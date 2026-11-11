@@ -42,6 +42,14 @@ struct GrantedFile {
     path: PathBuf,
 }
 
+struct PendingFileMove {
+    grant_id: String,
+    destination_relative: String,
+    original_sha256: String,
+    expires_at: u64,
+    approval_token: Option<String>,
+}
+
 struct PendingFileEdit {
     grant_id: String,
     original_sha256: String,
@@ -62,6 +70,24 @@ pub struct FileEditPreview {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FileMovePreview {
+    pub preview_id: String,
+    pub source_relative_path: String,
+    pub destination_relative_path: String,
+    pub file_name: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileMoveResult {
+    pub file_name: String,
+    pub destination_relative_path: String,
+    pub backup_path: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileEditResult {
     pub file_name: String,
     pub backup_path: String,
@@ -70,6 +96,7 @@ pub struct FileEditResult {
 
 static FOLDER_GRANTS: Mutex<BTreeMap<String, GrantedFile>> = Mutex::new(BTreeMap::new());
 static PENDING_FILE_EDITS: Mutex<BTreeMap<String, PendingFileEdit>> = Mutex::new(BTreeMap::new());
+static PENDING_FILE_MOVES: Mutex<BTreeMap<String, PendingFileMove>> = Mutex::new(BTreeMap::new());
 
 fn supported_text_file(path: &Path) -> bool {
     const EXTENSIONS: &[&str] = &[
@@ -462,6 +489,136 @@ pub fn apply_file_edit(
         true,
     );
     Ok(FileEditResult { file_name, backup_path: relative_backup, bytes_written })
+}
+
+
+fn validate_relative_destination(value: &str) -> Result<PathBuf, String> {
+    if value.is_empty() || value.len() > 512 || value.contains('\0') {
+        return Err("Enter a valid destination path inside the selected folder.".into());
+    }
+    let normalized = value.replace('\\', "/");
+    let path = Path::new(&normalized);
+    if path.is_absolute() || path.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+        return Err("Destination must be a relative path inside the selected folder; parent and absolute paths are not allowed.".into());
+    }
+    if !supported_text_file(path) {
+        return Err("The destination must keep a supported text-file extension.".into());
+    }
+    Ok(path.to_path_buf())
+}
+
+#[tauri::command]
+pub fn prepare_file_move(file_id: String, destination_relative_path: String) -> Result<FileMovePreview, String> {
+    if file_id.len() != 48 || !file_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("This file selection is invalid. Choose the folder and file again.".into());
+    }
+    let destination = validate_relative_destination(&destination_relative_path)?;
+    let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
+    let grant = grants.get(&file_id).ok_or("This file selection has expired. Select the folder again.")?;
+    let root = fs::canonicalize(&grant.root).map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let source_meta = fs::symlink_metadata(&grant.path).map_err(|_| "The selected file is no longer available.".to_string())?;
+    if source_meta.file_type().is_symlink() || !source_meta.is_file() || source_meta.len() == 0 || source_meta.len() > MAX_FILE_BYTES {
+        return Err("Only regular, non-empty supported text files up to 64 KB can be moved.".into());
+    }
+    let source = fs::canonicalize(&grant.path).map_err(|_| "The selected file is no longer available.".to_string())?;
+    if source != grant.path || !source.starts_with(&root) || !supported_text_file(&source) {
+        return Err("The selected file is no longer inside the approved folder or is not supported.".into());
+    }
+    let destination_path = root.join(&destination);
+    let parent = destination_path.parent().ok_or("Choose a destination inside an existing subfolder.")?;
+    let parent_meta = fs::symlink_metadata(parent).map_err(|_| "The destination folder must already exist inside the selected folder.".to_string())?;
+    if parent_meta.file_type().is_symlink() || !parent_meta.is_dir() {
+        return Err("The destination must be a normal existing folder, not a symbolic link.".into());
+    }
+    let canonical_parent = fs::canonicalize(parent).map_err(|_| "FRIDAY could not verify the destination folder.".to_string())?;
+    if !canonical_parent.starts_with(&root) { return Err("The destination is outside the selected folder.".into()); }
+    if destination_path == source { return Err("The source and destination are the same.".into()); }
+    if fs::symlink_metadata(&destination_path).is_ok() {
+        return Err("A file or folder already exists at the destination. Choose another name.".into());
+    }
+    let original = fs::read(&source).map_err(|_| "FRIDAY could not verify the selected file.".to_string())?;
+    if original.len() as u64 != source_meta.len() || original.contains(&0) {
+        return Err("The selected file changed or is not plain text. No changes were made.".into());
+    }
+    let source_relative_path = source.strip_prefix(&root).map_err(|_| "The selected file is outside the approved folder.")?
+        .to_string_lossy().replace('\\', "/");
+    let preview_id = make_token();
+    let mut pending = PENDING_FILE_MOVES.lock().map_err(|_| "File operations are temporarily unavailable.".to_string())?;
+    pending.retain(|_, item| item.expires_at >= edit_now());
+    if pending.len() >= 32 { return Err("Too many pending file previews. Close one and try again.".into()); }
+    pending.insert(preview_id.clone(), PendingFileMove {
+        grant_id: file_id, destination_relative: destination.to_string_lossy().replace('\\', "/"),
+        original_sha256: content_hash(&original), expires_at: edit_now() + 300, approval_token: None,
+    });
+    Ok(FileMovePreview {
+        preview_id, source_relative_path, destination_relative_path: destination_path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"),
+        file_name: source.file_name().and_then(|name| name.to_str()).unwrap_or("Selected file").to_string(),
+        size_bytes: source_meta.len(),
+    })
+}
+
+#[tauri::command]
+pub fn issue_file_move_approval(preview_id: String) -> Result<String, String> {
+    let mut pending = PENDING_FILE_MOVES.lock().map_err(|_| "File operations are temporarily unavailable.".to_string())?;
+    let expired = pending.get(&preview_id).ok_or("This preview has expired. Prepare the move again.")?.expires_at < edit_now();
+    if expired { pending.remove(&preview_id); return Err("This preview has expired. Prepare the move again.".into()); }
+    let token = make_token();
+    pending.get_mut(&preview_id).ok_or("This preview has expired.")?.approval_token = Some(token.clone());
+    Ok(token)
+}
+
+#[tauri::command]
+pub fn cancel_file_move_preview(preview_id: String) -> Result<(), String> {
+    PENDING_FILE_MOVES.lock().map_err(|_| "File operations are temporarily unavailable.".to_string())?.remove(&preview_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: String) -> Result<FileMoveResult, String> {
+    let operation = PENDING_FILE_MOVES.lock().map_err(|_| "File operations are temporarily unavailable.".to_string())?
+        .remove(&preview_id).ok_or("This preview has expired or was already used. Prepare it again.")?;
+    if operation.expires_at < edit_now() || operation.approval_token.as_deref() != Some(approval_token.as_str()) {
+        return Err("The move was not approved with a valid, fresh confirmation. Review it again.".into());
+    }
+    let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
+    let grant = grants.get(&operation.grant_id).ok_or("This folder selection has expired. Select it again.")?;
+    let root = fs::canonicalize(&grant.root).map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let source_meta = fs::symlink_metadata(&grant.path).map_err(|_| "The selected file is no longer available.".to_string())?;
+    if source_meta.file_type().is_symlink() || !source_meta.is_file() || source_meta.len() > MAX_FILE_BYTES {
+        return Err("The source is no longer a safe regular text file. No changes were made.".into());
+    }
+    let source = fs::canonicalize(&grant.path).map_err(|_| "The selected file is no longer available.".to_string())?;
+    if source != grant.path || !source.starts_with(&root) { return Err("The source is no longer inside the selected folder. No changes were made.".into()); }
+    let bytes = fs::read(&source).map_err(|_| "FRIDAY could not re-check the source file.".to_string())?;
+    if content_hash(&bytes) != operation.original_sha256 { return Err("The source changed after the preview. No changes were made; prepare a fresh preview.".into()); }
+    let relative = validate_relative_destination(&operation.destination_relative)?;
+    let destination = root.join(relative);
+    let parent = destination.parent().ok_or("Invalid destination folder.")?;
+    let parent_meta = fs::symlink_metadata(parent).map_err(|_| "The destination folder is no longer available.".to_string())?;
+    if parent_meta.file_type().is_symlink() || !parent_meta.is_dir() { return Err("The destination folder is no longer safe. No changes were made.".into()); }
+    let canonical_parent = fs::canonicalize(parent).map_err(|_| "Could not verify the destination folder.".to_string())?;
+    if !canonical_parent.starts_with(&root) || fs::symlink_metadata(&destination).is_ok() {
+        return Err("The destination is outside the selected folder or is no longer empty. No changes were made.".into());
+    }
+    let backup_dir = root.join(".friday-backups");
+    match fs::symlink_metadata(&backup_dir) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => return Err("The FRIDAY backup location is not a safe folder.".into()),
+        Ok(_) => {},
+        Err(_) => fs::create_dir(&backup_dir).map_err(|e| format!("Could not create the backup folder: {e}"))?,
+    }
+    let token = make_token();
+    let backup = backup_dir.join(format!("{token}.move.bak"));
+    fs::copy(&source, &backup).map_err(|e| format!("Could not preserve a backup before moving: {e}"))?;
+    if let Err(error) = fs::rename(&source, &destination) {
+        let _ = fs::remove_file(&backup);
+        return Err(format!("Could not move the file. The original was left in place: {error}"));
+    }
+    let backup_relative = backup.strip_prefix(&root).unwrap_or(&backup).to_string_lossy().replace('\\', "/");
+    let destination_relative = destination.strip_prefix(&root).unwrap_or(&destination).to_string_lossy().replace('\\', "/");
+    let file_name = destination.file_name().and_then(|name| name.to_str()).unwrap_or("Selected file").to_string();
+    let _ = crate::tools::record(&app, "file.move_selected_file",
+        &format!("Moved a selected file to {destination_relative}; backup preserved at {backup_relative}."), true);
+    Ok(FileMoveResult { file_name, destination_relative_path: destination_relative, backup_path: backup_relative })
 }
 
 #[tauri::command]
