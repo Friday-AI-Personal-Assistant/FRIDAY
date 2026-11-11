@@ -250,3 +250,14 @@ h1 em{font-style:normal;color:#9ce4ad}
 .pdf-extracted-text section{padding:9px 0;border-bottom:1px solid #29392d}
 .pdf-extracted-text section strong{font-size:9px;color:#c6dfcb}
 .pdf-extracted-text section p{font-size:9px;line-height:1.6;color:#aab8ad;white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto;margin:6px 0 0}
+
+
+.web-research-panel { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border, #dedede); display: grid; gap: 12px; }
+.web-research-panel > p { margin: 0; color: var(--muted, #777); font-size: 0.9rem; line-height: 1.5; }
+.web-query-label { display: grid; gap: 7px; font-size: 0.88rem; font-weight: 600; }
+.web-query-label input { width: 100%; box-sizing: border-box; border: 1px solid var(--border, #ccc); border-radius: 8px; padding: 10px 12px; background: var(--surface, #fff); color: inherit; font: inherit; }
+.web-results { display: grid; gap: 12px; }
+.web-result { display: grid; gap: 5px; padding: 12px; border: 1px solid var(--border, #dedede); border-radius: 9px; min-width: 0; }
+.web-result a { color: var(--accent, #24765b); font-weight: 650; overflow-wrap: anywhere; }
+.web-result small { color: var(--muted, #777); overflow-wrap: anywhere; }
+.web-result p { margin: 0; line-height: 1.45; font-size: 0.9rem; overflow-wrap: anywhere; }
