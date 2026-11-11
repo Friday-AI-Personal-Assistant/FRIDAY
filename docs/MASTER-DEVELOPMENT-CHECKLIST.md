@@ -120,7 +120,7 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 
 Implement each as a real end-to-end capability, including permissions, errors, settings, data handling and Windows tests.
 
-- [ ] **PDF Reader** — open user-selected PDFs, extract text, summarise, answer questions with page references; handle scanned PDFs via optional OCR.
+- [~] **PDF Reader** — native Windows file picker, local text extraction with page numbers, extracted-text preview, and local Ollama Q&A with page-citation instructions are implemented. Encrypted/damaged PDFs return a clear error; file size (25 MB), page count (500) and extracted text (120,000 characters) are bounded. Scanned-PDF OCR, stronger PDF parser hardening, Rust/TypeScript builds and Windows end-to-end verification remain pending.
 - [ ] **Web Research** — search and open sources, summarise with citations, distinguish source facts from model inference.
 - [ ] **File Assistant** — user-selected folders/files with path-scoped access grants; search and summarise; approved file writes with preview/diff; require confirmation before write, move or delete.
 - [ ] **Coding Assistant** — inspect selected project files, explain and propose edits; sandbox tests/commands with strict time/resource limits; show diffs and require approval before applying changes.
@@ -231,4 +231,4 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 **Phase 1E — Proper Skills Platform:** four versioned built-in declarative packages can be installed locally, enabled, explicitly loaded/unloaded and integrity-checked. Loaded instructions are added to the next local chat prompt; packages do not execute scripts and do not yet provide their advertised tools. Automated and Windows verification remain pending.
 
-**Phase 1D — Persistent personal memory:** user-entered memory entries are stored separately from transcripts in an encrypted local file. The chat UI supports add, edit, enable/disable and delete; enabled entries are included as bounded context in local Ollama prompts. No memory is silently extracted or saved. Rust/TypeScript checks and Windows end-to-end verification remain pending. Next, verify create/edit/disable/delete, persistence across restart, and that disabled entries are excluded from prompts. Next, build the central permissioned tool registry (Phase 1F), then connect each original FRIDAY skill to real tools and workflows.
+**Phase 1D — Persistent personal memory:** user-entered memory entries are stored separately from transcripts in an encrypted local file. The chat UI supports add, edit, enable/disable and delete; enabled entries are included as bounded context in local Ollama prompts. No memory is silently extracted or saved. Rust/TypeScript checks and Windows end-to-end verification remain pending.
