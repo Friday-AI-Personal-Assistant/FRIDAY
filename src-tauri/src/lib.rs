@@ -43,6 +43,7 @@ pub fn run() {
             skills::loaded_skill_instructions,
             pdf_reader::pick_and_read_pdf,
             web_research::web_search,
+            web_research::web_read_page,
             skills::uninstall_skill
         ])
         .run(tauri::generate_context!())
