@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import Assistant from "./Assistant";
 
-type Page = "Overview" | "Modules" | "Privacy & Security" | "Settings";
+type Page = "AI Chat" | "Overview" | "Modules" | "Privacy & Security" | "Settings";
 
 const modules = [
   { name: "Email Assistant", detail: "Organise messages and prepare replies for your approval.", icon: "✉", status: "Planned" },
@@ -11,7 +12,7 @@ const modules = [
 ];
 
 function App() {
-  const [page, setPage] = useState<Page>("Overview");
+  const [page, setPage] = useState<Page>("AI Chat");
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [note, setNote] = useState("");
   const [workspaceMessage, setWorkspaceMessage] = useState("");
@@ -53,16 +54,16 @@ function App() {
         <div className="brand"><div className="brand-mark">F</div><div><strong>FRIDAY</strong><span>PERSONAL AI</span></div></div>
         <div className="side-label">WORKSPACE</div>
         <nav>
-          {(["Overview", "Modules", "Privacy & Security", "Settings"] as Page[]).map(item => (
+          {(["AI Chat", "Overview", "Modules", "Privacy & Security", "Settings"] as Page[]).map(item => (
             <button key={item} className={page === item ? "nav-item active" : "nav-item"} onClick={() => setPage(item)}>
-              <span className="nav-icon">{item === "Overview" ? "⌂" : item === "Modules" ? "▦" : item === "Privacy & Security" ? "◇" : "⚙"}</span>{item}
+              <span className="nav-icon">{item === "AI Chat" ? "✦" : item === "Overview" ? "⌂" : item === "Modules" ? "▦" : item === "Privacy & Security" ? "◇" : "⚙"}</span>{item}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
           <div className="local-pill"><span /> LOCAL-FIRST DESIGN</div>
           <p>Your workspace is designed to stay on this device.</p>
-          <span className="version">EARLY PREVIEW · v0.1.0</span>
+          <span className="version">LOCAL AI · v0.2.0</span>
         </div>
       </aside>
 
@@ -72,6 +73,8 @@ function App() {
           <div className="profile-chip"><div className="profile-dot">U</div><span>YOUR WORKSPACE</span></div>
         </header>
 
+        {page === "AI Chat" && <Assistant />}
+
         {page === "Overview" && <section className="page">
           <div className="eyebrow"><span className="pulse" /> YOUR PERSONAL ASSISTANT</div>
           <h1>Good to see you.<br /><em>Let's get things done.</em></h1>
@@ -79,12 +82,12 @@ function App() {
 
           <div className="notice">
             <div className="notice-icon">i</div>
-            <div><strong>Early development preview</strong><p>The local encrypted-note foundation is now being implemented. AI, accounts, email connections and other modules are not active yet.</p></div>
+            <div><strong>Early development preview</strong><p>The local encrypted-note foundation is now being implemented. AI Chat is available on Windows when Ollama is running. Accounts and full email integrations are not active yet.</p></div>
           </div>
 
           <div className="section-heading"><div><span className="eyebrow">YOUR SETUP</span><h2>Workspace status</h2></div><span className="muted-tag">{workspaceReady ? "INITIALIZED" : "NOT INITIALIZED"}</span></div>
           <div className="status-grid">
-            <div className="status-card"><span className="card-icon">◈</span><span className="card-label">AI ENGINE</span><strong>Not connected</strong><small>Local model setup comes next</small></div>
+            <div className="status-card"><span className="card-icon">◈</span><span className="card-label">AI ENGINE</span><strong>Local Ollama</strong><small>Open AI Chat to check connection</small></div>
             <div className="status-card"><span className="card-icon">▣</span><span className="card-label">PRIVATE WORKSPACE</span><strong>{workspaceReady ? "Initialized" : "Not initialized"}</strong><small>Encryption key stored by Windows</small></div>
             <div className="status-card"><span className="card-icon">⌑</span><span className="card-label">YOUR MODULES</span><strong>4 planned</strong><small>Choose what you use later</small></div>
           </div>
