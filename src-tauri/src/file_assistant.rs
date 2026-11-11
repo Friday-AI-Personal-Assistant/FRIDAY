@@ -396,12 +396,15 @@ pub fn prepare_file_edit(file_id: String, proposed_content: String) -> Result<Fi
 #[tauri::command]
 pub fn issue_file_edit_approval(preview_id: String) -> Result<String, String> {
     let mut pending = PENDING_FILE_EDITS.lock().map_err(|_| "File editing is temporarily unavailable.".to_string())?;
-    let edit = pending.get_mut(&preview_id).ok_or("This preview has expired. Prepare the edit again.")?;
-    if edit.expires_at < edit_now() {
+    let expired = pending.get(&preview_id)
+        .ok_or("This preview has expired. Prepare the edit again.")?
+        .expires_at < edit_now();
+    if expired {
         pending.remove(&preview_id);
         return Err("This preview has expired. Prepare the edit again.".into());
     }
     let token = make_token();
+    let edit = pending.get_mut(&preview_id).ok_or("This preview has expired. Prepare the edit again.")?;
     edit.approval_token = Some(token.clone());
     Ok(token)
 }
