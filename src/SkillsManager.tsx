@@ -148,7 +148,7 @@ export default function SkillsManager() {
             <label className="pdf-question-label">Ask about this document
               <textarea value={pdfQuestion} onChange={event => setPdfQuestion(event.target.value)} rows={3} maxLength={2000} placeholder="Summarise this document, or ask a question…" />
             </label>
-            <button className="primary-button" disabled={pdfBusy || !pdfModel.trim() || !pdfQuestion.trim() || pdf.needsOcr} onClick={() => void askPdf(pdfQuestion)}>{pdfBusy ? "Thinking…" : "Ask FRIDAY about this PDF"}</button>
+            <button className="primary-button" disabled={pdfBusy || !pdfModel.trim() || !pdfQuestion.trim() || !pdf.pages.some(page => page.text.trim().length > 0)} onClick={() => void askPdf(pdfQuestion)}>{pdfBusy ? "Thinking…" : "Ask FRIDAY about this PDF"}</button>
             {pdfAnswer && <div className="pdf-answer"><strong>FRIDAY's answer</strong><p>{pdfAnswer}</p></div>}
             <details className="pdf-extracted-text">
               <summary>Preview extracted pages</summary>
