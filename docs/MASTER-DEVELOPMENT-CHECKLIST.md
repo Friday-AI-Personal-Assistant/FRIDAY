@@ -53,8 +53,8 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 - [~] Detect whether Ollama is reachable.
 - [~] List locally installed Ollama models.
 - [~] Select a model in the chat UI.
-- [ ] Improve connection errors, retry and timeout handling.
-- [ ] Add model details (size, family, context where available) and safe model refresh.
+- [x] Improve connection errors and set separate connection/request timeouts; richer Ollama HTTP error messages are returned. (Implemented; Windows verification pending.)
+- [~] Improve model refresh feedback and sort/deduplicate installed model names. Model details (size, family, context) remain pending.
 - [ ] Add model download/pull flow with clear disk-space and network warnings.
 - [ ] Support configurable local endpoint safely, defaulting to localhost.
 - [ ] Add streaming responses, cancellation and clear busy/error states.
@@ -179,8 +179,8 @@ These are capability areas to adapt, not a promise to reproduce every OpenJarvis
 
 ## Phase 6 — Verification and Windows release
 
-- [ ] TypeScript build and lint/checks pass.
-- [ ] Rust formatting, unit tests and build pass.
+- [ ] TypeScript build and lint/checks pass for the latest changes.
+- [ ] Rust formatting, new Ollama request-validation unit tests, and build pass for the latest changes.
 - [ ] Tauri Windows installer build passes on the development branch.
 - [ ] Install on a clean supported Windows environment.
 - [ ] Test Ollama missing, running, stopped and model-not-installed cases.
@@ -209,4 +209,4 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 ## Immediate next work item
 
-**Phase 1A — stabilise and verify the Ollama foundation**, then proceed through chat persistence, memory, skills architecture and permissioned tool execution before implementing the larger skill catalogue.
+**Phase 1A — complete Ollama foundation:** run the frontend/Rust checks, verify the Windows desktop connection with Ollama running/offline/no-model cases, then add streaming responses and a safe model download flow. After that, proceed through chat persistence, memory, skills architecture and permissioned tool execution before implementing the larger skill catalogue.
