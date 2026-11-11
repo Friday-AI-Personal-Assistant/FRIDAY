@@ -191,7 +191,7 @@ export default function SkillsManager() {
         </div>
         {skill.id === "web-research" && skill.loaded && <div className="web-research-panel">
           <strong>Search the web</strong>
-          <p>Your search query is sent to DuckDuckGo. FRIDAY returns source titles, links and short snippets; it does not open pages or access private accounts.</p>
+          <p>Your search query is sent to DuckDuckGo. Choose up to four results for FRIDAY to read and compare. It does not access private accounts.</p>
           <label className="web-query-label">What would you like to research?
             <input value={webQuery} onChange={event => setWebQuery(event.target.value)} maxLength={500} placeholder="e.g. latest advances in battery recycling" />
           </label>
