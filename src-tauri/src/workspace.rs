@@ -1,16 +1,53 @@
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce,
 };
 use keyring::Entry;
 use rand::{rngs::OsRng, RngCore};
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{AppHandle, Manager};
 
 const KEYRING_SERVICE: &str = "com.friday.assistant";
 const KEYRING_ACCOUNT: &str = "local-workspace-encryption-key";
 const NOTE_FILE: &str = "private-note.enc";
+static KEYRING_LOCK: Mutex<()> = Mutex::new(());
+
+fn workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let base = app.path().app_data_dir().map_err(|e| format!("Cannot locate this user's application data folder: {e}"))?;
+    Ok(base.join("workspace"))
+}
+
+fn encryption_key() -> Result<[u8; 32], String> {
+    // Windows Credential Manager does not guarantee ordering for concurrent
+    // access to the same credential, so serialize key creation and retrieval.
+    let _guard = KEYRING_LOCK.lock().map_err(|_| "Workspace key lock is unavailable.".to_string())?;
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|e| format!("Windows credential storage is unavailable: {e}"))?;
+
+    match entry.get_secret() {
+        Ok(bytes) => bytes.try_into().map_err(|_| "Stored workspace key has an invalid length.".to_string()),
+        Err(keyring::Error::NoEntry) => {
+            let mut key = [0_u8; 32];
+            OsRng.fill_bytes(&mut key);
+            entry.set_secret(&key)
+                .map_err(|e| format!("Could not protect the workspace key in Windows Credential Manager: {e}"))?;
+            Ok(key)
+        }
+        Err(e) => Err(format!("Could not access the workspace key in Windows Credential Manager: {e}")),
+    }
+}se chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    XChaCha20Poly1305, XNonce,
+};
+use keyring::Entry;
+use rand::{rngs::OsRng, RngCore};
+use std::{fs, path::PathBuf, sync::Mutex};
+use tauri::{AppHandle, Manager};
+
+const KEYRING_SERVICE: &str = "com.friday.assistant";
+const KEYRING_ACCOUNT: &str = "local-workspace-encryption-key";
+const NOTE_FILE: &str = "private-note.enc";
+static KEYRING_LOCK: Mutex<()> = Mutex::new(());
 
 fn workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let base = app.path().app_data_dir().map_err(|e| format!("Cannot locate this user's application data folder: {e}"))?;
