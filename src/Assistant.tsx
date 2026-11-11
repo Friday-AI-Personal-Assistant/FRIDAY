@@ -32,6 +32,7 @@ export default function Assistant() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeTitle, setActiveTitle] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -66,7 +67,7 @@ export default function Assistant() {
     if (!desktop || !id || !items.length) return;
     setSaving(true);
     try {
-      await invoke("save_conversation", { id, title: titleFor(items), messages: items });
+      await invoke("save_conversation", { id, title: activeTitle || titleFor(items), messages: items });
       await refreshHistory();
       setHistoryError("");
     } catch (e) { setHistoryError("Chat could not be saved: " + String(e)); }
@@ -80,6 +81,7 @@ export default function Assistant() {
     try {
       const chat = await invoke<Conversation>("load_conversation", { id });
       setActiveId(chat.id);
+      setActiveTitle(chat.title);
       setMessages(chat.messages);
       setError("");
       setActionResult("");
@@ -90,6 +92,7 @@ export default function Assistant() {
   function newConversation() {
     if (pending) return;
     setActiveId(null);
+    setActiveTitle(null);
     setMessages([]);
     setInput("");
     setError("");
@@ -104,6 +107,7 @@ export default function Assistant() {
     try {
       const chat = await invoke<Conversation>("load_conversation", { id: item.id });
       await invoke("save_conversation", { id: item.id, title: title.trim().slice(0, 160), messages: chat.messages });
+      if (activeId === item.id) setActiveTitle(title.trim().slice(0, 160));
       await refreshHistory();
     } catch (e) { setHistoryError(String(e)); }
   }
@@ -176,7 +180,7 @@ export default function Assistant() {
     setInput(""); setError(""); setActionResult("");
     const next: Message[] = [...messages, { role: "user", content: text }];
     const id = activeId || crypto.randomUUID();
-    setActiveId(id); setMessages(next);
+    setActiveId(id); if (!activeTitle) setActiveTitle(titleFor(next)); setMessages(next);
     if (desktop) await persist(id, next);
     if (match) { setAction(match); return; }
     if (!desktop) { setError("AI chat works in the Windows desktop app. This is only the browser preview."); return; }
