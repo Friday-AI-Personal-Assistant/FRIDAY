@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import urllib.request
@@ -238,10 +239,21 @@ def execute(name, args, root):
     if platform.system() != 'Windows':
         raise RuntimeError('Desktop tools require Windows')
     if name == 'open_application':
-        applications = {'notepad': ['notepad.exe'], 'calculator': ['calc.exe'], 'explorer': ['explorer.exe', str(root)]}
+        applications = {'notepad': ['notepad.exe'], 'calculator': ['calc.exe'], 'explorer': ['explorer.exe', str(root)], 'chrome': ['chrome.exe'], 'edge': ['msedge.exe']}
         if args['application'] not in applications:
             raise ValueError('Application is not allowlisted')
-        process = subprocess.Popen(applications[args['application']], shell=False)
+        try:
+            process = subprocess.Popen(applications[args['application']], shell=False)
+        except FileNotFoundError:
+            if args['application'] not in {'chrome', 'edge'}:
+                raise
+            import shutil
+            exe = 'chrome.exe' if args['application'] == 'chrome' else 'msedge.exe'
+            candidates = [Path(os.environ.get('PROGRAMFILES', '')) / ('Google/Chrome/Application/' + exe if exe.startswith('chrome') else 'Microsoft/Edge/Application/' + exe), Path(os.environ.get('PROGRAMFILES(X86)', '')) / ('Google/Chrome/Application/' + exe if exe.startswith('chrome') else 'Microsoft/Edge/Application/' + exe), Path(os.environ.get('LOCALAPPDATA', '')) / ('Google/Chrome/Application/' + exe if exe.startswith('chrome') else 'Microsoft/Edge/Application/' + exe)]
+            found = next((str(p) for p in candidates if p.is_file()), None) or shutil.which(exe)
+            if not found:
+                raise ValueError('Browser is not installed or could not be found')
+            process = subprocess.Popen([found], shell=False)
         return {'launched_pid': process.pid, 'verified': False, 'note': 'Launch requested; inspect windows to verify.'}
     if name in {'inspect_windows', 'focus_window', 'click_element', 'type_text'}:
         from pywinauto import Desktop
@@ -257,17 +269,23 @@ def execute(name, args, root):
                     continue
             return result
         if name == 'focus_window':
-            desktop.window(title=args['title']).set_focus()
+            desktop.window(title_re='(?i).*' + re.escape(args['title']) + '.*').set_focus()
             return {'focused': args['title']}
         if name == 'click_element':
-            desktop.window(title=args['title']).child_window(auto_id=args['automation_id']).click_input()
+            desktop.window(title_re='(?i).*' + re.escape(args['title']) + '.*').child_window(auto_id=args['automation_id']).click_input()
             return {'clicked': args['automation_id'], 'verified': False}
         # Avoid interpreting user text as pywinauto key expressions.
         from pywinauto.controls.uiawrapper import UIAWrapper
         from pywinauto.uia_element_info import UIAElementInfo
         from pywinauto.uia_defines import IUIA
         focused = UIAWrapper(UIAElementInfo(IUIA().iuia.GetFocusedElement()))
-        focused.iface_value.SetValue(args['text'])
+        try:
+            focused.iface_value.SetValue(args['text'])
+        except Exception:
+            # Some Windows apps expose a read-only UIA ValuePattern despite accepting keystrokes.
+            # Clipboard is not used: it can overwrite private clipboard contents.
+            import pyautogui
+            pyautogui.write(args['text'], interval=0.005)
         return {'typed': len(args['text']), 'verified': False}
     if name == 'capture_screenshot':
         from PIL import ImageGrab
@@ -376,9 +394,9 @@ def main():
         if len(line) > MAX_BYTES:
             raise ValueError('Request exceeds limit')
         result = handle(json.loads(line))
-        print(json.dumps({'ok': True, 'result': result}, ensure_ascii=False))
+        sys.stdout.buffer.write((json.dumps({'ok': True, 'result': result}, ensure_ascii=True) + '\\n').encode('utf-8'))
     except Exception as error:
-        print(json.dumps({'ok': False, 'error': f'{type(error).__name__}: {error}'}))
+        sys.stdout.buffer.write((json.dumps({'ok': False, 'error': f'{type(error).__name__}: {error}'}, ensure_ascii=True) + '\\n').encode('utf-8'))
 
 
 if __name__ == '__main__':
