@@ -23,7 +23,7 @@ serde_json = "1"
 sha2 = "0.10"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 
-tokio = { version = "1", features = ["macros", "sync"] }
+tokio = { version = "1", features = ["macros", "sync", "net"] }
 lopdf = "0.47"
 regex = "1"
 url = "2"
