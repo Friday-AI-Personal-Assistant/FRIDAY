@@ -172,7 +172,7 @@ export default function Assistant() {
 
   async function send() {
     const text = input.trim();
-    if (!text || pending || action) return;
+    if (!text || pending || saving || action) return;
     const match = ACTIONS.find(a => a.keywords.test(text));
     if (!match && desktop && models.length === 0) {
       setError("FRIDAY cannot start an AI chat yet. Make sure Ollama is running and at least one model is installed, then press Refresh.");
@@ -240,7 +240,7 @@ export default function Assistant() {
   }
 
   return <section className="assistant-page">
-    <div className="assistant-head"><div><div className="eyebrow">YOUR LOCAL AI ASSISTANT</div><h1>Talk to <em>FRIDAY.</em></h1><p className="intro">Your conversations are saved privately on this computer.</p></div><button className="secondary-button" onClick={newConversation} disabled={pending}>+ New chat</button></div>
+    <div className="assistant-head"><div><div className="eyebrow">YOUR LOCAL AI ASSISTANT</div><h1>Talk to <em>FRIDAY.</em></h1><p className="intro">Your conversations are saved privately on this computer.</p></div><button className="secondary-button" onClick={newConversation} disabled={pending || saving}>+ New chat</button></div>
     <div className="chat-layout">
       <aside className="conversation-sidebar" aria-label="Conversation history">
         <div className="conversation-sidebar-head"><strong>CHAT HISTORY</strong><button onClick={() => void refreshHistory()} disabled={historyLoading} aria-label="Refresh chat history">↻</button></div>
@@ -249,7 +249,7 @@ export default function Assistant() {
         {!conversations.length && !historyLoading && <p className="history-hint">Your saved chats will appear here.</p>}
         {conversations.length > 0 && !conversations.some(item => item.title.toLowerCase().includes(historySearch.trim().toLowerCase())) && historySearch.trim() && <p className="history-hint">No matching conversations.</p>}
         <div className="conversation-list">{conversations.filter(item => item.title.toLowerCase().includes(historySearch.trim().toLowerCase())).map(item => <div className={activeId === item.id ? "conversation-item active" : "conversation-item"} key={item.id}>
-          <button className="conversation-open" onClick={() => void openConversation(item.id)} disabled={pending}><strong>{item.title}</strong><small>{item.message_count} messages</small></button>
+          <button className="conversation-open" onClick={() => void openConversation(item.id)} disabled={pending || saving}><strong>{item.title}</strong><small>{item.message_count} messages</small></button>
           <div className="conversation-actions"><button onClick={() => void renameConversation(item)} title="Rename chat" aria-label={"Rename " + item.title}>✎</button><button onClick={() => void removeConversation(item)} title="Delete chat" aria-label={"Delete " + item.title}>×</button></div>
         </div>)}</div>
         {historyError && <p className="history-error" role="alert">{historyError}</p>}
@@ -272,7 +272,7 @@ export default function Assistant() {
         {error && <div className="chat-error" role="alert">{error}</div>}
         {wasStopped && <div className="chat-success" role="status">Response stopped.</div>}
         {actionResult && <div className="chat-success" role="status">{actionResult}</div>}
-        <div className="chat-compose"><textarea aria-label="Message FRIDAY" placeholder="Message FRIDAY…" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} rows={2} maxLength={20000}/>{pending ? <button className="secondary-button stop-generation" onClick={() => void stopGeneration()} aria-label="Stop response">■ Stop</button> : <button className="primary-button" disabled={!input.trim() || !!action} onClick={() => void send()} aria-label="Send message">↑ Send</button>}</div>
+        <div className="chat-compose"><textarea aria-label="Message FRIDAY" placeholder="Message FRIDAY…" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} rows={2} maxLength={20000}/>{pending ? <button className="secondary-button stop-generation" onClick={() => void stopGeneration()} aria-label="Stop response">■ Stop</button> : <button className="primary-button" disabled={!input.trim() || !!action || saving} onClick={() => void send()} aria-label="Send message">↑ Send</button>}</div>
         <p className="chat-footnote">Local AI · Encrypted chat history · Desktop actions require confirmation · {saving ? "Saving…" : "Saved on this device"} · Emails are never sent automatically</p>
       </div>
     </div>
