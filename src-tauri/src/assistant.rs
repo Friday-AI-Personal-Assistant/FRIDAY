@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{process::Command, time::Duration};
+use tauri::ipc::Channel;
 
 const OLLAMA: &str = "http://127.0.0.1:11434";
 const MAX_MODEL_NAME_BYTES: usize = 200;
@@ -20,11 +21,7 @@ struct Request<'a> {
     stream: bool,
 }
 
-#[derive(Deserialize)]
-struct Response {
-    message: Message,
-}
-
+#
 #[derive(Deserialize)]
 struct Models {
     #[serde(default)]
@@ -108,6 +105,93 @@ pub async fn ollama_models() -> Result<Vec<String>, String> {
     names.dedup();
 
     Ok(names)
+}
+
+
+#[derive(Serialize, Clone)]
+pub struct StreamEvent {
+    pub event: String,
+    pub content: String,
+}
+
+#[derive(Deserialize)]
+struct StreamResponse {
+    #[serde(default)]
+    message: Option<Message>,
+    #[serde(default)]
+    done: bool,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn forward_stream_line(line: &[u8], channel: &Channel<StreamEvent>) -> Result<bool, String> {
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return Ok(false);
+    }
+    let chunk: StreamResponse = serde_json::from_slice(line)
+        .map_err(|_| "Ollama sent an unreadable streaming response.".to_string())?;
+    if let Some(error) = chunk.error {
+        return Err(format!("Ollama streaming error: {}", error.chars().take(400).collect::<String>()));
+    }
+    if let Some(message) = chunk.message {
+        if !message.content.is_empty() {
+            channel.send(StreamEvent { event: "token".into(), content: message.content })
+                .map_err(|e| format!("Could not deliver the response to FRIDAY: {e}"))?;
+        }
+    }
+    Ok(chunk.done)
+}
+
+#[tauri::command]
+pub async fn ollama_chat_stream(
+    messages: Vec<Message>,
+    model: String,
+    on_event: Channel<StreamEvent>,
+) -> Result<(), String> {
+    validate_chat_request(&messages, &model)?;
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(|e| format!("Could not prepare the Ollama chat connection: {e}"))?;
+
+    let mut response = client
+        .post(format!("{OLLAMA}/api/chat"))
+        .json(&Request { model: &model, messages: &messages, stream: true })
+        .send()
+        .await
+        .map_err(|_| "Cannot reach Ollama. Check that it is running, then try again.".to_string())?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(upstream_error(status, body));
+    }
+
+    let mut pending = Vec::<u8>::new();
+    let mut finished = false;
+    while let Some(bytes) = response.chunk().await
+        .map_err(|_| "The connection to Ollama was interrupted while generating the answer.".to_string())?
+    {
+        pending.extend_from_slice(&bytes);
+        if pending.len() > 1_000_000 && !pending.contains(&b'\n') {
+            return Err("Ollama sent an unexpectedly large streaming response chunk.".into());
+        }
+        while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = pending.drain(..=newline).collect();
+            finished = forward_stream_line(&line, &on_event)?;
+            if finished { break; }
+        }
+        if finished { break; }
+    }
+
+    if !pending.iter().all(u8::is_ascii_whitespace) {
+        forward_stream_line(&pending, &on_event)?;
+    }
+    on_event.send(StreamEvent { event: "done".into(), content: String::new() })
+        .map_err(|e| format!("Could not finish the response in FRIDAY: {e}"))?;
+    Ok(())
 }
 
 #[tauri::command]
