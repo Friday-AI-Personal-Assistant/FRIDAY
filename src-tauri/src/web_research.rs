@@ -155,6 +155,6 @@ mod tests {
     fn validates_search_query_size_and_controls() {
         assert!("hello world".len() <= MAX_QUERY_BYTES);
         assert!("a".repeat(MAX_QUERY_BYTES + 1).len() > MAX_QUERY_BYTES);
-        assert!("bad\\nquery".contains(char::is_control));
+        assert!("bad\nquery".contains(char::is_control));
     }
 }
