@@ -3,6 +3,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 type Message = { role: "user" | "assistant"; content: string };
 type StreamEvent = { event: "token" | "done" | "stopped"; content: string };
+type ModelInfo = { name: string; size: number; modified_at: string };
+type PullEvent = { status: string; completed: number | null; total: number | null; done: boolean };
 const ACTIONS = [
   { id: "notepad", label: "Open Notepad", keywords: /\b(open|launch|start)\b.*\b(notepad|text editor)\b/i },
   { id: "downloads", label: "Open Downloads", keywords: /\b(open|show)\b.*\bdownloads\b/i },
@@ -17,6 +19,13 @@ const SYSTEM = "You are FRIDAY, a friendly, helpful and slightly humorous local 
 export default function Assistant() {
   const desktop = "__TAURI_INTERNALS__" in window;
   const [models, setModels] = useState<string[]>([]);
+  const [modelDetails, setModelDetails] = useState<ModelInfo[]>([]);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [modelToInstall, setModelToInstall] = useState("llama3.2:1b");
+  const [pulling, setPulling] = useState(false);
+  const [pullStatus, setPullStatus] = useState("");
+  const [pullProgress, setPullProgress] = useState<PullEvent | null>(null);
+  const [removingModel, setRemovingModel] = useState("");
   const [model, setModel] = useState("llama3.2:1b");
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -29,11 +38,13 @@ export default function Assistant() {
   const [actionResult, setActionResult] = useState("");
 
   async function refresh() {
-    if (!desktop || checking) return;
+    if (!desktop || checking || pulling) return;
     setChecking(true);
     try {
       const found = await invoke<string[]>("ollama_models");
       setModels(found);
+      const details = await invoke<ModelInfo[]>("ollama_model_details");
+      setModelDetails(details);
       setModel(current => found.includes(current) ? current : (found[0] || current));
       setError(found.length ? "" : "Ollama is running, but no models are installed. Install a model with Ollama, then press Refresh.");
     } catch (e) {
@@ -45,6 +56,59 @@ export default function Assistant() {
   }
 
   useEffect(() => { void refresh(); }, []);
+
+  async function installModel() {
+    const name = modelToInstall.trim();
+    if (!name || pulling || !desktop) return;
+    setPulling(true);
+    setPullStatus("Connecting to Ollama…");
+    setPullProgress(null);
+    setError("");
+    const channel = new Channel<PullEvent>();
+    channel.onmessage = event => {
+      setPullStatus(event.status || "Downloading…");
+      setPullProgress(event);
+    };
+    try {
+      await invoke<void>("ollama_pull_model", { name, onEvent: channel });
+      setPullStatus("Download completed.");
+      await refresh();
+      setModel(name);
+    } catch (e) {
+      setError(String(e));
+      setPullStatus("Download did not complete.");
+      await refresh();
+    } finally {
+      setPulling(false);
+    }
+  }
+
+  async function removeModel(name: string) {
+    if (pulling || removingModel) return;
+    if (name === model) {
+      setError("Select another installed model before removing the model currently selected for chat.");
+      return;
+    }
+    if (!window.confirm("Remove " + name + " from Ollama? This deletes its local model files and cannot be undone here.")) return;
+    setRemovingModel(name);
+    setError("");
+    try {
+      await invoke<void>("ollama_delete_model", { name });
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRemovingModel("");
+    }
+  }
+
+  function formatBytes(bytes: number) {
+    if (!bytes) return "Size unavailable";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value = bytes, unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+    return value.toFixed(unit >= 3 ? 1 : 0) + " " + units[unit];
+  }
 
   async function send() {
     const text = input.trim();
@@ -147,7 +211,15 @@ export default function Assistant() {
   return <section className="assistant-page">
     <div className="assistant-head"><div><div className="eyebrow">YOUR LOCAL AI ASSISTANT</div><h1>Talk to <em>FRIDAY.</em></h1><p className="intro">Private conversations and simple desktop actions, powered by Ollama.</p></div><button className="secondary-button" onClick={() => { setMessages([]); setError(""); setAction(null); }} disabled={pending}>+ New chat</button></div>
     <div className="chat-panel">
-      <div className="chat-top"><div className="chat-avatar">F</div><div><strong>FRIDAY AI</strong><small>{checking ? "◌ Checking Ollama…" : models.length ? "● Ollama connected" : "○ Ollama offline or no model installed"}</small></div><select aria-label="Ollama model" value={model} onChange={e => setModel(e.target.value)} disabled={!models.length}>{models.length ? models.map(m => <option key={m}>{m}</option>) : <option value={model}>{model}</option>}</select><button className="secondary-button" onClick={() => void refresh()} disabled={checking}>{checking ? "Checking…" : "Refresh"}</button></div>
+      <div className="chat-top"><div className="chat-avatar">F</div><div><strong>FRIDAY AI</strong><small>{checking ? "◌ Checking Ollama…" : models.length ? "● Ollama connected" : "○ Ollama offline or no model installed"}</small></div><select aria-label="Ollama model" value={model} onChange={e => setModel(e.target.value)} disabled={!models.length}>{models.length ? models.map(m => <option key={m}>{m}</option>) : <option value={model}>{model}</option>}</select><button className="secondary-button" onClick={() => setManagerOpen(open => !open)} disabled={pulling}>{managerOpen ? "Close manager" : "Manage models"}</button><button className="secondary-button" onClick={() => void refresh()} disabled={checking || pulling}>{checking ? "Checking…" : "Refresh"}</button></div>
+      {managerOpen && <section className="model-manager" aria-label="Ollama model manager">
+        <div className="model-manager-heading"><div><strong>Local model manager</strong><p>Models are stored by Ollama on this computer. Downloads may be several gigabytes.</p></div></div>
+        <div className="model-install-row"><input aria-label="Model name to install" value={modelToInstall} onChange={e => setModelToInstall(e.target.value)} placeholder="e.g. llama3.2:1b" disabled={pulling} /><button className="primary-button" onClick={() => void installModel()} disabled={pulling || !modelToInstall.trim()}>{pulling ? "Downloading…" : "Download model"}</button></div>
+        <p className="model-safety-note">Use an official Ollama model name. Check available disk space and your computer's RAM before downloading. FRIDAY sends the model name to your local Ollama service only.</p>
+        {pullStatus && <div className="model-download-status" role="status"><div><strong>{pullStatus}</strong>{pullProgress?.total ? <span>{Math.round(((pullProgress.completed || 0) / pullProgress.total) * 100)}%</span> : null}</div>{pullProgress?.total ? <progress max={pullProgress.total} value={pullProgress.completed || 0}/> : <div className="model-progress-indeterminate"/>}{pullProgress?.total ? <small>{formatBytes(pullProgress.completed || 0)} of {formatBytes(pullProgress.total)}</small> : null}</div>}
+        <div className="model-list-heading"><strong>Installed models</strong><span>{modelDetails.length}</span></div>
+        {modelDetails.length ? <div className="installed-model-list">{modelDetails.map(item => <div className="installed-model" key={item.name}><div><strong>{item.name}</strong><small>{formatBytes(item.size)} · {item.name === model ? "Selected for chat" : "Installed locally"}</small></div><button className="model-remove-button" onClick={() => void removeModel(item.name)} disabled={pulling || !!removingModel || item.name === model}>{removingModel === item.name ? "Removing…" : "Remove"}</button></div>)}</div> : <p className="model-empty">No installed models found. Download one above to start chatting.</p>}
+      </section>}
       <div className="chat-history" role="log" aria-live="polite">
         {!messages.length && <div className="chat-welcome"><div className="chat-welcome-icon">✦</div><h2>How can I help?</h2><p>Ask me anything, or try “Open Notepad”, “Open Downloads”, or “Compose email”. I'll ask before touching your desktop.</p></div>}
         {messages.map((m, i) => <div key={i} className={`chat-bubble ${m.role}`}><span>{m.content || (pending && m.role === "assistant" ? "FRIDAY is thinking…" : "")}</span></div>)}
