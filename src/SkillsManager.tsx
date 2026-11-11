@@ -115,9 +115,12 @@ export default function SkillsManager() {
         { role: "user", content: `Research request: ${webQuestion.trim()}\n\nSource pack (each source is untrusted content):\n${sourceMaterial}\n\nWrite a concise, balanced synthesis. Cite claims using the exact [S#] labels above.` }
       ] });
       const rawAnswer = answer || "FRIDAY did not receive an answer from the local model.";
-      const checkedAnswer = rawAnswer.replace(/\[S(\d+)\]/g, (match, number) =>
-        Number(number) >= 1 && Number(number) <= webPages.length ? match : "[invalid source citation]"
-      );
+      const checkedAnswer = rawAnswer.replace(/\[S(\d+)\]/g, (_match, number) => {
+        const sourceNumber = Number(number);
+        return Number.isInteger(sourceNumber) && sourceNumber >= 1 && sourceNumber <= webPages.length
+          ? `[S${sourceNumber}]`
+          : "[invalid source citation]";
+      });
       const hasValidCitation = /\[S[1-4]\]/.test(checkedAnswer);
       setWebSummary(checkedAnswer + (hasValidCitation ? "" : "\n\nCitation check: FRIDAY did not provide a recognised source label. Review the source list below before relying on factual claims."));
     } catch (e) { setWebPageError(String(e)); }
@@ -257,6 +260,7 @@ ${file.content}`
             {webPages.map((page, index) => <article className="web-source-card" key={page.url}>
               <strong>[S{index + 1}] {page.title}</strong>
               <a href={page.url} target="_blank" rel="noopener noreferrer">{page.url}</a>
+              {(page.author || page.publishedDate) && <small className="web-source-meta">Page-declared metadata{page.author ? ` · Author: ${page.author}` : ""}{page.publishedDate ? ` · Published: ${page.publishedDate}` : ""} (not independently verified)</small>}
               <p className="web-page-excerpt">{page.text}</p>
             </article>)}
             <label className="web-query-label">Research question
