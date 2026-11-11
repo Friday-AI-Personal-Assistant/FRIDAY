@@ -198,7 +198,7 @@ pub async fn read_granted_text_files(
         return Err("Select between 1 and 8 files to read.".into());
     }
     let mut unique = std::collections::BTreeSet::new();
-    if file_ids.iter().any(|id| !unique.insert(id.clone())) {
+    if file_ids.iter().any(|id| id.len() != 48 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) || !unique.insert(id.clone())) {
         return Err("A file was selected more than once.".into());
     }
 
@@ -278,6 +278,35 @@ mod tests {
         assert!(!supported_text_file(Path::new("document.pdf")));
         assert!(!supported_text_file(Path::new("archive.zip")));
         assert!(!supported_text_file(Path::new("README")));
+    }
+
+    #[test]
+    fn folder_scan_stays_within_selected_root_and_skips_common_build_folders() {
+        let root = std::env::temp_dir().join(format!("friday-file-assistant-{}", make_token()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("node_modules")).unwrap();
+        fs::create_dir_all(root.join(".private")).unwrap();
+        fs::write(root.join("README.md"), "hello").unwrap();
+        fs::write(root.join("src").join("main.rs"), "fn main() {}").unwrap();
+        fs::write(root.join("node_modules").join("package.json"), "{}").unwrap();
+        fs::write(root.join(".private").join("secret.txt"), "hidden").unwrap();
+        fs::write(root.join("image.png"), [0u8, 1, 2]).unwrap();
+
+        let canonical_root = fs::canonicalize(&root).unwrap();
+        let mut candidates = Vec::new();
+        let mut grants = BTreeMap::new();
+        let mut scanned = 0usize;
+        scan_folder(&canonical_root, &canonical_root, 0, &mut scanned, &mut candidates, &mut grants).unwrap();
+
+        let paths: Vec<String> = candidates.iter().map(|item| item.relative_path.clone()).collect();
+        assert!(paths.contains(&"README.md".to_string()));
+        assert!(paths.contains(&"src/main.rs".to_string()));
+        assert!(!paths.iter().any(|path| path.contains("node_modules")));
+        assert!(!paths.iter().any(|path| path.contains(".private")));
+        assert!(!paths.iter().any(|path| path.ends_with(".png")));
+        assert_eq!(grants.len(), candidates.len());
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
