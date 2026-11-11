@@ -6,6 +6,7 @@ mod memory;
 mod tools;
 mod pdf_reader;
 mod web_research;
+mod file_assistant;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -45,6 +46,7 @@ pub fn run() {
             web_research::web_search,
             web_research::web_read_page,
             web_research::web_read_pages,
+            file_assistant::pick_and_read_text_files,
             skills::uninstall_skill
         ])
         .run(tauri::generate_context!())
