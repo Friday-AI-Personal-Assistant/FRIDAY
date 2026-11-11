@@ -115,6 +115,11 @@ pub struct StreamEvent {
 }
 
 #[derive(Deserialize)]
+#[derive(Deserialize)]
+struct Response {
+    message: Message,
+}
+
 struct StreamResponse {
     #[serde(default)]
     message: Option<Message>,
