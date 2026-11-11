@@ -85,3 +85,12 @@ Email providers, job sites, and optional cloud AI providers still process the in
 6. Perform dependency, permission, and security review before distributing installers.
 
 No feature should be described as encrypted, private, or secure until the corresponding implementation and tests exist.
+
+
+## Current preview implementation (November 2026)
+
+The first Windows implementation stores one random 256-bit workspace key in Windows Credential Manager and uses XChaCha20-Poly1305 to encrypt a single test note before writing it to the user's application-data directory. The key is generated with the operating system random source. The Rust backend exposes only workspace initialization and fixed-note save/read commands; it does not expose arbitrary filesystem access.
+
+Unit tests cover encryption/decryption round-trip and rejection of tampered ciphertext. These tests are included in the Windows build workflow.
+
+Not implemented yet: encrypted SQLite, multiple document records, workspace lock timeout, key rotation, encrypted backup/recovery, uninstall cleanup, independent security review, and non-Windows credential-store support. The current note preview must not be treated as a complete production-ready workspace.
