@@ -261,3 +261,9 @@ h1 em{font-style:normal;color:#9ce4ad}
 .web-result a { color: var(--accent, #24765b); font-weight: 650; overflow-wrap: anywhere; }
 .web-result small { color: var(--muted, #777); overflow-wrap: anywhere; }
 .web-result p { margin: 0; line-height: 1.45; font-size: 0.9rem; overflow-wrap: anywhere; }
+
+
+.web-page-reader { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border, #dedede); border-radius: 10px; min-width: 0; }
+.web-page-reader > a { color: var(--accent, #24765b); font-size: 0.85rem; overflow-wrap: anywhere; }
+.web-page-excerpt { max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; font-size: 0.9rem; margin: 0; padding: 10px; background: var(--surface, #f7f7f7); border-radius: 7px; }
+.web-query-label textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--border, #ccc); border-radius: 8px; padding: 10px 12px; background: var(--surface, #fff); color: inherit; font: inherit; resize: vertical; }
