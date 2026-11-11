@@ -1,0 +1,54 @@
+name: Deploy FRIDAY browser preview
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "index.html"
+      - "package.json"
+      - "vite.config.ts"
+      - "tsconfig*.json"
+      - ".github/workflows/deploy-preview.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: friday-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Build browser preview
+        run: npm run build
+        env:
+          FRIDAY_WEB_PREVIEW: "true"
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
