@@ -27,6 +27,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
+    "icon": ["icons/icon.ico"],
     "shortDescription": "Your personal AI assistant",
     "longDescription": "A local-first, user-owned personal AI desktop assistant."
   }
