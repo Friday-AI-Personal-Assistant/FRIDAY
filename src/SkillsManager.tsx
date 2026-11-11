@@ -221,6 +221,14 @@ ${file.content}`
 
   async function prepareFileEdit() {
     if (!desktop || !editingFileId || editBusy) return;
+    const currentFile = selectedTextFiles.find(file => file.grantId === editingFileId);
+    const proposedBytes = new TextEncoder().encode(draftContent).length;
+    const nextTotal = selectedTextFiles.reduce((sum, file) => sum + file.sizeBytes, 0)
+      - (currentFile?.sizeBytes || 0) + proposedBytes;
+    if (nextTotal > 180 * 1024) {
+      setFileError("The edited selection would exceed FRIDAY's 180 KB combined analysis limit. Reduce the proposed file size first.");
+      return;
+    }
     setEditBusy(true); setFileError(""); setFileNotice(""); setEditPreview(null);
     try {
       const preview = await invoke<FileEditPreview>("prepare_file_edit", {
