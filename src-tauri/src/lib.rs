@@ -5,6 +5,7 @@ mod conversations;
 mod memory;
 mod tools;
 mod pdf_reader;
+mod web_research;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -41,6 +42,7 @@ pub fn run() {
             skills::unload_skill,
             skills::loaded_skill_instructions,
             pdf_reader::pick_and_read_pdf,
+            web_research::web_search,
             skills::uninstall_skill
         ])
         .run(tauri::generate_context!())
