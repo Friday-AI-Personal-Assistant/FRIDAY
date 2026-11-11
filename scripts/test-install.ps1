@@ -13,11 +13,17 @@ if (-not $diagnostic.ok) { throw "Packaged worker failed: $($diagnostic.error)" 
 foreach ($dependency in $diagnostic.result.dependencies.PSObject.Properties) {
   if (-not $dependency.Value) { throw "Missing packaged dependency: $($dependency.Name)" }
 }
+# Enable local WebView2 debugging for this disposable CI test process only.
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9223 --remote-debugging-address=127.0.0.1'
 $process = Start-Process -FilePath $app -PassThru
 Start-Sleep -Seconds 10
 $process.Refresh()
 if ($process.HasExited) { throw "Installed application exited early: $($process.ExitCode)" }
-Stop-Process -Id $process.Id -Force
+node tests/native-smoke.cjs
+$nativeResult = $LASTEXITCODE
+Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
+if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+if ($nativeResult -ne 0) { throw 'Installed native integration test failed' }
 Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 $uninstaller = Join-Path $installDir 'uninstall.exe'
 if (-not (Test-Path $uninstaller)) { throw 'Uninstaller missing' }
