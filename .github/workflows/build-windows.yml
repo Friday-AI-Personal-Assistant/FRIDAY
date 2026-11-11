@@ -30,7 +30,7 @@ jobs:
       - name: Set up stable Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm install
       - name: Build Windows installers
         run: npm run tauri -- build
       - name: Upload installer artifacts
