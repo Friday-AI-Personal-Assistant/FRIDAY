@@ -38,7 +38,7 @@ export default function Assistant() {
   const [actionResult, setActionResult] = useState("");
 
   async function refresh() {
-    if (!desktop || checking || pulling) return;
+    if (!desktop || checking) return;
     setChecking(true);
     try {
       const found = await invoke<string[]>("ollama_models");
