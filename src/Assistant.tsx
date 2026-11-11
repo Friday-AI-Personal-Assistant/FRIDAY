@@ -53,6 +53,7 @@ export default function Assistant() {
   const [error, setError] = useState("");
   const [action, setAction] = useState<(typeof ACTIONS)[number] | null>(null);
   const [actionResult, setActionResult] = useState("");
+  const [toolHistory, setToolHistory] = useState<Array<{id:number;tool_id:string;label:string;outcome:string;timestamp:number;approved:boolean}>>([]);
 
   async function refreshHistory() {
     if (!desktop) return;
@@ -76,6 +77,12 @@ export default function Assistant() {
   }
 
   useEffect(() => { void refreshMemories(); }, []);
+
+  async function refreshToolHistory() {
+    if (!desktop) return;
+    try { setToolHistory(await invoke("tool_history")); } catch { /* history is supplementary */ }
+  }
+  useEffect(() => { void refreshToolHistory(); }, []);
 
   function resetMemoryForm() {
     setEditingMemoryId(null);
@@ -236,7 +243,8 @@ export default function Assistant() {
     const text = input.trim();
     if (!text || pending || saving || action) return;
     const match = ACTIONS.find(a => a.keywords.test(text));
-    if (!match && desktop && models.length === 0) {
+    const calculation = text.match(/^\\s*(?:calculate|calc)\\s*:\\s*(.+)$/i);
+    if (!match && !calculation && desktop && models.length === 0) {
       setError("FRIDAY cannot start an AI chat yet. Make sure Ollama is running and at least one model is installed, then press Refresh.");
       return;
     }
@@ -246,6 +254,14 @@ export default function Assistant() {
     setActiveId(id); if (!activeTitle) setActiveTitle(titleFor(next)); setMessages(next);
     if (desktop) await persist(id, next);
     if (match) { setAction(match); return; }
+    if (calculation) {
+      try {
+        const result = await invoke<string>("execute_tool", { toolId: "calculator.evaluate", arguments: { expression: calculation[1] }, approved: false });
+        const updated = [...next, { role: "assistant" as const, content: result }]; setMessages(updated); if (activeId) await persist(activeId, updated);
+        setActionResult(result); await refreshToolHistory(); await refreshToolHistory();
+      } catch (e) { setError(String(e)); }
+      return;
+    }
     if (!desktop) { setError("AI chat works in the Windows desktop app. This is only the browser preview."); return; }
 
     setPending(true); setWasStopped(false);
@@ -296,7 +312,7 @@ export default function Assistant() {
     const selected = action; setAction(null);
     if (!desktop) { setError("Desktop actions require the installed Windows app."); return; }
     try {
-      const result = await invoke<string>("desktop_action", { action: selected.id });
+      const result = await invoke<string>("execute_tool", { toolId: "desktop.open_target", arguments: { target: selected.id }, approved: true });
       setActionResult(result);
       const updated = [...messages, { role: "assistant" as const, content: result }];
       setMessages(updated);
@@ -305,7 +321,7 @@ export default function Assistant() {
   }
 
   return <section className="assistant-page">
-    <div className="assistant-head"><div><div className="eyebrow">YOUR LOCAL AI ASSISTANT</div><h1>Talk to <em>FRIDAY.</em></h1><p className="intro">Your conversations are saved privately on this computer.</p></div><button className="secondary-button" onClick={newConversation} disabled={pending || saving}>+ New chat</button></div>
+    <div className="assistant-head"><div><div className="eyebrow">YOUR LOCAL AI ASSISTANT</div><h1>Talk to <em>FRIDAY.</em></h1><p className="intro">Your conversations are saved privately on this computer. Type <strong>calculate: 12 * (4 + 3)</strong> for safe local calculations.</p></div><button className="secondary-button" onClick={newConversation} disabled={pending || saving}>+ New chat</button></div>
     <div className="chat-layout">
       <aside className="conversation-sidebar" aria-label="Conversation history">
         <div className="conversation-sidebar-head"><strong>CHAT HISTORY</strong><button onClick={() => void refreshHistory()} disabled={historyLoading} aria-label="Refresh chat history">↻</button></div>
@@ -351,6 +367,7 @@ export default function Assistant() {
         {error && <div className="chat-error" role="alert">{error}</div>}
         {wasStopped && <div className="chat-success" role="status">Response stopped.</div>}
         {actionResult && <div className="chat-success" role="status">{actionResult}</div>}
+        {!!toolHistory.length && <details className="tool-history"><summary>Recent tool activity ({toolHistory.length})</summary><ul>{toolHistory.slice(0,8).map(item => <li key={item.id}><strong>{item.tool_id}</strong><span>{item.outcome}</span><small>{new Date(item.timestamp * 1000).toLocaleString()} · {item.approved ? "Approved" : "No approval needed"}</small></li>)}</ul></details>}
         <div className="chat-compose"><textarea aria-label="Message FRIDAY" placeholder="Message FRIDAY…" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} rows={2} maxLength={20000}/>{pending ? <button className="secondary-button stop-generation" onClick={() => void stopGeneration()} aria-label="Stop response">■ Stop</button> : <button className="primary-button" disabled={!input.trim() || !!action || saving} onClick={() => void send()} aria-label="Send message">↑ Send</button>}</div>
         <p className="chat-footnote">Local AI · Encrypted chat and personal memory · Desktop actions require confirmation · {saving ? "Saving…" : "Saved on this device"} · Emails are never sent automatically</p>
       </div>
