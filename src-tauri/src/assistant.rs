@@ -20,6 +20,8 @@ struct Request<'a> {
     model: &'a str,
     messages: &'a [Message],
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -223,9 +225,25 @@ struct Response {
 }
 
 #[derive(Deserialize)]
+struct StreamToolCall {
+    function: StreamToolFunction,
+}
+#[derive(Deserialize)]
+struct StreamToolFunction {
+    name: String,
+    arguments: serde_json::Value,
+}
+#[derive(Deserialize)]
+struct StreamMessage {
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    tool_calls: Vec<StreamToolCall>,
+}
+#[derive(Deserialize)]
 struct StreamResponse {
     #[serde(default)]
-    message: Option<Message>,
+    message: Option<StreamMessage>,
     #[serde(default)]
     done: bool,
     #[serde(default)]
@@ -245,6 +263,16 @@ fn forward_stream_line(line: &[u8], channel: &Channel<StreamEvent>) -> Result<bo
         if !message.content.is_empty() {
             channel.send(StreamEvent { event: "token".into(), content: message.content })
                 .map_err(|e| format!("Could not deliver the response to FRIDAY: {e}"))?;
+        }
+        for call in message.tool_calls.into_iter().take(4) {
+            let proposal = serde_json::json!({
+                "tool_id": call.function.name,
+                "arguments": call.function.arguments
+            });
+            channel.send(StreamEvent {
+                event: "tool_proposal".into(),
+                content: proposal.to_string(),
+            }).map_err(|e| format!("Could not deliver a tool proposal to FRIDAY: {e}"))?;
         }
     }
     Ok(chunk.done)
@@ -270,7 +298,37 @@ async fn run_ollama_stream(
 
     let request = client
         .post(format!("{OLLAMA}/api/chat"))
-        .json(&Request { model: &model, messages: &messages, stream: true });
+        .json(&Request {
+            model: &model,
+            messages: &messages,
+            stream: true,
+            tools: Some(serde_json::json!([
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "calculator.evaluate",
+                        "description": "Evaluate a basic arithmetic expression locally. Use only for arithmetic.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": { "expression": { "type": "string", "description": "Arithmetic expression using numbers, +, -, *, / and parentheses." } },
+                            "required": ["expression"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "desktop.open_target",
+                        "description": "Open one fixed Windows destination. Requires explicit user approval in FRIDAY.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": { "target": { "type": "string", "enum": ["notepad", "downloads", "documents", "desktop", "browser", "youtube", "email"] } },
+                            "required": ["target"]
+                        }
+                    }
+                }
+            ]))
+        });
 
     let send_result = tokio::select! {
         _ = cancel_rx.changed() => {
@@ -382,6 +440,7 @@ pub async fn ollama_chat(messages: Vec<Message>, model: String) -> Result<String
             model: &model,
             messages: &messages,
             stream: false,
+            tools: None,
         })
         .send()
         .await
