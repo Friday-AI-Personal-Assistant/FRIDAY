@@ -3,6 +3,7 @@ mod assistant;
 mod skills;
 mod conversations;
 mod memory;
+mod tools;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -26,7 +27,9 @@ pub fn run() {
             assistant::ollama_delete_model,
             assistant::ollama_chat,
             assistant::ollama_chat_stream,
-            assistant::desktop_action,
+            tools::list_tools,
+            tools::execute_tool,
+            tools::tool_history,
             skills::skills_catalog,
             skills::install_skill,
             skills::set_skill_enabled,
