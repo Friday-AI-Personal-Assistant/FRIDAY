@@ -6,7 +6,7 @@ use tauri_plugin_dialog::DialogExt;
 
 const MAX_PDF_BYTES: u64 = 25 * 1024 * 1024;
 const MAX_PDF_PAGES: usize = 500;
-const MAX_EXTRACTED_CHARS: usize = 120_000;
+const MAX_EXTRACTED_BYTES: usize = 120_000;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,14 +49,19 @@ fn extract_selected_pdf(path: PathBuf) -> Result<PdfDocument, String> {
     }
 
     let mut pages = Vec::with_capacity(page_map.len());
-    let mut extracted_chars = 0usize;
+    let mut extracted_bytes = 0usize;
     for page_number in page_map.keys().copied() {
         let text = document.extract_text_with_limit(&[page_number], 2 * 1024 * 1024).unwrap_or_else(|_| "[This page could not be safely extracted.]".to_string());
-        let remaining = MAX_EXTRACTED_CHARS.saturating_sub(extracted_chars);
-        let bounded: String = text.chars().take(remaining).collect();
-        extracted_chars += bounded.chars().count();
+        let remaining = MAX_EXTRACTED_BYTES.saturating_sub(extracted_bytes);
+        let bounded: String = text.chars().scan(0usize, |used, character| {
+            let size = character.len_utf8();
+            if used.saturating_add(size) > remaining { return None; }
+            *used += size;
+            Some(character)
+        }).collect();
+        extracted_bytes += bounded.len();
         pages.push(PdfPage { page_number, text: bounded });
-        if extracted_chars >= MAX_EXTRACTED_CHARS { break; }
+        if extracted_bytes >= MAX_EXTRACTED_BYTES { break; }
     }
 
     let needs_ocr = pages.iter().all(|page| page.text.trim().is_empty());
@@ -66,7 +71,7 @@ fn extract_selected_pdf(path: PathBuf) -> Result<PdfDocument, String> {
     Ok(PdfDocument {
         file_name,
         page_count: page_map.len(),
-        extracted_chars,
+        extracted_chars: pages.iter().map(|page| page.text.chars().count()).sum(),
         pages,
         needs_ocr,
     })
@@ -99,6 +104,6 @@ mod tests {
     fn extraction_limits_are_bounded() {
         assert_eq!(MAX_PDF_BYTES, 25 * 1024 * 1024);
         assert_eq!(MAX_PDF_PAGES, 500);
-        assert_eq!(MAX_EXTRACTED_CHARS, 120_000);
+        assert_eq!(MAX_EXTRACTED_BYTES, 120_000);
     }
 }
