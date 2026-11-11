@@ -52,7 +52,7 @@ fn save_registry(path: &PathBuf, registry: &SkillRegistry) -> Result<(), String>
 }
 
 fn known_skill(skill_id: &str) -> bool {
-    SKILLS.iter().any(|(id, _, _, _)| *id == skill_id)
+    SKILLS.iter().any(|(id, _, _, _)| *id == skill_id.as_str())
 }
 
 #[tauri::command]
