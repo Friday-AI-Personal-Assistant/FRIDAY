@@ -54,6 +54,7 @@ export default function Assistant() {
   const [action, setAction] = useState<(typeof ACTIONS)[number] | null>(null);
   const [actionResult, setActionResult] = useState("");
   const [toolHistory, setToolHistory] = useState<Array<{id:number;tool_id:string;label:string;outcome:string;timestamp:number;approved:boolean}>>([]);
+  const [availableTools, setAvailableTools] = useState<Array<{id:string;name:string;description:string;permission:string;approval_required:boolean}>>([]);
 
   async function refreshHistory() {
     if (!desktop) return;
@@ -82,7 +83,11 @@ export default function Assistant() {
     if (!desktop) return;
     try { setToolHistory(await invoke("tool_history")); } catch { /* history is supplementary */ }
   }
-  useEffect(() => { void refreshToolHistory(); }, []);
+  useEffect(() => {
+    if (!desktop) return;
+    void refreshToolHistory();
+    void invoke<Array<{id:string;name:string;description:string;permission:string;approval_required:boolean}>>("list_tools").then(setAvailableTools).catch(() => setAvailableTools([]));
+  }, []);
 
   function resetMemoryForm() {
     setEditingMemoryId(null);
@@ -257,8 +262,8 @@ export default function Assistant() {
     if (calculation) {
       try {
         const result = await invoke<string>("execute_tool", { toolId: "calculator.evaluate", arguments: { expression: calculation[1] }, approved: false });
-        const updated = [...next, { role: "assistant" as const, content: result }]; setMessages(updated); if (activeId) await persist(activeId, updated);
-        setActionResult(result); await refreshToolHistory(); await refreshToolHistory();
+        const updated = [...next, { role: "assistant" as const, content: result }]; setMessages(updated); await persist(id, updated);
+        setActionResult(result); await refreshToolHistory();
       } catch (e) { setError(String(e)); }
       return;
     }
@@ -313,7 +318,7 @@ export default function Assistant() {
     if (!desktop) { setError("Desktop actions require the installed Windows app."); return; }
     try {
       const result = await invoke<string>("execute_tool", { toolId: "desktop.open_target", arguments: { target: selected.id }, approved: true });
-      setActionResult(result);
+      setActionResult(result); await refreshToolHistory();
       const updated = [...messages, { role: "assistant" as const, content: result }];
       setMessages(updated);
       if (activeId) await persist(activeId, updated);
@@ -367,6 +372,7 @@ export default function Assistant() {
         {error && <div className="chat-error" role="alert">{error}</div>}
         {wasStopped && <div className="chat-success" role="status">Response stopped.</div>}
         {actionResult && <div className="chat-success" role="status">{actionResult}</div>}
+        {!!availableTools.length && <details className="tool-history"><summary>Available tools ({availableTools.length})</summary><ul>{availableTools.map(tool => <li key={tool.id}><strong>{tool.name} · {tool.id}</strong><span>{tool.description}</span><small>{tool.permission}{tool.approval_required ? " · Approval required" : " · No approval needed"}</small></li>)}</ul></details>}
         {!!toolHistory.length && <details className="tool-history"><summary>Recent tool activity ({toolHistory.length})</summary><ul>{toolHistory.slice(0,8).map(item => <li key={item.id}><strong>{item.tool_id}</strong><span>{item.outcome}</span><small>{new Date(item.timestamp * 1000).toLocaleString()} · {item.approved ? "Approved" : "No approval needed"}</small></li>)}</ul></details>}
         <div className="chat-compose"><textarea aria-label="Message FRIDAY" placeholder="Message FRIDAY…" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} rows={2} maxLength={20000}/>{pending ? <button className="secondary-button stop-generation" onClick={() => void stopGeneration()} aria-label="Stop response">■ Stop</button> : <button className="primary-button" disabled={!input.trim() || !!action || saving} onClick={() => void send()} aria-label="Send message">↑ Send</button>}</div>
         <p className="chat-footnote">Local AI · Encrypted chat and personal memory · Desktop actions require confirmation · {saving ? "Saving…" : "Saved on this device"} · Emails are never sent automatically</p>
