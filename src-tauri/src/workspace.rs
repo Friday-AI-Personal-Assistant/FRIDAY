@@ -38,7 +38,7 @@ fn encryption_key() -> Result<[u8; 32], String> {
 }
 
 fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    let cipher = XChaCha20Poly1305::new(key.into());
+    let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| "Invalid workspace encryption key.".to_string())?;
     let mut nonce = [0_u8; 24];
     OsRng.fill_bytes(&mut nonce);
     let encrypted = cipher.encrypt(XNonce::from_slice(&nonce), plaintext)
@@ -78,6 +78,7 @@ pub fn save_private_note(app: AppHandle, note: String) -> Result<String, String>
     let destination = directory.join(NOTE_FILE);
     let temporary = directory.join("private-note.enc.tmp");
     fs::write(&temporary, encrypted).map_err(|e| format!("Could not write encrypted note: {e}"))?;
+    if destination.exists() { fs::remove_file(&destination).map_err(|e| format!("Could not replace previous encrypted note: {e}"))?; }
     fs::rename(&temporary, &destination).map_err(|e| format!("Could not finish saving encrypted note: {e}"))?;
     Ok("Private note saved in encrypted form on this device.".to_string())
 }
