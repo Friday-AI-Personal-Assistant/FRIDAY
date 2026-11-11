@@ -22,7 +22,7 @@ fn workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(base.join("workspace"))
 }
 
-fn encryption_key() -> Result<[u8; 32], String> {
+pub(crate) fn encryption_key() -> Result<[u8; 32], String> {
     let _guard = KEYRING_LOCK
         .lock()
         .map_err(|_| "Workspace key lock is unavailable.".to_string())?;
@@ -48,7 +48,7 @@ fn encryption_key() -> Result<[u8; 32], String> {
     }
 }
 
-fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let cipher = XChaCha20Poly1305::new_from_slice(key)
         .map_err(|_| "Invalid workspace encryption key.".to_string())?;
     let mut nonce = [0_u8; 24];
@@ -63,7 +63,7 @@ fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
-fn decrypt_bytes(key: &[u8; 32], payload: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn decrypt_bytes(key: &[u8; 32], payload: &[u8]) -> Result<Vec<u8>, String> {
     if payload.len() < 24 {
         return Err("Encrypted workspace file is incomplete.".to_string());
     }
