@@ -17,32 +17,6 @@ pub struct WebSearchResult {
     pub snippet: String,
 }
 
-fn result_regex() -> &'static Regex {
-    static VALUE: OnceLock<Regex> = OnceLock::new();
-    VALUE.get_or_init(|| Regex::new(r#"(?is)<a[^>]*class=["'][^"']*result__a[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>"#).expect("valid result regex"))
-}
-
-fn snippet_regex() -> &'static Regex {
-    static VALUE: OnceLock<Regex> = OnceLock::new();
-    VALUE.get_or_init(|| Regex::new(r#"(?is)<(?:a|div)[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*>(.*?)</(?:a|div)>"#).expect("valid snippet regex"))
-}
-
-fn strip_tags(value: &str) -> String {
-    static TAGS: OnceLock<Regex> = OnceLock::new();
-    let tags = TAGS.get_or_init(|| Regex::new(r"(?is)<[^>]*>").expect("valid tag regex"));
-    decode_entities(&tags.replace_all(value, " ")).split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn decode_entities(value: &str) -> String {
-    value.replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
-        .replace("&#39;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&nbsp;", " ")
-}
-
 fn safe_result_url(raw: &str) -> Option<String> {
     let base = url::Url::parse(SEARCH_ENDPOINT).ok()?;
     let mut url = base.join(raw).ok()?;
@@ -379,8 +353,14 @@ mod tests {
     }
 
     #[test]
-    fn removes_markup_and_decodes_basic_entities() {
-        assert_eq!(strip_tags("<b>Friday &amp; friends</b>"), "Friday & friends");
+    fn parses_titles_and_snippets_from_their_own_search_result_cards() {
+        let html = r#"<div class="result"><a class="result__a" href="https://example.com/a">First &amp; best</a><a class="result__snippet">Snippet A</a></div><div class="result"><a class="result__a" href="https://example.org/b">Second</a><a class="result__snippet">Snippet B</a></div>"#;
+        let results = parse_results(html);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "First & best");
+        assert_eq!(results[0].snippet, "Snippet A");
+        assert_eq!(results[1].title, "Second");
+        assert_eq!(results[1].snippet, "Snippet B");
     }
 
     #[test]
