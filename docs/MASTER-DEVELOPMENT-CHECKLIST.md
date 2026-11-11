@@ -105,7 +105,7 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 - [x] Safe local calculator tool (basic arithmetic parser; no eval, shell or network).
 - [x] Desktop destination tool with fixed target allowlist and explicit per-action approval gate.
 - [x] Frontend uses the central executor rather than the legacy desktop-action command.
-- [x] Bounded in-session user-visible action history (last 100 events); no telemetry upload.
+- [x] Encrypted, persistent user-visible tool activity history (last 500 events), with a clear-history control; no telemetry upload.
 - [x] Reject unknown tool IDs, unknown desktop targets, unsupported calculator syntax and unapproved desktop actions.
 - [x] Permission tiers are represented per tool; only the calculator and fixed desktop-launch tools are currently enabled. File/network permissions remain deliberately unavailable until their dedicated skills are implemented.
 - [x] Send the registered calculator and fixed desktop tool schemas to Ollama during streamed chat requests.
@@ -115,7 +115,6 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 - [x] Approved tool results are handed back to Ollama through a bounded app-generated context message; native Ollama tool-role transcript support remains a later compatibility improvement.
 - [x] Desktop actions require a short-lived, one-use backend-issued approval token bound to the exact tool ID and JSON arguments; mismatched, expired and replayed tokens are rejected. The UI confirmation remains the user-consent step; the token is not a security boundary against a compromised frontend.
 - [x] Tool activity is stored locally in an encrypted file using the existing workspace key, bounded to 500 events, and can be cleared from the UI.
-- [ ] Add persistent, privacy-preserving audit history and clear-history controls.
 
 ## Phase 2 — FRIDAY's original skills
 
