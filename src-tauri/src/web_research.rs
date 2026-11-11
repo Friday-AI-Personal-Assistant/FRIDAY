@@ -239,8 +239,7 @@ fn extract_page_text(html: &str) -> (String, String) {
     (title.chars().take(200).collect(), bounded_utf8(&text, MAX_PAGE_TEXT_BYTES))
 }
 
-#[tauri::command]
-pub async fn web_read_page(app: AppHandle, url: String) -> Result<WebPage, String> {
+async fn read_page_inner(url: String) -> Result<WebPage, String> {
     let mut current = validate_page_url(&url)?;
     for redirect_count in 0..=MAX_REDIRECTS {
         let host = current.host_str().ok_or("Source URL has no hostname.")?;
@@ -284,10 +283,33 @@ pub async fn web_read_page(app: AppHandle, url: String) -> Result<WebPage, Strin
         let (title, text) = extract_page_text(&html);
         if text.trim().is_empty() { return Err("FRIDAY could not extract readable text from this webpage.".into()); }
         let page = WebPage { title, url: current.to_string(), text };
-        let _ = crate::tools::record(&app, "web.read_page", "Read a source webpage after explicit user selection.", true);
         return Ok(page);
     }
     Err("FRIDAY could not safely follow this source link.".into())
+}
+
+#[tauri::command]
+pub async fn web_read_page(app: AppHandle, url: String) -> Result<WebPage, String> {
+    let page = read_page_inner(url).await?;
+    let _ = crate::tools::record(&app, "web.read_page", "Read one source webpage after explicit user selection.", true);
+    Ok(page)
+}
+
+#[tauri::command]
+pub async fn web_read_pages(app: AppHandle, urls: Vec<String>) -> Result<Vec<WebPage>, String> {
+    if urls.is_empty() || urls.len() > 4 {
+        return Err("Select between 1 and 4 sources for a research session.".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut pages = Vec::new();
+    for raw_url in urls {
+        let canonical = validate_page_url(&raw_url)?.to_string();
+        if !seen.insert(canonical.clone()) { continue; }
+        let page = read_page_inner(canonical).await?;
+        pages.push(page);
+    }
+    let _ = crate::tools::record(&app, "web.read_pages", &format!("Read {} source webpages after explicit user selection.", pages.len()), true);
+    Ok(pages)
 }
 
 #[cfg(test)]
