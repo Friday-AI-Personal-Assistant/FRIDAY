@@ -1,7 +1,7 @@
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::{HashMap, VecDeque}, fs, path::PathBuf, process::Command, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
+use std::{collections::{HashMap, VecDeque}, fs, path::PathBuf, process::Command, sync::{LazyLock, Mutex}, time::{SystemTime, UNIX_EPOCH}};
 use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Serialize)]
@@ -27,7 +27,7 @@ struct PendingApproval {
     arguments: Value,
     expires_at: u64,
 }
-static PENDING_APPROVALS: Mutex<HashMap<String, PendingApproval>> = Mutex::new(HashMap::new());
+static PENDING_APPROVALS: LazyLock<Mutex<HashMap<String, PendingApproval>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static HISTORY_LOCK: Mutex<()> = Mutex::new(());
 
 const HISTORY_FILE: &str = "tool-activity.enc";
