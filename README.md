@@ -43,7 +43,7 @@ The Windows bundle configuration currently targets NSIS and MSI installers. Buil
 
 ## Current status
 
-The current scaffold provides a navigable desktop interface and product placeholders only. It does not yet connect to an AI model, create user accounts, store user profiles, connect email, or process job applications.
+The current preview includes a navigable desktop interface and an early encrypted-note workspace test. On Windows, the workspace encryption key is stored using Windows Credential Manager and the test note is encrypted before being written locally. This is not yet a complete workspace/database, backup or account recovery system, and it has not received an independent security audit. AI, user accounts, email connections and job features are not active yet.
 
 ## Security
 
