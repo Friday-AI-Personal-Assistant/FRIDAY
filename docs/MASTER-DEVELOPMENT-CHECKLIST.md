@@ -64,7 +64,7 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 - [ ] Test small and larger models on representative hardware.
 - [ ] Document optional cloud providers separately; never silently send local data to them.
 
-### 1B. Chat and conversation storage
+### 1C. Chat and conversation storage
 - [x] Basic user/assistant chat interface.
 - [x] Conversation list, create, rename and delete (implemented; Windows verification pending; archive remains a later enhancement).
 - [x] Persist conversations locally across restart using authenticated XChaCha20-Poly1305 encryption and the existing Windows Credential Manager key (implementation committed; Windows verification pending).
@@ -73,16 +73,19 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 - [ ] Context-window management and conversation summarisation.
 - [ ] Clear indication of the active model and where processing occurs.
 
-### 1C. Workspace and personal memory
+### 1D. Workspace and personal memory
 - [~] Encrypted single-note proof of concept.
 - [ ] Design and implement a proper local database and migrations.
-- [ ] Store preferences and user-approved profile facts separately from chat transcripts.
-- [ ] Add explicit memory review, correction, disable and delete controls.
+- [x] Store user-entered, user-approved memory entries separately from chat transcripts in an encrypted local file using the existing Windows Credential Manager key (implementation committed; Windows verification pending).
+- [x] Add personal memory review, correction, enable/disable and delete controls (implementation committed; Windows verification pending).
+- [x] Include enabled user-approved memory as bounded context in local Ollama chat prompts; memory text is explicitly treated as context, not instructions.
+- [ ] Add natural-language memory suggestions and a clear approval step before saving; no automatic extraction or silent saving is enabled.
+- [ ] Add memory export and clear-all controls.
 - [ ] Add document indexing and retrieval with source references.
 - [ ] Add data export, backup/restore and deletion.
 - [ ] Document key loss and recovery limitations before promising recovery.
 
-### 1D. Skills platform
+### 1E. Skills platform
 - [~] Built-in catalogue with four initial entries.
 - [~] Local installed/enabled registry.
 - [ ] Correct UI wording so registry selection is not described as downloading a package.
@@ -94,7 +97,7 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 - [ ] Add skill-specific settings and data cleanup.
 - [ ] Make the catalogue extensible without hard-coding every skill into the UI.
 
-### 1E. Tool execution and permissions
+### 1F. Tool execution and permissions
 - [~] A small desktop-action allowlist with per-action confirmation.
 - [ ] Build a central tool registry and structured tool-calling loop.
 - [ ] Permission levels: no access, read selected data, write with approval, external/network access.
@@ -212,4 +215,6 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 ## Immediate next work item
 
-**Phase 1C — Persistent chat history:** encrypted local conversation storage, conversation list/create/switch/rename/delete, title search and persistence of completed or stopped responses are implemented in the development branch. Rust/TypeScript checks and Windows end-to-end verification remain pending. Next, verify restart persistence, switching, rename/search/delete, streaming cancellation and encryption-key availability on Windows. Then continue with personal memory, the skills package architecture and permissioned tool execution.
+**Phase 1C — Persistent chat history:** encrypted local conversation storage, conversation list/create/switch/rename/delete, title search and persistence of completed or stopped responses are implemented in the development branch. Rust/TypeScript checks and Windows end-to-end verification remain pending.
+
+**Phase 1D — Persistent personal memory:** user-entered memory entries are stored separately from transcripts in an encrypted local file. The chat UI supports add, edit, enable/disable and delete; enabled entries are included as bounded context in local Ollama prompts. No memory is silently extracted or saved. Rust/TypeScript checks and Windows end-to-end verification remain pending. Next, verify create/edit/disable/delete, persistence across restart, and that disabled entries are excluded from prompts. Then proceed to the versioned skills platform and permissioned tool execution.
