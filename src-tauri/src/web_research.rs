@@ -56,7 +56,7 @@ fn safe_result_url(raw: &str) -> Option<String> {
         return None;
     }
     if let Some(host) = url.host_str() {
-        if let Ok(ip) = host.parse::<IpAddr>() {
+        if let Ok(ip) = host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
             let blocked = match ip {
                 IpAddr::V4(value) => value.is_loopback() || value.is_private() || value.is_link_local() || value.is_unspecified() || value.is_multicast(),
                 IpAddr::V6(value) => value.is_loopback() || value.is_unique_local() || value.is_unicast_link_local() || value.is_unspecified() || value.is_multicast(),
@@ -132,7 +132,7 @@ pub async fn web_search(_app: AppHandle, query: String) -> Result<Vec<WebSearchR
 
 
 const MAX_PAGE_BYTES: usize = 1_500_000;
-const MAX_PAGE_TEXT_CHARS: usize = 20_000;
+const MAX_PAGE_TEXT_BYTES: usize = 14_000;
 const MAX_REDIRECTS: usize = 3;
 
 #[derive(Serialize, Clone)]
@@ -193,6 +193,15 @@ async fn pinned_public_address(url: &url::Url) -> Result<Option<SocketAddr>, Str
     Ok(addresses.first().copied())
 }
 
+fn bounded_utf8(text: &str, max_bytes: usize) -> String {
+    let mut output = String::new();
+    for character in text.chars() {
+        if output.len().saturating_add(character.len_utf8()) > max_bytes { break; }
+        output.push(character);
+    }
+    output
+}
+
 fn extract_page_text(html: &str) -> (String, String) {
     static TITLE: OnceLock<Regex> = OnceLock::new();
     static ACTIVE: OnceLock<Regex> = OnceLock::new();
@@ -203,8 +212,8 @@ fn extract_page_text(html: &str) -> (String, String) {
         .unwrap_or_else(|| "Web source".into());
     let without_active = active_re.replace_all(html, " ");
     let text = strip_tags(&without_active).split_whitespace().collect::<Vec<_>>().join(" ");
-    let bounded: String = text.chars().take(MAX_PAGE_TEXT_CHARS).collect();
-    (title, bounded)
+    let bounded = bounded_utf8(&text, MAX_PAGE_TEXT_BYTES);
+    (title.chars().take(200).collect(), bounded)
 }
 
 #[tauri::command]
@@ -271,6 +280,12 @@ mod tests {
     }
 
     #[test]
+    fn extracted_page_text_respects_utf8_byte_limit() {
+        assert_eq!(bounded_utf8("A🦊B", 5), "A🦊");
+        assert_eq!(bounded_utf8("A🦊B", 4), "A");
+    }
+
+    #[test]
     fn source_reader_requires_https() {
         assert!(validate_page_url("http://example.com").is_err());
         assert!(validate_page_url("file:///C:/Windows").is_err());
@@ -281,6 +296,7 @@ mod tests {
     fn extracts_page_title_and_visible_text_without_scripts() {
         let (title, text) = extract_page_text("<html><title>Friday Page</title><script>secret()</script><body>Hello <b>world</b></body></html>");
         assert_eq!(title, "Friday Page");
+        assert!(text.len() <= MAX_PAGE_TEXT_BYTES);
         assert!(text.contains("Hello world"));
         assert!(!text.contains("secret"));
     }
