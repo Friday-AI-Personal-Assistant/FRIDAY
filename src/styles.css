@@ -300,3 +300,12 @@ h1 em{font-style:normal;color:#9ce4ad}
 .file-assistant-search-results { display: grid; gap: 8px; }
 .file-assistant-search-results > div { display: grid; gap: 4px; min-width: 0; }
 .file-assistant-search-results pre { margin: 0; padding: 9px; border-radius: 6px; background: var(--surface, #f7f7f7); white-space: pre-wrap; overflow-wrap: anywhere; font: 0.8rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+
+.file-edit-panel { display: grid; gap: 10px; border: 1px solid var(--border, #dedede); border-radius: 9px; padding: 12px; min-width: 0; }
+.file-edit-panel > p, .file-edit-preview > small { margin: 0; color: var(--muted, #777); font-size: 0.84rem; line-height: 1.5; }
+.file-edit-panel > textarea { width: 100%; min-width: 0; min-height: 220px; resize: vertical; font: 0.82rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.file-edit-preview { display: grid; gap: 10px; min-width: 0; }
+.file-edit-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; min-width: 0; }
+.file-edit-comparison > div { display: grid; align-content: start; gap: 6px; min-width: 0; }
+.file-edit-comparison pre { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.78rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; color: inherit; background: var(--surface, #f7f7f7); border: 1px solid var(--border, #dedede); border-radius: 6px; padding: 10px; margin: 0; }
+@media (max-width: 700px) { .file-edit-comparison { grid-template-columns: minmax(0, 1fr); } }
