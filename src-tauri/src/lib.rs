@@ -44,6 +44,7 @@ pub fn run() {
             pdf_reader::pick_and_read_pdf,
             web_research::web_search,
             web_research::web_read_page,
+            web_research::web_read_pages,
             skills::uninstall_skill
         ])
         .run(tauri::generate_context!())
