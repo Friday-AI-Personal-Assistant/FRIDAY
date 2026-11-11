@@ -51,6 +51,7 @@ pub fn run() {
             file_assistant::read_granted_text_files,
             file_assistant::prepare_file_edit,
             file_assistant::issue_file_edit_approval,
+            file_assistant::cancel_file_edit_preview,
             file_assistant::apply_file_edit,
             skills::uninstall_skill
         ])
