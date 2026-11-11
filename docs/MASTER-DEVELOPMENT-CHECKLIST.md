@@ -55,7 +55,9 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 - [~] Select a model in the chat UI.
 - [x] Improve connection errors and set separate connection/request timeouts; richer Ollama HTTP error messages are returned. (Implemented; Windows verification pending.)
 - [~] Improve model refresh feedback and sort/deduplicate installed model names. Model details (size, family, context) remain pending.
-- [ ] Add model download/pull flow with clear disk-space and network warnings.
+- [x] Add local Ollama model download/pull flow with streamed progress and disk-space/network warnings (implementation committed; Windows verification pending).
+- [x] List installed models with local disk sizes (implementation committed; Windows verification pending).
+- [x] Remove installed models through Ollama after explicit user confirmation (implementation committed; Windows verification pending).
 - [ ] Support configurable local endpoint safely, defaulting to localhost.
 - [x] Implement incremental Ollama response streaming from Rust to the chat UI, including chunked NDJSON parsing and visible partial responses.
 - [~] Streaming busy/error states are implemented; Windows end-to-end verification and request cancellation remain pending.
@@ -210,4 +212,4 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 ## Immediate next work item
 
-**Phase 1A — complete Ollama foundation:** streaming response path and request cancellation controls are implemented in the development branch; frontend/Rust checks and Windows verification remain pending. Verify with Ollama running, stopped and without an installed model. Then add a safe model download flow. After that, proceed through chat persistence, memory, skills architecture and permissioned tool execution before implementing the larger skill catalogue.
+**Phase 1A/1B — Ollama foundation and model manager:** response streaming/cancellation and local model download, progress, installed-size listing and confirmed removal are implemented in the development branch. Frontend/Rust checks and Windows end-to-end verification remain pending. Verify with Ollama running, stopped and with/without installed models; test successful and interrupted downloads and confirmed/cancelled removal. Then proceed through chat persistence, memory, skills architecture and permissioned tool execution before implementing the larger skill catalogue.
