@@ -71,18 +71,25 @@ fn safe_result_url(raw: &str) -> Option<String> {
 }
 
 fn parse_results(html: &str) -> Vec<WebSearchResult> {
-    let snippets: Vec<String> = snippet_regex().captures_iter(html)
-        .filter_map(|capture| capture.get(1).map(|value| strip_tags(value.as_str())))
-        .map(|value| value.trim().to_string())
-        .collect();
+    static RESULT: OnceLock<Selector> = OnceLock::new();
+    static LINK: OnceLock<Selector> = OnceLock::new();
+    static SNIPPET: OnceLock<Selector> = OnceLock::new();
+    let result_selector = RESULT.get_or_init(|| Selector::parse(".result").expect("valid result selector"));
+    let link_selector = LINK.get_or_init(|| Selector::parse(".result__a").expect("valid link selector"));
+    let snippet_selector = SNIPPET.get_or_init(|| Selector::parse(".result__snippet").expect("valid snippet selector"));
+    let document = Html::parse_document(html);
     let mut results = Vec::new();
-    for capture in result_regex().captures_iter(html).take(MAX_RESULTS) {
-        let Some(raw_url) = capture.get(1).map(|value| value.as_str()) else { continue; };
+    for result in document.select(result_selector) {
+        if results.len() >= MAX_RESULTS { break; }
+        let Some(link) = result.select(link_selector).next() else { continue; };
+        let Some(raw_url) = link.value().attr("href") else { continue; };
         let Some(url) = safe_result_url(raw_url) else { continue; };
-        let title = capture.get(2).map(|value| strip_tags(value.as_str()))
-            .unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
+        let title = link.text().collect::<Vec<_>>().join(" ")
+            .split_whitespace().collect::<Vec<_>>().join(" ");
         if title.is_empty() { continue; }
-        let snippet = snippets.get(results.len()).cloned().unwrap_or_default();
+        let snippet = result.select(snippet_selector).next()
+            .map(|element| element.text().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
         results.push(WebSearchResult { title, url, snippet });
     }
     results
