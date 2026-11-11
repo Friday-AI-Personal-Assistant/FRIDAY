@@ -244,7 +244,7 @@ ${file.content}`
   async function applyFileEdit() {
     if (!desktop || !editPreview || editBusy) return;
     const approved = window.confirm("Replace \"" + editPreview.relativePath + "\" with the proposed version? FRIDAY will preserve the original in a .friday-backups folder inside the selected folder.");
-    if (!approved) return;
+    if (!approved) { await cancelFileEdit(); return; }
     setEditBusy(true); setFileError(""); setFileNotice("");
     try {
       const approvalToken = await invoke<string>("issue_file_edit_approval", { previewId: editPreview.previewId });
@@ -252,12 +252,15 @@ ${file.content}`
         previewId: editPreview.previewId,
         approvalToken
       });
+      const newSize = new TextEncoder().encode(editPreview.proposedContent).length;
       setSelectedTextFiles(current => current.map(file => file.grantId === editingFileId
-        ? { ...file, content: editPreview.proposedContent, sizeBytes: new TextEncoder().encode(editPreview.proposedContent).length }
+        ? { ...file, content: editPreview.proposedContent, sizeBytes: newSize }
         : file));
+      setFolderCandidates(current => current.map(file => file.id === editingFileId ? { ...file, sizeBytes: newSize } : file));
+      setFileAnswer("");
       setFileNotice("Saved " + result.fileName + ". Original backup: " + result.backupPath + " (" + result.bytesWritten.toLocaleString() + " bytes written).");
       setEditingFileId(""); setDraftContent(""); setEditPreview(null);
-    } catch (e) { setFileError(String(e)); }
+    } catch (e) { setFileError(String(e)); setEditPreview(null); }
     finally { setEditBusy(false); }
   }
 
