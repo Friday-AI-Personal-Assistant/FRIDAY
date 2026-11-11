@@ -143,7 +143,7 @@ fn validate_edit_content(content: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], token: &str) -> Result<PathBuf, String> {
+fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], expected_sha256: &str, token: &str) -> Result<PathBuf, String> {
     if !current.starts_with(root) {
         return Err("The file is no longer inside the approved folder.".into());
     }
@@ -155,6 +155,15 @@ fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], token:
     if metadata.len() > MAX_FILE_BYTES {
         return Err("The original file is now larger than the 64 KB editing limit.".into());
     }
+    if metadata.permissions().readonly() {
+        return Err("This file is read-only. FRIDAY will not change its permissions to edit it.".into());
+    }
+    let original_bytes = fs::read(current)
+        .map_err(|_| "FRIDAY could not re-check the original file before replacement.".to_string())?;
+    if content_hash(&original_bytes) != expected_sha256 {
+        return Err("The original file changed immediately before saving. No changes were made.".into());
+    }
+    let original_permissions = metadata.permissions();
     let backup_dir = root.join(".friday-backups");
     match fs::symlink_metadata(&backup_dir) {
         Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() =>
@@ -168,7 +177,7 @@ fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], token:
     let temporary = parent.join(format!(".friday-edit-{token}.tmp"));
     let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temporary)
         .map_err(|e| format!("Could not prepare the replacement file: {e}"))?;
-    if let Err(error) = temp_file.write_all(proposed).and_then(|_| temp_file.sync_all()) {
+    if let Err(error) = temp_file.set_permissions(original_permissions).and_then(|_| temp_file.write_all(proposed)).and_then(|_| temp_file.sync_all()) {
         let _ = fs::remove_file(&temporary);
         return Err(format!("Could not write the replacement file: {error}"));
     }
@@ -392,6 +401,14 @@ pub fn issue_file_edit_approval(preview_id: String) -> Result<String, String> {
     Ok(token)
 }
 
+
+#[tauri::command]
+pub fn cancel_file_edit_preview(preview_id: String) -> Result<(), String> {
+    let mut pending = PENDING_FILE_EDITS.lock().map_err(|_| "File editing is temporarily unavailable.".to_string())?;
+    pending.remove(&preview_id);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn apply_file_edit(
     app: AppHandle,
@@ -426,7 +443,7 @@ pub fn apply_file_edit(
         return Err("This file changed after the preview was prepared. No changes were made; prepare a fresh preview.".into());
     }
     let backup_token = make_token();
-    let backup = replace_file_with_backup(&root, &current, edit.proposed_content.as_bytes(), &backup_token)?;
+    let backup = replace_file_with_backup(&root, &current, edit.proposed_content.as_bytes(), &edit.original_sha256, &backup_token)?;
     let relative_backup = backup.strip_prefix(&root).unwrap_or(&backup).to_string_lossy().replace('\\', "/");
     let file_name = current.file_name().and_then(|name| name.to_str()).unwrap_or("Selected file").to_string();
     let bytes_written = edit.proposed_content.len();
@@ -550,7 +567,7 @@ mod tests {
         fs::create_dir_all(root.join("src")).unwrap();
         let file = root.join("src").join("notes.txt");
         fs::write(&file, "before").unwrap();
-        let backup = replace_file_with_backup(&root, &file, b"after", &make_token()).unwrap();
+        let backup = replace_file_with_backup(&root, &file, b"after", &content_hash(b"before"), &make_token()).unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "after");
         assert_eq!(fs::read_to_string(&backup).unwrap(), "before");
         assert!(backup.starts_with(root.join(".friday-backups")));
