@@ -82,3 +82,5 @@ h1 em{font-style:normal;color:#9ce4ad}
 .private-note:focus{outline:2px solid #83c995;outline-offset:1px}
 .workspace-message{font-size:11px;color:#b4e8c0;margin:12px 0 0;overflow-wrap:anywhere}
 .security-footnote{font-size:9px;line-height:1.65;color:#74877a;margin:14px 0 0}
+
+.browser-preview-label{display:inline-flex;border:1px solid #526b58;border-radius:7px;padding:10px 12px;color:#b9e8c3;font-size:9px;font-weight:700;letter-spacing:1px;background:#1a2a20}
