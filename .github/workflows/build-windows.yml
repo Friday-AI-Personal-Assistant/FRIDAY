@@ -26,13 +26,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
       - name: Set up stable Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Run Rust workspace encryption tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
       - name: Install frontend dependencies
         run: npm install
+      - name: Build frontend
+        run: npm run build
+      - name: Run Rust workspace encryption tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
       - name: Build Windows installers
         run: npm run tauri -- build
       - name: Upload installer artifacts
