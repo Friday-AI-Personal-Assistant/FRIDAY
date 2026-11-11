@@ -76,7 +76,7 @@ fn write_history_locked(app: &AppHandle, items: &VecDeque<ToolEvent>) -> Result<
     fs::rename(&temporary, &destination).map_err(|e| format!("Could not finish saving tool history: {e}"))?;
     Ok(())
 }
-fn record(app: &AppHandle, tool_id: &str, outcome: &str, approved: bool) -> Result<(), String> {
+pub(crate) fn record(app: &AppHandle, tool_id: &str, outcome: &str, approved: bool) -> Result<(), String> {
     let _guard = HISTORY_LOCK.lock().map_err(|_| "Tool history is temporarily unavailable.".to_string())?;
     let mut history = read_history_locked(app)?;
     let id = history.back().map(|item| item.id.saturating_add(1)).unwrap_or(1);
