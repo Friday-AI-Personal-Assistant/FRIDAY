@@ -141,3 +141,21 @@ pub fn delete_conversation(app: AppHandle, id: String) -> Result<(), String> {
     if store.conversations.len() == before { return Err("That conversation could not be found.".into()); }
     write_store(&app, &store)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::valid_id;
+
+    #[test]
+    fn accepts_generated_style_ids() {
+        assert!(valid_id("a1b2c3d4-e5f6-7890"));
+    }
+
+    #[test]
+    fn rejects_empty_or_unsafe_ids() {
+        assert!(!valid_id(""));
+        assert!(!valid_id("../private"));
+        assert!(!valid_id("contains spaces"));
+        assert!(!valid_id(&"a".repeat(65)));
+    }
+}
