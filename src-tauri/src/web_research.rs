@@ -15,6 +15,7 @@ pub struct WebSearchResult {
     pub title: String,
     pub url: String,
     pub snippet: String,
+    pub domain: String,
 }
 
 fn safe_result_url(raw: &str) -> Option<String> {
@@ -24,7 +25,7 @@ fn safe_result_url(raw: &str) -> Option<String> {
         let target = url.query_pairs().find(|(key, _)| key == "uddg")?.1.into_owned();
         url = url::Url::parse(&target).ok()?;
     }
-    if !matches!(url.scheme(), "https" | "http")
+    if url.scheme() != "https"
         || url.username() != ""
         || url.password().is_some()
         || url.host_str().is_none()
@@ -64,7 +65,8 @@ fn parse_results(html: &str) -> Vec<WebSearchResult> {
         let snippet = result.select(snippet_selector).next()
             .map(|element| element.text().collect::<Vec<_>>().join(" "))
             .unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
-        results.push(WebSearchResult { title, url, snippet });
+        let domain = url::Url::parse(&url).ok().and_then(|value| value.host_str().map(str::to_string)).unwrap_or_default();
+        results.push(WebSearchResult { title, url, snippet, domain });
     }
     results
 }
@@ -125,6 +127,9 @@ pub struct WebPage {
     pub title: String,
     pub url: String,
     pub text: String,
+    pub domain: String,
+    pub author: Option<String>,
+    pub published_date: Option<String>,
 }
 
 fn public_ipv4(ip: Ipv4Addr) -> bool {
@@ -184,6 +189,18 @@ fn bounded_utf8(text: &str, max_bytes: usize) -> String {
         output.push(character);
     }
     output
+}
+
+fn extract_page_metadata(html: &str) -> (Option<String>, Option<String>) {
+    static AUTHOR: OnceLock<Selector> = OnceLock::new();
+    static PUBLISHED: OnceLock<Selector> = OnceLock::new();
+    let author_selector = AUTHOR.get_or_init(|| Selector::parse(r#"meta[name="author"], meta[property="article:author"]"#).expect("valid author selector"));
+    let published_selector = PUBLISHED.get_or_init(|| Selector::parse(r#"meta[property="article:published_time"], meta[name="date"], meta[name="publish-date"], meta[name="pubdate"]"#).expect("valid publication date selector"));
+    let document = Html::parse_document(html);
+    let value = |selector: &Selector| document.select(selector).find_map(|element| element.value().attr("content"))
+        .map(|value| value.trim().chars().take(160).collect::<String>())
+        .filter(|value| !value.is_empty());
+    (value(author_selector), value(published_selector))
 }
 
 fn extract_page_text(html: &str) -> (String, String) {
@@ -255,8 +272,10 @@ async fn read_page_inner(url: String) -> Result<WebPage, String> {
         }
         let html = String::from_utf8_lossy(&body);
         let (title, text) = extract_page_text(&html);
+        let (author, published_date) = extract_page_metadata(&html);
         if text.trim().is_empty() { return Err("FRIDAY could not extract readable text from this webpage.".into()); }
-        let page = WebPage { title, url: current.to_string(), text };
+        let domain = current.host_str().unwrap_or_default().to_string();
+        let page = WebPage { title, url: current.to_string(), text, domain, author, published_date };
         return Ok(page);
     }
     Err("FRIDAY could not safely follow this source link.".into())
@@ -332,6 +351,13 @@ mod tests {
     }
 
     #[test]
+    fn extracts_declared_author_and_publication_metadata() {
+        let (author, date) = extract_page_metadata(r#"<meta name="author" content="Ada Example"><meta property="article:published_time" content="2026-11-10T12:00:00Z">"#);
+        assert_eq!(author.as_deref(), Some("Ada Example"));
+        assert_eq!(date.as_deref(), Some("2026-11-10T12:00:00Z"));
+    }
+
+    #[test]
     fn extracts_article_content_over_navigation_when_available() {
         let (_, text) = extract_page_text("<html><body><nav>Menu links</nav><article><p>Research body</p></article></body></html>");
         assert_eq!(text, "Research body");
@@ -361,6 +387,7 @@ mod tests {
         assert_eq!(results[0].snippet, "Snippet A");
         assert_eq!(results[1].title, "Second");
         assert_eq!(results[1].snippet, "Snippet B");
+        assert_eq!(results[0].domain, "example.com");
     }
 
     #[test]
