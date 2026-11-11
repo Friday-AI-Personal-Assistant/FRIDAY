@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::{process::Command, time::Duration};
+use std::{collections::HashMap, process::Command, sync::{Mutex, OnceLock}, time::Duration};
+use tokio::sync::watch;
 use tauri::ipc::Channel;
 
 const OLLAMA: &str = "http://127.0.0.1:11434";
@@ -21,7 +22,6 @@ struct Request<'a> {
     stream: bool,
 }
 
-#
 #[derive(Deserialize)]
 struct Models {
     #[serde(default)]
@@ -115,11 +115,11 @@ pub struct StreamEvent {
 }
 
 #[derive(Deserialize)]
-#[derive(Deserialize)]
 struct Response {
     message: Message,
 }
 
+#[derive(Deserialize)]
 struct StreamResponse {
     #[serde(default)]
     message: Option<Message>,
@@ -147,25 +147,36 @@ fn forward_stream_line(line: &[u8], channel: &Channel<StreamEvent>) -> Result<bo
     Ok(chunk.done)
 }
 
-#[tauri::command]
-pub async fn ollama_chat_stream(
+static ACTIVE_STREAMS: OnceLock<Mutex<HashMap<String, watch::Sender<bool>>>> = OnceLock::new();
+
+fn active_streams() -> &'static Mutex<HashMap<String, watch::Sender<bool>>> {
+    ACTIVE_STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn run_ollama_stream(
     messages: Vec<Message>,
     model: String,
     on_event: Channel<StreamEvent>,
+    cancel_rx: &mut watch::Receiver<bool>,
 ) -> Result<(), String> {
-    validate_chat_request(&messages, &model)?;
-
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(180))
         .build()
         .map_err(|e| format!("Could not prepare the Ollama chat connection: {e}"))?;
 
-    let mut response = client
+    let request = client
         .post(format!("{OLLAMA}/api/chat"))
-        .json(&Request { model: &model, messages: &messages, stream: true })
-        .send()
-        .await
+        .json(&Request { model: &model, messages: &messages, stream: true });
+
+    let send_result = tokio::select! {
+        _ = cancel_rx.changed() => {
+            let _ = on_event.send(StreamEvent { event: "stopped".into(), content: String::new() });
+            return Ok(());
+        }
+        result = request.send() => result,
+    };
+    let mut response = send_result
         .map_err(|_| "Cannot reach Ollama. Check that it is running, then try again.".to_string())?;
 
     let status = response.status();
@@ -176,19 +187,27 @@ pub async fn ollama_chat_stream(
 
     let mut pending = Vec::<u8>::new();
     let mut finished = false;
-    while let Some(bytes) = response.chunk().await
-        .map_err(|_| "The connection to Ollama was interrupted while generating the answer.".to_string())?
-    {
+    while !finished {
+        let chunk_result = tokio::select! {
+            _ = cancel_rx.changed() => {
+                let _ = on_event.send(StreamEvent { event: "stopped".into(), content: String::new() });
+                return Ok(());
+            }
+            result = response.chunk() => result,
+        };
+        let Some(bytes) = chunk_result
+            .map_err(|_| "The connection to Ollama was interrupted while generating the answer.".to_string())?
+        else { break };
+
         pending.extend_from_slice(&bytes);
-        if pending.len() > 1_000_000 && !pending.contains(&b'\n') {
+        if pending.len() > 1_000_000 && !pending.contains(&b'\\n') {
             return Err("Ollama sent an unexpectedly large streaming response chunk.".into());
         }
-        while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+        while let Some(newline) = pending.iter().position(|byte| *byte == b'\\n') {
             let line: Vec<u8> = pending.drain(..=newline).collect();
             finished = forward_stream_line(&line, &on_event)?;
             if finished { break; }
         }
-        if finished { break; }
     }
 
     if !pending.iter().all(u8::is_ascii_whitespace) {
@@ -197,6 +216,51 @@ pub async fn ollama_chat_stream(
     on_event.send(StreamEvent { event: "done".into(), content: String::new() })
         .map_err(|e| format!("Could not finish the response in FRIDAY: {e}"))?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn ollama_chat_stream(
+    messages: Vec<Message>,
+    model: String,
+    request_id: String,
+    on_event: Channel<StreamEvent>,
+) -> Result<(), String> {
+    validate_chat_request(&messages, &model)?;
+    if request_id.is_empty() || request_id.len() > 80
+        || !request_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("Invalid response request identifier.".into());
+    }
+
+    let (cancel_tx, mut cancel_rx) = watch::channel(false);
+    {
+        let mut streams = active_streams().lock()
+            .map_err(|_| "FRIDAY could not access its active response list.".to_string())?;
+        if streams.contains_key(&request_id) {
+            return Err("This response is already active.".into());
+        }
+        streams.insert(request_id.clone(), cancel_tx);
+    }
+
+    let result = run_ollama_stream(messages, model, on_event, &mut cancel_rx).await;
+    if let Ok(mut streams) = active_streams().lock() {
+        streams.remove(&request_id);
+    }
+    result
+}
+
+#[tauri::command]
+pub fn cancel_ollama_chat(request_id: String) -> Result<bool, String> {
+    let streams = active_streams().lock()
+        .map_err(|_| "FRIDAY could not access its active response list.".to_string())?;
+    match streams.get(&request_id) {
+        Some(cancel_tx) => {
+            cancel_tx.send(true)
+                .map_err(|_| "The response has already finished.".to_string())?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
 }
 
 #[tauri::command]
