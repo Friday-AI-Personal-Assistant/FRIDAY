@@ -1,7 +1,7 @@
 use lopdf::Document;
 use serde::Serialize;
 use std::{fs, path::PathBuf};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_PDF_BYTES: u64 = 25 * 1024 * 1024;
