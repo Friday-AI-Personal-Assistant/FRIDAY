@@ -49,6 +49,9 @@ pub fn run() {
             file_assistant::pick_and_read_text_files,
             file_assistant::pick_folder_and_list_text_files,
             file_assistant::read_granted_text_files,
+            file_assistant::prepare_file_edit,
+            file_assistant::issue_file_edit_approval,
+            file_assistant::apply_file_edit,
             skills::uninstall_skill
         ])
         .run(tauri::generate_context!())
