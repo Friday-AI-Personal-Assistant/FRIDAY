@@ -47,6 +47,8 @@ pub fn run() {
             web_research::web_read_page,
             web_research::web_read_pages,
             file_assistant::pick_and_read_text_files,
+            file_assistant::pick_folder_and_list_text_files,
+            file_assistant::read_granted_text_files,
             skills::uninstall_skill
         ])
         .run(tauri::generate_context!())
