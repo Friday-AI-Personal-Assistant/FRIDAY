@@ -398,8 +398,10 @@ pub fn apply_file_edit(
     preview_id: String,
     approval_token: String,
 ) -> Result<FileEditResult, String> {
-    let mut pending = PENDING_FILE_EDITS.lock().map_err(|_| "File editing is temporarily unavailable.".to_string())?;
-    let edit = pending.remove(&preview_id).ok_or("This preview has expired or was already used. Prepare the edit again.")?;
+    let edit = {
+        let mut pending = PENDING_FILE_EDITS.lock().map_err(|_| "File editing is temporarily unavailable.".to_string())?;
+        pending.remove(&preview_id).ok_or("This preview has expired or was already used. Prepare the edit again.")?
+    };
     if edit.expires_at < edit_now() || edit.approval_token.as_deref() != Some(approval_token.as_str()) {
         return Err("The edit was not approved with a valid, fresh confirmation. Review it again.".into());
     }
@@ -533,4 +535,26 @@ mod tests {
         assert_eq!(MAX_FILE_BYTES, 64 * 1024);
         assert_eq!(MAX_TOTAL_BYTES, 180 * 1024);
     }
+
+    #[test]
+    fn edit_content_is_bounded_text_without_null_bytes() {
+        assert!(validate_edit_content("hello\nworld").is_ok());
+        assert!(validate_edit_content(&"x".repeat(MAX_FILE_BYTES as usize)).is_ok());
+        assert!(validate_edit_content(&"x".repeat(MAX_FILE_BYTES as usize + 1)).is_err());
+        assert!(validate_edit_content("hello\\0world").is_err());
+    }
+
+    #[test]
+    fn replacement_preserves_original_backup_and_updates_selected_file() {
+        let root = std::env::temp_dir().join(format!("friday-file-edit-{}", make_token()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file = root.join("src").join("notes.txt");
+        fs::write(&file, "before").unwrap();
+        let backup = replace_file_with_backup(&root, &file, b"after", &make_token()).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "after");
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "before");
+        assert!(backup.starts_with(root.join(".friday-backups")));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
 }
