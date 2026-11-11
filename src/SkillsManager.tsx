@@ -57,6 +57,7 @@ export default function SkillsManager() {
   const [selectedFolderIds, setSelectedFolderIds] = useState<string[]>([]);
   const [folderSearch, setFolderSearch] = useState("");
   const [fileQuestion, setFileQuestion] = useState("Summarise these files and explain their important points.");
+  const [fileContentSearch, setFileContentSearch] = useState("");
   const [fileAnswer, setFileAnswer] = useState("");
   const [fileBusy, setFileBusy] = useState(false);
   const [fileError, setFileError] = useState("");
@@ -90,7 +91,7 @@ export default function SkillsManager() {
       }
       if (skill.id === "file-assistant" && (action === "uninstall" || action === "disable" || action === "unload")) {
         setSelectedTextFiles([]); setFolderCandidates([]); setSelectedFolderIds([]);
-        setFolderSearch(""); setFileAnswer(""); setFileError("");
+        setFolderSearch(""); setFileContentSearch(""); setFileAnswer(""); setFileError("");
         setFileQuestion("Summarise these files and explain their important points.");
       }
       await refresh();
@@ -146,7 +147,7 @@ export default function SkillsManager() {
   async function chooseFolder() {
     if (!desktop || fileBusy) return;
     setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
-    setFolderCandidates([]); setSelectedFolderIds([]); setFolderSearch("");
+    setFolderCandidates([]); setSelectedFolderIds([]); setFolderSearch(""); setFileContentSearch("");
     try {
       const candidates = await invoke<FileCandidate[]>("pick_folder_and_list_text_files");
       setFolderCandidates(candidates);
@@ -170,7 +171,7 @@ export default function SkillsManager() {
   async function chooseTextFiles() {
     if (!desktop || fileBusy) return;
     setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
-    setFolderCandidates([]); setSelectedFolderIds([]);
+    setFolderCandidates([]); setSelectedFolderIds([]); setFileContentSearch("");
     try {
       const files = await invoke<SelectedTextFile[]>("pick_and_read_text_files");
       setSelectedTextFiles(files);
@@ -328,6 +329,21 @@ ${file.content}`
             <button className="primary-button" disabled={fileBusy || selectedFolderIds.length === 0} onClick={() => void readFolderSelection()}>{fileBusy ? "Reading selected files…" : `Read ${selectedFolderIds.length} selected file${selectedFolderIds.length === 1 ? "" : "s"}`}</button>
           </div>}
           {selectedTextFiles.length > 0 && <>
+            <div className="file-assistant-search">
+              <label>Search inside the selected files
+                <input value={fileContentSearch} onChange={event => setFileContentSearch(event.target.value)} placeholder="Find a word or phrase…" />
+              </label>
+              {fileContentSearch.trim() && <div className="file-assistant-search-results">
+                {selectedTextFiles.map(file => {
+                  const index = file.content.toLocaleLowerCase().indexOf(fileContentSearch.trim().toLocaleLowerCase());
+                  if (index < 0) return null;
+                  const start = Math.max(0, index - 100);
+                  const end = Math.min(file.content.length, index + fileContentSearch.trim().length + 160);
+                  return <div key={file.name}><strong>{file.name}</strong><pre>{(start > 0 ? "…" : "") + file.content.slice(start, end) + (end < file.content.length ? "…" : "")}</pre></div>;
+                })}
+                {!selectedTextFiles.some(file => file.content.toLocaleLowerCase().includes(fileContentSearch.trim().toLocaleLowerCase())) && <small>No matches found in the selected files.</small>}
+              </div>}
+            </div>
             <div className="pdf-file-summary"><strong>{selectedTextFiles.length} selected file{selectedTextFiles.length === 1 ? "" : "s"}</strong><span>{selectedTextFiles.reduce((total, file) => total + file.sizeBytes, 0).toLocaleString()} bytes · held in this session only</span></div>
             <div className="file-assistant-files">
               {selectedTextFiles.map((file, index) => <details key={file.name + index}>
