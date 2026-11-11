@@ -202,7 +202,7 @@ fn decode_page_bytes(bytes: &[u8], content_type: &str) -> String {
     }
     let header_charset = content_type.split(';').skip(1)
         .find_map(|part| part.trim().strip_prefix("charset="))
-        .map(|label| label.trim_matches(['"', '\'']));
+        .map(|label| label.trim_matches('"').trim_matches('\''));
     let meta_charset = String::from_utf8_lossy(&bytes[..bytes.len().min(2048)]);
     static META: OnceLock<Regex> = OnceLock::new();
     let meta_re = META.get_or_init(|| Regex::new(r#"(?i)<meta[^>]+charset=["']?([a-z0-9._-]+)"#).expect("valid charset regex"));
