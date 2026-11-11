@@ -29,7 +29,7 @@ fn snippet_regex() -> &'static Regex {
 fn strip_tags(value: &str) -> String {
     static TAGS: OnceLock<Regex> = OnceLock::new();
     let tags = TAGS.get_or_init(|| Regex::new(r"(?is)<[^>]*>").expect("valid tag regex"));
-    decode_entities(&tags.replace_all(value, " "))
+    decode_entities(&tags.replace_all(value, " ")).split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn decode_entities(value: &str) -> String {
