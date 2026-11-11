@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 type Message = { role: "user" | "assistant"; content: string };
+type StreamEvent = { event: "token" | "done"; content: string };
 const ACTIONS = [
   { id: "notepad", label: "Open Notepad", keywords: /\b(open|launch|start)\b.*\b(notepad|text editor)\b/i },
   { id: "downloads", label: "Open Downloads", keywords: /\b(open|show)\b.*\bdownloads\b/i },
@@ -63,14 +64,50 @@ export default function Assistant() {
     if (!desktop) { setError("AI chat works in the Windows desktop app. This is only the browser preview."); return; }
 
     setPending(true);
+    setMessages(prev => [...prev, { role: "assistant", content: "" }]);
+    let streamed = "";
+    const channel = new Channel<StreamEvent>();
+    channel.onmessage = event => {
+      if (event.event === "token") {
+        streamed += event.content;
+        setMessages(prev => {
+          const updated = [...prev];
+          const lastIndex = updated.length - 1;
+          if (lastIndex >= 0 && updated[lastIndex].role === "assistant") {
+            updated[lastIndex] = { ...updated[lastIndex], content: streamed };
+          }
+          return updated;
+        });
+      }
+    };
     try {
-      const answer = await invoke<string>("ollama_chat", {
+      await invoke<void>("ollama_chat_stream", {
         model,
-        messages: [{ role: "system", content: SYSTEM }, ...next.slice(-18)]
+        messages: [{ role: "system", content: SYSTEM }, ...next.slice(-18)],
+        onEvent: channel
       });
-      setMessages(prev => [...prev, { role: "assistant", content: answer || "(Empty response)" }]);
+      if (!streamed) {
+        setMessages(prev => {
+          const updated = [...prev];
+          const lastIndex = updated.length - 1;
+          if (lastIndex >= 0 && updated[lastIndex].role === "assistant") {
+            updated[lastIndex] = { ...updated[lastIndex], content: "(Empty response)" };
+          }
+          return updated;
+        });
+      }
     } catch (e) {
       setError(String(e));
+      if (!streamed) {
+        setMessages(prev => {
+          const updated = [...prev];
+          const lastIndex = updated.length - 1;
+          if (lastIndex >= 0 && updated[lastIndex].role === "assistant") {
+            updated.pop();
+          }
+          return updated;
+        });
+      }
     } finally {
       setPending(false);
     }
@@ -91,12 +128,12 @@ export default function Assistant() {
   }
 
   return <section className="assistant-page">
-    <div className="assistant-head"><div><div className="eyebrow">YOUR LOCAL AI ASSISTANT</div><h1>Talk to <em>FRIDAY.</em></h1><p className="intro">Private conversations and simple desktop actions, powered by Ollama.</p></div><button className="secondary-button" onClick={() => { setMessages([]); setError(""); setAction(null); }}>+ New chat</button></div>
+    <div className="assistant-head"><div><div className="eyebrow">YOUR LOCAL AI ASSISTANT</div><h1>Talk to <em>FRIDAY.</em></h1><p className="intro">Private conversations and simple desktop actions, powered by Ollama.</p></div><button className="secondary-button" onClick={() => { setMessages([]); setError(""); setAction(null); }} disabled={pending}>+ New chat</button></div>
     <div className="chat-panel">
       <div className="chat-top"><div className="chat-avatar">F</div><div><strong>FRIDAY AI</strong><small>{checking ? "◌ Checking Ollama…" : models.length ? "● Ollama connected" : "○ Ollama offline or no model installed"}</small></div><select aria-label="Ollama model" value={model} onChange={e => setModel(e.target.value)} disabled={!models.length}>{models.length ? models.map(m => <option key={m}>{m}</option>) : <option value={model}>{model}</option>}</select><button className="secondary-button" onClick={() => void refresh()} disabled={checking}>{checking ? "Checking…" : "Refresh"}</button></div>
       <div className="chat-history" role="log" aria-live="polite">
         {!messages.length && <div className="chat-welcome"><div className="chat-welcome-icon">✦</div><h2>How can I help?</h2><p>Ask me anything, or try “Open Notepad”, “Open Downloads”, or “Compose email”. I'll ask before touching your desktop.</p></div>}
-        {messages.map((m, i) => <div key={i} className={`chat-bubble ${m.role}`}><span>{m.content}</span></div>)}
+        {messages.map((m, i) => <div key={i} className={`chat-bubble ${m.role}`}><span>{m.content || (pending && m.role === "assistant" ? "FRIDAY is thinking…" : "")}</span></div>)}
         {pending && <div className="chat-bubble assistant">FRIDAY is thinking…</div>}
       </div>
       {action && <div className="action-confirm" role="alertdialog" aria-label="Confirm desktop action"><strong>Allow FRIDAY to {action.label.toLowerCase()}?</strong><p>Nothing will happen until you approve. Email will open a draft, not send it.</p><div><button className="primary-button" onClick={() => void confirmAction()}>Allow once</button><button className="secondary-button" onClick={() => { setAction(null); setActionResult("Action cancelled."); }}>Cancel</button></div></div>}
