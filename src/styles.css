@@ -285,3 +285,13 @@ h1 em{font-style:normal;color:#9ce4ad}
 .file-assistant-files pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.8rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; color: inherit; background: var(--surface, #f7f7f7); border-radius: 6px; padding: 10px; margin: 10px 0 0; }
 
 .web-source-meta { color: var(--muted, #777); font-size: 0.78rem; line-height: 1.4; overflow-wrap: anywhere; }
+
+
+.file-assistant-picker-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.file-assistant-folder-list { display: grid; gap: 8px; border: 1px solid var(--border, #dedede); border-radius: 8px; padding: 12px; min-width: 0; }
+.file-assistant-folder-list > input { width: 100%; min-width: 0; }
+.file-assistant-candidate { display: flex; align-items: flex-start; gap: 9px; padding: 8px; border-radius: 6px; background: var(--surface, #f7f7f7); min-width: 0; }
+.file-assistant-candidate > input { margin-top: 3px; flex: 0 0 auto; }
+.file-assistant-candidate > span { display: grid; gap: 3px; min-width: 0; }
+.file-assistant-candidate strong { font-size: 0.84rem; font-weight: 500; overflow-wrap: anywhere; }
+.file-assistant-candidate small { color: var(--muted, #777); font-size: 0.75rem; }
