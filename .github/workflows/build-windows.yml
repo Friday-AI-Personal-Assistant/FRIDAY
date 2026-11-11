@@ -32,6 +32,31 @@ jobs:
         run: npm install
       - name: Build frontend
         run: npm run build
+      - name: Generate Windows application icon
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $size = 256
+          $bitmap = [System.Drawing.Bitmap]::new($size, $size)
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+          $graphics.Clear([System.Drawing.Color]::FromArgb(20, 60, 48))
+          $font = [System.Drawing.Font]::new("Segoe UI", 150, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+          $brush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
+          $format = [System.Drawing.StringFormat]::new()
+          $format.Alignment = [System.Drawing.StringAlignment]::Center
+          $format.LineAlignment = [System.Drawing.StringAlignment]::Center
+          $graphics.DrawString("F", $font, $brush, [System.Drawing.RectangleF]::new(0, 0, $size, $size), $format)
+          $iconHandle = $bitmap.GetHicon()
+          $icon = [System.Drawing.Icon]::FromHandle($iconHandle)
+          New-Item -ItemType Directory -Force -Path "src-tauri/icons" | Out-Null
+          $stream = [System.IO.File]::Open("src-tauri/icons/icon.ico", [System.IO.FileMode]::Create)
+          $icon.Save($stream)
+          $stream.Dispose()
+          $icon.Dispose(); $graphics.Dispose(); $font.Dispose(); $brush.Dispose(); $format.Dispose(); $bitmap.Dispose()
+          Add-Type -Namespace Native -Name IconCleanup -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool DestroyIcon(System.IntPtr handle);'
+          [Native.IconCleanup]::DestroyIcon($iconHandle) | Out-Null
+
       - name: Run Rust workspace encryption tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
       - name: Generate Windows application icon
