@@ -95,6 +95,11 @@ pub async fn web_search(_app: AppHandle, query: String) -> Result<Vec<WebSearchR
     if !response.status().is_success() {
         return Err(format!("The web search provider returned HTTP {}.", response.status()));
     }
+    let search_content_type = response.headers().get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok()).unwrap_or("");
+    if !search_content_type.contains("text/html") {
+        return Err("The web search provider did not return an HTML results page.".into());
+    }
     if response.content_length().is_some_and(|length| length > MAX_RESPONSE_BYTES as u64) {
         return Err("The web search response exceeded FRIDAY's 1 MB safety limit.".into());
     }
@@ -191,6 +196,22 @@ fn bounded_utf8(text: &str, max_bytes: usize) -> String {
     output
 }
 
+fn decode_page_bytes(bytes: &[u8], content_type: &str) -> String {
+    if let Some((encoding, remainder)) = encoding_rs::Encoding::for_bom(bytes) {
+        return encoding.decode(remainder).0.into_owned();
+    }
+    let header_charset = content_type.split(';').skip(1)
+        .find_map(|part| part.trim().strip_prefix("charset="))
+        .map(|label| label.trim_matches(['"', '\'']));
+    let meta_charset = String::from_utf8_lossy(&bytes[..bytes.len().min(2048)]);
+    static META: OnceLock<Regex> = OnceLock::new();
+    let meta_re = META.get_or_init(|| Regex::new(r#"(?i)<meta[^>]+charset=["']?([a-z0-9._-]+)"#).expect("valid charset regex"));
+    let detected = header_charset.or_else(|| meta_re.captures(&meta_charset).and_then(|capture| capture.get(1).map(|value| value.as_str())));
+    let encoding = detected.and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))
+        .unwrap_or(encoding_rs::UTF_8);
+    encoding.decode(bytes).0.into_owned()
+}
+
 fn extract_page_metadata(html: &str) -> (Option<String>, Option<String>) {
     static AUTHOR: OnceLock<Selector> = OnceLock::new();
     static PUBLISHED: OnceLock<Selector> = OnceLock::new();
@@ -270,7 +291,7 @@ async fn read_page_inner(url: String) -> Result<WebPage, String> {
             }
             body.extend_from_slice(&chunk);
         }
-        let html = String::from_utf8_lossy(&body);
+        let html = decode_page_bytes(&body, content_type);
         let (title, text) = extract_page_text(&html);
         let (author, published_date) = extract_page_metadata(&html);
         if text.trim().is_empty() { return Err("FRIDAY could not extract readable text from this webpage.".into()); }
@@ -348,6 +369,14 @@ mod tests {
         assert!(text.contains("One & two"));
         assert!(text.contains("Three"));
         assert!(!text.contains("doBadThings"));
+    }
+
+    #[test]
+    fn decodes_utf8_and_legacy_webpage_charsets() {
+        let utf8 = "Café".as_bytes();
+        assert_eq!(decode_page_bytes(utf8, "text/html; charset=utf-8"), "Café");
+        let windows_1252 = [b'C', b'a', b'f', 0xe9];
+        assert_eq!(decode_page_bytes(&windows_1252, "text/html; charset=windows-1252"), "Café");
     }
 
     #[test]
