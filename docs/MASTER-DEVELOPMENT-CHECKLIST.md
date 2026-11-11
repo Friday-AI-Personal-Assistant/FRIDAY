@@ -120,7 +120,7 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 
 Implement each as a real end-to-end capability, including permissions, errors, settings, data handling and Windows tests.
 
-- [~] **PDF Reader** — native Windows file picker, local text extraction with page numbers, extracted-text preview, and local Ollama Q&A with page-citation instructions are implemented. Encrypted/damaged PDFs return a clear error; file size (25 MB), page count (500) and extracted text (120,000 characters) are bounded. Scanned-PDF OCR, stronger PDF parser hardening, Rust/TypeScript builds and Windows end-to-end verification remain pending.
+- [~] **PDF Reader** — native Windows file picker, local text extraction with page numbers, extracted-text preview, and local Ollama Q&A with page-citation instructions are implemented. Encrypted/damaged PDFs return a clear error; file size (25 MB), page count (500) and extracted text (120,000 UTF-8 bytes) are bounded. Scanned-PDF OCR, stronger PDF parser hardening, Rust/TypeScript builds and Windows end-to-end verification remain pending.
 - [ ] **Web Research** — search and open sources, summarise with citations, distinguish source facts from model inference.
 - [ ] **File Assistant** — user-selected folders/files with path-scoped access grants; search and summarise; approved file writes with preview/diff; require confirmation before write, move or delete.
 - [ ] **Coding Assistant** — inspect selected project files, explain and propose edits; sandbox tests/commands with strict time/resource limits; show diffs and require approval before applying changes.
