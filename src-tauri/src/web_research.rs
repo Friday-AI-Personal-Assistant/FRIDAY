@@ -197,8 +197,8 @@ fn bounded_utf8(text: &str, max_bytes: usize) -> String {
 }
 
 fn decode_page_bytes(bytes: &[u8], content_type: &str) -> String {
-    if let Some((encoding, remainder)) = encoding_rs::Encoding::for_bom(bytes) {
-        return encoding.decode(remainder).0.into_owned();
+    if let Some((encoding, bom_length)) = encoding_rs::Encoding::for_bom(bytes) {
+        return encoding.decode(&bytes[bom_length..]).0.into_owned();
     }
     let header_charset = content_type.split(';').skip(1)
         .find_map(|part| part.trim().strip_prefix("charset="))
@@ -277,7 +277,7 @@ async fn read_page_inner(url: String) -> Result<WebPage, String> {
             return Err(format!("The source website returned HTTP {}.", response.status()));
         }
         let content_type = response.headers().get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok()).unwrap_or("");
+            .and_then(|value| value.to_str().ok()).unwrap_or("").to_string();
         if !(content_type.contains("text/html") || content_type.contains("text/plain")) {
             return Err("This source is not an HTML or plain-text webpage.".into());
         }
@@ -291,7 +291,7 @@ async fn read_page_inner(url: String) -> Result<WebPage, String> {
             }
             body.extend_from_slice(&chunk);
         }
-        let html = decode_page_bytes(&body, content_type);
+        let html = decode_page_bytes(&body, &content_type);
         let (title, text) = extract_page_text(&html);
         let (author, published_date) = extract_page_metadata(&html);
         if text.trim().is_empty() { return Err("FRIDAY could not extract readable text from this webpage.".into()); }
