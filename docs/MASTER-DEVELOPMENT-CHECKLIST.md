@@ -57,7 +57,8 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 - [~] Improve model refresh feedback and sort/deduplicate installed model names. Model details (size, family, context) remain pending.
 - [ ] Add model download/pull flow with clear disk-space and network warnings.
 - [ ] Support configurable local endpoint safely, defaulting to localhost.
-- [ ] Add streaming responses, cancellation and clear busy/error states.
+- [x] Implement incremental Ollama response streaming from Rust to the chat UI, including chunked NDJSON parsing and visible partial responses.
+- [~] Streaming busy/error states are implemented; Windows end-to-end verification and request cancellation remain pending.
 - [ ] Test small and larger models on representative hardware.
 - [ ] Document optional cloud providers separately; never silently send local data to them.
 
@@ -209,4 +210,4 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 ## Immediate next work item
 
-**Phase 1A — complete Ollama foundation:** run the frontend/Rust checks, verify the Windows desktop connection with Ollama running/offline/no-model cases, then add streaming responses and a safe model download flow. After that, proceed through chat persistence, memory, skills architecture and permissioned tool execution before implementing the larger skill catalogue.
+**Phase 1A — complete Ollama foundation:** run frontend/Rust checks and verify streaming on Windows with Ollama running, stopped and without an installed model. Add request cancellation and a safe model download flow. After that, proceed through chat persistence, memory, skills architecture and permissioned tool execution before implementing the larger skill catalogue.
