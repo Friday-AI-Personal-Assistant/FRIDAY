@@ -34,11 +34,11 @@ fn safe_result_url(raw: &str) -> Option<String> {
     }
     if let Some(host) = url.host_str() {
         if let Ok(ip) = host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
-            let blocked = match ip {
-                IpAddr::V4(value) => value.is_loopback() || value.is_private() || value.is_link_local() || value.is_unspecified() || value.is_multicast(),
-                IpAddr::V6(value) => value.is_loopback() || value.is_unique_local() || value.is_unicast_link_local() || value.is_unspecified() || value.is_multicast(),
+            let is_public = match ip {
+                IpAddr::V4(value) => public_ipv4(value),
+                IpAddr::V6(value) => public_ipv6(value),
             };
-            if blocked { return None; }
+            if !is_public { return None; }
         }
     }
     url.set_fragment(None);
@@ -162,7 +162,12 @@ fn validate_page_url(raw: &str) -> Result<url::Url, String> {
     if url.scheme() != "https" || url.username() != "" || url.password().is_some() || url.host_str().is_none() {
         return Err("For safety, FRIDAY can read HTTPS webpages only.".into());
     }
-    Ok(url)
+    if url.port_or_known_default() != Some(443) {
+        return Err("For safety, FRIDAY can read standard HTTPS webpages on port 443 only.".into());
+    }
+    let mut canonical = url;
+    canonical.set_fragment(None);
+    Ok(canonical)
 }
 
 async fn pinned_public_address(url: &url::Url) -> Result<Option<SocketAddr>, String> {
@@ -201,8 +206,11 @@ fn decode_page_bytes(bytes: &[u8], content_type: &str) -> String {
         return encoding.decode(&bytes[bom_length..]).0.into_owned();
     }
     let header_charset = content_type.split(';').skip(1)
-        .find_map(|part| part.trim().strip_prefix("charset="))
-        .map(|label| label.trim_matches('"').trim_matches('\''));
+        .find_map(|part| {
+            let (key, value) = part.trim().split_once('=')?;
+            key.trim().eq_ignore_ascii_case("charset")
+                .then(|| value.trim().trim_matches('"').trim_matches('\''))
+        });
     let meta_charset = String::from_utf8_lossy(&bytes[..bytes.len().min(2048)]);
     static META: OnceLock<Regex> = OnceLock::new();
     let meta_re = META.get_or_init(|| Regex::new(r#"(?i)<meta[^>]+charset=["']?([a-z0-9._-]+)"#).expect("valid charset regex"));
@@ -278,7 +286,8 @@ async fn read_page_inner(url: String) -> Result<WebPage, String> {
         }
         let content_type = response.headers().get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok()).unwrap_or("").to_string();
-        if !(content_type.contains("text/html") || content_type.contains("text/plain")) {
+        let content_type_lower = content_type.to_ascii_lowercase();
+        if !(content_type_lower.contains("text/html") || content_type_lower.contains("text/plain")) {
             return Err("This source is not an HTML or plain-text webpage.".into());
         }
         if response.content_length().is_some_and(|length| length > MAX_PAGE_BYTES as u64) {
@@ -335,6 +344,8 @@ mod tests {
         assert!(!public_ipv4(Ipv4Addr::new(10, 0, 0, 1)));
         assert!(!public_ipv4(Ipv4Addr::new(192, 168, 1, 2)));
         assert!(!public_ipv4(Ipv4Addr::new(100, 64, 0, 1)));
+        assert!(!public_ipv4(Ipv4Addr::new(192, 0, 2, 1)));
+        assert!(!public_ipv4(Ipv4Addr::new(198, 51, 100, 1)));
         assert!(public_ipv4(Ipv4Addr::new(1, 1, 1, 1)));
         assert!(!public_ipv6(Ipv6Addr::LOCALHOST));
         assert!(public_ipv6("2606:4700:4700::1111".parse().unwrap()));
@@ -351,6 +362,8 @@ mod tests {
         assert!(validate_page_url("http://example.com").is_err());
         assert!(validate_page_url("file:///C:/Windows").is_err());
         assert!(validate_page_url("https://example.com/article").is_ok());
+        assert!(validate_page_url("https://example.com:8443/article").is_err());
+        assert_eq!(validate_page_url("https://example.com/article#section").unwrap().as_str(), "https://example.com/article");
     }
 
     #[test]
@@ -377,6 +390,7 @@ mod tests {
         assert_eq!(decode_page_bytes(utf8, "text/html; charset=utf-8"), "Café");
         let windows_1252 = [b'C', b'a', b'f', 0xe9];
         assert_eq!(decode_page_bytes(&windows_1252, "text/html; charset=windows-1252"), "Café");
+        assert_eq!(decode_page_bytes(&windows_1252, "text/html; CHARSET = \"windows-1252\""), "Café");
     }
 
     #[test]
