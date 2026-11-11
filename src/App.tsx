@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Assistant from "./Assistant";
+import SkillsManager from "./SkillsManager";
 
 type Page = "AI Chat" | "Overview" | "Modules" | "Privacy & Security" | "Settings";
 
@@ -112,8 +113,8 @@ function App() {
 
         {page === "Modules" && <section className="page compact-page">
           <div className="eyebrow">FRIDAY CAPABILITIES</div><h1>Your tools,<br /><em>your choice.</em></h1>
-          <p className="intro">These modules are planned, not active yet. We'll build and test each one before enabling it.</p>
-          <div className="module-list">{modules.map(module => <article className="module-row" key={module.name}><span className="module-icon">{module.icon}</span><div><h3>{module.name}</h3><p>{module.detail}</p></div><span className="planned">PLANNED</span></article>)}</div>
+          <p className="intro">Install capabilities when you need them. FRIDAY keeps installed skills on disk and does not start them automatically.</p>
+          <SkillsManager />
         </section>}
 
         {page === "Privacy & Security" && <section className="page compact-page">
