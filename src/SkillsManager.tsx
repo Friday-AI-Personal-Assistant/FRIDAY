@@ -231,6 +231,15 @@ ${file.content}`
     finally { setEditBusy(false); }
   }
 
+  async function cancelFileEdit() {
+    const previewId = editPreview?.previewId;
+    if (previewId && desktop) {
+      try { await invoke("cancel_file_edit_preview", { previewId }); }
+      catch (e) { setFileError(String(e)); }
+    }
+    setEditingFileId(""); setDraftContent(""); setEditPreview(null);
+  }
+
   async function applyFileEdit() {
     if (!desktop || !editPreview || editBusy) return;
     const approved = window.confirm("Replace \"" + editPreview.relativePath + "\" with the proposed version? FRIDAY will preserve the original in a .friday-backups folder inside the selected folder.");
@@ -412,7 +421,7 @@ ${file.content}`
                 <textarea aria-label="Proposed file contents" value={draftContent} onChange={event => { setDraftContent(event.target.value); setEditPreview(null); }} rows={12} maxLength={65536} />
                 <div className="file-assistant-picker-actions">
                   <button className="primary-button" disabled={editBusy} onClick={() => void prepareFileEdit()}>{editBusy ? "Preparing preview…" : "Preview proposed changes"}</button>
-                  <button className="secondary-button" disabled={editBusy} onClick={() => { setEditingFileId(""); setDraftContent(""); setEditPreview(null); }}>Cancel</button>
+                  <button className="secondary-button" disabled={editBusy} onClick={() => void cancelFileEdit()}>Cancel</button>
                 </div>
                 {editPreview && <div className="file-edit-preview">
                   <strong>Review before saving: {editPreview.relativePath}</strong>
