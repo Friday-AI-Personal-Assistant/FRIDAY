@@ -22,7 +22,7 @@ fn workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(base.join("workspace"))
 }
 
-fn encryption_key() -> Result<[u8; 32], String> {
+pub(crate) fn encryption_key() -> Result<[u8; 32], String> {
     let _guard = KEYRING_LOCK
         .lock()
         .map_err(|_| "Workspace key lock is unavailable.".to_string())?;
@@ -48,7 +48,7 @@ fn encryption_key() -> Result<[u8; 32], String> {
     }
 }
 
-fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let cipher = XChaCha20Poly1305::new_from_slice(key)
         .map_err(|_| "Invalid workspace encryption key.".to_string())?;
     let mut nonce = [0_u8; 24];
@@ -63,7 +63,7 @@ fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
-fn decrypt_bytes(key: &[u8; 32], payload: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn decrypt_bytes(key: &[u8; 32], payload: &[u8]) -> Result<Vec<u8>, String> {
     if payload.len() < 24 {
         return Err("Encrypted workspace file is incomplete.".to_string());
     }
@@ -163,4 +163,30 @@ mod tests {
 
         assert!(decrypt_bytes(&key, &encrypted).is_err());
     }
+}
+
+// Agent state uses a separate encrypted record; the original private note is preserved.
+#[tauri::command]
+pub fn save_agent_state(app: AppHandle, content: String) -> Result<(), String> {
+    if content.len() > 4 * 1024 * 1024 { return Err("Session exceeds 4 MiB; start a new conversation".into()); }
+    let _: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    let dir = workspace_dir(&app)?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let payload = encrypt_bytes(&encryption_key()?, content.as_bytes())?;
+    let temporary = dir.join("agent-state.enc.tmp");
+    let destination = dir.join("agent-state.enc");
+    fs::write(&temporary, payload).map_err(|e| e.to_string())?;
+    // Retain last successful encrypted version if replacement is interrupted.
+    if destination.exists() { fs::copy(&destination, dir.join("agent-state.enc.bak")).map_err(|e| e.to_string())?; }
+    if destination.exists() { fs::remove_file(&destination).map_err(|e| e.to_string())?; }
+    fs::rename(&temporary, &destination).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn read_agent_state(app: AppHandle) -> Result<String, String> {
+    let path = workspace_dir(&app)?.join("agent-state.enc");
+    if !path.exists() { return Ok(String::new()); }
+    let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
+    if metadata.len() > 4 * 1024 * 1024 + 40 { return Err("Saved session exceeds size limit".into()); }
+    String::from_utf8(decrypt_bytes(&encryption_key()?, &fs::read(path).map_err(|e| e.to_string())?)?).map_err(|e| e.to_string())
 }
