@@ -111,6 +111,57 @@ pub async fn pick_and_read_pdf(app: AppHandle) -> Result<PdfDocument, String> {
 mod tests {
     use super::*;
 
+    fn minimal_text_pdf() -> Vec<u8> {
+        let content = b"BT /F1 12 Tf 72 720 Td (Hello Friday) Tj ET";
+        let objects: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+            {
+                let mut stream = format!("<< /Length {} >>\\nstream\\n", content.len()).into_bytes();
+                stream.extend_from_slice(content);
+                stream.extend_from_slice(b"\\nendstream");
+                stream
+            },
+        ];
+
+        let mut pdf = b"%PDF-1.4\\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\\n", index + 1).as_bytes());
+            pdf.extend_from_slice(object);
+            pdf.extend_from_slice(b"\\nendobj\\n");
+        }
+
+        let xref_offset = pdf.len();
+        pdf.extend_from_slice(format!("xref\\n0 {}\\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \\n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \\n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\\n<< /Size {} /Root 1 0 R >>\\nstartxref\\n{xref_offset}\\n%%EOF\\n",
+                objects.len() + 1
+            ).as_bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    fn extracts_text_from_a_real_minimal_pdf_document() {
+        let document = Document::load_mem(&minimal_text_pdf()).expect("minimal PDF should parse");
+        let pages = document.get_pages();
+        assert_eq!(pages.len(), 1);
+        let page_number = *pages.keys().next().expect("one page should exist");
+        let text = document
+            .extract_text_with_limit(&[page_number], 2 * 1024 * 1024)
+            .expect("page text should extract");
+        assert!(text.contains("Hello Friday"), "unexpected extracted text: {text:?}");
+    }
+
     #[test]
     fn accepts_pdf_extension_case_insensitively() {
         assert!(is_pdf_path(std::path::Path::new("report.pdf")));
