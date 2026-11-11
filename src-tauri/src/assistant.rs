@@ -265,13 +265,20 @@ fn forward_stream_line(line: &[u8], channel: &Channel<StreamEvent>) -> Result<bo
                 .map_err(|e| format!("Could not deliver the response to FRIDAY: {e}"))?;
         }
         for call in message.tool_calls.into_iter().take(1) {
+            if call.function.name.len() > 100 {
+                return Err("Ollama proposed a tool name that exceeds FRIDAY's safety limit.".into());
+            }
             let proposal = serde_json::json!({
                 "tool_id": call.function.name,
                 "arguments": call.function.arguments
             });
+            let encoded = proposal.to_string();
+            if encoded.len() > 8_192 {
+                return Err("Ollama proposed tool arguments that exceed FRIDAY's 8 KB safety limit.".into());
+            }
             channel.send(StreamEvent {
                 event: "tool_proposal".into(),
-                content: proposal.to_string(),
+                content: encoded,
             }).map_err(|e| format!("Could not deliver a tool proposal to FRIDAY: {e}"))?;
         }
     }
