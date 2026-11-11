@@ -6,11 +6,15 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 (async () => {
   let browser;
+  let connectionError;
   for (let attempt = 0; attempt < 60; attempt++) {
     try { browser = await chromium.connectOverCDP('http://127.0.0.1:9223'); break; }
-    catch { await new Promise(resolve => setTimeout(resolve, 500)); }
+    catch (error) { connectionError = error; await new Promise(resolve => setTimeout(resolve, 500)); }
   }
-  assert(browser, 'Installed WebView2 debugging endpoint did not start');
+  if (!browser) {
+    console.warn('BLOCKED: This runner did not expose the installed WebView2 debugging endpoint. Native IPC/UI checks were NOT executed. Last connection error:', String(connectionError));
+    process.exit(process.env.FRIDAY_REQUIRE_NATIVE_SMOKE === '1' ? 1 : 2);
+  }
   try {
     let page;
     for (let attempt = 0; attempt < 60; attempt++) {

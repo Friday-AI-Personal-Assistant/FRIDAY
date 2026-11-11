@@ -62,14 +62,16 @@ jobs:
           Add-Type -Namespace Native -Name IconCleanup -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool DestroyIcon(System.IntPtr handle);'
           [Native.IconCleanup]::DestroyIcon($iconHandle) | Out-Null
 
+      - run: npm run build
       - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+        run: cargo test --release --manifest-path src-tauri/Cargo.toml --lib
       - name: Build NSIS and MSI installers
         run: npm run tauri -- build
       - name: Install, launch and uninstall NSIS smoke test
         shell: pwsh
         run: ./scripts/test-install.ps1
       - name: Upload installers
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: friday-free-local-windows
