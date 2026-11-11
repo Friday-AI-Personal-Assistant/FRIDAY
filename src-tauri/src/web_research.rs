@@ -206,7 +206,7 @@ fn extract_page_text(html: &str) -> (String, String) {
     static TITLE: OnceLock<Regex> = OnceLock::new();
     static ACTIVE: OnceLock<Regex> = OnceLock::new();
     let title_re = TITLE.get_or_init(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").expect("valid title regex"));
-    let active_re = ACTIVE.get_or_init(|| Regex::new(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>").expect("valid active-content regex"));
+    let active_re = ACTIVE.get_or_init(|| Regex::new(r"(?is)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<noscript[^>]*>.*?</noscript>").expect("valid active-content regex"));
     let title = title_re.captures(html).and_then(|capture| capture.get(1))
         .map(|value| strip_tags(value.as_str()).split_whitespace().collect::<Vec<_>>().join(" "))
         .unwrap_or_else(|| "Web source".into());
