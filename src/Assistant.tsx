@@ -333,7 +333,7 @@ export default function Assistant() {
     try {
       if (approve) {
         if (toolRounds >= 3) throw new Error("FRIDAY reached the three-step tool limit for this request. Start a new message to continue.");
-        const result = await invoke<string>("execute_tool", { toolId: proposal.tool_id, arguments: proposal.arguments, approved: definition.approval_required });
+        const approvalToken = definition.approval_required ? await invoke<string>("issue_tool_approval", { toolId: proposal.tool_id, arguments: proposal.arguments }) : null;\n        const result = await invoke<string>("execute_tool", { toolId: proposal.tool_id, arguments: proposal.arguments, approvalToken });
         const toolNote = "Tool result — " + definition.name + ": " + result;
         const updated = [...messages.filter(message => message.content.trim()), { role: "assistant" as const, content: toolNote }];
         setMessages(updated); if (activeId) await persist(activeId, updated);
@@ -387,7 +387,7 @@ export default function Assistant() {
     const selected = action; setAction(null);
     if (!desktop) { setError("Desktop actions require the installed Windows app."); return; }
     try {
-      const result = await invoke<string>("execute_tool", { toolId: "desktop.open_target", arguments: { target: selected.id }, approved: true });
+      const arguments_ = { target: selected.id };\n      const approvalToken = await invoke<string>("issue_tool_approval", { toolId: "desktop.open_target", arguments: arguments_ });\n      const result = await invoke<string>("execute_tool", { toolId: "desktop.open_target", arguments: arguments_, approvalToken });
       setActionResult(result); await refreshToolHistory();
       const updated = [...messages, { role: "assistant" as const, content: result }];
       setMessages(updated);
@@ -444,7 +444,7 @@ export default function Assistant() {
         {wasStopped && <div className="chat-success" role="status">Response stopped.</div>}
         {actionResult && <div className="chat-success" role="status">{actionResult}</div>}
         {!!availableTools.length && <details className="tool-history"><summary>Available tools ({availableTools.length})</summary><ul>{availableTools.map(tool => <li key={tool.id}><strong>{tool.name} · {tool.id}</strong><span>{tool.description}</span><small>{tool.permission}{tool.approval_required ? " · Approval required" : " · No approval needed"}</small></li>)}</ul></details>}
-        {!!toolHistory.length && <details className="tool-history"><summary>Recent tool activity ({toolHistory.length})</summary><ul>{toolHistory.slice(0,8).map(item => <li key={item.id}><strong>{item.tool_id}</strong><span>{item.outcome}</span><small>{new Date(item.timestamp * 1000).toLocaleString()} · {item.approved ? "Approved" : "No approval needed"}</small></li>)}</ul></details>}
+        {!!toolHistory.length && <><details className="tool-history"><summary>Recent tool activity ({toolHistory.length})</summary><ul>{toolHistory.slice(0,8).map(item => <li key={item.id}><strong>{item.tool_id}</strong><span>{item.outcome}</span><small>{new Date(item.timestamp * 1000).toLocaleString()} · {item.approved ? "Approved" : "No approval needed"}</small></li>)}</ul></details><button className="secondary-button" onClick={() => { if (window.confirm("Clear all saved tool activity from this device?")) void invoke("clear_tool_history").then(() => void refreshToolHistory()).catch(e => setError(String(e))); }}>Clear activity history</button></>}
         <div className="chat-compose"><textarea aria-label="Message FRIDAY" placeholder="Message FRIDAY…" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} rows={2} maxLength={20000}/>{pending ? <button className="secondary-button stop-generation" onClick={() => void stopGeneration()} aria-label="Stop response">■ Stop</button> : <button className="primary-button" disabled={!input.trim() || !!action || !!pendingToolProposal || saving} onClick={() => void send()} aria-label="Send message">↑ Send</button>}</div>
         <p className="chat-footnote">Local AI · Encrypted chat and personal memory · Desktop actions require confirmation · {saving ? "Saving…" : "Saved on this device"} · Emails are never sent automatically</p>
       </div>
