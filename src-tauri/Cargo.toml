@@ -16,5 +16,4 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 chacha20poly1305 = "0.10"
 rand = "0.8"
-base64 = "0.22"
 keyring = { version = "3", features = ["windows-native"] }
