@@ -30,6 +30,9 @@ pub fn run() {
             skills::skills_catalog,
             skills::install_skill,
             skills::set_skill_enabled,
+            skills::load_skill,
+            skills::unload_skill,
+            skills::loaded_skill_instructions,
             skills::uninstall_skill
         ])
         .run(tauri::generate_context!())
