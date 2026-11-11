@@ -333,7 +333,8 @@ export default function Assistant() {
     try {
       if (approve) {
         if (toolRounds >= 3) throw new Error("FRIDAY reached the three-step tool limit for this request. Start a new message to continue.");
-        const approvalToken = definition.approval_required ? await invoke<string>("issue_tool_approval", { toolId: proposal.tool_id, arguments: proposal.arguments }) : null;\n        const result = await invoke<string>("execute_tool", { toolId: proposal.tool_id, arguments: proposal.arguments, approvalToken });
+        const approvalToken = definition.approval_required ? await invoke<string>("issue_tool_approval", { toolId: proposal.tool_id, arguments: proposal.arguments }) : null;
+        const result = await invoke<string>("execute_tool", { toolId: proposal.tool_id, arguments: proposal.arguments, approvalToken });
         const toolNote = "Tool result — " + definition.name + ": " + result;
         const updated = [...messages.filter(message => message.content.trim()), { role: "assistant" as const, content: toolNote }];
         setMessages(updated); if (activeId) await persist(activeId, updated);
@@ -387,7 +388,9 @@ export default function Assistant() {
     const selected = action; setAction(null);
     if (!desktop) { setError("Desktop actions require the installed Windows app."); return; }
     try {
-      const arguments_ = { target: selected.id };\n      const approvalToken = await invoke<string>("issue_tool_approval", { toolId: "desktop.open_target", arguments: arguments_ });\n      const result = await invoke<string>("execute_tool", { toolId: "desktop.open_target", arguments: arguments_, approvalToken });
+      const arguments_ = { target: selected.id };
+      const approvalToken = await invoke<string>("issue_tool_approval", { toolId: "desktop.open_target", arguments: arguments_ });
+      const result = await invoke<string>("execute_tool", { toolId: "desktop.open_target", arguments: arguments_, approvalToken });
       setActionResult(result); await refreshToolHistory();
       const updated = [...messages, { role: "assistant" as const, content: result }];
       setMessages(updated);
