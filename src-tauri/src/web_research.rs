@@ -43,7 +43,8 @@ fn decode_entities(value: &str) -> String {
 }
 
 fn safe_result_url(raw: &str) -> Option<String> {
-    let mut url = url::Url::parse(raw).ok()?;
+    let base = url::Url::parse(SEARCH_ENDPOINT).ok()?;
+    let mut url = base.join(raw).ok()?;
     if url.host_str() == Some("duckduckgo.com") && url.path() == "/l/" {
         let target = url.query_pairs().find(|(key, _)| key == "uddg")?.1.into_owned();
         url = url::Url::parse(&target).ok()?;
