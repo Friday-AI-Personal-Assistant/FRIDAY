@@ -16,6 +16,7 @@ function App() {
   const [note, setNote] = useState("");
   const [workspaceMessage, setWorkspaceMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const isDesktopApp = "__TAURI_INTERNALS__" in window;
 
   async function initializeWorkspace() {
     setBusy(true);
@@ -90,8 +91,8 @@ function App() {
 
           <div className="workspace-panel">
             <div className="section-heading"><div><span className="eyebrow">ON-DEVICE STORAGE</span><h2>Private workspace test</h2></div><span className="planned">ENCRYPTED NOTE</span></div>
-            <p className="panel-copy">Initialize your local workspace, then save a test note. The note is encrypted before it is written to your computer. Its key is kept in Windows Credential Manager.</p>
-            {!workspaceReady ? <button className="primary-button" disabled={busy} onClick={initializeWorkspace}>{busy ? "Please wait…" : "Initialize private workspace"}</button> : <>
+            <p className="panel-copy">{isDesktopApp ? "Initialize your local workspace, then save a test note. The note is encrypted before it is written to your computer. Its key is kept in Windows Credential Manager." : "You are viewing the browser preview. The private workspace test requires the Windows desktop app, so no notes are stored or encrypted in this browser demo."}</p>
+            {!isDesktopApp ? <div className="browser-preview-label">BROWSER DEMO · STORAGE DISABLED</div> : !workspaceReady ? <button className="primary-button" disabled={busy} onClick={initializeWorkspace}>{busy ? "Please wait…" : "Initialize private workspace"}</button> : <>
               <textarea className="private-note" value={note} onChange={event => setNote(event.target.value)} maxLength={20000} placeholder="Write a private test note here…" />
               <button className="primary-button" disabled={busy} onClick={saveNote}>{busy ? "Please wait…" : "Save encrypted note"}</button>
             </>}
