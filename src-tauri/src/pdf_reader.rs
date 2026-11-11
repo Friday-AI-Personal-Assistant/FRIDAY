@@ -87,7 +87,9 @@ pub async fn pick_and_read_pdf(app: AppHandle) -> Result<PdfDocument, String> {
     };
     let path = selected.into_path()
         .map_err(|_| "FRIDAY could not access the selected PDF path.".to_string())?;
-    extract_selected_pdf(path)
+    tauri::async_runtime::spawn_blocking(move || extract_selected_pdf(path))
+        .await
+        .map_err(|_| "FRIDAY's PDF reader worker stopped unexpectedly.".to_string())?
 }
 
 #[cfg(test)]
