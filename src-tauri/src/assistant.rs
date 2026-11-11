@@ -109,6 +109,109 @@ pub async fn ollama_models() -> Result<Vec<String>, String> {
 
 
 #[derive(Serialize, Clone)]
+pub struct ModelInfo { pub name: String, pub size: u64, pub modified_at: String }
+#[derive(Deserialize)]
+struct ModelTags { #[serde(default)] models: Vec<ModelTag> }
+#[derive(Deserialize)]
+struct ModelTag {
+    name: String,
+    #[serde(default)] size: u64,
+    #[serde(default)] modified_at: String,
+}
+fn validate_model_name(name: &str) -> Result<(), String> {
+    let value = name.trim();
+    if value.is_empty() || value.len() > MAX_MODEL_NAME_BYTES
+        || !value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/'))
+        || value.starts_with('/') || value.ends_with('/') || value.contains("//")
+    { return Err("Enter a valid Ollama model name, for example llama3.2:1b.".into()); }
+    Ok(())
+}
+#[derive(Serialize, Clone)]
+pub struct ModelPullEvent { pub status: String, pub completed: Option<u64>, pub total: Option<u64>, pub done: bool }
+#[derive(Deserialize)]
+struct PullResponse {
+    #[serde(default)] status: String,
+    #[serde(default)] completed: Option<u64>,
+    #[serde(default)] total: Option<u64>,
+    #[serde(default)] error: Option<String>,
+}
+#[tauri::command]
+pub async fn ollama_model_details() -> Result<Vec<ModelInfo>, String> {
+    let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(12)).build()
+        .map_err(|e| format!("Could not prepare the Ollama connection: {e}"))?;
+    let response = client.get(format!("{OLLAMA}/api/tags")).send().await
+        .map_err(|_| "Cannot connect to Ollama at 127.0.0.1:11434. Start Ollama and refresh.".to_string())?;
+    let status = response.status();
+    if !status.is_success() { return Err(upstream_error(status, response.text().await.unwrap_or_default())); }
+    let tags: ModelTags = response.json().await
+        .map_err(|_| "Ollama returned an unreadable installed-model list.".to_string())?;
+    let mut models: Vec<ModelInfo> = tags.models.into_iter().map(|m| ModelInfo {
+        name: m.name, size: m.size, modified_at: m.modified_at,
+    }).collect();
+    models.sort_by(|a,b| a.name.cmp(&b.name));
+    Ok(models)
+}
+#[tauri::command]
+pub async fn ollama_pull_model(name: String, on_event: Channel<ModelPullEvent>) -> Result<(), String> {
+    validate_model_name(&name)?;
+    let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(7200)).build()
+        .map_err(|e| format!("Could not prepare the model download: {e}"))?;
+    let mut response = client.post(format!("{OLLAMA}/api/pull"))
+        .json(&serde_json::json!({"name": name, "stream": true})).send().await
+        .map_err(|_| "Cannot reach Ollama. Start Ollama and try the download again.".to_string())?;
+    let status = response.status();
+    if !status.is_success() { return Err(upstream_error(status, response.text().await.unwrap_or_default())); }
+    let mut pending = Vec::<u8>::new();
+    while let Some(bytes) = response.chunk().await
+        .map_err(|_| "The model download connection was interrupted. Check Ollama and refresh installed models.".to_string())?
+    {
+        pending.extend_from_slice(&bytes);
+        if pending.len() > 1_000_000 && !pending.contains(&b'\n') {
+            return Err("Ollama sent an unexpectedly large download status.".into());
+        }
+        while let Some(newline) = pending.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = pending.drain(..=newline).collect();
+            if line.iter().all(u8::is_ascii_whitespace) { continue; }
+            let progress: PullResponse = serde_json::from_slice(&line)
+                .map_err(|_| "Ollama sent an unreadable model-download status.".to_string())?;
+            if let Some(error) = progress.error {
+                return Err(format!("Ollama could not download this model: {}", error.chars().take(400).collect::<String>()));
+            }
+            let done = progress.status.eq_ignore_ascii_case("success");
+            on_event.send(ModelPullEvent { status: progress.status, completed: progress.completed, total: progress.total, done })
+                .map_err(|e| format!("Could not update download progress in FRIDAY: {e}"))?;
+            if done { return Ok(()); }
+        }
+    }
+    if !pending.iter().all(u8::is_ascii_whitespace) {
+        let progress: PullResponse = serde_json::from_slice(&pending)
+            .map_err(|_| "Ollama sent an unreadable final download status.".to_string())?;
+        if let Some(error) = progress.error { return Err(error); }
+        let done = progress.status.eq_ignore_ascii_case("success");
+        on_event.send(ModelPullEvent { status: progress.status, completed: progress.completed, total: progress.total, done })
+            .map_err(|e| format!("Could not update download progress in FRIDAY: {e}"))?;
+        if done { return Ok(()); }
+    }
+    Err("Ollama closed the download stream before confirming success. Refresh the model list before retrying.".into())
+}
+#[tauri::command]
+pub async fn ollama_delete_model(name: String) -> Result<(), String> {
+    validate_model_name(&name)?;
+    let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30)).build()
+        .map_err(|e| format!("Could not prepare the model removal request: {e}"))?;
+    let response = client.delete(format!("{OLLAMA}/api/delete"))
+        .json(&serde_json::json!({"name": name})).send().await
+        .map_err(|_| "Cannot reach Ollama. Start Ollama and try again.".to_string())?;
+    let status = response.status();
+    if !status.is_success() { return Err(upstream_error(status, response.text().await.unwrap_or_default())); }
+    Ok(())
+}
+
+
+#[derive(Serialize, Clone)]
 pub struct StreamEvent {
     pub event: String,
     pub content: String,
