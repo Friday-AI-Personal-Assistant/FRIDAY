@@ -94,12 +94,15 @@ pub async fn web_search(_app: AppHandle, query: String) -> Result<Vec<WebSearchR
     }
 
     // The destination is fixed; redirects are disabled and result links are never fetched here.
-    let client = reqwest::Client::builder()
+    let search_url = url::Url::parse(SEARCH_ENDPOINT).map_err(|_| "FRIDAY's search endpoint is invalid.".to_string())?;
+    let pinned = pinned_public_address(&search_url).await?;
+    let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent("FRIDAY-Personal-Assistant/0.2 (web research)")
-        .build()
+        .user_agent("FRIDAY-Personal-Assistant/0.2 (web research)");
+    if let Some(address) = pinned { builder = builder.resolve(search_url.host_str().unwrap_or("html.duckduckgo.com"), address); }
+    let client = builder.build()
         .map_err(|_| "FRIDAY could not prepare the web search connection.".to_string())?;
 
     let mut response = client.get(SEARCH_ENDPOINT).query(&[("q", query)]).send().await
