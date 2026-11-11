@@ -60,15 +60,15 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 - [x] Remove installed models through Ollama after explicit user confirmation (implementation committed; Windows verification pending).
 - [ ] Support configurable local endpoint safely, defaulting to localhost.
 - [x] Implement incremental Ollama response streaming from Rust to the chat UI, including chunked NDJSON parsing and visible partial responses.
-- [~] Streaming busy/error states are implemented; Windows end-to-end verification and request cancellation remain pending.
+- [x] Streaming busy/error states and request cancellation are implemented; Windows end-to-end verification remains pending.
 - [ ] Test small and larger models on representative hardware.
 - [ ] Document optional cloud providers separately; never silently send local data to them.
 
 ### 1B. Chat and conversation storage
-- [~] Basic user/assistant chat interface.
-- [ ] Conversation list, create, rename, archive and delete.
-- [ ] Persist conversations locally across restart.
-- [ ] Search conversation history.
+- [x] Basic user/assistant chat interface.
+- [x] Conversation list, create, rename and delete (implemented; Windows verification pending; archive remains a later enhancement).
+- [x] Persist conversations locally across restart using authenticated XChaCha20-Poly1305 encryption and the existing Windows Credential Manager key (implementation committed; Windows verification pending).
+- [x] Search conversation history by conversation title (implementation committed; Windows verification pending).
 - [ ] Export and delete chat data.
 - [ ] Context-window management and conversation summarisation.
 - [ ] Clear indication of the active model and where processing occurs.
@@ -212,4 +212,4 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 ## Immediate next work item
 
-**Phase 1A/1B — Ollama foundation and model manager:** response streaming/cancellation and local model download, progress, installed-size listing and confirmed removal are implemented in the development branch. Frontend/Rust checks and Windows end-to-end verification remain pending. Verify with Ollama running, stopped and with/without installed models; test successful and interrupted downloads and confirmed/cancelled removal. Then proceed through chat persistence, memory, skills architecture and permissioned tool execution before implementing the larger skill catalogue.
+**Phase 1C — Persistent chat history:** encrypted local conversation storage, conversation list/create/switch/rename/delete, title search and persistence of completed or stopped responses are implemented in the development branch. Rust/TypeScript checks and Windows end-to-end verification remain pending. Next, verify restart persistence, switching, rename/search/delete, streaming cancellation and encryption-key availability on Windows. Then continue with personal memory, the skills package architecture and permissioned tool execution.
