@@ -283,3 +283,5 @@ h1 em{font-style:normal;color:#9ce4ad}
 .file-assistant-files details { min-width: 0; border: 1px solid var(--border, #dedede); border-radius: 8px; padding: 10px; }
 .file-assistant-files summary { cursor: pointer; color: var(--accent, #24765b); font-size: 0.88rem; font-weight: 600; overflow-wrap: anywhere; }
 .file-assistant-files pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.8rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; color: inherit; background: var(--surface, #f7f7f7); border-radius: 6px; padding: 10px; margin: 10px 0 0; }
+
+.web-source-meta { color: var(--muted, #777); font-size: 0.78rem; line-height: 1.4; overflow-wrap: anywhere; }
