@@ -101,13 +101,18 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 - [ ] Add signed remote package distribution and safe updates before accepting third-party packages.
 
 ### 1F. Tool execution and permissions
-- [~] A small desktop-action allowlist with per-action confirmation.
-- [ ] Build a central tool registry and structured tool-calling loop.
-- [ ] Permission levels: no access, read selected data, write with approval, external/network access.
-- [ ] Ask before sending messages, modifying/deleting files, running commands or submitting forms.
-- [ ] Use sandboxing and strict time/resource limits for code execution.
-- [ ] Log user-visible action history without silently uploading telemetry.
-- [ ] Reject arbitrary shell commands and arbitrary filesystem/network access by default.
+- [x] Central allowlisted tool registry with structured JSON arguments and per-tool permission declarations.
+- [x] Safe local calculator tool (basic arithmetic parser; no eval, shell or network).
+- [x] Desktop destination tool with fixed target allowlist and explicit per-action approval gate.
+- [x] Frontend uses the central executor rather than the legacy desktop-action command.
+- [x] Bounded in-session user-visible action history (last 100 events); no telemetry upload.
+- [x] Reject unknown tool IDs, unknown desktop targets, unsupported calculator syntax and unapproved desktop actions.
+- [~] Permission tiers are represented per tool; selected-file read, approved file write and external/network tools are not registered yet.
+- [~] Tool calls are explicit app-side actions; automatic Ollama structured tool-calling loop and model-proposed call approval UI remain pending.
+- [ ] Add selected-file read tools and path-scoped access grants.
+- [ ] Add approved file-write tools with preview/diff and confirmation.
+- [ ] Add sandboxing and strict time/resource limits before any code execution.
+- [ ] Add persistent, privacy-preserving audit history and clear-history controls.
 
 ## Phase 2 — FRIDAY's original skills
 
@@ -220,4 +225,4 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 **Phase 1C — Persistent chat history:** encrypted local conversation storage, conversation list/create/switch/rename/delete, title search and persistence of completed or stopped responses are implemented in the development branch. Rust/TypeScript checks and Windows end-to-end verification remain pending.
 
-**Phase 1E — Proper Skills Platform:** four versioned built-in declarative packages can be installed locally, enabled, explicitly loaded/unloaded and integrity-checked. Loaded instructions are added to the next local chat prompt; packages do not execute scripts and do not yet provide their advertised tools. Automated and Windows verification remain pending.\n\n**Phase 1D — Persistent personal memory:** user-entered memory entries are stored separately from transcripts in an encrypted local file. The chat UI supports add, edit, enable/disable and delete; enabled entries are included as bounded context in local Ollama prompts. No memory is silently extracted or saved. Rust/TypeScript checks and Windows end-to-end verification remain pending. Next, verify create/edit/disable/delete, persistence across restart, and that disabled entries are excluded from prompts. Next, build the central permissioned tool registry (Phase 1F), then connect each original FRIDAY skill to real tools and workflows.
+**Phase 1F — Central Tool Execution and Permission System:** a small allowlisted tool registry now exposes safe local arithmetic and fixed desktop destinations. Desktop launches require explicit UI approval; unsupported tool IDs/targets and unsafe calculator syntax are rejected. The UI shows a bounded in-session activity log. Automatic model-driven tool calling, file/network tools, persistent audit storage and sandbox execution are not implemented. Build and Windows verification remain pending.\n\n**Phase 1E — Proper Skills Platform:** four versioned built-in declarative packages can be installed locally, enabled, explicitly loaded/unloaded and integrity-checked. Loaded instructions are added to the next local chat prompt; packages do not execute scripts and do not yet provide their advertised tools. Automated and Windows verification remain pending.\n\n**Phase 1D — Persistent personal memory:** user-entered memory entries are stored separately from transcripts in an encrypted local file. The chat UI supports add, edit, enable/disable and delete; enabled entries are included as bounded context in local Ollama prompts. No memory is silently extracted or saved. Rust/TypeScript checks and Windows end-to-end verification remain pending. Next, verify create/edit/disable/delete, persistence across restart, and that disabled entries are excluded from prompts. Next, build the central permissioned tool registry (Phase 1F), then connect each original FRIDAY skill to real tools and workflows.
