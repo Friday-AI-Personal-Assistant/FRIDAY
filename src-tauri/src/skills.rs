@@ -121,9 +121,13 @@ fn verify_package(app: &AppHandle, skill_id: &str) -> Result<SkillManifest, Stri
     }
     let manifest_path = path.join("manifest.json");
     let instruction_path = path.join("instructions.md");
-    if fs::symlink_metadata(&manifest_path).map(|m| m.file_type().is_symlink()).unwrap_or(true)
-        || fs::symlink_metadata(&instruction_path).map(|m| m.file_type().is_symlink()).unwrap_or(true) {
-        return Err("The skill package contains an unsafe file path.".into());
+    let manifest_meta = fs::symlink_metadata(&manifest_path)
+        .map_err(|_| "The skill manifest is missing.".to_string())?;
+    let instructions_meta = fs::symlink_metadata(&instruction_path)
+        .map_err(|_| "The skill instructions are missing.".to_string())?;
+    if !manifest_meta.is_file() || manifest_meta.file_type().is_symlink() || manifest_meta.len() > 16_384
+        || !instructions_meta.is_file() || instructions_meta.file_type().is_symlink() || instructions_meta.len() > 32_768 {
+        return Err("The skill package contains an unsafe or oversized file.".into());
     }
     let manifest: SkillManifest = serde_json::from_slice(&fs::read(&manifest_path)
         .map_err(|e| format!("Could not read skill manifest: {e}"))?)
@@ -131,9 +135,11 @@ fn verify_package(app: &AppHandle, skill_id: &str) -> Result<SkillManifest, Stri
     let instructions = fs::read_to_string(&instruction_path)
         .map_err(|e| format!("Could not read skill instructions: {e}"))?;
     let (expected, expected_instructions) = expected_manifest(skill_id)?;
-    if manifest.id != expected.id || manifest.version != expected.version
-        || manifest.instruction_file != "instructions.md"
-        || manifest.package_type != "declarative-instructions"
+    if manifest.id != expected.id || manifest.name != expected.name
+        || manifest.version != expected.version || manifest.description != expected.description
+        || manifest.permissions != expected.permissions
+        || manifest.instruction_file != expected.instruction_file
+        || manifest.package_type != expected.package_type
         || manifest.dependencies != expected.dependencies
         || manifest.instruction_sha256 != digest(&instructions)
         || manifest.instruction_sha256 != expected.instruction_sha256
