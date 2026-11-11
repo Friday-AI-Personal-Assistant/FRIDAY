@@ -26,5 +26,6 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], defau
 tokio = { version = "1", features = ["macros", "sync", "net"] }
 lopdf = "0.47"
 regex = "1"
+scraper = "0.24"
 url = "2"
 tauri-plugin-dialog = "2"
