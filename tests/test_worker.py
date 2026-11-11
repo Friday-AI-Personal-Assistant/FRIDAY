@@ -33,6 +33,46 @@ class WorkerTests(unittest.TestCase):
         self.run_tool('write_document', path='urdu.txt', text='سلام Friday')
         self.assertEqual(self.run_tool('read_document', path='urdu.txt'), 'سلام Friday')
 
+    def test_docx_round_trip(self):
+        self.run_tool('write_document', path='cv.docx', text='Experience\nPython developer')
+        text = self.run_tool('read_document', path='cv.docx')
+        self.assertIn('Python developer', text)
+
+    def test_pdf_round_trip(self):
+        self.run_tool('write_document', path='cv.pdf', text='Experience\nPython developer')
+        text = self.run_tool('read_document', path='cv.pdf')
+        self.assertIn('Python developer', text)
+
+    def test_pdf_unsupported_script_honest_error(self):
+        with self.assertRaisesRegex(ValueError, 'DOCX'):
+            self.run_tool('write_document', path='urdu.pdf', text='سلام')
+        self.assertFalse((self.root / 'urdu.pdf').exists())
+
+    def test_extract_zip_round_trip(self):
+        self.run_tool('write_document', path='a.txt', text='hello')
+        self.run_tool('create_zip', path='a.txt', destination='backup.zip')
+        self.run_tool('extract_zip', path='backup.zip', destination='restored')
+        self.assertEqual((self.root / 'restored/a.txt').read_text(), 'hello')
+
+    def test_zip_traversal_rejected(self):
+        import zipfile
+        for name in ['../escape.txt', 'C:/escape.txt', '/absolute.txt', '..\\escape.txt']:
+            with self.subTest(name=name):
+                with zipfile.ZipFile(self.root / 'evil.zip', 'w') as archive:
+                    archive.writestr(name, 'bad')
+                with self.assertRaises(ValueError):
+                    self.run_tool('extract_zip', path='evil.zip', destination='restored')
+                self.assertFalse((self.root / 'restored').exists())
+
+    def test_zip_symlink_rejected(self):
+        import zipfile
+        entry = zipfile.ZipInfo('link')
+        entry.external_attr = (0o120777 << 16)
+        with zipfile.ZipFile(self.root / 'link.zip', 'w') as archive:
+            archive.writestr(entry, '../outside')
+        with self.assertRaises(ValueError):
+            self.run_tool('extract_zip', path='link.zip', destination='restored')
+
     def test_traversal_denied(self):
         for path in ['../outside.txt', '/etc/passwd', 'C:\\Windows\\secrets', 'a/../../b']:
             with self.subTest(path=path), self.assertRaises(ValueError):
@@ -112,6 +152,11 @@ class WorkerTests(unittest.TestCase):
         with patch.object(worker, 'ollama', side_effect=[{'models': [{'name': 'local'}]}, {'capabilities': ['completion']} ]):
             with self.assertRaisesRegex(ValueError, 'tool calling'):
                 worker.handle({'operation': 'chat', 'model': 'local', 'messages': [], 'tools': True})
+
+    def test_vision_requires_capability(self):
+        with patch.object(worker, 'ollama', side_effect=[{'models': [{'name': 'local'}]}, {'capabilities': ['completion']} ]):
+            with self.assertRaisesRegex(ValueError, 'vision'):
+                worker.handle({'operation': 'chat', 'model': 'local', 'messages': [{'role': 'user', 'content': 'screen', 'images': ['base64']} ]})
 
     def test_local_chat_payload(self):
         with patch.object(worker, 'ollama', side_effect=[{'models': [{'name': 'local'}]}, {'capabilities': ['completion', 'tools']}, {'message': {'role': 'assistant', 'content': 'Hello'}}]) as mock:

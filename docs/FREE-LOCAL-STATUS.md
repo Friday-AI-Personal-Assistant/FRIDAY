@@ -12,7 +12,7 @@ The model proposes tools. The UI presents each call and its exact arguments for 
 
 Conversation, approved memory, preferences and action history are saved on explicit request as an authenticated encrypted record using the existing Windows Credential Manager key. This record is independent of the original private note. Local document files and their backups **are not encrypted**. Screenshot images are excluded from saved session state.
 
-Worker dependencies: Python standard library (Ollama HTTP and file primitives), pywinauto (UI Automation), PyAutoGUI (input), Pillow (screenshots), faster-whisper/CTranslate2 (CPU int8 speech recognition), sounddevice (audio), pyttsx3 (installed Windows SAPI voices), pypdf and python-docx (documents), PyInstaller (worker packaging). No paid services. Speech model files must be installed separately. Check model licences before redistribution; no model weights are bundled.
+Worker dependencies: Python standard library (Ollama HTTP and file primitives), pywinauto (UI Automation), PyAutoGUI (input), Pillow (screenshots), faster-whisper/CTranslate2 (CPU int8 speech recognition), sounddevice (audio), pyttsx3 (installed Windows SAPI voices), pypdf, python-docx and ReportLab (documents), PyInstaller (worker packaging). No paid services. Speech model files must be installed separately. Check model licences before redistribution; no model weights are bundled.
 
 ## Feature inventory
 
@@ -30,10 +30,10 @@ Worker dependencies: Python standard library (Ollama HTTP and file primitives), 
 | Windows automation | Partially implemented, platform verification pending | Allowlisted app launch, UIA inspection/focus/click/value input, hotkeys, coordinate clicks and scroll |
 | Close/resize/drag/menus/file pickers/DPI recovery | Not implemented | Must be exercised against real Windows apps before acceptance |
 | Screen capture | Implemented, not Windows verified | All-monitor capture resized for local display; user can discard immediately |
-| Vision reasoning / OCR / visual grounding | Not implemented | Screenshot is not automatically sent to model; no visual grounding claims |
+| Vision reasoning / OCR / visual grounding | Partial, live-model verification pending | User can explicitly analyze a capture with a local vision model; capability checked; no OCR engine or reliable coordinate grounding |
 | Browser agent | Not implemented | No browser cookies or tokens accessed |
-| File operations | Implemented and unit tested for text/files | Scoped list/read/write/copy/move/folder/duplicates/ZIP; replacement backups; 8 MiB input limit |
-| PDF/DOCX | Implemented, not fully verified | Read PDF/DOCX; write DOCX; no PDF rendering/export, archive extraction or spreadsheet formula engine |
+| File operations | Implemented and unit tested for text/files | Scoped list/read/write/copy/move/folder/duplicates/ZIP creation and safe extraction; replacement backups; 8 MiB input limit |
+| PDF/DOCX | Implemented and unit tested for round trips | Read and write PDF/DOCX; English PDF export and DOCX round trips unit tested; no PDF visual preview or spreadsheet formula engine |
 | Coding assistant | Partial | Local model drafts and scoped source edits; no terminal, Git, dependency installation, PR or deployments |
 | Email and calendar OAuth | Not implemented | Requires internet and user OAuth registration/consent even when using free provider endpoints |
 | Notes/reminders/scheduling | Partial | Notes via document tools; no scheduler or background service |
@@ -49,7 +49,7 @@ Worker dependencies: Python standard library (Ollama HTTP and file primitives), 
 
 ## Validation
 
-Local validation: 20 Python tests pass; TypeScript + Vite production build passes; production npm dependency audit reports zero known vulnerabilities at execution time. Tests exercise filesystem scope, symlink rejection, schema enforcement, backups, Unicode, archive creation, duplicates, cloud/remote model rejection, missing capabilities and structured failure results. Mocked Ollama protocol tests do **not** prove live model operation. The untrusted-document test verifies that reading content does not execute it; it does **not** establish model-level prompt injection resistance.
+Local validation: 27 Python tests pass; TypeScript + Vite production build passes; production npm dependency audit reports zero known vulnerabilities at execution time. Tests exercise filesystem scope, symlink rejection, schema enforcement, backups, Unicode, archive creation, duplicates, cloud/remote model rejection, missing capabilities and structured failure results. Mocked Ollama protocol tests do **not** prove live model operation. The untrusted-document test verifies that reading content does not execute it; it does **not** establish model-level prompt injection resistance.
 
 This development host is Linux and has no Rust compiler, Windows UI, microphone, Ollama runtime or model weights. Rust compilation and Windows packaging are delegated to the checked-in Windows workflow. Real Windows acceptance remains required, including application controls, Credential Manager, recording, voice output, cancellation, multi-monitor/DPI behavior and installer install/uninstall.
 
@@ -66,3 +66,9 @@ This development host is Linux and has no Rust compiler, Windows UI, microphone,
 - Desktop worker cancellation does not close applications it opened.
 - Unsigned free builds may trigger SmartScreen. Trusted publisher signing is not provided or claimed; paid code-signing is not required to build or use the app.
 - Internet-dependent email and job browsing cannot be fully offline. Free local AI does not make remote websites locally executable.
+
+## Additional verification pipeline
+
+`tests/ui-smoke.cjs` uses an explicitly mocked Tauri bridge to test renderer navigation, the desktop-only gate, approval-before-execution, refusal and tool-loop continuation in real Edge on the Windows runner. This is renderer integration testing, not a claim that Windows automation tools were exercised. The development host blocks Chromium's process singleton socket, so these browser tests cannot run locally here.
+
+`scripts/test-install.ps1` silently installs the generated NSIS bundle, verifies the bundled worker and its declared dependencies, launches the installed application process for ten seconds, then uninstalls. Passing proves installation/process smoke behavior only. It does not establish microphone, real model, UI interaction or MSI installation acceptance. A CI failure remains a failure until repaired and rerun.

@@ -39,7 +39,7 @@ python -m unittest discover -s tests -v
 npm run build
 ```
 
-The **Free local Windows desktop** GitHub Actions workflow installs worker dependencies, runs Python tests, packages the worker, generates an icon, runs Rust encryption tests, builds NSIS/MSI installers and uploads artifacts. Use a standard public-repository runner or your own Windows runner; no paid build or AI service is integrated. Installer artifacts are not evidence of successful installation on a user's machine.
+The **Free local Windows desktop** GitHub Actions workflow installs worker dependencies, runs Python and renderer tests, packages the worker, generates an icon, runs Rust encryption tests, builds NSIS/MSI installers, smoke-tests NSIS installation/launch/uninstall, and uploads artifacts. Use a standard public-repository runner or your own Windows runner; no paid build or AI service is integrated. Installer artifacts are not evidence of successful installation on a user's machine.
 
 For local installer builds, package `worker/friday_worker.py` as `src-tauri/worker/friday-worker.exe` using the exact PyInstaller command in the workflow, generate `src-tauri/icons/icon.ico` using the workflow icon step, then run `npm run tauri -- build`. Install/uninstall and actual Windows app behavior must be tested before distribution. Builds are unsigned; no paid certificate is required or bundled.
 

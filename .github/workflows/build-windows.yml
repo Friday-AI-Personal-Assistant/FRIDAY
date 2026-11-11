@@ -5,6 +5,9 @@ on:
     branches: [main]
   push:
     branches: [feat/free-local-agent]
+concurrency:
+  group: free-local-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -20,8 +23,10 @@ jobs:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
-      - run: python -m unittest discover -s tests -v
+      - name: Renderer approval integration tests
+        run: node tests/ui-smoke.cjs
       - run: python -m pip install -r worker/requirements.txt
+      - run: python -m unittest discover -s tests -v
       - name: Package local worker
         run: >-
           python -m PyInstaller --noconfirm --clean --onefile
@@ -29,7 +34,7 @@ jobs:
           --collect-all faster_whisper --collect-all ctranslate2
           --collect-all onnxruntime --collect-all sounddevice
           --collect-all pywinauto --collect-all pyautogui
-          --collect-all pyttsx3 --collect-all pypdf --collect-all docx
+          --collect-all pyttsx3 --collect-all pypdf --collect-all docx --collect-all reportlab
           --hidden-import pyttsx3.drivers.sapi5 --hidden-import PIL.ImageGrab
           worker/friday_worker.py
       - name: Generate Windows application icon
@@ -61,6 +66,9 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
       - name: Build NSIS and MSI installers
         run: npm run tauri -- build
+      - name: Install, launch and uninstall NSIS smoke test
+        shell: pwsh
+        run: ./scripts/test-install.ps1
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
