@@ -199,3 +199,6 @@ h1 em{font-style:normal;color:#9ce4ad}
 .chat-layout>.chat-panel{min-width:0}
 @media(max-width:900px){.chat-layout{grid-template-columns:1fr}.conversation-sidebar{min-height:0;max-height:220px}.conversation-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){.conversation-list{grid-template-columns:1fr}.chat-top{flex-wrap:wrap}.chat-top select{max-width:100%}}
+
+.conversation-search{margin:10px 9px 4px;width:calc(100% - 18px);box-sizing:border-box;background:#0d1710;border:1px solid #344638;border-radius:7px;color:#e4eee5;padding:8px 9px;font:10px 'DM Sans',sans-serif}
+.conversation-search:focus{outline:2px solid #82d99c}
