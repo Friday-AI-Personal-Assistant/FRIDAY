@@ -2,6 +2,7 @@ mod workspace;
 mod assistant;
 mod skills;
 mod conversations;
+mod memory;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,6 +15,11 @@ pub fn run() {
             conversations::load_conversation,
             conversations::save_conversation,
             conversations::delete_conversation,
+            memory::list_memories,
+            memory::add_memory,
+            memory::update_memory,
+            memory::set_memory_enabled,
+            memory::delete_memory,
             assistant::ollama_models,
             assistant::ollama_model_details,
             assistant::ollama_pull_model,
