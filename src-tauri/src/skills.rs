@@ -223,6 +223,27 @@ pub fn load_skill(app: AppHandle, skill_id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+pub fn loaded_skill_instructions(app: AppHandle) -> Result<String, String> {
+    let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
+    let ids: Vec<String> = LOADED_SKILLS.lock()
+        .map_err(|_| "Skills runtime is busy.".to_string())?
+        .iter().cloned().collect();
+    let mut sections = Vec::new();
+    for id in ids {
+        let manifest = verify_package(&app, &id)?;
+        let path = package_path(&app, &id)?.join(&manifest.instruction_file);
+        let instructions = fs::read_to_string(path)
+            .map_err(|e| format!("Could not load skill instructions: {e}"))?;
+        sections.push(format!("## {} (v{})\n{}", manifest.name, manifest.version, instructions));
+    }
+    let combined = sections.join("\n\n");
+    if combined.len() > 24_000 {
+        return Err("Loaded skill instructions exceed the safe context limit. Unload some skills.".into());
+    }
+    Ok(combined)
+}
+
+#[tauri::command]
 pub fn unload_skill(skill_id: String) -> Result<String, String> {
     let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
     LOADED_SKILLS.lock().map_err(|_| "Skills runtime is busy.".to_string())?.remove(&skill_id);
