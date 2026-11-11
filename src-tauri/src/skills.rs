@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::{BTreeMap, BTreeSet}, fs, path::{Path, PathBuf}, sync::Mutex};
+use std::{collections::{BTreeMap, BTreeSet}, fs, path::PathBuf, sync::Mutex};
 use tauri::{AppHandle, Manager};
 
 const SKILL_VERSION: &str = "1.0.0";
