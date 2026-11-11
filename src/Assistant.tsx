@@ -73,7 +73,7 @@ export default function Assistant() {
       await invoke<void>("ollama_pull_model", { name, onEvent: channel });
       setPullStatus("Download completed.");
       await refresh();
-      setModel(name);
+      setModel(name.includes(":") ? name : name + ":latest");
     } catch (e) {
       setError(String(e));
       setPullStatus("Download did not complete.");
@@ -84,11 +84,7 @@ export default function Assistant() {
   }
 
   async function removeModel(name: string) {
-    if (pulling || removingModel) return;
-    if (name === model) {
-      setError("Select another installed model before removing the model currently selected for chat.");
-      return;
-    }
+    if (pulling || pending || removingModel) return;
     if (!window.confirm("Remove " + name + " from Ollama? This deletes its local model files and cannot be undone here.")) return;
     setRemovingModel(name);
     setError("");
@@ -218,7 +214,7 @@ export default function Assistant() {
         <p className="model-safety-note">Use an official Ollama model name. Check available disk space and your computer's RAM before downloading. FRIDAY sends the model name to your local Ollama service only.</p>
         {pullStatus && <div className="model-download-status" role="status"><div><strong>{pullStatus}</strong>{pullProgress?.total ? <span>{Math.round(((pullProgress.completed || 0) / pullProgress.total) * 100)}%</span> : null}</div>{pullProgress?.total ? <progress max={pullProgress.total} value={pullProgress.completed || 0}/> : <div className="model-progress-indeterminate"/>}{pullProgress?.total ? <small>{formatBytes(pullProgress.completed || 0)} of {formatBytes(pullProgress.total)}</small> : null}</div>}
         <div className="model-list-heading"><strong>Installed models</strong><span>{modelDetails.length}</span></div>
-        {modelDetails.length ? <div className="installed-model-list">{modelDetails.map(item => <div className="installed-model" key={item.name}><div><strong>{item.name}</strong><small>{formatBytes(item.size)} · {item.name === model ? "Selected for chat" : "Installed locally"}</small></div><button className="model-remove-button" onClick={() => void removeModel(item.name)} disabled={pulling || !!removingModel || item.name === model}>{removingModel === item.name ? "Removing…" : "Remove"}</button></div>)}</div> : <p className="model-empty">No installed models found. Download one above to start chatting.</p>}
+        {modelDetails.length ? <div className="installed-model-list">{modelDetails.map(item => <div className="installed-model" key={item.name}><div><strong>{item.name}</strong><small>{formatBytes(item.size)} · {item.name === model ? "Selected for chat" : "Installed locally"}</small></div><button className="model-remove-button" onClick={() => void removeModel(item.name)} disabled={pulling || pending || !!removingModel}>{removingModel === item.name ? "Removing…" : "Remove"}</button></div>)}</div> : <p className="model-empty">No installed models found. Download one above to start chatting.</p>}
       </section>}
       <div className="chat-history" role="log" aria-live="polite">
         {!messages.length && <div className="chat-welcome"><div className="chat-welcome-icon">✦</div><h2>How can I help?</h2><p>Ask me anything, or try “Open Notepad”, “Open Downloads”, or “Compose email”. I'll ask before touching your desktop.</p></div>}
