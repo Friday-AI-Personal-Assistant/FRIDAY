@@ -11,6 +11,7 @@ type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 type WebSearchResult = { title: string; url: string; snippet: string; domain: string };
 type WebPage = { title: string; url: string; text: string; domain: string; author?: string | null; publishedDate?: string | null };
 type SelectedTextFile = { name: string; content: string; sizeBytes: number };
+type FileCandidate = { id: string; name: string; relativePath: string; sizeBytes: number };
 const ICONS: Record<string, string> = {
   "web-research": "⌕", "pdf-reader": "▤", "file-assistant": "▣", "coding-assistant": "</>"
 };
@@ -52,6 +53,9 @@ export default function SkillsManager() {
   const [webSummary, setWebSummary] = useState("");
   const [webSummaryBusy, setWebSummaryBusy] = useState(false);
   const [selectedTextFiles, setSelectedTextFiles] = useState<SelectedTextFile[]>([]);
+  const [folderCandidates, setFolderCandidates] = useState<FileCandidate[]>([]);
+  const [selectedFolderIds, setSelectedFolderIds] = useState<string[]>([]);
+  const [folderSearch, setFolderSearch] = useState("");
   const [fileQuestion, setFileQuestion] = useState("Summarise these files and explain their important points.");
   const [fileAnswer, setFileAnswer] = useState("");
   const [fileBusy, setFileBusy] = useState(false);
@@ -85,7 +89,8 @@ export default function SkillsManager() {
         setPdf(null); setPdfAnswer(""); setPdfQuestion("");
       }
       if (skill.id === "file-assistant" && (action === "uninstall" || action === "disable" || action === "unload")) {
-        setSelectedTextFiles([]); setFileAnswer(""); setFileError("");
+        setSelectedTextFiles([]); setFolderCandidates([]); setSelectedFolderIds([]);
+        setFolderSearch(""); setFileAnswer(""); setFileError("");
         setFileQuestion("Summarise these files and explain their important points.");
       }
       await refresh();
@@ -138,9 +143,34 @@ export default function SkillsManager() {
     finally { setWebBusy(false); }
   }
 
+  async function chooseFolder() {
+    if (!desktop || fileBusy) return;
+    setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
+    setFolderCandidates([]); setSelectedFolderIds([]); setFolderSearch("");
+    try {
+      const candidates = await invoke<FileCandidate[]>("pick_folder_and_list_text_files");
+      setFolderCandidates(candidates);
+      if (candidates.length === 0) setFileError("No supported text files were found within the folder search limits.");
+    } catch (e) {
+      const message = String(e);
+      if (!message.toLowerCase().includes("cancel")) setFileError(message);
+    } finally { setFileBusy(false); }
+  }
+
+  async function readFolderSelection() {
+    if (!desktop || fileBusy || selectedFolderIds.length === 0 || selectedFolderIds.length > 8) return;
+    setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
+    try {
+      const files = await invoke<SelectedTextFile[]>("read_granted_text_files", { fileIds: selectedFolderIds });
+      setSelectedTextFiles(files);
+    } catch (e) { setFileError(String(e)); }
+    finally { setFileBusy(false); }
+  }
+
   async function chooseTextFiles() {
     if (!desktop || fileBusy) return;
     setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
+    setFolderCandidates([]); setSelectedFolderIds([]);
     try {
       const files = await invoke<SelectedTextFile[]>("pick_and_read_text_files");
       setSelectedTextFiles(files);
@@ -276,8 +306,27 @@ ${file.content}`
         {skill.id === "file-assistant" && skill.loaded && <div className="file-assistant-panel">
           <strong>Read selected text files</strong>
           <p>Choose files yourself. FRIDAY reads them locally and does not change them. This first version supports up to 8 UTF-8 text/code files, 64 KB each and 180 KB combined. No folders, binary documents or file modifications yet.</p>
-          <button className="primary-button" disabled={fileBusy} onClick={() => void chooseTextFiles()}>{fileBusy ? "Reading files…" : "Choose text files"}</button>
+          <div className="file-assistant-picker-actions">
+            <button className="primary-button" disabled={fileBusy} onClick={() => void chooseFolder()}>{fileBusy ? "Scanning…" : "Choose a folder"}</button>
+            <button className="secondary-button" disabled={fileBusy} onClick={() => void chooseTextFiles()}>Choose individual files</button>
+          </div>
+          <small>Folder scanning stays inside the folder you choose, skips hidden and common dependency/build folders, checks at most 2,000 entries and shows up to 200 supported files (maximum depth: 3 folders).</small>
           {fileError && <div className="skills-error" role="alert">{fileError}</div>}
+          {folderCandidates.length > 0 && <div className="file-assistant-folder-list">
+            <strong>Found {folderCandidates.length} candidate files</strong>
+            <input aria-label="Search files by name or folder" value={folderSearch} onChange={event => setFolderSearch(event.target.value)} placeholder="Search file names or folders…" />
+            <small>Select up to 8 files (64 KB each, 180 KB combined).</small>
+            {folderCandidates.filter(file => file.relativePath.toLowerCase().includes(folderSearch.trim().toLowerCase())).map(file => {
+              const checked = selectedFolderIds.includes(file.id);
+              const selectedBytes = folderCandidates.filter(item => selectedFolderIds.includes(item.id)).reduce((sum, item) => sum + item.sizeBytes, 0);
+              const tooLarge = selectedBytes + file.sizeBytes > 180 * 1024;
+              return <label className="file-assistant-candidate" key={file.id}>
+                <input type="checkbox" checked={checked} disabled={!checked && (selectedFolderIds.length >= 8 || tooLarge)} onChange={event => setSelectedFolderIds(current => event.target.checked ? [...current, file.id] : current.filter(id => id !== file.id))} />
+                <span><strong>{file.relativePath}</strong><small>{file.sizeBytes.toLocaleString()} bytes</small></span>
+              </label>;
+            })}
+            <button className="primary-button" disabled={fileBusy || selectedFolderIds.length === 0} onClick={() => void readFolderSelection()}>{fileBusy ? "Reading selected files…" : `Read ${selectedFolderIds.length} selected file${selectedFolderIds.length === 1 ? "" : "s"}`}</button>
+          </div>}
           {selectedTextFiles.length > 0 && <>
             <div className="pdf-file-summary"><strong>{selectedTextFiles.length} selected file{selectedTextFiles.length === 1 ? "" : "s"}</strong><span>{selectedTextFiles.reduce((total, file) => total + file.sizeBytes, 0).toLocaleString()} bytes · held in this session only</span></div>
             <div className="file-assistant-files">
