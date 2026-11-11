@@ -27,5 +27,6 @@ tokio = { version = "1", features = ["macros", "sync", "net"] }
 lopdf = "0.47"
 regex = "1"
 scraper = "0.24"
+encoding_rs = "0.8"
 url = "2"
 tauri-plugin-dialog = "2"
