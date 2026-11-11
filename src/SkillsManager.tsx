@@ -13,6 +13,8 @@ type WebPage = { title: string; url: string; text: string; domain: string; autho
 type SelectedTextFile = { name: string; content: string; sizeBytes: number; grantId?: string | null };
 type FileEditPreview = { previewId: string; fileName: string; relativePath: string; originalContent: string; proposedContent: string };
 type FileEditResult = { fileName: string; backupPath: string; bytesWritten: number };
+type FileMovePreview = { previewId: string; sourceRelativePath: string; destinationRelativePath: string; fileName: string; sizeBytes: number };
+type FileMoveResult = { fileName: string; destinationRelativePath: string; backupPath: string };
 type FileCandidate = { id: string; name: string; relativePath: string; sizeBytes: number };
 const ICONS: Record<string, string> = {
   "web-research": "⌕", "pdf-reader": "▤", "file-assistant": "▣", "coding-assistant": "</>"
@@ -68,6 +70,9 @@ export default function SkillsManager() {
   const [draftContent, setDraftContent] = useState("");
   const [editPreview, setEditPreview] = useState<FileEditPreview | null>(null);
   const [editBusy, setEditBusy] = useState(false);
+  const [movingFileId, setMovingFileId] = useState("");
+  const [moveDestination, setMoveDestination] = useState("");
+  const [movePreview, setMovePreview] = useState<FileMovePreview | null>(null);
 
   const refresh = useCallback(async () => {
     if (!desktop) { setLoading(false); return; }
@@ -272,6 +277,51 @@ ${file.content}`
     finally { setEditBusy(false); }
   }
 
+  function beginFileMove(file: SelectedTextFile) {
+    if (!file.grantId) return;
+    const candidate = folderCandidates.find(item => item.id === file.grantId);
+    if (!candidate) return;
+    const parts = candidate.relativePath.split("/");
+    const fileName = parts.pop() || candidate.name;
+    const dot = fileName.lastIndexOf(".");
+    const suggested = (dot > 0 ? fileName.slice(0, dot) : fileName) + "-renamed" + (dot > 0 ? fileName.slice(dot) : "");
+    setMovingFileId(file.grantId); setMoveDestination([...parts, suggested].join("/"));
+    setMovePreview(null); setFileError(""); setFileNotice("");
+  }
+
+  async function prepareFileMove() {
+    if (!desktop || !movingFileId || editBusy || !moveDestination.trim()) return;
+    setEditBusy(true); setFileError(""); setMovePreview(null);
+    try {
+      const preview = await invoke<FileMovePreview>("prepare_file_move", { fileId: movingFileId, destinationRelativePath: moveDestination.trim() });
+      setMovePreview(preview);
+    } catch (e) { setFileError(String(e)); }
+    finally { setEditBusy(false); }
+  }
+
+  async function cancelFileMove() {
+    if (movePreview?.previewId && desktop) {
+      try { await invoke("cancel_file_move_preview", { previewId: movePreview.previewId }); }
+      catch (e) { setFileError(String(e)); }
+    }
+    setMovingFileId(""); setMoveDestination(""); setMovePreview(null);
+  }
+
+  async function applyFileMove() {
+    if (!desktop || !movePreview || editBusy) return;
+    const approved = window.confirm("Move " + movePreview.sourceRelativePath + " to " + movePreview.destinationRelativePath + "? FRIDAY will preserve a copy of the original in .friday-backups. This cannot be automatically undone in this stage.");
+    if (!approved) { await cancelFileMove(); return; }
+    setEditBusy(true); setFileError(""); setFileNotice("");
+    try {
+      const approvalToken = await invoke<string>("issue_file_move_approval", { previewId: movePreview.previewId });
+      const result = await invoke<FileMoveResult>("apply_file_move", { previewId: movePreview.previewId, approvalToken });
+      setSelectedTextFiles([]); setFolderCandidates([]); setSelectedFolderIds([]); setFileAnswer("");
+      setFileNotice("Moved " + result.fileName + " to " + result.destinationRelativePath + ". Original backup: " + result.backupPath + ". Choose the folder again to refresh its file list.");
+      setMovingFileId(""); setMoveDestination(""); setMovePreview(null);
+    } catch (e) { setFileError(String(e)); setMovePreview(null); }
+    finally { setEditBusy(false); }
+  }
+
   async function choosePdf() {
     if (!desktop || pdfBusy) return;
     setPdfBusy(true); setPdfError(""); setPdfAnswer("");
@@ -422,10 +472,33 @@ ${file.content}`
               {selectedTextFiles.map((file, index) => <details key={file.grantId || file.name + index}>
                 <summary>{file.name} · {file.sizeBytes.toLocaleString()} bytes</summary>
                 <pre>{file.content}</pre>
-                {file.grantId && <button className="secondary-button" disabled={editBusy || fileBusy} onClick={() => beginFileEdit(file)}>Prepare an edit</button>}
+                {file.grantId && <div className="file-assistant-file-actions">
+                  <button className="secondary-button" disabled={editBusy || fileBusy} onClick={() => beginFileEdit(file)}>Prepare an edit</button>
+                  <button className="secondary-button" disabled={editBusy || fileBusy} onClick={() => beginFileMove(file)}>Rename or move…</button>
+                </div>}
               </details>)}
             </div>
             {fileNotice && <div className="skills-notice" role="status">{fileNotice}</div>}
+            {movingFileId && <>
+              <div className="file-edit-panel">
+                <strong>Preview a rename or move</strong>
+                <p>Enter a destination path relative to the folder you selected. The destination folder must already exist. FRIDAY will not overwrite an existing item, leave the selected folder, or move symbolic links. A backup copy is preserved before moving.</p>
+                <label>New relative path
+                  <input value={moveDestination} onChange={event => { setMoveDestination(event.target.value); setMovePreview(null); }} maxLength={512} placeholder="e.g. notes/meeting-renamed.md" />
+                </label>
+                <div className="file-assistant-picker-actions">
+                  <button className="primary-button" disabled={editBusy || !moveDestination.trim()} onClick={() => void prepareFileMove()}>{editBusy ? "Preparing preview…" : "Preview move"}</button>
+                  <button className="secondary-button" disabled={editBusy} onClick={() => void cancelFileMove()}>Cancel</button>
+                </div>
+                {movePreview && <div className="file-edit-preview">
+                  <strong>Review this file operation</strong>
+                  <p><strong>From:</strong> {movePreview.sourceRelativePath}</p>
+                  <p><strong>To:</strong> {movePreview.destinationRelativePath}</p>
+                  <small>Preview expires after five minutes. FRIDAY checks that the original has not changed and that the destination is still available before moving. A backup copy is kept in .friday-backups.</small>
+                  <button className="primary-button" disabled={editBusy} onClick={() => void applyFileMove()}>{editBusy ? "Moving approved file…" : "Approve and move this file"}</button>
+                </div>}
+              </div>
+            </>}
             {editingFileId && <>
               <div className="file-edit-panel">
                 <strong>Prepare a replacement</strong>
