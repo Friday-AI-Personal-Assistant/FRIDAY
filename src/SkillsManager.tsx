@@ -203,7 +203,7 @@ export default function SkillsManager() {
             <a href={webPage.url} target="_blank" rel="noopener noreferrer">{webPage.url}</a>
             <p className="web-page-excerpt">{webPage.text}</p>
             <label className="web-query-label">Ask FRIDAY about this source
-              <textarea value={webQuestion} onChange={event => setWebQuestion(event.target.value)} rows={3} maxLength={2000} />
+              <textarea value={webQuestion} onChange={event => setWebQuestion(event.target.value)} rows={3} maxLength={500} />
             </label>
             <label className="web-query-label">Local Ollama model
               <input value={pdfModel} onChange={event => setPdfModel(event.target.value)} placeholder="e.g. llama3.2:1b" />
