@@ -394,9 +394,9 @@ def main():
         if len(line) > MAX_BYTES:
             raise ValueError('Request exceeds limit')
         result = handle(json.loads(line))
-        sys.stdout.buffer.write((json.dumps({'ok': True, 'result': result}, ensure_ascii=True) + '\\n').encode('utf-8'))
+        sys.stdout.buffer.write((json.dumps({'ok': True, 'result': result}, ensure_ascii=True) + '\n').encode('utf-8'))
     except Exception as error:
-        sys.stdout.buffer.write((json.dumps({'ok': False, 'error': f'{type(error).__name__}: {error}'}, ensure_ascii=True) + '\\n').encode('utf-8'))
+        sys.stdout.buffer.write((json.dumps({'ok': False, 'error': f'{type(error).__name__}: {error}'}, ensure_ascii=True) + '\n').encode('utf-8'))
 
 
 if __name__ == '__main__':
