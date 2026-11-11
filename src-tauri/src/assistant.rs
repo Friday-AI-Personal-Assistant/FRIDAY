@@ -303,10 +303,10 @@ async fn run_ollama_stream(
         else { break };
 
         pending.extend_from_slice(&bytes);
-        if pending.len() > 1_000_000 && !pending.contains(&b'\\n') {
+        if pending.len() > 1_000_000 && !pending.contains(&b'\n') {
             return Err("Ollama sent an unexpectedly large streaming response chunk.".into());
         }
-        while let Some(newline) = pending.iter().position(|byte| *byte == b'\\n') {
+        while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = pending.drain(..=newline).collect();
             finished = forward_stream_line(&line, &on_event)?;
             if finished { break; }
