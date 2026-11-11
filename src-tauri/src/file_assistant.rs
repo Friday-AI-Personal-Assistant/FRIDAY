@@ -1,11 +1,20 @@
+use rand::RngCore;
 use serde::Serialize;
-use std::{fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_SELECTED_FILES: usize = 8;
 const MAX_FILE_BYTES: u64 = 64 * 1024;
 const MAX_TOTAL_BYTES: usize = 180 * 1024;
+const MAX_FOLDER_DEPTH: usize = 3;
+const MAX_SCANNED_ENTRIES: usize = 2_000;
+const MAX_FOLDER_CANDIDATES: usize = 200;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,6 +23,22 @@ pub struct SelectedTextFile {
     pub content: String,
     pub size_bytes: usize,
 }
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FileCandidate {
+    id: String,
+    name: String,
+    relative_path: String,
+    size_bytes: u64,
+}
+
+struct GrantedFile {
+    root: PathBuf,
+    path: PathBuf,
+}
+
+static FOLDER_GRANTS: Mutex<BTreeMap<String, GrantedFile>> = Mutex::new(BTreeMap::new());
 
 fn supported_text_file(path: &Path) -> bool {
     const EXTENSIONS: &[&str] = &[
@@ -34,16 +59,13 @@ fn read_selected_text_file(path: &Path, remaining_bytes: usize) -> Result<Select
         return Err("For safety, FRIDAY can read regular files only, not folders or symbolic links.".into());
     }
     if !supported_text_file(path) {
-        return Err(format!(
-            "The selected file type is not supported for text reading: {}",
-            path.extension().and_then(|extension| extension.to_str()).unwrap_or("unknown")
-        ));
+        return Err("The selected file type is not supported for text reading.".into());
     }
     if metadata.len() == 0 {
         return Err("One of the selected files is empty.".into());
     }
     if metadata.len() > MAX_FILE_BYTES {
-        return Err("Each selected text file must be 64 KB or smaller in this first version.".into());
+        return Err("Each selected text file must be 64 KB or smaller.".into());
     }
     if metadata.len() as usize > remaining_bytes {
         return Err("The selected files exceed FRIDAY's 180 KB combined reading limit.".into());
@@ -62,6 +84,149 @@ fn read_selected_text_file(path: &Path, remaining_bytes: usize) -> Result<Select
         .unwrap_or("Selected text file").chars().take(180).collect();
     let size_bytes = content.len();
     Ok(SelectedTextFile { name, content, size_bytes })
+}
+
+fn ignored_folder(name: &str) -> bool {
+    name.starts_with('.') || matches!(
+        name.to_ascii_lowercase().as_str(),
+        "node_modules" | "target" | "dist" | "build" | "out" | "vendor"
+            | ".venv" | "venv" | "__pycache__" | ".next" | ".cache"
+    )
+}
+
+fn make_token() -> String {
+    let mut bytes = [0u8; 24];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn scan_folder(
+    current: &Path,
+    root: &Path,
+    depth: usize,
+    scanned: &mut usize,
+    candidates: &mut Vec<FileCandidate>,
+    grants: &mut BTreeMap<String, GrantedFile>,
+) -> Result<(), String> {
+    if depth > MAX_FOLDER_DEPTH || candidates.len() >= MAX_FOLDER_CANDIDATES
+        || *scanned >= MAX_SCANNED_ENTRIES {
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(current)
+        .map_err(|_| "FRIDAY could not read part of the selected folder.".to_string())?;
+    for entry in entries {
+        if *scanned >= MAX_SCANNED_ENTRIES || candidates.len() >= MAX_FOLDER_CANDIDATES {
+            break;
+        }
+        *scanned += 1;
+        let entry = match entry { Ok(value) => value, Err(_) => continue };
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let metadata = match fs::symlink_metadata(&path) { Ok(value) => value, Err(_) => continue };
+        if metadata.file_type().is_symlink() { continue; }
+
+        if metadata.is_dir() {
+            if depth < MAX_FOLDER_DEPTH && !ignored_folder(&name) {
+                let canonical = match fs::canonicalize(&path) { Ok(value) => value, Err(_) => continue };
+                if canonical.starts_with(root) {
+                    scan_folder(&canonical, root, depth + 1, scanned, candidates, grants)?;
+                }
+            }
+            continue;
+        }
+        if !metadata.is_file() || !supported_text_file(&path)
+            || metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES {
+            continue;
+        }
+        let canonical = match fs::canonicalize(&path) { Ok(value) => value, Err(_) => continue };
+        if !canonical.starts_with(root) { continue; }
+        let relative_path = match canonical.strip_prefix(root) {
+            Ok(value) => value.components()
+                .map(|part| part.as_os_str().to_string_lossy().to_string())
+                .collect::<Vec<_>>().join("/"),
+            Err(_) => continue,
+        };
+        let id = make_token();
+        candidates.push(FileCandidate {
+            id: id.clone(),
+            name,
+            relative_path,
+            size_bytes: metadata.len(),
+        });
+        grants.insert(id, GrantedFile { root: root.to_path_buf(), path: canonical });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pick_folder_and_list_text_files(app: AppHandle) -> Result<Vec<FileCandidate>, String> {
+    let selected = app.dialog().file().blocking_pick_folder();
+    let Some(selected) = selected else {
+        return Err("Folder selection was cancelled.".into());
+    };
+    let path = selected.into_path()
+        .map_err(|_| "FRIDAY could not access the selected folder.".to_string())?;
+    let root = fs::canonicalize(&path)
+        .map_err(|_| "FRIDAY could not open the selected folder.".to_string())?;
+    let root_meta = fs::symlink_metadata(&root)
+        .map_err(|_| "FRIDAY could not inspect the selected folder.".to_string())?;
+    if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
+        return Err("Please select a normal folder, not a symbolic link.".into());
+    }
+
+    let mut candidates = Vec::new();
+    let mut grants = BTreeMap::new();
+    let mut scanned = 0usize;
+    scan_folder(&root, &root, 0, &mut scanned, &mut candidates, &mut grants)?;
+    *FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())? = grants;
+    let _ = crate::tools::record(
+        &app,
+        "file.list_selected_folder",
+        &format!("Listed up to {} supported text files in a folder explicitly selected by the user.", candidates.len()),
+        true,
+    );
+    Ok(candidates)
+}
+
+#[tauri::command]
+pub async fn read_granted_text_files(
+    app: AppHandle,
+    file_ids: Vec<String>,
+) -> Result<Vec<SelectedTextFile>, String> {
+    if file_ids.is_empty() || file_ids.len() > MAX_SELECTED_FILES {
+        return Err("Select between 1 and 8 files to read.".into());
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    if file_ids.iter().any(|id| !unique.insert(id.clone())) {
+        return Err("A file was selected more than once.".into());
+    }
+
+    let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
+    let mut files = Vec::with_capacity(file_ids.len());
+    let mut total_bytes = 0usize;
+    for id in &file_ids {
+        let grant = grants.get(id).ok_or("This folder selection has expired. Select the folder again.")?;
+        let root = fs::canonicalize(&grant.root)
+            .map_err(|_| "The selected folder is no longer available.".to_string())?;
+        let current = fs::canonicalize(&grant.path)
+            .map_err(|_| "A selected file is no longer available.".to_string())?;
+        if !current.starts_with(&root) {
+            return Err("A selected file is no longer inside the approved folder.".into());
+        }
+        let file = read_selected_text_file(&current, MAX_TOTAL_BYTES.saturating_sub(total_bytes))?;
+        total_bytes = total_bytes.saturating_add(file.size_bytes);
+        files.push(file);
+    }
+    drop(grants);
+
+    let _ = crate::tools::record(
+        &app,
+        "file.read_folder_selection",
+        &format!("Read {} user-selected files from a previously selected folder ({} bytes).", files.len(), total_bytes),
+        true,
+    );
+    Ok(files)
 }
 
 #[tauri::command]
@@ -113,6 +278,16 @@ mod tests {
         assert!(!supported_text_file(Path::new("document.pdf")));
         assert!(!supported_text_file(Path::new("archive.zip")));
         assert!(!supported_text_file(Path::new("README")));
+    }
+
+    #[test]
+    fn folder_scan_limits_are_bounded() {
+        assert_eq!(MAX_FOLDER_DEPTH, 3);
+        assert_eq!(MAX_SCANNED_ENTRIES, 2_000);
+        assert_eq!(MAX_FOLDER_CANDIDATES, 200);
+        assert!(ignored_folder("node_modules"));
+        assert!(ignored_folder(".git"));
+        assert!(!ignored_folder("src"));
     }
 
     #[test]
