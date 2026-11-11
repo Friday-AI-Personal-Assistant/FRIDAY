@@ -70,7 +70,7 @@ export default function SkillsManager() {
   }, [desktop]);
 
   async function runAction(skill: Skill, action: "install" | "enable" | "disable" | "load" | "unload" | "uninstall") {
-    if (!desktop || busyId) return;
+    if (!desktop || busyId || (skill.id === "file-assistant" && fileBusy)) return;
     if (action === "uninstall" && !window.confirm(`Uninstall ${skill.name} and remove its local package files?`)) return;
     setBusyId(skill.id); setError(""); setNotice("");
     try {
@@ -83,6 +83,10 @@ export default function SkillsManager() {
       setNotice(result);
       if (skill.id === "pdf-reader" && (action === "uninstall" || action === "disable" || action === "unload")) {
         setPdf(null); setPdfAnswer(""); setPdfQuestion("");
+      }
+      if (skill.id === "file-assistant" && (action === "uninstall" || action === "disable" || action === "unload")) {
+        setSelectedTextFiles([]); setFileAnswer(""); setFileError("");
+        setFileQuestion("Summarise these files and explain their important points.");
       }
       await refresh();
     } catch (e) { setError(String(e)); }
@@ -133,7 +137,7 @@ export default function SkillsManager() {
 
   async function chooseTextFiles() {
     if (!desktop || fileBusy) return;
-    setFileBusy(true); setFileError(""); setFileAnswer("");
+    setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
     try {
       const files = await invoke<SelectedTextFile[]>("pick_and_read_text_files");
       setSelectedTextFiles(files);
