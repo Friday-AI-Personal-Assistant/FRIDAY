@@ -1,10 +1,13 @@
 use rand::RngCore;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
@@ -22,6 +25,7 @@ pub struct SelectedTextFile {
     pub name: String,
     pub content: String,
     pub size_bytes: usize,
+    pub grant_id: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -38,7 +42,34 @@ struct GrantedFile {
     path: PathBuf,
 }
 
+struct PendingFileEdit {
+    grant_id: String,
+    original_sha256: String,
+    proposed_content: String,
+    expires_at: u64,
+    approval_token: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEditPreview {
+    pub preview_id: String,
+    pub file_name: String,
+    pub relative_path: String,
+    pub original_content: String,
+    pub proposed_content: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEditResult {
+    pub file_name: String,
+    pub backup_path: String,
+    pub bytes_written: usize,
+}
+
 static FOLDER_GRANTS: Mutex<BTreeMap<String, GrantedFile>> = Mutex::new(BTreeMap::new());
+static PENDING_FILE_EDITS: Mutex<BTreeMap<String, PendingFileEdit>> = Mutex::new(BTreeMap::new());
 
 fn supported_text_file(path: &Path) -> bool {
     const EXTENSIONS: &[&str] = &[
@@ -83,7 +114,7 @@ fn read_selected_text_file(path: &Path, remaining_bytes: usize) -> Result<Select
     let name = path.file_name().and_then(|value| value.to_str())
         .unwrap_or("Selected text file").chars().take(180).collect();
     let size_bytes = content.len();
-    Ok(SelectedTextFile { name, content, size_bytes })
+    Ok(SelectedTextFile { name, content, size_bytes, grant_id: None })
 }
 
 fn ignored_folder(name: &str) -> bool {
@@ -92,6 +123,70 @@ fn ignored_folder(name: &str) -> bool {
         "node_modules" | "target" | "dist" | "build" | "out" | "vendor"
             | ".venv" | "venv" | "__pycache__" | ".next" | ".cache"
     )
+}
+
+fn edit_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+fn content_hash(content: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(content))
+}
+
+fn validate_edit_content(content: &str) -> Result<(), String> {
+    if content.len() > MAX_FILE_BYTES as usize {
+        return Err("An edited file must remain 64 KB or smaller.".into());
+    }
+    if content.contains('\\0') {
+        return Err("FRIDAY cannot save text containing binary null characters.".into());
+    }
+    Ok(())
+}
+
+fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], token: &str) -> Result<PathBuf, String> {
+    if !current.starts_with(root) {
+        return Err("The file is no longer inside the approved folder.".into());
+    }
+    let metadata = fs::symlink_metadata(current)
+        .map_err(|_| "FRIDAY could not inspect the file before saving.".to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("For safety, FRIDAY can edit regular files only, not symbolic links.".into());
+    }
+    if metadata.len() > MAX_FILE_BYTES {
+        return Err("The original file is now larger than the 64 KB editing limit.".into());
+    }
+    let backup_dir = root.join(".friday-backups");
+    match fs::symlink_metadata(&backup_dir) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() =>
+            return Err("The FRIDAY backup location is not a safe folder.".into()),
+        Ok(_) => {},
+        Err(_) => fs::create_dir(&backup_dir)
+            .map_err(|e| format!("Could not create the backup folder: {e}"))?,
+    }
+    let backup_path = backup_dir.join(format!("{token}.bak"));
+    let parent = current.parent().ok_or("The selected file has no parent folder.")?;
+    let temporary = parent.join(format!(".friday-edit-{token}.tmp"));
+    let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temporary)
+        .map_err(|e| format!("Could not prepare the replacement file: {e}"))?;
+    if let Err(error) = temp_file.write_all(proposed).and_then(|_| temp_file.sync_all()) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("Could not write the replacement file: {error}"));
+    }
+    drop(temp_file);
+    if let Err(error) = fs::rename(current, &backup_path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("Could not preserve the original file as a backup: {error}"));
+    }
+    if let Err(error) = fs::rename(&temporary, current) {
+        let restored = fs::rename(&backup_path, current).is_ok();
+        let _ = fs::remove_file(&temporary);
+        return Err(if restored {
+            format!("Could not install the edited file; the original was restored: {error}")
+        } else {
+            format!("Could not install the edited file or restore it automatically. Your original is preserved at {}: {error}", backup_path.display())
+        });
+    }
+    Ok(backup_path)
 }
 
 fn make_token() -> String {
