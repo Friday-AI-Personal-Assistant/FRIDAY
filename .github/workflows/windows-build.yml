@@ -86,6 +86,12 @@ jobs:
           Add-Type -Namespace Native -Name IconCleanup -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool DestroyIcon(System.IntPtr handle);'
           [Native.IconCleanup]::DestroyIcon($iconHandle) | Out-Null
 
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Run Rust unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
       - name: Build Windows installers
         run: npm run tauri build
 
