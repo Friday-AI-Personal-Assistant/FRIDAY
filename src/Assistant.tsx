@@ -350,8 +350,10 @@ export default function Assistant() {
           if (event.event === "tool_proposal") {
             try {
               const nextProposal = JSON.parse(event.content) as ToolProposal;
-              if (typeof nextProposal.tool_id === "string" && nextProposal.arguments && typeof nextProposal.arguments === "object") setPendingToolProposal(nextProposal);
-              else setError("FRIDAY received an invalid follow-up tool request and did not run it.");
+              if (typeof nextProposal.tool_id === "string" && nextProposal.arguments && typeof nextProposal.arguments === "object") {
+                if (toolRounds >= 3) setError("FRIDAY reached the three-step tool limit. Send a new message if you want to continue.");
+                else setPendingToolProposal(nextProposal);
+              } else setError("FRIDAY received an invalid follow-up tool request and did not run it.");
             } catch { setError("FRIDAY received an unreadable follow-up tool request and did not run it."); }
           }
           if (event.event === "token") {
