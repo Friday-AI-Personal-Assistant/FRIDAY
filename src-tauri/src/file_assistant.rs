@@ -313,9 +313,14 @@ pub async fn read_granted_text_files(
         let grant = grants.get(id).ok_or("This folder selection has expired. Select the folder again.")?;
         let root = fs::canonicalize(&grant.root)
             .map_err(|_| "The selected folder is no longer available.".to_string())?;
+        let path_meta = fs::symlink_metadata(&grant.path)
+            .map_err(|_| "A selected file is no longer available.".to_string())?;
+        if path_meta.file_type().is_symlink() || !path_meta.is_file() {
+            return Err("A selected file is no longer a regular file. Symbolic links are not read.".into());
+        }
         let current = fs::canonicalize(&grant.path)
             .map_err(|_| "A selected file is no longer available.".to_string())?;
-        if !current.starts_with(&root) {
+        if current != grant.path || !current.starts_with(&root) {
             return Err("A selected file is no longer inside the approved folder.".into());
         }
         let mut file = read_selected_text_file(&current, MAX_TOTAL_BYTES.saturating_sub(total_bytes))?;
