@@ -309,7 +309,8 @@ pub async fn read_granted_text_files(
         if !current.starts_with(&root) {
             return Err("A selected file is no longer inside the approved folder.".into());
         }
-        let file = read_selected_text_file(&current, MAX_TOTAL_BYTES.saturating_sub(total_bytes))?;
+        let mut file = read_selected_text_file(&current, MAX_TOTAL_BYTES.saturating_sub(total_bytes))?;
+        file.grant_id = Some(id.clone());
         total_bytes = total_bytes.saturating_add(file.size_bytes);
         files.push(file);
     }
@@ -322,6 +323,118 @@ pub async fn read_granted_text_files(
         true,
     );
     Ok(files)
+}
+
+
+#[tauri::command]
+pub fn prepare_file_edit(file_id: String, proposed_content: String) -> Result<FileEditPreview, String> {
+    if file_id.len() != 48 || !file_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("This file selection is invalid. Choose the folder and file again.".into());
+    }
+    validate_edit_content(&proposed_content)?;
+    let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
+    let grant = grants.get(&file_id).ok_or("This file selection has expired. Select the folder again.")?;
+    let root = fs::canonicalize(&grant.root)
+        .map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let path_meta = fs::symlink_metadata(&grant.path)
+        .map_err(|_| "The selected file is no longer available.".to_string())?;
+    if path_meta.file_type().is_symlink() || !path_meta.is_file() {
+        return Err("For safety, FRIDAY can edit regular files only, not symbolic links.".into());
+    }
+    let current = fs::canonicalize(&grant.path)
+        .map_err(|_| "The selected file is no longer available.".to_string())?;
+    if current != grant.path || !current.starts_with(&root) {
+        return Err("The selected file has changed location. Select it again before editing.".into());
+    }
+    if !supported_text_file(&current) || path_meta.len() > MAX_FILE_BYTES {
+        return Err("Only supported text files up to 64 KB can be edited.".into());
+    }
+    let original_bytes = fs::read(&current)
+        .map_err(|_| "FRIDAY could not read the original file for its preview.".to_string())?;
+    if original_bytes.len() > MAX_FILE_BYTES as usize {
+        return Err("The selected file exceeded the 64 KB limit while being read.".into());
+    }
+    let original_content = String::from_utf8(original_bytes.clone())
+        .map_err(|_| "Only valid UTF-8 text files can be edited.".to_string())?;
+    if original_content.contains('\\0') {
+        return Err("This file appears to contain binary data and cannot be edited.".into());
+    }
+    let relative_path = current.strip_prefix(&root)
+        .map_err(|_| "The selected file is outside the approved folder.".to_string())?
+        .to_string_lossy().replace('\\', "/");
+    let file_name = current.file_name().and_then(|name| name.to_str()).unwrap_or("Selected file").to_string();
+    let preview_id = make_token();
+    let mut pending = PENDING_FILE_EDITS.lock().map_err(|_| "File editing is temporarily unavailable.".to_string())?;
+    pending.retain(|_, edit| edit.expires_at >= edit_now());
+    if pending.len() >= 32 {
+        return Err("Too many pending file previews. Close an existing preview and try again.".into());
+    }
+    pending.insert(preview_id.clone(), PendingFileEdit {
+        grant_id: file_id,
+        original_sha256: content_hash(&original_bytes),
+        proposed_content: proposed_content.clone(),
+        expires_at: edit_now() + 300,
+        approval_token: None,
+    });
+    Ok(FileEditPreview { preview_id, file_name, relative_path, original_content, proposed_content })
+}
+
+#[tauri::command]
+pub fn issue_file_edit_approval(preview_id: String) -> Result<String, String> {
+    let mut pending = PENDING_FILE_EDITS.lock().map_err(|_| "File editing is temporarily unavailable.".to_string())?;
+    let edit = pending.get_mut(&preview_id).ok_or("This preview has expired. Prepare the edit again.")?;
+    if edit.expires_at < edit_now() {
+        pending.remove(&preview_id);
+        return Err("This preview has expired. Prepare the edit again.".into());
+    }
+    let token = make_token();
+    edit.approval_token = Some(token.clone());
+    Ok(token)
+}
+
+#[tauri::command]
+pub fn apply_file_edit(
+    app: AppHandle,
+    preview_id: String,
+    approval_token: String,
+) -> Result<FileEditResult, String> {
+    let mut pending = PENDING_FILE_EDITS.lock().map_err(|_| "File editing is temporarily unavailable.".to_string())?;
+    let edit = pending.remove(&preview_id).ok_or("This preview has expired or was already used. Prepare the edit again.")?;
+    if edit.expires_at < edit_now() || edit.approval_token.as_deref() != Some(approval_token.as_str()) {
+        return Err("The edit was not approved with a valid, fresh confirmation. Review it again.".into());
+    }
+    validate_edit_content(&edit.proposed_content)?;
+    let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
+    let grant = grants.get(&edit.grant_id).ok_or("This folder selection has expired. Select the folder again.")?;
+    let root = fs::canonicalize(&grant.root)
+        .map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let metadata = fs::symlink_metadata(&grant.path)
+        .map_err(|_| "The selected file is no longer available.".to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("The selected file is no longer a regular file. No changes were made.".into());
+    }
+    let current = fs::canonicalize(&grant.path)
+        .map_err(|_| "The selected file is no longer available.".to_string())?;
+    if current != grant.path || !current.starts_with(&root) {
+        return Err("The selected file has changed location. No changes were made.".into());
+    }
+    let original = fs::read(&current)
+        .map_err(|_| "FRIDAY could not re-read the original file. No changes were made.".to_string())?;
+    if content_hash(&original) != edit.original_sha256 {
+        return Err("This file changed after the preview was prepared. No changes were made; prepare a fresh preview.".into());
+    }
+    let backup_token = make_token();
+    let backup = replace_file_with_backup(&root, &current, edit.proposed_content.as_bytes(), &backup_token)?;
+    let relative_backup = backup.strip_prefix(&root).unwrap_or(&backup).to_string_lossy().replace('\\', "/");
+    let file_name = current.file_name().and_then(|name| name.to_str()).unwrap_or("Selected file").to_string();
+    let bytes_written = edit.proposed_content.len();
+    let _ = crate::tools::record(
+        &app,
+        "file.edit_selected_file",
+        &format!("Updated {file_name}; original preserved at {relative_backup}."),
+        true,
+    );
+    Ok(FileEditResult { file_name, backup_path: relative_backup, bytes_written })
 }
 
 #[tauri::command]
