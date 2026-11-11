@@ -20,49 +20,80 @@ export default function Assistant() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
   const [action, setAction] = useState<(typeof ACTIONS)[number] | null>(null);
   const [actionResult, setActionResult] = useState("");
+
   async function refresh() {
-    if (!desktop) return;
+    if (!desktop || checking) return;
+    setChecking(true);
     try {
       const found = await invoke<string[]>("ollama_models");
       setModels(found);
       setModel(current => found.includes(current) ? current : (found[0] || current));
-      setError(found.length ? "" : "No Ollama models installed.");
-    } catch (e) { setModels([]); setError(String(e)); }
+      setError(found.length ? "" : "Ollama is running, but no models are installed. Install a model with Ollama, then press Refresh.");
+    } catch (e) {
+      setModels([]);
+      setError(String(e));
+    } finally {
+      setChecking(false);
+    }
   }
+
   useEffect(() => { void refresh(); }, []);
+
   async function send() {
     const text = input.trim();
     if (!text || pending || action) return;
-    setInput(""); setError(""); setActionResult("");
+
+    const match = ACTIONS.find(a => a.keywords.test(text));
+    if (!match && desktop && models.length === 0) {
+      setError("FRIDAY cannot start an AI chat yet. Make sure Ollama is running and at least one model is installed, then press Refresh.");
+      return;
+    }
+
+    setInput("");
+    setError("");
+    setActionResult("");
     const next: Message[] = [...messages, { role: "user", content: text }];
     setMessages(next);
-    const match = ACTIONS.find(a => a.keywords.test(text));
+
     if (match) { setAction(match); return; }
     if (!desktop) { setError("AI chat works in the Windows desktop app. This is only the browser preview."); return; }
+
     setPending(true);
     try {
-      const answer = await invoke<string>("ollama_chat", { model, messages: [{ role: "system", content: SYSTEM }, ...next.slice(-18)] });
+      const answer = await invoke<string>("ollama_chat", {
+        model,
+        messages: [{ role: "system", content: SYSTEM }, ...next.slice(-18)]
+      });
       setMessages(prev => [...prev, { role: "assistant", content: answer || "(Empty response)" }]);
-    } catch (e) { setError(String(e)); }
-    finally { setPending(false); }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setPending(false);
+    }
   }
+
   async function confirmAction() {
     if (!action) return;
-    const selected = action; setAction(null);
+    const selected = action;
+    setAction(null);
     if (!desktop) { setError("Desktop actions require the installed Windows app."); return; }
     try {
       const result = await invoke<string>("desktop_action", { action: selected.id });
       setActionResult(result);
       setMessages(prev => [...prev, { role: "assistant", content: result }]);
-    } catch (e) { setError(String(e)); }
+    } catch (e) {
+      setError(String(e));
+    }
   }
+
   return <section className="assistant-page">
     <div className="assistant-head"><div><div className="eyebrow">YOUR LOCAL AI ASSISTANT</div><h1>Talk to <em>FRIDAY.</em></h1><p className="intro">Private conversations and simple desktop actions, powered by Ollama.</p></div><button className="secondary-button" onClick={() => { setMessages([]); setError(""); setAction(null); }}>+ New chat</button></div>
     <div className="chat-panel">
-      <div className="chat-top"><div className="chat-avatar">F</div><div><strong>FRIDAY AI</strong><small>{models.length ? "● Ollama connected" : "○ Ollama offline or unavailable"}</small></div><select aria-label="Ollama model" value={model} onChange={e => setModel(e.target.value)}>{models.length ? models.map(m => <option key={m}>{m}</option>) : <option value={model}>{model}</option>}</select><button className="secondary-button" onClick={() => void refresh()}>Refresh</button></div>
+      <div className="chat-top"><div className="chat-avatar">F</div><div><strong>FRIDAY AI</strong><small>{checking ? "◌ Checking Ollama…" : models.length ? "● Ollama connected" : "○ Ollama offline or no model installed"}</small></div><select aria-label="Ollama model" value={model} onChange={e => setModel(e.target.value)} disabled={!models.length}>{models.length ? models.map(m => <option key={m}>{m}</option>) : <option value={model}>{model}</option>}</select><button className="secondary-button" onClick={() => void refresh()} disabled={checking}>{checking ? "Checking…" : "Refresh"}</button></div>
       <div className="chat-history" role="log" aria-live="polite">
         {!messages.length && <div className="chat-welcome"><div className="chat-welcome-icon">✦</div><h2>How can I help?</h2><p>Ask me anything, or try “Open Notepad”, “Open Downloads”, or “Compose email”. I'll ask before touching your desktop.</p></div>}
         {messages.map((m, i) => <div key={i} className={`chat-bubble ${m.role}`}><span>{m.content}</span></div>)}
