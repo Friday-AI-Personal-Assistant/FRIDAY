@@ -86,16 +86,19 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 - [ ] Document key loss and recovery limitations before promising recovery.
 
 ### 1E. Skills platform
-- [~] Built-in catalogue with four initial entries.
-- [~] Local installed/enabled registry.
-- [ ] Correct UI wording so registry selection is not described as downloading a package.
-- [ ] Define a versioned skill manifest (ID, version, description, entry point, dependencies, permissions).
-- [ ] Add install source, integrity/signature checks and safe update/uninstall.
-- [ ] Separate installed-on-disk from loaded-in-memory states.
-- [ ] Load skill instructions and tools only when needed; no background startup by default.
-- [ ] Add dependency checks and clear install errors.
-- [ ] Add skill-specific settings and data cleanup.
-- [ ] Make the catalogue extensible without hard-coding every skill into the UI.
+- [x] Built-in catalogue with four declarative skill packages.
+- [x] Versioned manifests with ID, version, description, instruction entry point, dependencies and declared permissions.
+- [x] Install package instruction files to the local app-data skills folder; preserve compatibility with the legacy registry format.
+- [x] Verify built-in package identity, compatibility and SHA-256 instruction integrity before enabling/loading.
+- [x] Separate installed-on-disk, enabled and loaded-in-session states.
+- [x] Explicit load/unload controls; loaded instructions are fetched only when a chat request starts.
+- [x] No package scripts are executed and no skills load automatically in the background.
+- [x] Safe package path checks and uninstall cleanup for each skill package directory.
+- [~] Dependency metadata is supported; current built-in packages have no external dependencies.
+- [~] Catalogue remains a Rust built-in list; third-party catalogue/update/signing support is deferred.
+- [ ] Add skill-specific settings and data cleanup for future skills.
+- [ ] Connect each skill to real permissioned tools and end-to-end workflows.
+- [ ] Add signed remote package distribution and safe updates before accepting third-party packages.
 
 ### 1F. Tool execution and permissions
 - [~] A small desktop-action allowlist with per-action confirmation.
@@ -217,4 +220,4 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 **Phase 1C — Persistent chat history:** encrypted local conversation storage, conversation list/create/switch/rename/delete, title search and persistence of completed or stopped responses are implemented in the development branch. Rust/TypeScript checks and Windows end-to-end verification remain pending.
 
-**Phase 1D — Persistent personal memory:** user-entered memory entries are stored separately from transcripts in an encrypted local file. The chat UI supports add, edit, enable/disable and delete; enabled entries are included as bounded context in local Ollama prompts. No memory is silently extracted or saved. Rust/TypeScript checks and Windows end-to-end verification remain pending. Next, verify create/edit/disable/delete, persistence across restart, and that disabled entries are excluded from prompts. Then proceed to the versioned skills platform and permissioned tool execution.
+**Phase 1E — Proper Skills Platform:** four versioned built-in declarative packages can be installed locally, enabled, explicitly loaded/unloaded and integrity-checked. Loaded instructions are added to the next local chat prompt; packages do not execute scripts and do not yet provide their advertised tools. Automated and Windows verification remain pending.\n\n**Phase 1D — Persistent personal memory:** user-entered memory entries are stored separately from transcripts in an encrypted local file. The chat UI supports add, edit, enable/disable and delete; enabled entries are included as bounded context in local Ollama prompts. No memory is silently extracted or saved. Rust/TypeScript checks and Windows end-to-end verification remain pending. Next, verify create/edit/disable/delete, persistence across restart, and that disabled entries are excluded from prompts. Next, build the central permissioned tool registry (Phase 1F), then connect each original FRIDAY skill to real tools and workflows.
