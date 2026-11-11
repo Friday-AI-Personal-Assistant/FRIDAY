@@ -739,4 +739,16 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+
+    #[test]
+    fn move_destination_must_be_safe_relative_supported_path() {
+        assert!(validate_relative_destination("notes/renamed.md").is_ok());
+        assert!(validate_relative_destination("renamed.TXT").is_ok());
+        assert!(validate_relative_destination("../outside.txt").is_err());
+        assert!(validate_relative_destination("notes/../../outside.txt").is_err());
+        assert!(validate_relative_destination("/outside.txt").is_err());
+        assert!(validate_relative_destination("notes/photo.png").is_err());
+        assert!(validate_relative_destination("").is_err());
+    }
+
 }
