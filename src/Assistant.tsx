@@ -34,6 +34,7 @@ export default function Assistant() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeTitle, setActiveTitle] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historySearch, setHistorySearch] = useState("");
   const [historyError, setHistoryError] = useState("");
   const [saving, setSaving] = useState(false);
   const [input, setInput] = useState("");
@@ -243,9 +244,11 @@ export default function Assistant() {
     <div className="chat-layout">
       <aside className="conversation-sidebar" aria-label="Conversation history">
         <div className="conversation-sidebar-head"><strong>CHAT HISTORY</strong><button onClick={() => void refreshHistory()} disabled={historyLoading} aria-label="Refresh chat history">↻</button></div>
+        <input className="conversation-search" aria-label="Search conversations" placeholder="Search saved chats…" value={historySearch} onChange={e => setHistorySearch(e.target.value)} />
         {historyLoading && <small className="history-hint">Loading…</small>}
         {!conversations.length && !historyLoading && <p className="history-hint">Your saved chats will appear here.</p>}
-        <div className="conversation-list">{conversations.map(item => <div className={activeId === item.id ? "conversation-item active" : "conversation-item"} key={item.id}>
+        {conversations.length > 0 && !conversations.some(item => item.title.toLowerCase().includes(historySearch.trim().toLowerCase())) && historySearch.trim() && <p className="history-hint">No matching conversations.</p>}
+        <div className="conversation-list">{conversations.filter(item => item.title.toLowerCase().includes(historySearch.trim().toLowerCase())).map(item => <div className={activeId === item.id ? "conversation-item active" : "conversation-item"} key={item.id}>
           <button className="conversation-open" onClick={() => void openConversation(item.id)} disabled={pending}><strong>{item.title}</strong><small>{item.message_count} messages</small></button>
           <div className="conversation-actions"><button onClick={() => void renameConversation(item)} title="Rename chat" aria-label={"Rename " + item.title}>✎</button><button onClick={() => void removeConversation(item)} title="Delete chat" aria-label={"Delete " + item.title}>×</button></div>
         </div>)}</div>
