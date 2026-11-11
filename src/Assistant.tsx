@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 type Message = { role: "user" | "assistant"; content: string };
-type StreamEvent = { event: "token" | "done"; content: string };
+type StreamEvent = { event: "token" | "done" | "stopped"; content: string };
 const ACTIONS = [
   { id: "notepad", label: "Open Notepad", keywords: /\b(open|launch|start)\b.*\b(notepad|text editor)\b/i },
   { id: "downloads", label: "Open Downloads", keywords: /\b(open|show)\b.*\bdownloads\b/i },
@@ -21,6 +21,8 @@ export default function Assistant() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
+  const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
+  const [wasStopped, setWasStopped] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
   const [action, setAction] = useState<(typeof ACTIONS)[number] | null>(null);
@@ -64,10 +66,14 @@ export default function Assistant() {
     if (!desktop) { setError("AI chat works in the Windows desktop app. This is only the browser preview."); return; }
 
     setPending(true);
+    setWasStopped(false);
+    const requestId = crypto.randomUUID();
+    setActiveRequestId(requestId);
     setMessages(prev => [...prev, { role: "assistant", content: "" }]);
     let streamed = "";
     const channel = new Channel<StreamEvent>();
     channel.onmessage = event => {
+      if (event.event === "stopped") setWasStopped(true);
       if (event.event === "token") {
         streamed += event.content;
         setMessages(prev => {
@@ -82,6 +88,7 @@ export default function Assistant() {
     };
     try {
       await invoke<void>("ollama_chat_stream", {
+        requestId,
         model,
         messages: [{ role: "system", content: SYSTEM }, ...next.slice(-18)],
         onEvent: channel
@@ -110,6 +117,16 @@ export default function Assistant() {
       }
     } finally {
       setPending(false);
+      setActiveRequestId(null);
+    }
+  }
+
+  async function stopGeneration() {
+    if (!activeRequestId) return;
+    try {
+      await invoke<boolean>("cancel_ollama_chat", { requestId: activeRequestId });
+    } catch (e) {
+      setError(`Could not stop generation: ${String(e)}`);
     }
   }
 
@@ -138,8 +155,9 @@ export default function Assistant() {
       </div>
       {action && <div className="action-confirm" role="alertdialog" aria-label="Confirm desktop action"><strong>Allow FRIDAY to {action.label.toLowerCase()}?</strong><p>Nothing will happen until you approve. Email will open a draft, not send it.</p><div><button className="primary-button" onClick={() => void confirmAction()}>Allow once</button><button className="secondary-button" onClick={() => { setAction(null); setActionResult("Action cancelled."); }}>Cancel</button></div></div>}
       {error && <div className="chat-error" role="alert">{error}</div>}
+      {wasStopped && <div className="chat-success" role="status">Response stopped.</div>}
       {actionResult && <div className="chat-success" role="status">{actionResult}</div>}
-      <div className="chat-compose"><textarea aria-label="Message FRIDAY" placeholder="Message FRIDAY…" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} rows={2} maxLength={20000}/><button className="primary-button" disabled={!input.trim() || pending || !!action} onClick={() => void send()} aria-label="Send message">↑ Send</button></div>
+      <div className="chat-compose"><textarea aria-label="Message FRIDAY" placeholder="Message FRIDAY…" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} rows={2} maxLength={20000}/>{pending ? <button className="secondary-button stop-generation" onClick={() => void stopGeneration()} aria-label="Stop response">■ Stop</button> : <button className="primary-button" disabled={!input.trim() || !!action} onClick={() => void send()} aria-label="Send message">↑ Send</button>}</div>
       <p className="chat-footnote">Local AI · Chat is held in memory for this session · Desktop actions require confirmation · Emails are never sent automatically</p>
     </div>
   </section>;
