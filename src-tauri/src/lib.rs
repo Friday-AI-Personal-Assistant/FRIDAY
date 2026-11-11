@@ -1,5 +1,6 @@
 mod workspace;
 mod assistant;
+mod skills;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -10,7 +11,11 @@ pub fn run() {
             workspace::read_private_note,
             assistant::ollama_models,
             assistant::ollama_chat,
-            assistant::desktop_action
+            assistant::desktop_action,
+            skills::skills_catalog,
+            skills::install_skill,
+            skills::set_skill_enabled,
+            skills::uninstall_skill
         ])
         .run(tauri::generate_context!())
         .expect("error while running FRIDAY");
