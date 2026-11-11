@@ -235,5 +235,11 @@ mod tests {
         });
         assert!(consume_approval(Some(token.clone()), "desktop.open_target", &serde_json::json!({"target":"downloads"})).is_err());
         assert!(consume_approval(Some(token.clone()), "desktop.open_target", &args).is_err());
+        let valid_token = "valid-once".to_string();
+        PENDING_APPROVALS.lock().unwrap().insert(valid_token.clone(), PendingApproval {
+            tool_id: "desktop.open_target".into(), arguments: args.clone(), expires_at: now() + 60
+        });
+        assert!(consume_approval(Some(valid_token.clone()), "desktop.open_target", &args).is_ok());
+        assert!(consume_approval(Some(valid_token), "desktop.open_target", &args).is_err());
     }
 }
