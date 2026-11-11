@@ -210,4 +210,4 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 ## Immediate next work item
 
-**Phase 1A — complete Ollama foundation:** run frontend/Rust checks and verify streaming on Windows with Ollama running, stopped and without an installed model. Add request cancellation and a safe model download flow. After that, proceed through chat persistence, memory, skills architecture and permissioned tool execution before implementing the larger skill catalogue.
+**Phase 1A — complete Ollama foundation:** streaming response path and request cancellation controls are implemented in the development branch; frontend/Rust checks and Windows verification remain pending. Verify with Ollama running, stopped and without an installed model. Then add a safe model download flow. After that, proceed through chat persistence, memory, skills architecture and permissioned tool execution before implementing the larger skill catalogue.
