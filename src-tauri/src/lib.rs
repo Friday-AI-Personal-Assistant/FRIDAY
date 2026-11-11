@@ -11,6 +11,7 @@ pub fn run() {
             workspace::read_private_note,
             assistant::ollama_models,
             assistant::ollama_chat,
+            assistant::ollama_chat_stream,
             assistant::desktop_action,
             skills::skills_catalog,
             skills::install_skill,
