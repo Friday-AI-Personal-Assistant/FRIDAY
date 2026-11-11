@@ -226,3 +226,6 @@ h1 em{font-style:normal;color:#9ce4ad}
 .memory-item-actions button{border:1px solid #405746;background:#1c2c21;color:#c7d8ca;border-radius:6px;padding:6px 8px;font-size:9px;cursor:pointer}
 .memory-item-actions button:last-child{border-color:#654343;background:#302020;color:#efbcbc}
 @media(max-width:650px){.memory-item{flex-direction:column}.memory-item-actions{justify-content:flex-start}.memory-manager{padding:11px}}
+
+.model-tool-confirm pre{max-height:150px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#101713;border:1px solid #35483a;border-radius:7px;padding:10px;color:#cfe4d2;font:10px/1.5 ui-monospace,monospace}
+.model-tool-confirm p{overflow-wrap:anywhere}
