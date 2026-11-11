@@ -8,6 +8,7 @@ type Skill = {
 type PdfPage = { pageNumber: number; text: string };
 type PdfDocument = { fileName: string; pageCount: number; extractedChars: number; pages: PdfPage[]; needsOcr: boolean; ocrNeededPages: number[] };
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+type WebSearchResult = { title: string; url: string; snippet: string };
 const ICONS: Record<string, string> = {
   "web-research": "⌕", "pdf-reader": "▤", "file-assistant": "▣", "coding-assistant": "</>"
 };
@@ -37,6 +38,10 @@ export default function SkillsManager() {
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfError, setPdfError] = useState("");
   const [pdfModel, setPdfModel] = useState("");
+  const [webQuery, setWebQuery] = useState("");
+  const [webResults, setWebResults] = useState<WebSearchResult[]>([]);
+  const [webBusy, setWebBusy] = useState(false);
+  const [webError, setWebError] = useState("");
 
   const refresh = useCallback(async () => {
     if (!desktop) { setLoading(false); return; }
@@ -68,6 +73,17 @@ export default function SkillsManager() {
       await refresh();
     } catch (e) { setError(String(e)); }
     finally { setBusyId(""); }
+  }
+
+  async function searchWeb() {
+    const query = webQuery.trim();
+    if (!desktop || !query || webBusy) return;
+    setWebBusy(true); setWebError(""); setWebResults([]);
+    try {
+      const results = await invoke<WebSearchResult[]>("web_search", { query });
+      setWebResults(results);
+    } catch (e) { setWebError(String(e)); }
+    finally { setWebBusy(false); }
   }
 
   async function choosePdf() {
@@ -134,6 +150,23 @@ export default function SkillsManager() {
             <button className="skill-remove" disabled={!desktop || !!busyId} onClick={() => void runAction(skill, "uninstall")}>Uninstall</button>
           </>}
         </div>
+        {skill.id === "web-research" && skill.loaded && <div className="web-research-panel">
+          <strong>Search the web</strong>
+          <p>Your search query is sent to DuckDuckGo. FRIDAY returns source titles, links and short snippets; it does not open pages or access private accounts.</p>
+          <label className="web-query-label">What would you like to research?
+            <input value={webQuery} onChange={event => setWebQuery(event.target.value)} maxLength={500} placeholder="e.g. latest advances in battery recycling" />
+          </label>
+          <button className="primary-button" disabled={webBusy || !webQuery.trim()} onClick={() => void searchWeb()}>{webBusy ? "Searching…" : "Search the web"}</button>
+          {webError && <div className="skills-error" role="alert">{webError}</div>}
+          {webResults.length > 0 && <div className="web-results">
+            <strong>Sources ({webResults.length})</strong>
+            {webResults.map((result, index) => <article className="web-result" key={result.url + index}>
+              <a href={result.url} target="_blank" rel="noopener noreferrer">{result.title}</a>
+              <small>{result.url}</small>
+              {result.snippet && <p>{result.snippet}</p>}
+            </article>)}
+          </div>}
+        </div>}
         {skill.id === "pdf-reader" && skill.loaded && <div className="pdf-reader-panel">
           <strong>Read a PDF on this device</strong>
           <p>Select a document to extract its text locally. It is not uploaded or saved by FRIDAY.</p>
