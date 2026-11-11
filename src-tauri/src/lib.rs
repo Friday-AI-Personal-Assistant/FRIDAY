@@ -1,6 +1,7 @@
 mod workspace;
 mod assistant;
 mod skills;
+mod conversations;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -9,6 +10,10 @@ pub fn run() {
             workspace::initialize_workspace,
             workspace::save_private_note,
             workspace::read_private_note,
+            conversations::list_conversations,
+            conversations::load_conversation,
+            conversations::save_conversation,
+            conversations::delete_conversation,
             assistant::ollama_models,
             assistant::ollama_model_details,
             assistant::ollama_pull_model,
