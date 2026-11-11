@@ -18,7 +18,7 @@ Every feature must have both an implementation status and a test status. Keep th
 
 ## Baseline audit — current development branch
 
-Branch: `feature/v0.2-local-ollama-chat`
+Branch: `feature/phase-2-skills`
 
 Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Continue development on this branch; do not commit feature work to `main` or merge without explicit approval.
 
@@ -120,8 +120,8 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 
 Implement each as a real end-to-end capability, including permissions, errors, settings, data handling and Windows tests.
 
-- [~] **PDF Reader** — native Windows file picker, local text extraction with page numbers, extracted-text preview, and local Ollama Q&A with page-citation instructions are implemented. Encrypted/damaged PDFs return a clear error; file size (25 MB), page count (500) and extracted text (120,000 UTF-8 bytes) are bounded. Scanned-PDF OCR, stronger PDF parser hardening, Rust/TypeScript builds and Windows end-to-end verification remain pending.
-- [ ] **Web Research** — search and open sources, summarise with citations, distinguish source facts from model inference.
+- [~] **PDF Reader** — native Windows file picker, local text extraction with page numbers, extracted-text preview, and local Ollama Q&A with page-citation instructions are implemented. Mixed documents can be queried when some pages contain readable text; pages without selectable text are identified. Encrypted/damaged PDFs return a clear error; file size (25 MB), page count (500), per-page decompression (2 MB) and extracted text (120,000 UTF-8 bytes) are bounded. A real minimal-PDF extraction fixture test has been added. OCR, stronger parser isolation/hardening, latest Rust/TypeScript/Windows build results and end-to-end Windows verification remain pending.
+- [~] **Web Research** — first search-only slice implemented: user-entered query sent to a fixed DuckDuckGo HTML endpoint, bounded response/time/query sizes, redirects disabled, result links filtered to HTTP(S), and source titles/links/snippets displayed in the Skills Store. Search results are not yet fetched/read by FRIDAY; summarisation with source-grounded citations, page reading, source verification, provider controls and Windows tests remain pending.
 - [ ] **File Assistant** — user-selected folders/files with path-scoped access grants; search and summarise; approved file writes with preview/diff; require confirmation before write, move or delete.
 - [ ] **Coding Assistant** — inspect selected project files, explain and propose edits; sandbox tests/commands with strict time/resource limits; show diffs and require approval before applying changes.
 - [ ] **Email Management** — official OAuth, least-privilege scopes, inbox summaries, search/labels, draft replies; explicit approval before sending; disconnect and revoke access.
