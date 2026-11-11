@@ -75,9 +75,11 @@ export default function Assistant() {
       await refresh();
       setModel(name.includes(":") ? name : name + ":latest");
     } catch (e) {
-      setError(String(e));
+      const message = String(e);
+      setError(message);
       setPullStatus("Download did not complete.");
       await refresh();
+      setError(message);
     } finally {
       setPulling(false);
     }
@@ -207,7 +209,7 @@ export default function Assistant() {
   return <section className="assistant-page">
     <div className="assistant-head"><div><div className="eyebrow">YOUR LOCAL AI ASSISTANT</div><h1>Talk to <em>FRIDAY.</em></h1><p className="intro">Private conversations and simple desktop actions, powered by Ollama.</p></div><button className="secondary-button" onClick={() => { setMessages([]); setError(""); setAction(null); }} disabled={pending}>+ New chat</button></div>
     <div className="chat-panel">
-      <div className="chat-top"><div className="chat-avatar">F</div><div><strong>FRIDAY AI</strong><small>{checking ? "◌ Checking Ollama…" : models.length ? "● Ollama connected" : "○ Ollama offline or no model installed"}</small></div><select aria-label="Ollama model" value={model} onChange={e => setModel(e.target.value)} disabled={!models.length}>{models.length ? models.map(m => <option key={m}>{m}</option>) : <option value={model}>{model}</option>}</select><button className="secondary-button" onClick={() => setManagerOpen(open => !open)} disabled={pulling}>{managerOpen ? "Close manager" : "Manage models"}</button><button className="secondary-button" onClick={() => void refresh()} disabled={checking || pulling}>{checking ? "Checking…" : "Refresh"}</button></div>
+      <div className="chat-top"><div className="chat-avatar">F</div><div><strong>FRIDAY AI</strong><small>{checking ? "◌ Checking Ollama…" : models.length ? "● Ollama connected" : "○ Ollama offline or no model installed"}</small></div><select aria-label="Ollama model" value={model} onChange={e => setModel(e.target.value)} disabled={!models.length}>{models.length ? models.map(m => <option key={m}>{m}</option>) : <option value={model}>{model}</option>}</select><button className="secondary-button" onClick={() => setManagerOpen(open => !open)} disabled={!desktop || pulling}>{managerOpen ? "Close manager" : "Manage models"}</button><button className="secondary-button" onClick={() => void refresh()} disabled={checking || pulling}>{checking ? "Checking…" : "Refresh"}</button></div>
       {managerOpen && <section className="model-manager" aria-label="Ollama model manager">
         <div className="model-manager-heading"><div><strong>Local model manager</strong><p>Models are stored by Ollama on this computer. Downloads may be several gigabytes.</p></div></div>
         <div className="model-install-row"><input aria-label="Model name to install" value={modelToInstall} onChange={e => setModelToInstall(e.target.value)} placeholder="e.g. llama3.2:1b" disabled={pulling} /><button className="primary-button" onClick={() => void installModel()} disabled={pulling || !modelToInstall.trim()}>{pulling ? "Downloading…" : "Download model"}</button></div>
