@@ -6,7 +6,7 @@ type Skill = {
   version: string; installed: boolean; enabled: boolean; loaded: boolean;
 };
 type PdfPage = { pageNumber: number; text: string };
-type PdfDocument = { fileName: string; pageCount: number; extractedChars: number; pages: PdfPage[]; needsOcr: boolean };
+type PdfDocument = { fileName: string; pageCount: number; extractedChars: number; pages: PdfPage[]; needsOcr: boolean; ocrNeededPages: number[] };
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 const ICONS: Record<string, string> = {
   "web-research": "⌕", "pdf-reader": "▤", "file-assistant": "▣", "coding-assistant": "</>"
@@ -141,7 +141,7 @@ export default function SkillsManager() {
           {pdfError && <div className="skills-error" role="alert">{pdfError}</div>}
           {pdf && <>
             <div className="pdf-file-summary"><strong>{pdf.fileName}</strong><span>{pdf.pageCount} pages · {pdf.extractedChars.toLocaleString()} characters extracted</span></div>
-            {pdf.needsOcr && <div className="skills-message">No selectable text was found. This may be a scanned PDF; OCR is not included in this first version.</div>}
+            {pdf.needsOcr && <div className="skills-message">Some pages have no selectable text (pages {pdf.ocrNeededPages.join(", ")}). They may be scanned images or use unsupported text encoding. OCR is not included in this first version.</div>}
             <label className="pdf-model-label">Local Ollama model
               <input value={pdfModel} onChange={event => setPdfModel(event.target.value)} placeholder="e.g. llama3.2:1b" />
             </label>
