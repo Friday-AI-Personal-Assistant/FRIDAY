@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 type Message = { role: "user" | "assistant"; content: string };
-type StreamEvent = { event: "token" | "done" | "stopped"; content: string };
+type StreamEvent = { event: "token" | "done" | "stopped" | "tool_proposal"; content: string };
+type ToolProposal = { tool_id: string; arguments: Record<string, unknown> };
 type ModelInfo = { name: string; size: number; modified_at: string };
 type PullEvent = { status: string; completed: number | null; total: number | null; done: boolean };
 type ConversationSummary = { id: string; title: string; created_at: number; updated_at: number; message_count: number };
@@ -55,6 +56,8 @@ export default function Assistant() {
   const [actionResult, setActionResult] = useState("");
   const [toolHistory, setToolHistory] = useState<Array<{id:number;tool_id:string;label:string;outcome:string;timestamp:number;approved:boolean}>>([]);
   const [availableTools, setAvailableTools] = useState<Array<{id:string;name:string;description:string;permission:string;approval_required:boolean}>>([]);
+  const [pendingToolProposal, setPendingToolProposal] = useState<ToolProposal | null>(null);
+  const [toolDecisionBusy, setToolDecisionBusy] = useState(false);
 
   async function refreshHistory() {
     if (!desktop) return;
@@ -246,7 +249,7 @@ export default function Assistant() {
 
   async function send() {
     const text = input.trim();
-    if (!text || pending || saving || action) return;
+    if (!text || pending || saving || action || pendingToolProposal) return;
     const match = ACTIONS.find(a => a.keywords.test(text));
     const calculation = text.match(/^\\s*(?:calculate|calc)\\s*:\\s*(.+)$/i);
     if (!match && !calculation && desktop && models.length === 0) {
@@ -277,6 +280,13 @@ export default function Assistant() {
     const channel = new Channel<StreamEvent>();
     channel.onmessage = event => {
       if (event.event === "stopped") setWasStopped(true);
+      if (event.event === "tool_proposal") {
+        try {
+          const proposal = JSON.parse(event.content) as ToolProposal;
+          if (typeof proposal.tool_id === "string" && proposal.arguments && typeof proposal.arguments === "object") setPendingToolProposal(proposal);
+          else setError("FRIDAY received an invalid tool request and did not run it.");
+        } catch { setError("FRIDAY received an unreadable tool request and did not run it."); }
+      }
       if (event.event === "token") {
         streamed += event.content;
         setMessages(prev => {
@@ -295,7 +305,7 @@ export default function Assistant() {
         messages: [{ role: "system", content: systemContext }, ...next.slice(-18)],
         onEvent: channel
       });
-      const finalMessages = [...next, { role: "assistant" as const, content: streamed || "(Empty response)" }];
+      const finalMessages = [...next, { role: "assistant" as const, content: streamed || "(FRIDAY is waiting for a tool decision, or the model returned an empty response.)" }];
       setMessages(finalMessages);
       await persist(id, finalMessages);
     } catch (e) {
@@ -310,6 +320,28 @@ export default function Assistant() {
     if (!activeRequestId) return;
     try { await invoke<boolean>("cancel_ollama_chat", { requestId: activeRequestId }); }
     catch (e) { setError(`Could not stop generation: ${String(e)}`); }
+  }
+
+  async function decideModelTool(approve: boolean) {
+    if (!pendingToolProposal || toolDecisionBusy) return;
+    const proposal = pendingToolProposal;
+    const definition = availableTools.find(tool => tool.id === proposal.tool_id);
+    if (!definition) { setPendingToolProposal(null); setError("FRIDAY blocked a tool that is not in its approved tool catalogue."); return; }
+    if (approve && definition.approval_required && !window.confirm("Allow FRIDAY to " + definition.name.toLowerCase() + " once?\\n\\n" + JSON.stringify(proposal.arguments, null, 2))) return;
+    setToolDecisionBusy(true);
+    try {
+      if (approve) {
+        const result = await invoke<string>("execute_tool", { toolId: proposal.tool_id, arguments: proposal.arguments, approved: definition.approval_required });
+        const updated = [...messages, { role: "assistant" as const, content: "Tool result — " + definition.name + ": " + result }];
+        setMessages(updated); if (activeId) await persist(activeId, updated);
+        setActionResult(result); await refreshToolHistory();
+      } else {
+        const updated = [...messages, { role: "assistant" as const, content: "I did not run that tool because you denied the request." }];
+        setMessages(updated); if (activeId) await persist(activeId, updated);
+      }
+      setPendingToolProposal(null);
+    } catch (e) { setError(String(e)); }
+    finally { setToolDecisionBusy(false); }
   }
 
   async function confirmAction() {
@@ -369,12 +401,13 @@ export default function Assistant() {
           {messages.map((m, i) => <div key={i} className={`chat-bubble ${m.role}`}><span>{m.content || (pending && m.role === "assistant" ? "FRIDAY is thinking…" : "")}</span></div>)}
         </div>
         {action && <div className="action-confirm" role="alertdialog" aria-label="Confirm desktop action"><strong>Allow FRIDAY to {action.label.toLowerCase()}?</strong><p>Nothing will happen until you approve. Email will open a draft, not send it.</p><div><button className="primary-button" onClick={() => void confirmAction()}>Allow once</button><button className="secondary-button" onClick={() => setAction(null)}>Cancel</button></div></div>}
+        {pendingToolProposal && <div className="action-confirm model-tool-confirm" role="alertdialog" aria-label="Review requested tool"><strong>FRIDAY wants to use: {availableTools.find(tool => tool.id === pendingToolProposal.tool_id)?.name || pendingToolProposal.tool_id}</strong><p>{availableTools.find(tool => tool.id === pendingToolProposal.tool_id)?.description || "Unknown tool"} · {availableTools.find(tool => tool.id === pendingToolProposal.tool_id)?.permission || "Not permitted"}</p><pre>{JSON.stringify(pendingToolProposal.arguments, null, 2)}</pre><div><button className="primary-button" onClick={() => void decideModelTool(true)} disabled={toolDecisionBusy}>{toolDecisionBusy ? "Working…" : "Approve once"}</button><button className="secondary-button" onClick={() => void decideModelTool(false)} disabled={toolDecisionBusy}>Deny</button></div></div>}
         {error && <div className="chat-error" role="alert">{error}</div>}
         {wasStopped && <div className="chat-success" role="status">Response stopped.</div>}
         {actionResult && <div className="chat-success" role="status">{actionResult}</div>}
         {!!availableTools.length && <details className="tool-history"><summary>Available tools ({availableTools.length})</summary><ul>{availableTools.map(tool => <li key={tool.id}><strong>{tool.name} · {tool.id}</strong><span>{tool.description}</span><small>{tool.permission}{tool.approval_required ? " · Approval required" : " · No approval needed"}</small></li>)}</ul></details>}
         {!!toolHistory.length && <details className="tool-history"><summary>Recent tool activity ({toolHistory.length})</summary><ul>{toolHistory.slice(0,8).map(item => <li key={item.id}><strong>{item.tool_id}</strong><span>{item.outcome}</span><small>{new Date(item.timestamp * 1000).toLocaleString()} · {item.approved ? "Approved" : "No approval needed"}</small></li>)}</ul></details>}
-        <div className="chat-compose"><textarea aria-label="Message FRIDAY" placeholder="Message FRIDAY…" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} rows={2} maxLength={20000}/>{pending ? <button className="secondary-button stop-generation" onClick={() => void stopGeneration()} aria-label="Stop response">■ Stop</button> : <button className="primary-button" disabled={!input.trim() || !!action || saving} onClick={() => void send()} aria-label="Send message">↑ Send</button>}</div>
+        <div className="chat-compose"><textarea aria-label="Message FRIDAY" placeholder="Message FRIDAY…" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} rows={2} maxLength={20000}/>{pending ? <button className="secondary-button stop-generation" onClick={() => void stopGeneration()} aria-label="Stop response">■ Stop</button> : <button className="primary-button" disabled={!input.trim() || !!action || !!pendingToolProposal || saving} onClick={() => void send()} aria-label="Send message">↑ Send</button>}</div>
         <p className="chat-footnote">Local AI · Encrypted chat and personal memory · Desktop actions require confirmation · {saving ? "Saving…" : "Saved on this device"} · Emails are never sent automatically</p>
       </div>
     </div>
