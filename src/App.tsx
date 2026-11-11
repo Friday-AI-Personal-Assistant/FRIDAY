@@ -1,143 +1,56 @@
-import Agent from "./Agent";
-import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import Agent from './Agent';
 
-type Page = "Agent" | "Overview" | "Modules" | "Privacy & Security" | "Settings";
+type Page = 'Assistant' | 'Private workspace' | 'Privacy';
 
-const modules = [
-  { name: "Email Assistant", detail: "Organise messages and prepare replies for your approval.", icon: "✉", status: "Planned" },
-  { name: "Job Hunter", detail: "Find relevant opportunities and compare them with your experience.", icon: "⌕", status: "Planned" },
-  { name: "CV Studio", detail: "Create and improve an honest, ATS-friendly CV.", icon: "▤", status: "Planned" },
-  { name: "Voice Assistant", detail: "Use optional voice input and spoken responses.", icon: "◖", status: "Planned" }
-];
-
-function App() {
-  const [page, setPage] = useState<Page>("Agent");
-  const [workspaceReady, setWorkspaceReady] = useState(false);
-  const [note, setNote] = useState("");
-  const [workspaceMessage, setWorkspaceMessage] = useState("");
+export default function App() {
+  const [page, setPage] = useState<Page>('Assistant');
+  const [ready, setReady] = useState(false);
+  const [note, setNote] = useState('');
+  const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  const isDesktopApp = "__TAURI_INTERNALS__" in window;
-
-  async function initializeWorkspace() {
+  const desktop = '__TAURI_INTERNALS__' in window;
+  async function initialize() {
     setBusy(true);
-    setWorkspaceMessage("");
     try {
-      const message = await invoke<string>("initialize_workspace");
-      const savedNote = await invoke<string>("read_private_note");
-      setNote(savedNote);
-      setWorkspaceReady(true);
-      setWorkspaceMessage(message);
-    } catch (error) {
-      setWorkspaceMessage(String(error));
-    } finally {
-      setBusy(false);
-    }
+      setMessage(await invoke<string>('initialize_workspace'));
+      setNote(await invoke<string>('read_private_note'));
+      setReady(true);
+    } catch (e) { setMessage(String(e)); } finally { setBusy(false); }
   }
-
-  async function saveNote() {
+  async function save() {
     setBusy(true);
-    setWorkspaceMessage("");
-    try {
-      const message = await invoke<string>("save_private_note", { note });
-      setWorkspaceMessage(message);
-    } catch (error) {
-      setWorkspaceMessage(String(error));
-    } finally {
-      setBusy(false);
-    }
+    try { setMessage(await invoke<string>('save_private_note', { note })); }
+    catch (e) { setMessage(String(e)); } finally { setBusy(false); }
   }
-
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><div className="brand-mark">F</div><div><strong>FRIDAY</strong><span>PERSONAL AI</span></div></div>
-        <div className="side-label">WORKSPACE</div>
-        <nav>
-          {(["Agent", "Overview", "Modules", "Privacy & Security", "Settings"] as Page[]).map(item => (
-            <button key={item} className={page === item ? "nav-item active" : "nav-item"} onClick={() => setPage(item)}>
-              <span className="nav-icon">{item === "Overview" ? "⌂" : item === "Modules" ? "▦" : item === "Privacy & Security" ? "◇" : "⚙"}</span>{item}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-bottom">
-          <div className="local-pill"><span /> LOCAL-FIRST DESIGN</div>
-          <p>Your workspace is designed to stay on this device.</p>
-          <span className="version">EARLY PREVIEW · v0.1.0</span>
+  return <div className="app-shell">
+    <aside className="sidebar">
+      <div className="brand"><div className="brand-mark">F</div><div><strong>FRIDAY</strong><span>PERSONAL AI</span></div></div>
+      <div className="side-label">YOUR WORKSPACE</div>
+      <nav aria-label="Main navigation">{(['Assistant', 'Private workspace', 'Privacy'] as Page[]).map((name, i) => <button key={name} className={'nav-item' + (page === name ? ' active' : '')} onClick={() => setPage(name)} aria-label={name}><span className="nav-icon">{['◈', '▣', '◇'][i]}</span>{name}</button>)}</nav>
+      <div className="sidebar-bottom"><div className="local-pill"><span/> LOCAL AI ONLY</div><p>Ollama on your computer. No paid APIs or cloud AI.</p><span className="version">DEVELOPMENT BUILD · v0.1.0</span></div>
+    </aside>
+    <main className="main-content">
+      <header className="topbar"><div className="breadcrumb">FRIDAY <span>/</span> {page.toUpperCase()}</div><div className="profile-chip"><div className="profile-dot">F</div><span>FREE & LOCAL</span></div></header>
+      {/* Keep the assistant mounted so navigation cannot silently discard a running task or unsaved conversation. */}
+      <div hidden={page !== 'Assistant'}><Agent/></div>
+      {page === 'Private workspace' && <section className="page compact-page">
+        <div className="eyebrow">ON-DEVICE STORAGE</div><h1>Your private<br/><em>workspace.</em></h1>
+        <p className="intro">The original encrypted note is preserved independently of your assistant session. Both use the per-user encryption key protected by Windows Credential Manager.</p>
+        <div className="workspace-panel"><h2>Encrypted note</h2>
+          {!desktop ? <p>Use the Windows desktop app to access encrypted storage.</p> : !ready ? <button className="primary-button" disabled={busy} onClick={initialize}>Initialize / load workspace</button> : <><textarea aria-label="Encrypted private note" className="private-note" maxLength={20000} value={note} onChange={e => setNote(e.target.value)}/><button className="primary-button" disabled={busy} onClick={save}>Save encrypted note</button></>}
+          <p role="status" className="workspace-message">{message}</p>
         </div>
-      </aside>
-
-      <main className="main-content">
-        <header className="topbar">
-          <div className="breadcrumb">FRIDAY <span>/</span> {page.toUpperCase()}</div>
-          <div className="profile-chip"><div className="profile-dot">U</div><span>YOUR WORKSPACE</span></div>
-        </header>
-
-        {page === "Agent" && <Agent />}
-
-        {page === "Overview" && <section className="page">
-          <div className="eyebrow"><span className="pulse" /> YOUR PERSONAL ASSISTANT</div>
-          <h1>Good to see you.<br /><em>Let's get things done.</em></h1>
-          <p className="intro">A private space for your work, ideas and everyday tasks. FRIDAY is being built to put you in control.</p>
-
-          <div className="notice">
-            <div className="notice-icon">i</div>
-            <div><strong>Early development preview</strong><p>The local encrypted-note foundation is now being implemented. Open Agent for local Ollama chat and reviewed tools. Advanced integrations are listed with their implementation status.</p></div>
-          </div>
-
-          <div className="section-heading"><div><span className="eyebrow">YOUR SETUP</span><h2>Workspace status</h2></div><span className="muted-tag">{workspaceReady ? "INITIALIZED" : "NOT INITIALIZED"}</span></div>
-          <div className="status-grid">
-            <div className="status-card"><span className="card-icon">◈</span><span className="card-label">AI ENGINE</span><strong>Not connected</strong><small>Configure Ollama in the Agent page</small></div>
-            <div className="status-card"><span className="card-icon">▣</span><span className="card-label">PRIVATE WORKSPACE</span><strong>{workspaceReady ? "Initialized" : "Not initialized"}</strong><small>Encryption key stored by Windows</small></div>
-            <div className="status-card"><span className="card-icon">⌑</span><span className="card-label">YOUR MODULES</span><strong>4 planned</strong><small>Choose what you use later</small></div>
-          </div>
-
-          <div className="workspace-panel">
-            <div className="section-heading"><div><span className="eyebrow">ON-DEVICE STORAGE</span><h2>Private workspace test</h2></div><span className="planned">ENCRYPTED NOTE</span></div>
-            <p className="panel-copy">{isDesktopApp ? "Initialize your local workspace, then save a test note. The note is encrypted before it is written to your computer. Its key is kept in Windows Credential Manager." : "You are viewing the browser preview. The private workspace test requires the Windows desktop app, so no notes are stored or encrypted in this browser demo."}</p>
-            {!isDesktopApp ? <div className="browser-preview-label">BROWSER DEMO · STORAGE DISABLED</div> : !workspaceReady ? <button className="primary-button" disabled={busy} onClick={initializeWorkspace}>{busy ? "Please wait…" : "Initialize private workspace"}</button> : <>
-              <textarea className="private-note" value={note} onChange={event => setNote(event.target.value)} maxLength={20000} placeholder="Write a private test note here…" />
-              <button className="primary-button" disabled={busy} onClick={saveNote}>{busy ? "Please wait…" : "Save encrypted note"}</button>
-            </>}
-            {workspaceMessage && <p className="workspace-message" role="status">{workspaceMessage}</p>}
-            <p className="security-footnote">Preview limitation: this test stores one encrypted note only. It is not yet a complete database, backup, account recovery or audited security system. Anyone controlling your unlocked Windows account may still access data available to that account.</p>
-          </div>
-
-          <div className="section-heading modules-heading"><div><span className="eyebrow">WHAT FRIDAY WILL DO</span><h2>Coming to your workspace</h2></div><button className="text-button" onClick={() => setPage("Modules")}>View modules <span>↗</span></button></div>
-          <div className="module-grid">{modules.map(module => <article className="module-card" key={module.name}>
-            <div className="module-top"><span className="module-icon">{module.icon}</span><span className="planned">{module.status}</span></div>
-            <h3>{module.name}</h3><p>{module.detail}</p>
-          </article>)}</div>
-        </section>}
-
-        {page === "Modules" && <section className="page compact-page">
-          <div className="eyebrow">FRIDAY CAPABILITIES</div><h1>Your tools,<br /><em>your choice.</em></h1>
-          <p className="intro">These modules are planned, not active yet. We'll build and test each one before enabling it.</p>
-          <div className="module-list">{modules.map(module => <article className="module-row" key={module.name}><span className="module-icon">{module.icon}</span><div><h3>{module.name}</h3><p>{module.detail}</p></div><span className="planned">PLANNED</span></article>)}</div>
-        </section>}
-
-        {page === "Privacy & Security" && <section className="page compact-page">
-          <div className="eyebrow">BUILT AROUND YOUR PRIVACY</div><h1>Your data.<br /><em>Your control.</em></h1>
-          <p className="intro">FRIDAY separates local personal data from any future account and licence service.</p>
-          <div className="privacy-list">
-            <div><span>01</span><section><strong>No developer backdoor</strong><p>There is no developer remote-access command in this preview.</p></section></div>
-            <div><span>02</span><section><strong>Local encryption foundation</strong><p>The preview uses an encrypted test note and Windows Credential Manager for its key. This is not yet a complete secure workspace.</p></section></div>
-            <div><span>03</span><section><strong>Clear external connections</strong><p>Email providers, job websites and optional cloud AI may receive data needed for those features.</p></section></div>
-            <div><span>04</span><section><strong>Honest security claims</strong><p>This has not received an independent security audit and cannot protect against malware or an attacker controlling an unlocked device.</p></section></div>
-          </div>
-          <p className="footnote">See the repository's privacy principles and local workspace design document.</p>
-        </section>}
-
-        {page === "Settings" && <section className="page compact-page">
-          <div className="eyebrow">PERSONALISE FRIDAY</div><h1>Made to work<br /><em>your way.</em></h1>
-          <p className="intro">Settings will let each person choose their AI engine, modules, language and assistant personality.</p>
-          <div className="settings-placeholder"><span>⚙</span><strong>Settings are being prepared</strong><p>No preferences are saved in this preview yet. We'll add secure local settings with the workspace foundation.</p></div>
-        </section>}
-
-        <footer className="footer"><span>FRIDAY · YOUR PERSONAL AI</span><span>PRIVATE BY DESIGN. USER IN CONTROL.</span></footer>
-      </main>
-    </div>
-  );
+        <p className="security-footnote">This is a single encrypted note, not a complete encrypted database or backup/recovery system. Use the assistant’s separate encrypted session controls for conversation and approved memory.</p>
+      </section>}
+      {page === 'Privacy' && <section className="page compact-page"><div className="eyebrow">USER IN CONTROL</div><h1>Your data.<br/><em>Your decisions.</em></h1><div className="privacy-list">
+        <div><span>01</span><section><strong>Local Ollama only</strong><p>The worker connects to 127.0.0.1:11434, disables proxies and redirects, and rejects remote/cloud models. No paid APIs, subscriptions or telemetry are integrated.</p></section></div>
+        <div><span>02</span><section><strong>Review actions</strong><p>The model proposes tools; each proposal requires individual review. Desktop input can have real consequences. Check the foreground application before approving.</p></section></div>
+        <div><span>03</span><section><strong>Know what is stored</strong><p>Session, preferences, approved memory and history are encrypted when explicitly saved. Files and document backups are ordinary plaintext files in the per-user documents workspace. Screenshots are not included in saved sessions.</p></section></div>
+        <div><span>04</span><section><strong>Honest limits</strong><p>This development build is not independently audited. An attacker controlling your unlocked account can access data available to that account. Prompt injection cannot be guaranteed to be detected. Advanced modules remain unfinished; see Availability and the repository checklist.</p></section></div>
+      </div></section>}
+      <footer className="footer"><span>FRIDAY · FREE LOCAL DEVELOPMENT BUILD</span><span>REVIEW ACTIONS. VERIFY RESULTS.</span></footer>
+    </main>
+  </div>;
 }
-
-export default App;

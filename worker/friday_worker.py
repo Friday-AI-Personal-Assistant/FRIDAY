@@ -322,7 +322,19 @@ def handle(request):
             if 'tools' not in capabilities:
                 raise ValueError('Selected model does not advertise tool calling; disable tools or choose another model')
             payload['tools'] = TOOLS
-        return ollama('/api/chat', payload)
+        response = ollama('/api/chat', payload)
+        message = response.get('message')
+        if not isinstance(message, dict) or message.get('role') != 'assistant' or not isinstance(message.get('content', ''), str):
+            raise ValueError('Invalid assistant response from local model')
+        calls = message.get('tool_calls') or []
+        if not isinstance(calls, list) or len(calls) > 12:
+            raise ValueError('Invalid or excessive tool proposals')
+        for call in calls:
+            if not isinstance(call, dict) or not isinstance(call.get('function'), dict):
+                raise ValueError('Invalid tool proposal')
+            function = call['function']
+            validate(function.get('name'), function.get('arguments'))
+        return response
     if operation == 'tools':
         return TOOLS
     if operation == 'execute':

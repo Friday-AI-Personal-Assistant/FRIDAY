@@ -45,7 +45,7 @@ fn run_worker(app: AppHandle, state: Arc<Mutex<Option<Child>>>, mut request: Val
     *slot = Some(child);
     drop(slot);
     if let Err(e) = input.write_all(&bytes) {
-        if let Ok(mut slot) = state.lock() { if let Some(child) = slot.as_mut() { let _ = child.kill(); } }
+        if let Ok(mut slot) = state.lock() { if let Some(mut child) = slot.take() { let _ = child.kill(); let _ = child.wait(); } }
         return Err(e.to_string());
     }
     drop(input);

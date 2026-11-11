@@ -140,6 +140,16 @@ pub fn read_private_note(app: AppHandle) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_credential_key_is_stable() {
+        let first = encryption_key().expect("Windows credential write/read must succeed");
+        let second = encryption_key().expect("Windows credential reread must succeed");
+        assert_eq!(first, second);
+        let payload = encrypt_bytes(&first, b"credential-backed content").unwrap();
+        assert_eq!(decrypt_bytes(&second, &payload).unwrap(), b"credential-backed content");
+    }
+
     #[test]
     fn encrypted_payload_round_trips() {
         let key = [7_u8; 32];

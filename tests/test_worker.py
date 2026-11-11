@@ -166,6 +166,16 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(payload['tools'], worker.TOOLS)
             self.assertFalse(payload['stream'])
 
+    def test_invalid_model_tool_proposal_rejected(self):
+        with patch.object(worker, 'ollama', side_effect=[{'models': [{'name': 'local'}]}, {'capabilities': ['completion', 'tools']}, {'message': {'role': 'assistant', 'content': '', 'tool_calls': [{'function': {'name': 'terminal', 'arguments': {'command': 'whoami'}}}]}}]):
+            with self.assertRaisesRegex(ValueError, 'Unknown tool'):
+                worker.handle({'operation': 'chat', 'model': 'local', 'messages': [], 'tools': True})
+
+    def test_invalid_model_response_rejected(self):
+        with patch.object(worker, 'ollama', side_effect=[{'models': [{'name': 'local'}]}, {'capabilities': ['completion']}, {'message': 'bad'}]):
+            with self.assertRaisesRegex(ValueError, 'Invalid assistant'):
+                worker.handle({'operation': 'chat', 'model': 'local', 'messages': []})
+
     def test_protocol_failure_is_structured(self):
         result = subprocess.run([sys.executable, str(Path(worker.__file__))], input='{"operation":"invalid"}\n', capture_output=True, text=True)
         output = json.loads(result.stdout)

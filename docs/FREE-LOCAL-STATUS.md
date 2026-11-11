@@ -49,9 +49,9 @@ Worker dependencies: Python standard library (Ollama HTTP and file primitives), 
 
 ## Validation
 
-Local validation: 27 Python tests pass; TypeScript + Vite production build passes; production npm dependency audit reports zero known vulnerabilities at execution time. Tests exercise filesystem scope, symlink rejection, schema enforcement, backups, Unicode, archive creation, duplicates, cloud/remote model rejection, missing capabilities and structured failure results. Mocked Ollama protocol tests do **not** prove live model operation. The untrusted-document test verifies that reading content does not execute it; it does **not** establish model-level prompt injection resistance.
+Local validation: 29 Python tests pass; TypeScript + Vite production build passes; production npm dependency audit reports zero known vulnerabilities at execution time. Tests exercise filesystem scope, symlink rejection, schema enforcement, backups, Unicode, archive creation, duplicates, cloud/remote model rejection, missing capabilities and structured failure results. Mocked Ollama protocol tests do **not** prove live model operation. The untrusted-document test verifies that reading content does not execute it; it does **not** establish model-level prompt injection resistance.
 
-This development host is Linux and has no Rust compiler, Windows UI, microphone, Ollama runtime or model weights. Rust compilation and Windows packaging are delegated to the checked-in Windows workflow. Real Windows acceptance remains required, including application controls, Credential Manager, recording, voice output, cancellation, multi-monitor/DPI behavior and installer install/uninstall.
+This development host is Linux and has no Rust compiler, Windows UI, microphone, Ollama runtime or model weights. The initial implementation has passed Rust compilation and encryption tests on the checked-in Windows workflow. Newer revisions must pass the same checks. Installer builds and smoke acceptance are tracked on the PR. Real Windows acceptance remains required, including application controls, Credential Manager, recording, voice output, cancellation, multi-monitor/DPI behavior and installer install/uninstall.
 
 ## Known security and reliability limits
 
@@ -69,6 +69,6 @@ This development host is Linux and has no Rust compiler, Windows UI, microphone,
 
 ## Additional verification pipeline
 
-`tests/ui-smoke.cjs` uses an explicitly mocked Tauri bridge to test renderer navigation, the desktop-only gate, approval-before-execution, refusal and tool-loop continuation in real Edge on the Windows runner. This is renderer integration testing, not a claim that Windows automation tools were exercised. The development host blocks Chromium's process singleton socket, so these browser tests cannot run locally here.
+`tests/ui-smoke.cjs` uses an explicitly mocked Tauri bridge to test renderer navigation, the desktop-only gate, approval-before-execution, refusal and tool-loop continuation in real Edge on the Windows runner. This is renderer integration testing, not a claim that Windows automation tools were exercised. The development host blocks Chromium's process singleton socket. The Windows runner has passed the renderer integration tests on revision 729e01dd; this does not verify native tools.
 
 `scripts/test-install.ps1` silently installs the generated NSIS bundle, verifies the bundled worker and its declared dependencies, launches the installed application process for ten seconds, then uninstalls. Passing proves installation/process smoke behavior only. It does not establish microphone, real model, UI interaction or MSI installation acceptance. A CI failure remains a failure until repaired and rerun.
