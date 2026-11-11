@@ -49,9 +49,12 @@ The application is intended for free distribution to friends and family initiall
 
 ## Accounts and distribution: future design
 
+FRIDAY's source repository will remain public so people can inspect the code. Official installer distribution and registration will be controlled separately through an invitation process. A public source repository means anyone may still clone the source and build their own copy; invitation controls apply to the official distribution and account service, not to the source itself.
+
 The possible account system is for identity, invitations, and licence management only. It must be architecturally separate from private local workspace data.
 
-- Invitation-controlled distribution may be used initially.
+- Keep the GitHub source repository public.
+- Use a separate invitation-controlled channel for official installer downloads; do not publish official installer assets in a publicly accessible release location if access must be restricted.
 - Each person registers their own account if online accounts are introduced.
 - Licence status must not grant the developer access to private files.
 - No private workspace content or encryption keys should be uploaded to an account server.
