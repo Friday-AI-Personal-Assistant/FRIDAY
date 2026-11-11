@@ -51,7 +51,7 @@ fn extract_selected_pdf(path: PathBuf) -> Result<PdfDocument, String> {
     let mut pages = Vec::with_capacity(page_map.len());
     let mut extracted_chars = 0usize;
     for page_number in page_map.keys().copied() {
-        let text = document.extract_text(&[page_number]).unwrap_or_default();
+        let text = document.extract_text_with_limit(&[page_number], 2 * 1024 * 1024).unwrap_or_else(|_| "[This page could not be safely extracted.]".to_string());
         let remaining = MAX_EXTRACTED_CHARS.saturating_sub(extracted_chars);
         let bounded: String = text.chars().take(remaining).collect();
         extracted_chars += bounded.chars().count();
@@ -73,7 +73,7 @@ fn extract_selected_pdf(path: PathBuf) -> Result<PdfDocument, String> {
 }
 
 #[tauri::command]
-pub fn pick_and_read_pdf(app: AppHandle) -> Result<PdfDocument, String> {
+pub async fn pick_and_read_pdf(app: AppHandle) -> Result<PdfDocument, String> {
     let selected = app.dialog().file()
         .add_filter("PDF document", &["pdf"])
         .blocking_pick_file();
