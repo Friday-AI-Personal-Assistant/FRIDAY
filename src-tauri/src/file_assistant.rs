@@ -137,7 +137,7 @@ fn validate_edit_content(content: &str) -> Result<(), String> {
     if content.len() > MAX_FILE_BYTES as usize {
         return Err("An edited file must remain 64 KB or smaller.".into());
     }
-    if content.contains('\\0') {
+    if content.contains('\0') {
         return Err("FRIDAY cannot save text containing binary null characters.".into());
     }
     Ok(())
@@ -370,7 +370,7 @@ pub fn prepare_file_edit(file_id: String, proposed_content: String) -> Result<Fi
     }
     let original_content = String::from_utf8(original_bytes.clone())
         .map_err(|_| "Only valid UTF-8 text files can be edited.".to_string())?;
-    if original_content.contains('\\0') {
+    if original_content.contains('\0') {
         return Err("This file appears to contain binary data and cannot be edited.".into());
     }
     let relative_path = current.strip_prefix(&root)
@@ -563,7 +563,7 @@ mod tests {
         assert!(validate_edit_content("hello\nworld").is_ok());
         assert!(validate_edit_content(&"x".repeat(MAX_FILE_BYTES as usize)).is_ok());
         assert!(validate_edit_content(&"x".repeat(MAX_FILE_BYTES as usize + 1)).is_err());
-        assert!(validate_edit_content("hello\\0world").is_err());
+        assert!(validate_edit_content("hello\0world").is_err());
     }
 
     #[test]
