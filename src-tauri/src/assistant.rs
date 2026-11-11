@@ -264,7 +264,7 @@ fn forward_stream_line(line: &[u8], channel: &Channel<StreamEvent>) -> Result<bo
             channel.send(StreamEvent { event: "token".into(), content: message.content })
                 .map_err(|e| format!("Could not deliver the response to FRIDAY: {e}"))?;
         }
-        for call in message.tool_calls.into_iter().take(4) {
+        for call in message.tool_calls.into_iter().take(1) {
             let proposal = serde_json::json!({
                 "tool_id": call.function.name,
                 "arguments": call.function.arguments
@@ -510,5 +510,14 @@ mod tests {
         }];
         assert!(validate_chat_request(&messages, "llama3.2:1b").is_err());
         assert!(validate_chat_request(&[], &"m".repeat(MAX_MODEL_NAME_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn parses_a_structured_ollama_tool_proposal() {
+        let raw = br#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"calculator.evaluate","arguments":{"expression":"2 + 2"}}}]},"done":true}"#;
+        let parsed: StreamResponse = serde_json::from_slice(raw).unwrap();
+        let call = &parsed.message.unwrap().tool_calls[0];
+        assert_eq!(call.function.name, "calculator.evaluate");
+        assert_eq!(call.function.arguments["expression"], "2 + 2");
     }
 }
