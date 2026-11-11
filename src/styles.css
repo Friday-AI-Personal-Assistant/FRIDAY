@@ -267,3 +267,11 @@ h1 em{font-style:normal;color:#9ce4ad}
 .web-page-reader > a { color: var(--accent, #24765b); font-size: 0.85rem; overflow-wrap: anywhere; }
 .web-page-excerpt { max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; font-size: 0.9rem; margin: 0; padding: 10px; background: var(--surface, #f7f7f7); border-radius: 7px; }
 .web-query-label textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--border, #ccc); border-radius: 8px; padding: 10px 12px; background: var(--surface, #fff); color: inherit; font: inherit; resize: vertical; }
+
+
+.web-source-select { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
+.web-source-select input { width: 16px; height: 16px; }
+.web-source-card { display: grid; gap: 7px; min-width: 0; padding: 12px; border: 1px solid var(--border, #dedede); border-radius: 8px; }
+.web-source-card > a { overflow-wrap: anywhere; color: var(--accent, #24765b); font-size: 0.85rem; }
+.web-source-card .web-page-excerpt { max-height: 180px; }
+.pdf-answer small { display: block; margin-top: 8px; color: var(--muted, #777); line-height: 1.45; }
