@@ -265,7 +265,7 @@ export default function Assistant() {
     if (match) { setAction(match); return; }
     if (calculation) {
       try {
-        const result = await invoke<string>("execute_tool", { toolId: "calculator.evaluate", arguments: { expression: calculation[1] }, approved: false });
+        const result = await invoke<string>("execute_tool", { toolId: "calculator.evaluate", arguments: { expression: calculation[1] }, approvalToken: null });
         const updated = [...next, { role: "assistant" as const, content: result }]; setMessages(updated); await persist(id, updated);
         setActionResult(result); await refreshToolHistory();
       } catch (e) { setError(String(e)); }
