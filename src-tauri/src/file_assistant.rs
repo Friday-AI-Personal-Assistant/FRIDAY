@@ -533,8 +533,10 @@ pub fn prepare_file_move(file_id: String, destination_relative_path: String) -> 
     let canonical_parent = fs::canonicalize(parent).map_err(|_| "FRIDAY could not verify the destination folder.".to_string())?;
     if !canonical_parent.starts_with(&root) { return Err("The destination is outside the selected folder.".into()); }
     if destination_path == source { return Err("The source and destination are the same.".into()); }
-    if fs::symlink_metadata(&destination_path).is_ok() {
-        return Err("A file or folder already exists at the destination. Choose another name.".into());
+    match fs::symlink_metadata(&destination_path) {
+        Ok(_) => return Err("A file or folder already exists at the destination. Choose another name.".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(_) => return Err("FRIDAY could not safely inspect the destination. No changes were made.".into()),
     }
     let original = fs::read(&source).map_err(|_| "FRIDAY could not verify the selected file.".to_string())?;
     if original.len() as u64 != source_meta.len() || original.contains(&0) {
@@ -597,8 +599,13 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
     let parent_meta = fs::symlink_metadata(parent).map_err(|_| "The destination folder is no longer available.".to_string())?;
     if parent_meta.file_type().is_symlink() || !parent_meta.is_dir() { return Err("The destination folder is no longer safe. No changes were made.".into()); }
     let canonical_parent = fs::canonicalize(parent).map_err(|_| "Could not verify the destination folder.".to_string())?;
-    if !canonical_parent.starts_with(&root) || fs::symlink_metadata(&destination).is_ok() {
-        return Err("The destination is outside the selected folder or is no longer empty. No changes were made.".into());
+    if !canonical_parent.starts_with(&root) {
+        return Err("The destination is outside the selected folder. No changes were made.".into());
+    }
+    match fs::symlink_metadata(&destination) {
+        Ok(_) => return Err("The destination is no longer empty. No changes were made.".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(_) => return Err("FRIDAY could not safely inspect the destination. No changes were made.".into()),
     }
     let backup_dir = root.join(".friday-backups");
     match fs::symlink_metadata(&backup_dir) {
@@ -608,10 +615,28 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
     }
     let token = make_token();
     let backup = backup_dir.join(format!("{token}.move.bak"));
-    fs::copy(&source, &backup).map_err(|e| format!("Could not preserve a backup before moving: {e}"))?;
-    if let Err(error) = fs::rename(&source, &destination) {
+    let mut backup_file = OpenOptions::new().write(true).create_new(true).open(&backup)
+        .map_err(|e| format!("Could not create a new backup without overwriting anything: {e}"))?;
+    if let Err(error) = backup_file.write_all(&bytes).and_then(|_| backup_file.sync_all()) {
+        drop(backup_file);
         let _ = fs::remove_file(&backup);
-        return Err(format!("Could not move the file. The original was left in place: {error}"));
+        return Err(format!("Could not safely write the original backup: {error}"));
+    }
+    drop(backup_file);
+    let latest_bytes = fs::read(&source).map_err(|_| "FRIDAY could not re-check the source immediately before moving.".to_string())?;
+    if content_hash(&latest_bytes) != operation.original_sha256 {
+        let _ = fs::remove_file(&backup);
+        return Err("The source changed immediately before moving. No changes were made.".into());
+    }
+    // A hard-link creation is atomic and fails rather than replacing an existing destination.
+    if let Err(error) = fs::hard_link(&source, &destination) {
+        let _ = fs::remove_file(&backup);
+        return Err(format!("Could not safely create the destination without overwriting anything: {error}"));
+    }
+    if let Err(error) = fs::remove_file(&source) {
+        let _ = fs::remove_file(&destination);
+        let _ = fs::remove_file(&backup);
+        return Err(format!("Could not finish moving the file. The original remains in place: {error}"));
     }
     let backup_relative = backup.strip_prefix(&root).unwrap_or(&backup).to_string_lossy().replace('\\', "/");
     let destination_relative = destination.strip_prefix(&root).unwrap_or(&destination).to_string_lossy().replace('\\', "/");
