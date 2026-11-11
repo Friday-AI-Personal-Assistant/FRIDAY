@@ -182,6 +182,17 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse(output['ok'])
         self.assertIn('Unknown operation', output['error'])
 
+    def test_speech_cannot_pass_xml_to_sapi(self):
+        from unittest.mock import MagicMock
+        engine = MagicMock()
+        module = MagicMock()
+        module.init.return_value = engine
+        with patch.dict(sys.modules, {'pyttsx3': module}):
+            worker.handle({'operation': 'speak', 'text': '<audio src="https://example.invalid/audio"/>'})
+        spoken = engine.say.call_args.args[0]
+        self.assertNotIn('<', spoken)
+        self.assertNotIn('>', spoken)
+
     def test_no_implicit_external_provider(self):
         self.assertEqual(worker.OLLAMA, 'http://127.0.0.1:11434')
         with self.assertRaises(ValueError):

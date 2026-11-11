@@ -49,7 +49,7 @@ Worker dependencies: Python standard library (Ollama HTTP and file primitives), 
 
 ## Validation
 
-Local validation: 29 Python tests pass; TypeScript + Vite production build passes; production npm dependency audit reports zero known vulnerabilities at execution time. Tests exercise filesystem scope, symlink rejection, schema enforcement, backups, Unicode, archive creation, duplicates, cloud/remote model rejection, missing capabilities and structured failure results. Mocked Ollama protocol tests do **not** prove live model operation. The untrusted-document test verifies that reading content does not execute it; it does **not** establish model-level prompt injection resistance.
+Local validation: 30 Python tests pass; TypeScript + Vite production build passes; production npm dependency audit reports zero known vulnerabilities at execution time. Tests exercise filesystem scope, symlink rejection, schema enforcement, backups, Unicode, archive creation, duplicates, cloud/remote model rejection, missing capabilities and structured failure results. Mocked Ollama protocol tests do **not** prove live model operation. The untrusted-document test verifies that reading content does not execute it; it does **not** establish model-level prompt injection resistance.
 
 This development host is Linux and has no Rust compiler, Windows UI, microphone, Ollama runtime or model weights. The initial implementation has passed Rust compilation and encryption tests on the checked-in Windows workflow. Newer revisions must pass the same checks. Installer builds and smoke acceptance are tracked on the PR. Real Windows acceptance remains required, including application controls, Credential Manager, recording, voice output, cancellation, multi-monitor/DPI behavior and installer install/uninstall.
 
@@ -78,3 +78,5 @@ The NSIS acceptance step also runs `tests/native-smoke.cjs` against the installe
 ### Installed native test boundary
 
 Revision 69371c05 built both installers, installed NSIS, passed packaged dependency diagnostics and kept the app process running. Its deeper installed WebView2 test could not connect to a debugging endpoint; consequently native IPC storage/file checks were not executed and the overall run failed before uninstallation. This is not evidence those IPC checks passed. The harness now records that specific unavailable-debugging boundary as **blocked**, continues the independent uninstall check, and still fails actual native assertions whenever a debugging connection is available. Set `FRIDAY_REQUIRE_NATIVE_SMOKE=1` to make an unavailable endpoint fatal. Packaged worker file round trips are tested directly independently of WebView2. Installer artifacts are retained even if later acceptance checks fail, with the run's result visible.
+
+Speech normalizes angle brackets to spoken words before using SAPI, so untrusted model/document text cannot be interpreted as audio-loading XML markup. A unit test covers this boundary.

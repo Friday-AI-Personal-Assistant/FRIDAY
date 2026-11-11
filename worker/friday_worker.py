@@ -344,7 +344,10 @@ def handle(request):
         engine = pyttsx3.init()
         engine.setProperty('rate', max(80, min(250, int(request.get('rate', 170)))))
         engine.setProperty('volume', max(0, min(1, float(request.get('volume', 1)))))
-        engine.say(request['text'][:8000])
+        # SAPI may auto-detect XML. Speak model/document content as plain words,
+        # never markup that could load an external audio URL.
+        text = request['text'][:8000].replace('<', ' less than ').replace('>', ' greater than ')
+        engine.say(text)
         engine.runAndWait()
         return {'spoken': True}
     if operation == 'listen':
