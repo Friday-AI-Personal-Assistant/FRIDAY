@@ -10,7 +10,9 @@ type PdfDocument = { fileName: string; pageCount: number; extractedChars: number
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 type WebSearchResult = { title: string; url: string; snippet: string; domain: string };
 type WebPage = { title: string; url: string; text: string; domain: string; author?: string | null; publishedDate?: string | null };
-type SelectedTextFile = { name: string; content: string; sizeBytes: number };
+type SelectedTextFile = { name: string; content: string; sizeBytes: number; grantId?: string | null };
+type FileEditPreview = { previewId: string; fileName: string; relativePath: string; originalContent: string; proposedContent: string };
+type FileEditResult = { fileName: string; backupPath: string; bytesWritten: number };
 type FileCandidate = { id: string; name: string; relativePath: string; sizeBytes: number };
 const ICONS: Record<string, string> = {
   "web-research": "⌕", "pdf-reader": "▤", "file-assistant": "▣", "coding-assistant": "</>"
@@ -61,6 +63,11 @@ export default function SkillsManager() {
   const [fileAnswer, setFileAnswer] = useState("");
   const [fileBusy, setFileBusy] = useState(false);
   const [fileError, setFileError] = useState("");
+  const [fileNotice, setFileNotice] = useState("");
+  const [editingFileId, setEditingFileId] = useState("");
+  const [draftContent, setDraftContent] = useState("");
+  const [editPreview, setEditPreview] = useState<FileEditPreview | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!desktop) { setLoading(false); return; }
@@ -91,7 +98,8 @@ export default function SkillsManager() {
       }
       if (skill.id === "file-assistant" && (action === "uninstall" || action === "disable" || action === "unload")) {
         setSelectedTextFiles([]); setFolderCandidates([]); setSelectedFolderIds([]);
-        setFolderSearch(""); setFileContentSearch(""); setFileAnswer(""); setFileError("");
+        setFolderSearch(""); setFileContentSearch(""); setFileAnswer(""); setFileError(""); setFileNotice("");
+        setEditingFileId(""); setDraftContent(""); setEditPreview(null);
         setFileQuestion("Summarise these files and explain their important points.");
       }
       await refresh();
@@ -148,6 +156,7 @@ export default function SkillsManager() {
     if (!desktop || fileBusy) return;
     setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
     setFolderCandidates([]); setSelectedFolderIds([]); setFolderSearch(""); setFileContentSearch("");
+    setEditingFileId(""); setDraftContent(""); setEditPreview(null); setFileNotice("");
     try {
       const candidates = await invoke<FileCandidate[]>("pick_folder_and_list_text_files");
       setFolderCandidates(candidates);
@@ -172,6 +181,7 @@ export default function SkillsManager() {
     if (!desktop || fileBusy) return;
     setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
     setFolderCandidates([]); setSelectedFolderIds([]); setFileContentSearch("");
+    setEditingFileId(""); setDraftContent(""); setEditPreview(null); setFileNotice("");
     try {
       const files = await invoke<SelectedTextFile[]>("pick_and_read_text_files");
       setSelectedTextFiles(files);
@@ -197,6 +207,48 @@ ${file.content}`
       setFileAnswer(answer || "FRIDAY did not receive an answer from the local model.");
     } catch (e) { setFileError(String(e)); }
     finally { setFileBusy(false); }
+  }
+
+  function beginFileEdit(file: SelectedTextFile) {
+    if (!file.grantId) return;
+    setEditingFileId(file.grantId);
+    setDraftContent(file.content);
+    setEditPreview(null);
+    setFileError("");
+    setFileNotice("");
+  }
+
+  async function prepareFileEdit() {
+    if (!desktop || !editingFileId || editBusy) return;
+    setEditBusy(true); setFileError(""); setFileNotice(""); setEditPreview(null);
+    try {
+      const preview = await invoke<FileEditPreview>("prepare_file_edit", {
+        fileId: editingFileId,
+        proposedContent: draftContent
+      });
+      setEditPreview(preview);
+    } catch (e) { setFileError(String(e)); }
+    finally { setEditBusy(false); }
+  }
+
+  async function applyFileEdit() {
+    if (!desktop || !editPreview || editBusy) return;
+    const approved = window.confirm("Replace \"" + editPreview.relativePath + "\" with the proposed version? FRIDAY will preserve the original in a .friday-backups folder inside the selected folder.");
+    if (!approved) return;
+    setEditBusy(true); setFileError(""); setFileNotice("");
+    try {
+      const approvalToken = await invoke<string>("issue_file_edit_approval", { previewId: editPreview.previewId });
+      const result = await invoke<FileEditResult>("apply_file_edit", {
+        previewId: editPreview.previewId,
+        approvalToken
+      });
+      setSelectedTextFiles(current => current.map(file => file.grantId === editingFileId
+        ? { ...file, content: editPreview.proposedContent, sizeBytes: new TextEncoder().encode(editPreview.proposedContent).length }
+        : file));
+      setFileNotice("Saved " + result.fileName + ". Original backup: " + result.backupPath + " (" + result.bytesWritten.toLocaleString() + " bytes written).");
+      setEditingFileId(""); setDraftContent(""); setEditPreview(null);
+    } catch (e) { setFileError(String(e)); }
+    finally { setEditBusy(false); }
   }
 
   async function choosePdf() {
@@ -305,8 +357,8 @@ ${file.content}`
           </div>}
         </div>}
         {skill.id === "file-assistant" && skill.loaded && <div className="file-assistant-panel">
-          <strong>Read selected text files</strong>
-          <p>Choose files yourself. FRIDAY reads them locally and does not change them. This first version supports up to 8 UTF-8 text/code files, 64 KB each and 180 KB combined. No folders, binary documents or file modifications yet.</p>
+          <strong>Read and carefully edit selected text files</strong>
+          <p>Choose a folder or individual files. FRIDAY reads text locally. For files selected from a folder, you can prepare a replacement, compare the original and proposed versions, then explicitly approve saving one file at a time. The original is backed up first.</p>
           <div className="file-assistant-picker-actions">
             <button className="primary-button" disabled={fileBusy} onClick={() => void chooseFolder()}>{fileBusy ? "Scanning…" : "Choose a folder"}</button>
             <button className="secondary-button" disabled={fileBusy} onClick={() => void chooseTextFiles()}>Choose individual files</button>
@@ -346,11 +398,33 @@ ${file.content}`
             </div>
             <div className="pdf-file-summary"><strong>{selectedTextFiles.length} selected file{selectedTextFiles.length === 1 ? "" : "s"}</strong><span>{selectedTextFiles.reduce((total, file) => total + file.sizeBytes, 0).toLocaleString()} bytes · held in this session only</span></div>
             <div className="file-assistant-files">
-              {selectedTextFiles.map((file, index) => <details key={file.name + index}>
+              {selectedTextFiles.map((file, index) => <details key={file.grantId || file.name + index}>
                 <summary>{file.name} · {file.sizeBytes.toLocaleString()} bytes</summary>
                 <pre>{file.content}</pre>
+                {file.grantId && <button className="secondary-button" disabled={editBusy || fileBusy} onClick={() => beginFileEdit(file)}>Prepare an edit</button>}
               </details>)}
             </div>
+            {fileNotice && <div className="skills-notice" role="status">{fileNotice}</div>}
+            {editingFileId && <>
+              <div className="file-edit-panel">
+                <strong>Prepare a replacement</strong>
+                <p>Edit the text below. Nothing is written until you preview it and press the approval button. Only folder-selected files can be edited in this stage.</p>
+                <textarea aria-label="Proposed file contents" value={draftContent} onChange={event => { setDraftContent(event.target.value); setEditPreview(null); }} rows={12} maxLength={65536} />
+                <div className="file-assistant-picker-actions">
+                  <button className="primary-button" disabled={editBusy} onClick={() => void prepareFileEdit()}>{editBusy ? "Preparing preview…" : "Preview proposed changes"}</button>
+                  <button className="secondary-button" disabled={editBusy} onClick={() => { setEditingFileId(""); setDraftContent(""); setEditPreview(null); }}>Cancel</button>
+                </div>
+                {editPreview && <div className="file-edit-preview">
+                  <strong>Review before saving: {editPreview.relativePath}</strong>
+                  <small>The preview expires after five minutes. FRIDAY will refuse to save if the original file changes before approval.</small>
+                  <div className="file-edit-comparison">
+                    <div><strong>Original</strong><pre>{editPreview.originalContent}</pre></div>
+                    <div><strong>Proposed</strong><pre>{editPreview.proposedContent}</pre></div>
+                  </div>
+                  <button className="primary-button" disabled={editBusy} onClick={() => void applyFileEdit()}>{editBusy ? "Saving approved change…" : "Approve and save this file"}</button>
+                </div>}
+              </div>
+            </>}
             <label className="pdf-question-label">What should FRIDAY do with these files?
               <textarea value={fileQuestion} onChange={event => setFileQuestion(event.target.value)} rows={3} maxLength={2000} />
             </label>
