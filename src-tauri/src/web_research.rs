@@ -128,6 +128,7 @@ pub async fn web_search(_app: AppHandle, query: String) -> Result<Vec<WebSearchR
     if results.is_empty() {
         return Err("No readable search results were returned. Try a different query.".into());
     }
+    let _ = crate::tools::record(&_app, "web.search", &format!("Web search completed with {} results.", results.len()), true);
     Ok(results)
 }
 
@@ -218,7 +219,7 @@ fn extract_page_text(html: &str) -> (String, String) {
 }
 
 #[tauri::command]
-pub async fn web_read_page(url: String) -> Result<WebPage, String> {
+pub async fn web_read_page(app: AppHandle, url: String) -> Result<WebPage, String> {
     let mut current = validate_page_url(&url)?;
     for redirect_count in 0..=MAX_REDIRECTS {
         let host = current.host_str().ok_or("Source URL has no hostname.")?;
@@ -261,7 +262,9 @@ pub async fn web_read_page(url: String) -> Result<WebPage, String> {
         let html = String::from_utf8_lossy(&body);
         let (title, text) = extract_page_text(&html);
         if text.trim().is_empty() { return Err("FRIDAY could not extract readable text from this webpage.".into()); }
-        return Ok(WebPage { title, url: current.to_string(), text });
+        let page = WebPage { title, url: current.to_string(), text };
+        let _ = crate::tools::record(&app, "web.read_page", "Read a source webpage after explicit user selection.", true);
+        return Ok(page);
     }
     Err("FRIDAY could not safely follow this source link.".into())
 }
