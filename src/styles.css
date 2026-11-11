@@ -309,3 +309,7 @@ h1 em{font-style:normal;color:#9ce4ad}
 .file-edit-comparison > div { display: grid; align-content: start; gap: 6px; min-width: 0; }
 .file-edit-comparison pre { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.78rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; color: inherit; background: var(--surface, #f7f7f7); border: 1px solid var(--border, #dedede); border-radius: 6px; padding: 10px; margin: 0; }
 @media (max-width: 700px) { .file-edit-comparison { grid-template-columns: minmax(0, 1fr); } }
+
+.file-assistant-file-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+.file-edit-panel > label { display: grid; gap: 6px; font-size: 0.85rem; font-weight: 600; }
+.file-edit-panel > label > input { width: 100%; min-width: 0; }
