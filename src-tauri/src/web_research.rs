@@ -1,4 +1,5 @@
 use regex::Regex;
+use scraper::{Html, Selector};
 use serde::Serialize;
 use std::{net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr}, sync::OnceLock, time::Duration};
 use tauri::AppHandle;
@@ -205,17 +206,30 @@ fn bounded_utf8(text: &str, max_bytes: usize) -> String {
 }
 
 fn extract_page_text(html: &str) -> (String, String) {
-    static TITLE: OnceLock<Regex> = OnceLock::new();
+    static TITLE: OnceLock<Selector> = OnceLock::new();
+    static BODY: OnceLock<Selector> = OnceLock::new();
+    static MAIN: OnceLock<Selector> = OnceLock::new();
     static ACTIVE: OnceLock<Regex> = OnceLock::new();
-    let title_re = TITLE.get_or_init(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").expect("valid title regex"));
-    let active_re = ACTIVE.get_or_init(|| Regex::new(r"(?is)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<noscript[^>]*>.*?</noscript>").expect("valid active-content regex"));
-    let title = title_re.captures(html).and_then(|capture| capture.get(1))
-        .map(|value| strip_tags(value.as_str()).split_whitespace().collect::<Vec<_>>().join(" "))
-        .unwrap_or_else(|| "Web source".into());
-    let without_active = active_re.replace_all(html, " ");
-    let text = strip_tags(&without_active).split_whitespace().collect::<Vec<_>>().join(" ");
-    let bounded = bounded_utf8(&text, MAX_PAGE_TEXT_BYTES);
-    (title.chars().take(200).collect(), bounded)
+    let title_selector = TITLE.get_or_init(|| Selector::parse("title").expect("valid title selector"));
+    let body_selector = BODY.get_or_init(|| Selector::parse("body").expect("valid body selector"));
+    let main_selector = MAIN.get_or_init(|| Selector::parse("main, article").expect("valid content selector"));
+    let active_re = ACTIVE.get_or_init(|| Regex::new(r"(?is)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<noscript[^>]*>.*?</noscript>|<template[^>]*>.*?</template>|<svg[^>]*>.*?</svg>").expect("valid active-content regex"));
+
+    // Strip executable/non-content elements before HTML5 parsing. The parser
+    // repairs malformed markup and decodes named/numeric HTML entities.
+    let cleaned = active_re.replace_all(html, " ");
+    let document = Html::parse_document(&cleaned);
+    let title = document.select(title_selector).next()
+        .map(|element| element.text().collect::<Vec<_>>().join(" "))
+        .unwrap_or_else(|| "Web source".into())
+        .split_whitespace().collect::<Vec<_>>().join(" ");
+    let content = document.select(main_selector).next()
+        .or_else(|| document.select(body_selector).next());
+    let text = content
+        .map(|element| element.text().collect::<Vec<_>>().join(" "))
+        .unwrap_or_else(|| document.root_element().text().collect::<Vec<_>>().join(" "))
+        .split_whitespace().collect::<Vec<_>>().join(" ");
+    (title.chars().take(200).collect(), bounded_utf8(&text, MAX_PAGE_TEXT_BYTES))
 }
 
 #[tauri::command]
@@ -303,6 +317,21 @@ mod tests {
         assert!(text.len() <= MAX_PAGE_TEXT_BYTES);
         assert!(text.contains("Hello world"));
         assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn html5_extraction_decodes_entities_and_repairs_malformed_markup() {
+        let (title, text) = extract_page_text("<html><title>Research &amp; Facts</title><body><main><p>One &amp; two<p>Three</main><script>doBadThings()</script></body>");
+        assert_eq!(title, "Research & Facts");
+        assert!(text.contains("One & two"));
+        assert!(text.contains("Three"));
+        assert!(!text.contains("doBadThings"));
+    }
+
+    #[test]
+    fn extracts_article_content_over_navigation_when_available() {
+        let (_, text) = extract_page_text("<html><body><nav>Menu links</nav><article><p>Research body</p></article></body></html>");
+        assert_eq!(text, "Research body");
     }
 
     #[test]
