@@ -244,14 +244,7 @@ fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], expect
         return Err("The original file changed immediately before saving. No changes were made.".into());
     }
     let original_permissions = metadata.permissions();
-    let backup_dir = root.join(".friday-backups");
-    match fs::symlink_metadata(&backup_dir) {
-        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() =>
-            return Err("The FRIDAY backup location is not a safe folder.".into()),
-        Ok(_) => {},
-        Err(_) => fs::create_dir(&backup_dir)
-            .map_err(|e| format!("Could not create the backup folder: {e}"))?,
-    }
+    let backup_dir = ensure_backup_dir(root, true)?;
     let backup_path = backup_dir.join(format!("{token}.bak"));
     let parent = current.parent().ok_or("The selected file has no parent folder.")?;
     let temporary = parent.join(format!(".friday-edit-{token}.tmp"));
@@ -311,14 +304,37 @@ fn safe_relative_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(full)
 }
 
-fn undo_backup_dir(root: &Path) -> Result<PathBuf, String> {
+fn ensure_backup_dir(root: &Path, create: bool) -> Result<PathBuf, String> {
     let dir = root.join(".friday-backups");
+    match fs::symlink_metadata(&dir) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+            return Err("The FRIDAY backup location is not a normal folder.".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create => {
+            match fs::create_dir(&dir) {
+                Ok(()) => {}
+                Err(create_error) if create_error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(create_error) => return Err(format!("Could not create the FRIDAY backup folder: {create_error}")),
+            }
+        }
+        Err(_) => return Err("The FRIDAY backup folder is no longer available.".into()),
+    }
     let meta = fs::symlink_metadata(&dir)
         .map_err(|_| "The FRIDAY backup folder is no longer available.".to_string())?;
     if meta.file_type().is_symlink() || !meta.is_dir() {
-        return Err("The FRIDAY backup folder is not safe.".into());
+        return Err("The FRIDAY backup location is not a normal folder.".into());
+    }
+    let canonical = fs::canonicalize(&dir)
+        .map_err(|_| "Could not verify FRIDAY's backup folder.".to_string())?;
+    if canonical.as_path() != dir.as_path() || !canonical.starts_with(root) {
+        return Err("The FRIDAY backup folder was redirected or is outside the selected folder.".into());
     }
     Ok(dir)
+}
+
+fn undo_backup_dir(root: &Path) -> Result<PathBuf, String> {
+    ensure_backup_dir(root, false)
 }
 
 fn save_undo_record(root: &Path, record: &UndoRecord) -> Result<(), String> {
@@ -540,12 +556,17 @@ pub async fn pick_folder_and_list_text_files(app: AppHandle) -> Result<FolderSca
     };
     let path = selected.into_path()
         .map_err(|_| "FRIDAY could not access the selected folder.".to_string())?;
+    let selected_meta = fs::symlink_metadata(&path)
+        .map_err(|_| "FRIDAY could not inspect the selected folder.".to_string())?;
+    if !selected_meta.is_dir() || selected_meta.file_type().is_symlink() {
+        return Err("Please select a normal folder, not a symbolic link or redirected folder.".into());
+    }
     let root = fs::canonicalize(&path)
         .map_err(|_| "FRIDAY could not open the selected folder.".to_string())?;
     let root_meta = fs::symlink_metadata(&root)
         .map_err(|_| "FRIDAY could not inspect the selected folder.".to_string())?;
     if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
-        return Err("Please select a normal folder, not a symbolic link.".into());
+        return Err("Please select a normal folder, not a symbolic link or redirected folder.".into());
     }
 
     let mut candidates = Vec::new();
@@ -869,12 +890,7 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
         Err(_) => return Err("FRIDAY could not safely inspect the destination. No changes were made.".into()),
     }
-    let backup_dir = root.join(".friday-backups");
-    match fs::symlink_metadata(&backup_dir) {
-        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => return Err("The FRIDAY backup location is not a safe folder.".into()),
-        Ok(_) => {},
-        Err(_) => fs::create_dir(&backup_dir).map_err(|e| format!("Could not create the backup folder: {e}"))?,
-    }
+    let backup_dir = ensure_backup_dir(&root, true)?;
     let token = make_token();
     let backup = backup_dir.join(format!("{token}.move.bak"));
     let mut backup_file = OpenOptions::new().write(true).create_new(true).open(&backup)
@@ -1237,6 +1253,29 @@ mod tests {
         write_undone_marker(&root, &record.id).unwrap();
         assert!(list_undo_records(&root).unwrap().is_empty());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn backup_directory_rejects_symlink_redirection() {
+        let root = std::env::temp_dir().join(format!("friday-backup-root-{}", make_token()));
+        let outside = std::env::temp_dir().join(format!("friday-backup-outside-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            symlink(&outside, root.join(".friday-backups")).unwrap();
+            assert!(ensure_backup_dir(&root, false).is_err());
+        }
+
+        #[cfg(not(unix))]
+        {
+            assert!(ensure_backup_dir(&root, true).is_ok());
+        }
+
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
     }
 
     #[test]
