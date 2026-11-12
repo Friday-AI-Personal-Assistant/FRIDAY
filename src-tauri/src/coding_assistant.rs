@@ -232,8 +232,17 @@ fn apply_code_preview_to_disk(root: &Path, current: &Path, proposed: &[u8], expe
         return Err(if restored { "The installed file failed verification; FRIDAY restored the original.".into() }
             else { format!("The installed file failed verification and automatic restore failed. The original backup remains at {}.", backup.display()) });
     }
+    let undo_path = backup_dir.join(format!("{token}.undo.json"));
+    let undo_bytes = serde_json::to_vec(&record).map_err(|_| "Could not prepare the guarded undo record.".to_string())?;
+    let mut undo_file = OpenOptions::new().write(true).create_new(true).open(&undo_path)
+        .map_err(|e| format!("The change was installed and verified, but its undo record could not be created: {e}. The original backup remains at {}.", backup.display()))?;
+    if let Err(e) = undo_file.write_all(&undo_bytes).and_then(|_| undo_file.sync_all()) {
+        drop(undo_file);
+        return Err(format!("The change was installed and verified, but its undo record could not be saved: {e}. The original backup remains at {}.", backup.display()));
+    }
+    drop(undo_file);
     if let Err(e) = fs::remove_file(&displaced) {
-        return Err(format!("The change was verified, but FRIDAY could not remove its temporary displaced copy: {e}. The verified original backup remains."));
+        return Err(format!("The change was verified and its undo record saved, but FRIDAY could not remove its temporary displaced copy: {e}. The verified original backup remains."));
     }
     Ok((backup, record))
 }
@@ -836,6 +845,58 @@ mod tests {
         previews.insert("valid-preview".into(), valid);
         assert!(take_approved_preview(&mut previews, "valid-preview", "approved-token", 120).is_ok());
         assert!(take_approved_preview(&mut previews, "valid-preview", "approved-token", 120).is_err());
+    }
+
+    #[test]
+    fn guarded_code_apply_creates_verified_backup_and_undo_record() {
+        let root = std::env::temp_dir().join(format!("friday-code-apply-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+        let original_hash = sha256_hex(b"fn main() {}");
+        let token = make_token();
+        let (backup, record) = apply_code_preview_to_disk(&root, &file, b"fn main() { println!(\"hi\"); }",
+            &original_hash, &token, 123).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"fn main() { println!(\"hi\"); }");
+        assert_eq!(sha256_hex(&fs::read(&backup).unwrap()), original_hash);
+        assert_eq!(record.original_sha256, original_hash);
+        assert_eq!(record.resulting_sha256, sha256_hex(b"fn main() { println!(\"hi\"); }"));
+        assert!(root.join(".friday-code-backups").join(format!("{token}.undo.json")).is_file());
+        assert!(root.join(".friday-code-backups").join(format!("{token}.txn.json")).is_file());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn guarded_code_apply_refuses_stale_original_without_modifying_it() {
+        let root = std::env::temp_dir().join(format!("friday-code-stale-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "externally changed").unwrap();
+        let result = apply_code_preview_to_disk(&root, &file, b"proposed", &sha256_hex(b"old"), &make_token(), 123);
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "externally changed");
+        assert!(!root.join(".friday-code-backups").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn guarded_code_apply_refuses_symlink_targets() {
+        let root = std::env::temp_dir().join(format!("friday-code-link-{}", make_token()));
+        let outside = std::env::temp_dir().join(format!("friday-code-outside-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&outside, "outside").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("linked.rs")).unwrap();
+        #[cfg(windows)]
+        { let _ = fs::remove_dir_all(&root); let _ = fs::remove_file(&outside); return; }
+        #[cfg(unix)]
+        {
+            let result = apply_code_preview_to_disk(&root, &root.join("linked.rs"), b"changed", &sha256_hex(b"outside"), &make_token(), 123);
+            assert!(result.is_err());
+            assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
+        }
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_file(&outside).unwrap();
     }
 
     #[test]
