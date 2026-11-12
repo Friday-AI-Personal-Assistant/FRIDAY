@@ -316,7 +316,7 @@ fn recovery_hash(path: &Path, expected_limit: u64) -> Result<Option<String>, Str
 }
 
 fn remove_recovery_copy(path: &Path, expected_hash: &str) -> Result<(), String> {
-    match recovery_hash(path, MAX_PROPOSED_FILE_BYTES.max(MAX_FILE_BYTES))? {
+    match recovery_hash(path, MAX_FILE_BYTES.max(MAX_PROPOSED_FILE_BYTES as u64))? {
         None => Ok(()),
         Some(actual) if actual == expected_hash => fs::remove_file(path)
             .map_err(|_| "FRIDAY could not safely clean up a verified recovery copy.".to_string()),
@@ -389,7 +389,7 @@ fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoR
                 fs::rename(&displaced, &target)
                     .map_err(|_| "FRIDAY could not restore the edited file after an interrupted Undo. Recovery copies were preserved.".to_string())?;
                 if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.original_sha256)?; }
-            } else if temporary_hash.as_deref() == Some(record.original_sha256) {
+            } else if temporary_hash.as_deref() == Some(record.original_sha256.as_str()) {
                 fs::rename(&temporary, &target)
                     .map_err(|_| "FRIDAY could not finish restoring the verified original after an interrupted Undo.".to_string())?;
                 let undo_path = backup_dir.join(format!("{}.undo.json", record.id));
@@ -420,7 +420,7 @@ fn recover_apply_transaction(root: &Path, backup_dir: &Path, record: &CodingUndo
     let target_hash = recovery_hash(&target, MAX_FILE_BYTES)?;
     let temporary = target.parent().unwrap().join(format!(".friday-code-edit-{}.tmp", record.id));
     let displaced = target.parent().unwrap().join(format!(".friday-code-original-{}.tmp", record.id));
-    let temporary_hash = recovery_hash(&temporary, MAX_PROPOSED_FILE_BYTES)?;
+    let temporary_hash = recovery_hash(&temporary, MAX_PROPOSED_FILE_BYTES as u64)?;
     let displaced_hash = recovery_hash(&displaced, MAX_FILE_BYTES)?;
 
     match target_hash.as_deref() {
@@ -466,7 +466,7 @@ fn recover_apply_transaction(root: &Path, backup_dir: &Path, record: &CodingUndo
             }
         }
         None => {
-            if displaced_hash.as_deref() == Some(record.original_sha256) {
+            if displaced_hash.as_deref() == Some(record.original_sha256.as_str()) {
                 fs::rename(&displaced, &target)
                     .map_err(|_| "FRIDAY could not restore the displaced original after interrupted Apply. The backup remains available.".to_string())?;
                 if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.resulting_sha256)?; }
