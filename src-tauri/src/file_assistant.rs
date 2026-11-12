@@ -115,6 +115,8 @@ struct UndoRecord {
     current_relative_path: String,
     backup_relative_path: String,
     expected_current_sha256: String,
+    #[serde(default)]
+    backup_sha256: Option<String>,
     created_at: u64,
 }
 
@@ -333,6 +335,22 @@ fn save_undo_record(root: &Path, record: &UndoRecord) -> Result<(), String> {
     Ok(())
 }
 
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn validate_undo_backup(record: &UndoRecord, bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() > MAX_FILE_BYTES as usize || bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {
+        return Err("The original backup is not valid, bounded UTF-8 text.".into());
+    }
+    if let Some(expected) = record.backup_sha256.as_deref() {
+        if !is_sha256(expected) || content_hash(bytes) != expected {
+            return Err("The original backup failed its integrity check. Undo is unavailable.".into());
+        }
+    }
+    Ok(())
+}
+
 fn load_undo_record(root: &Path, id: &str) -> Result<UndoRecord, String> {
     if id.len() != 48 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("This undo item is invalid.".into());
@@ -351,7 +369,9 @@ fn load_undo_record(root: &Path, id: &str) -> Result<UndoRecord, String> {
         "move" => format!(".friday-backups/{id}.move.bak"),
         _ => return Err("The undo history record failed validation.".into()),
     };
-    if record.id != id || record.backup_relative_path != expected_backup {
+    if record.id != id || record.backup_relative_path != expected_backup
+        || !is_sha256(&record.expected_current_sha256)
+        || record.backup_sha256.as_deref().is_some_and(|value| !is_sha256(value)) {
         return Err("The undo history record failed validation.".into());
     }
     Ok(record)
@@ -365,6 +385,7 @@ fn undo_is_already_applied(root: &Path, record: &UndoRecord) -> bool {
     };
     if backup_meta.len() > MAX_FILE_BYTES { return false; }
     let backup_bytes = match fs::read(&backup) { Ok(bytes) => bytes, Err(_) => return false };
+    if validate_undo_backup(record, &backup_bytes).is_err() { return false; }
     match record.kind.as_str() {
         "edit" => {
             let current = match safe_relative_file(root, &record.current_relative_path) {
@@ -687,7 +708,9 @@ pub fn apply_file_edit(
         id: backup_token.clone(), kind: "edit".into(),
         original_relative_path: relative_current.clone(), current_relative_path: relative_current,
         backup_relative_path: relative_backup.clone(),
-        expected_current_sha256: content_hash(edit.proposed_content.as_bytes()), created_at: edit_now(),
+        expected_current_sha256: content_hash(edit.proposed_content.as_bytes()),
+        backup_sha256: Some(content_hash(&original)),
+        created_at: edit_now(),
     }).err();
     let file_name = current.file_name().and_then(|name| name.to_str()).unwrap_or("Selected file").to_string();
     let bytes_written = edit.proposed_content.len();
@@ -857,7 +880,9 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
         id: token.clone(), kind: "move".into(),
         original_relative_path: source_relative, current_relative_path: destination_relative.clone(),
         backup_relative_path: backup_relative.clone(),
-        expected_current_sha256: content_hash(&bytes), created_at: edit_now(),
+        expected_current_sha256: content_hash(&bytes),
+        backup_sha256: Some(content_hash(&bytes)),
+        created_at: edit_now(),
     }).err();
     let file_name = destination.file_name().and_then(|name| name.to_str()).unwrap_or("Selected file").to_string();
     let _ = crate::tools::record(&app, "file.move_selected_file",
@@ -905,7 +930,7 @@ pub fn prepare_file_undo(file_id: String, operation_id: String) -> Result<FileUn
         return Err("The original backup is not a safe regular text file.".into());
     }
     let backup_bytes = fs::read(&backup).map_err(|_| "Could not read the original backup.".to_string())?;
-    if backup_bytes.contains(&0) { return Err("The backup contains binary data; undo is not supported.".into()); }
+    validate_undo_backup(&record, &backup_bytes)?;
     let original = safe_relative_file(&root, &record.original_relative_path)?;
     if record.kind == "move" {
         match fs::symlink_metadata(&original) {
@@ -977,7 +1002,7 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
         return Err("The original backup is not a safe regular file.".into());
     }
     let original_bytes = fs::read(&backup).map_err(|_| "Could not read the original backup.".to_string())?;
-    if original_bytes.contains(&0) { return Err("The original backup is not valid text.".into()); }
+    validate_undo_backup(&record, &original_bytes)?;
     let original = safe_relative_file(&root, &record.original_relative_path)?;
     if record.kind == "move" {
         match fs::symlink_metadata(&original) {
@@ -1204,6 +1229,20 @@ mod tests {
     }
 
     #[test]
+    fn undo_backup_integrity_is_checked_for_edits_and_moves() {
+        let edit_record = UndoRecord {
+            id: make_token(), kind: "edit".into(),
+            original_relative_path: "notes.txt".into(), current_relative_path: "notes.txt".into(),
+            backup_relative_path: ".friday-backups/test.bak".into(),
+            expected_current_sha256: content_hash(b"after"),
+            backup_sha256: Some(content_hash(b"before")), created_at: edit_now(),
+        };
+        assert!(validate_undo_backup(&edit_record, b"before").is_ok());
+        assert!(validate_undo_backup(&edit_record, b"tampered").is_err());
+        assert!(validate_undo_backup(&edit_record, b"bad\xffutf8").is_err());
+    }
+
+    #[test]
     fn undo_completion_is_detected_even_if_history_marker_was_not_written() {
         let root = std::env::temp_dir().join(format!("friday-undo-recovery-{}", make_token()));
         fs::create_dir_all(root.join(".friday-backups")).unwrap();
@@ -1215,7 +1254,8 @@ mod tests {
             id: edit_id.clone(), kind: "edit".into(),
             original_relative_path: "edited.txt".into(), current_relative_path: "edited.txt".into(),
             backup_relative_path: format!(".friday-backups/{edit_id}.bak"),
-            expected_current_sha256: content_hash(b"after"), created_at: edit_now(),
+            expected_current_sha256: content_hash(b"after"),
+            backup_sha256: Some(content_hash(b"before")), created_at: edit_now(),
         };
         assert!(undo_is_already_applied(&root, &edit_record));
 
@@ -1226,7 +1266,8 @@ mod tests {
             id: move_id.clone(), kind: "move".into(),
             original_relative_path: "original.txt".into(), current_relative_path: "renamed.txt".into(),
             backup_relative_path: format!(".friday-backups/{move_id}.move.bak"),
-            expected_current_sha256: content_hash(b"moved bytes"), created_at: edit_now(),
+            expected_current_sha256: content_hash(b"moved bytes"),
+            backup_sha256: Some(content_hash(b"moved bytes")), created_at: edit_now(),
         };
         assert!(undo_is_already_applied(&root, &move_record));
 
