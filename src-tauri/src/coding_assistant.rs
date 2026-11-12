@@ -13,7 +13,7 @@ const MAX_SCANNED_ENTRIES: usize = 3_000;
 const MAX_PROJECT_CANDIDATES: usize = 300;
 const MAX_SELECTED_FILES: usize = 25;
 const MAX_FILE_BYTES: u64 = 128 * 1024;
-const MAX_TOTAL_BYTES: usize = 1024 * 1024;
+const MAX_TOTAL_BYTES: usize = 180 * 1024;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -270,7 +270,7 @@ pub async fn read_project_files(app: AppHandle, file_ids: Vec<String>) -> Result
         }
         let remaining = MAX_TOTAL_BYTES.saturating_sub(total_bytes);
         if metadata.len() as usize > remaining {
-            return Err("The selected files exceed the 1 MB combined project-reading limit. Select fewer files.".into());
+            return Err("The selected files exceed the 180 KB combined project-reading limit. Select fewer files.".into());
         }
         let bytes = fs::read(&canonical).map_err(|_| "FRIDAY could not read one of the selected project files.".to_string())?;
         if bytes.len() > MAX_FILE_BYTES as usize || bytes.len() > remaining || bytes.len() as u64 != metadata.len() {
