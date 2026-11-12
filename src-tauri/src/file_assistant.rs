@@ -122,6 +122,30 @@ struct UndoRecord {
     created_at: u64,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FileTransactionJournal {
+    id: String,
+    kind: String,
+    original_relative_path: String,
+    current_relative_path: String,
+    backup_relative_path: String,
+    expected_original_sha256: String,
+    expected_current_sha256: String,
+    created_at: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRecoveryItem {
+    pub id: String,
+    pub kind: String,
+    pub original_relative_path: String,
+    pub current_relative_path: String,
+    pub status: String,
+    pub created_at: u64,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileUndoOperation {
@@ -262,9 +286,18 @@ fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], expect
         return Err("The original file changed immediately before saving. No changes were made.".into());
     }
     let original_permissions = metadata.permissions();
-    ensure_backup_capacity(root)?;
+    ensure_backup_capacity(root, (original_bytes.len() as u64).saturating_add(proposed.len() as u64).saturating_add(16_384), 8)?;
     let backup_dir = ensure_backup_dir(root, false)?;
     let backup_path = backup_dir.join(format!("{token}.bak"));
+    let relative_current = current.strip_prefix(root).map_err(|_| "The file is outside the approved folder.")?
+        .to_string_lossy().replace('\\', "/");
+    begin_file_transaction(root, &FileTransactionJournal {
+        id: token.to_string(), kind: "edit".into(),
+        original_relative_path: relative_current.clone(), current_relative_path: relative_current,
+        backup_relative_path: format!(".friday-backups/{token}.bak"),
+        expected_original_sha256: content_hash(&original_bytes),
+        expected_current_sha256: content_hash(proposed), created_at: edit_now(),
+    })?;
     let parent = current.parent().ok_or("The selected file has no parent folder.")?;
     let temporary = parent.join(format!(".friday-edit-{token}.tmp"));
     let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temporary)
@@ -276,17 +309,21 @@ fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], expect
     drop(temp_file);
     if let Err(error) = fs::rename(current, &backup_path) {
         let _ = fs::remove_file(&temporary);
+        let _ = mark_file_transaction_phase(root, token, "aborted");
         return Err(format!("Could not preserve the original file as a backup: {error}"));
     }
+    mark_file_transaction_phase(root, token, "backup_created")?;
     if let Err(error) = fs::rename(&temporary, current) {
         let restored = fs::rename(&backup_path, current).is_ok();
         let _ = fs::remove_file(&temporary);
+        if restored { let _ = mark_file_transaction_phase(root, token, "aborted"); }
         return Err(if restored {
             format!("Could not install the edited file; the original was restored: {error}")
         } else {
             format!("Could not install the edited file or restore it automatically. Your original is preserved at {}: {error}", backup_path.display())
         });
     }
+    mark_file_transaction_phase(root, token, "file_installed")?;
     Ok(backup_path)
 }
 
@@ -358,7 +395,7 @@ fn undo_backup_dir(root: &Path) -> Result<PathBuf, String> {
 
 // Never automatically delete recovery data. Refuse new changes at a bounded
 // storage ceiling so users can review/export backups without losing recovery points.
-fn ensure_backup_capacity(root: &Path) -> Result<(), String> {
+fn ensure_backup_capacity(root: &Path, additional_bytes: u64, additional_files: usize) -> Result<(), String> {
     let dir = ensure_backup_dir(root, true)?;
     let mut bytes = 0u64;
     let mut files = 0usize;
@@ -371,10 +408,136 @@ fn ensure_backup_capacity(root: &Path) -> Result<(), String> {
         files = files.saturating_add(1);
         bytes = bytes.saturating_add(meta.len());
     }
-    if files >= MAX_BACKUP_STORAGE_FILES || bytes >= MAX_BACKUP_STORAGE_BYTES {
+    if files.saturating_add(additional_files) > MAX_BACKUP_STORAGE_FILES || bytes.saturating_add(additional_bytes) > MAX_BACKUP_STORAGE_BYTES {
         return Err("FRIDAY backup storage has reached its safety limit (500 files or 100 MB). Existing backups were preserved; review or export them before making more changes.".into());
     }
     Ok(())
+}
+
+fn transaction_journal_path(root: &Path, id: &str) -> Result<PathBuf, String> {
+    if id.len() != 48 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("The transaction identifier is invalid.".into());
+    }
+    Ok(undo_backup_dir(root)?.join(format!("{id}.txn.json")))
+}
+
+fn begin_file_transaction(root: &Path, journal: &FileTransactionJournal) -> Result<(), String> {
+    let path = transaction_journal_path(root, &journal.id)?;
+    let bytes = serde_json::to_vec(journal).map_err(|_| "Could not prepare the file-operation recovery record.".to_string())?;
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&path)
+        .map_err(|e| format!("Could not start a durable file-operation recovery record: {e}"))?;
+    if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(format!("Could not persist the file-operation recovery record: {error}"));
+    }
+    Ok(())
+}
+
+// Each phase is a separate create-new, flushed marker. This avoids relying on
+// replacing an existing journal file, which behaves differently on Windows.
+fn mark_file_transaction_phase(root: &Path, id: &str, phase: &str) -> Result<(), String> {
+    const PHASES: &[&str] = &["backup_created", "destination_created", "source_removed", "file_installed", "history_saved", "complete", "aborted"];
+    if !PHASES.contains(&phase) {
+        return Err("The file-operation recovery phase is invalid.".into());
+    }
+    let marker = undo_backup_dir(root)?.join(format!("{id}.txn-{phase}"));
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&marker)
+        .map_err(|e| format!("The file change may have completed, but FRIDAY could not persist its recovery phase: {e}"))?;
+    file.write_all(phase.as_bytes()).and_then(|_| file.sync_all())
+        .map_err(|e| format!("FRIDAY could not flush its recovery phase marker: {e}"))
+}
+
+fn transaction_phase_exists(root: &Path, id: &str, phase: &str) -> bool {
+    undo_backup_dir(root).map(|dir| dir.join(format!("{id}.txn-{phase}")).is_file()).unwrap_or(false)
+}
+
+fn bounded_regular_file_hash(path: &Path) -> Option<String> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if is_redirected(&metadata) || !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    if bytes.len() as u64 > MAX_FILE_BYTES || bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+        return None;
+    }
+    Some(content_hash(&bytes))
+}
+
+fn validate_transaction_journal(journal: &FileTransactionJournal, id: &str) -> Result<(), String> {
+    if journal.id != id || id.len() != 48 || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !is_sha256(&journal.expected_original_sha256) || !is_sha256(&journal.expected_current_sha256) {
+        return Err("The file-operation recovery record failed integrity validation.".into());
+    }
+    let expected_backup = match journal.kind.as_str() {
+        "edit" => format!(".friday-backups/{id}.bak"),
+        "move" => format!(".friday-backups/{id}.move.bak"),
+        _ => return Err("The file-operation recovery type is not supported.".into()),
+    };
+    if journal.backup_relative_path != expected_backup {
+        return Err("The file-operation recovery backup path is invalid.".into());
+    }
+    for relative in [&journal.original_relative_path, &journal.current_relative_path] {
+        let path = Path::new(relative);
+        if relative.is_empty() || relative.len() > 512 || path.is_absolute()
+            || path.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+            || !supported_text_file(path) {
+            return Err("The file-operation recovery path is invalid.".into());
+        }
+    }
+    Ok(())
+}
+
+fn classify_file_transaction(root: &Path, journal: &FileTransactionJournal) -> String {
+    let backup = root.join(&journal.backup_relative_path);
+    let backup_hash = bounded_regular_file_hash(&backup);
+    let original = root.join(&journal.original_relative_path);
+    let current = root.join(&journal.current_relative_path);
+    let original_hash = bounded_regular_file_hash(&original);
+    let current_hash = bounded_regular_file_hash(&current);
+    let original_missing = matches!(fs::symlink_metadata(&original), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+    let current_missing = matches!(fs::symlink_metadata(&current), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+
+    match journal.kind.as_str() {
+        "edit" if backup_hash.as_deref() == Some(journal.expected_original_sha256.as_str())
+            && current_hash.as_deref() == Some(journal.expected_current_sha256.as_str()) => "finish_undo_history".into(),
+        "edit" if backup_hash.as_deref() == Some(journal.expected_original_sha256.as_str()) && current_missing => "restore_original".into(),
+        "edit" if original_hash.as_deref() == Some(journal.expected_original_sha256.as_str()) && backup_hash.is_none() => "operation_not_started".into(),
+        "move" if backup_hash.as_deref() == Some(journal.expected_original_sha256.as_str())
+            && current_hash.as_deref() == Some(journal.expected_current_sha256.as_str()) && original_missing => "finish_undo_history".into(),
+        "move" if backup_hash.as_deref() == Some(journal.expected_original_sha256.as_str()) && current_missing && original_missing => "restore_original".into(),
+        "move" if original_hash.as_deref() == Some(journal.expected_original_sha256.as_str()) && current_missing && backup_hash.is_none() => "operation_not_started".into(),
+        _ => "manual_review".into(),
+    }
+}
+
+fn list_file_transactions(root: &Path) -> Result<Vec<FileRecoveryItem>, String> {
+    let dir = undo_backup_dir(root)?;
+    let mut items = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|_| "Could not inspect file-operation recovery records.".to_string())? {
+        let entry = entry.map_err(|_| "Could not inspect a file-operation recovery record.".to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".txn.json") { continue; }
+        let id = name.trim_end_matches(".txn.json");
+        if transaction_phase_exists(root, id, "complete") || transaction_phase_exists(root, id, "aborted") { continue; }
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|_| "Could not inspect a recovery record.".to_string())?;
+        if is_redirected(&metadata) || !metadata.is_file() || metadata.len() > 16_384 { continue; }
+        let journal: FileTransactionJournal = match fs::read(entry.path()).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()) {
+            Some(value) => value,
+            None => continue,
+        };
+        if validate_transaction_journal(&journal, id).is_err() { continue; }
+        items.push(FileRecoveryItem {
+            id: journal.id.clone(), kind: journal.kind.clone(),
+            original_relative_path: journal.original_relative_path.clone(),
+            current_relative_path: journal.current_relative_path.clone(),
+            status: classify_file_transaction(root, &journal),
+            created_at: journal.created_at,
+        });
+    }
+    items.sort_by(|a,b| b.created_at.cmp(&a.created_at));
+    items.truncate(50);
+    Ok(items)
 }
 
 fn save_undo_record(root: &Path, record: &UndoRecord) -> Result<(), String> {
@@ -822,6 +985,10 @@ pub fn apply_file_edit(
         backup_sha256: Some(content_hash(&original)),
         created_at: edit_now(),
     }).err();
+    if undo_warning.is_none() {
+        mark_file_transaction_phase(&root, &backup_token, "history_saved")?;
+        mark_file_transaction_phase(&root, &backup_token, "complete")?;
+    }
     let file_name = current.file_name().and_then(|name| name.to_str()).unwrap_or("Selected file").to_string();
     let bytes_written = edit.proposed_content.len();
     let _ = crate::tools::record(
@@ -956,9 +1123,20 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
         Err(_) => return Err("FRIDAY could not safely inspect the destination. No changes were made.".into()),
     }
-    ensure_backup_capacity(&root)?;
+    ensure_backup_capacity(&root, (bytes.len() as u64).saturating_mul(2).saturating_add(16_384), 8)?;
     let backup_dir = ensure_backup_dir(&root, false)?;
     let token = make_token();
+    let source_relative = source.strip_prefix(&root).map_err(|_| "The source is outside the approved folder.")?
+        .to_string_lossy().replace('\\', "/");
+    let destination_relative_for_journal = destination.strip_prefix(&root).map_err(|_| "The destination is outside the approved folder.")?
+        .to_string_lossy().replace('\\', "/");
+    begin_file_transaction(&root, &FileTransactionJournal {
+        id: token.clone(), kind: "move".into(),
+        original_relative_path: source_relative.clone(), current_relative_path: destination_relative_for_journal.clone(),
+        backup_relative_path: format!(".friday-backups/{token}.move.bak"),
+        expected_original_sha256: content_hash(&bytes), expected_current_sha256: content_hash(&bytes),
+        created_at: edit_now(),
+    })?;
     let backup = backup_dir.join(format!("{token}.move.bak"));
     let mut backup_file = OpenOptions::new().write(true).create_new(true).open(&backup)
         .map_err(|e| format!("Could not create a new backup without overwriting anything: {e}"))?;
@@ -968,21 +1146,27 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
         return Err(format!("Could not safely write the original backup: {error}"));
     }
     drop(backup_file);
+    mark_file_transaction_phase(&root, &token, "backup_created")?;
     let latest_bytes = fs::read(&source).map_err(|_| "FRIDAY could not re-check the source immediately before moving.".to_string())?;
     if content_hash(&latest_bytes) != operation.original_sha256 {
         let _ = fs::remove_file(&backup);
+        let _ = mark_file_transaction_phase(&root, &token, "aborted");
         return Err("The source changed immediately before moving. No changes were made.".into());
     }
     // A hard-link creation is atomic and fails rather than replacing an existing destination.
     if let Err(error) = fs::hard_link(&source, &destination) {
         let _ = fs::remove_file(&backup);
+        let _ = mark_file_transaction_phase(&root, &token, "aborted");
         return Err(format!("Could not safely create the destination without overwriting anything: {error}"));
     }
+    mark_file_transaction_phase(&root, &token, "destination_created")?;
     if let Err(error) = fs::remove_file(&source) {
         let _ = fs::remove_file(&destination);
         let _ = fs::remove_file(&backup);
+        let _ = mark_file_transaction_phase(&root, &token, "aborted");
         return Err(format!("Could not finish moving the file. The original remains in place: {error}"));
     }
+    mark_file_transaction_phase(&root, &token, "source_removed")?;
     let backup_relative = backup.strip_prefix(&root).unwrap_or(&backup).to_string_lossy().replace('\\', "/");
     let source_relative = source.strip_prefix(&root).unwrap_or(&source).to_string_lossy().replace('\\', "/");
     let destination_relative = destination.strip_prefix(&root).unwrap_or(&destination).to_string_lossy().replace('\\', "/");
@@ -994,6 +1178,10 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
         backup_sha256: Some(content_hash(&bytes)),
         created_at: edit_now(),
     }).err();
+    if undo_warning.is_none() {
+        mark_file_transaction_phase(&root, &token, "history_saved")?;
+        mark_file_transaction_phase(&root, &token, "complete")?;
+    }
     let file_name = destination.file_name().and_then(|name| name.to_str()).unwrap_or("Selected file").to_string();
     let _ = crate::tools::record(&app, "file.move_selected_file",
         &format!("Moved a selected file to {destination_relative}; backup preserved at {backup_relative}."), true);
@@ -1011,6 +1199,15 @@ pub fn list_file_undo_operations(file_id: String) -> Result<Vec<FileUndoOperatio
     let grant = grants.get(&file_id).ok_or("Select the folder again to view its undo history.")?;
     let root = validate_granted_root(&grant.root)?;
     list_undo_records(&root)
+}
+
+#[tauri::command]
+pub fn list_file_recovery_items(file_id: String) -> Result<Vec<FileRecoveryItem>, String> {
+    ensure_skill_loaded()?;
+    let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
+    let grant = grants.get(&file_id).ok_or("Select the folder again to inspect recovery items.")?;
+    let root = validate_granted_root(&grant.root)?;
+    list_file_transactions(&root)
 }
 
 #[tauri::command]
@@ -1392,7 +1589,7 @@ mod tests {
         for index in 0..MAX_BACKUP_STORAGE_FILES {
             fs::write(root.join(".friday-backups").join(format!("item-{index}.bak")), b"keep").unwrap();
         }
-        assert!(ensure_backup_capacity(&root).is_err());
+        assert!(ensure_backup_capacity(&root, 1, 1).is_err());
         assert_eq!(fs::read_dir(root.join(".friday-backups")).unwrap().count(), MAX_BACKUP_STORAGE_FILES);
         fs::remove_dir_all(&root).unwrap();
     }
@@ -1427,6 +1624,61 @@ mod tests {
             }
         }
 
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn transaction_journal_classifies_interrupted_edit_and_move_states() {
+        let root_path = std::env::temp_dir().join(format!("friday-transaction-state-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+
+        let edit_id = make_token();
+        let edit = FileTransactionJournal {
+            id: edit_id.clone(), kind: "edit".into(),
+            original_relative_path: "notes.txt".into(), current_relative_path: "notes.txt".into(),
+            backup_relative_path: format!(".friday-backups/{edit_id}.bak"),
+            expected_original_sha256: content_hash(b"before"),
+            expected_current_sha256: content_hash(b"after"), created_at: edit_now(),
+        };
+        fs::write(root.join(".friday-backups").join(format!("{edit_id}.bak")), b"before").unwrap();
+        assert_eq!(classify_file_transaction(&root, &edit), "restore_original");
+        fs::write(root.join("notes.txt"), b"after").unwrap();
+        assert_eq!(classify_file_transaction(&root, &edit), "finish_undo_history");
+
+        let move_id = make_token();
+        let moved = FileTransactionJournal {
+            id: move_id.clone(), kind: "move".into(),
+            original_relative_path: "old.txt".into(), current_relative_path: "new.txt".into(),
+            backup_relative_path: format!(".friday-backups/{move_id}.move.bak"),
+            expected_original_sha256: content_hash(b"moved"),
+            expected_current_sha256: content_hash(b"moved"), created_at: edit_now(),
+        };
+        fs::write(root.join(".friday-backups").join(format!("{move_id}.move.bak")), b"moved").unwrap();
+        assert_eq!(classify_file_transaction(&root, &moved), "restore_original");
+        fs::write(root.join("new.txt"), b"moved").unwrap();
+        assert_eq!(classify_file_transaction(&root, &moved), "finish_undo_history");
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn transaction_journal_markers_are_create_new_and_durable() {
+        let root_path = std::env::temp_dir().join(format!("friday-transaction-markers-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        let id = make_token();
+        let journal = FileTransactionJournal {
+            id: id.clone(), kind: "edit".into(),
+            original_relative_path: "notes.txt".into(), current_relative_path: "notes.txt".into(),
+            backup_relative_path: format!(".friday-backups/{id}.bak"),
+            expected_original_sha256: content_hash(b"before"),
+            expected_current_sha256: content_hash(b"after"), created_at: edit_now(),
+        };
+        begin_file_transaction(&root, &journal).unwrap();
+        mark_file_transaction_phase(&root, &id, "backup_created").unwrap();
+        assert!(transaction_phase_exists(&root, &id, "backup_created"));
+        assert!(mark_file_transaction_phase(&root, &id, "backup_created").is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 
