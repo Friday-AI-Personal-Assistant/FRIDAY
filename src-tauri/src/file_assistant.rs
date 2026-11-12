@@ -1382,12 +1382,13 @@ pub fn recover_file_transaction(file_id: String, transaction_id: String) -> Resu
             match fs::symlink_metadata(&record_path) {
                 Ok(_) => {
                     let existing = load_undo_record(&root, &journal.id)?;
+                    let expected_backup_hash = content_hash(backup_bytes);
                     if existing.kind != journal.kind
                         || existing.original_relative_path != journal.original_relative_path
                         || existing.current_relative_path != journal.current_relative_path
                         || existing.backup_relative_path != journal.backup_relative_path
                         || existing.expected_current_sha256 != journal.expected_current_sha256
-                        || existing.backup_sha256.as_deref() != Some(content_hash(backup_bytes).as_str()) {
+                        || existing.backup_sha256.as_deref() != Some(expected_backup_hash.as_str()) {
                         return Err("The existing Undo history does not match the recovery journal. FRIDAY made no changes.".into());
                     }
                 }
