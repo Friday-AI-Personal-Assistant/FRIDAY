@@ -1490,7 +1490,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn recovery_refuses_malformed_active_undo_record_and_preserves_journal() {
         let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("malformed-active-undo", b"edge original source");
         let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
@@ -1612,6 +1611,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn recovery_refuses_missing_original_backup_and_preserves_journal() {
         let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("missing-backup", b"edge original source");
         let journal = backup_dir.join(format!("{}.txn.json", record.id));
