@@ -99,3 +99,13 @@ Allow FRIDAY to propose and, only after explicit user approval, apply carefully 
 - The original backup must be a normal bounded file and match the recorded original SHA-256. A corrupted/missing backup, redirected target, unsupported file, or intervening user edit causes a refusal without overwriting the target.
 - Restoration uses a synced same-directory temporary file, a journal, a staged displaced copy, post-restore SHA-256 verification, and a consumed-record rename to prevent replay. The verified original backup is retained.
 - Tests cover successful restore and replay refusal, intervening user changes, and corrupted backups. Startup recovery and fault-injection across interrupted rename/journal states remain outstanding; the command stays hidden from the UI until those are complete and CI-verified.
+
+
+## Interrupted Coding Assistant transaction recovery
+
+- On each explicit project-folder selection, FRIDAY now scans the selected project's bounded code-backup directory for unfinished Apply and Undo journals before listing project files.
+- Recovery validates journal schema, transaction ID and filename, project-relative target path, canonical project root/parent, regular non-redirected files, and SHA-256 values before moving or deleting any recovery copy.
+- Interrupted Apply recovery restores the verified original if the target is missing, or finalizes a verified installed proposal and recreates its missing Undo record. Unexpected target contents or damaged/missing backups stop automatic recovery and preserve all copies for manual review.
+- Interrupted Undo recovery recognizes whether the original was already restored, whether the edited file must be put back, or whether a verified temporary original can finish the restore. It marks completed Undo records consumed and refuses ambiguous states.
+- Recovery runs only after the user explicitly selects the project folder; it does not search the entire computer or retain persistent folder permissions.
+- Unit tests simulate an Apply interruption between renames, an Undo interruption after original installation, and an unexpected user-modified target. CI verification pending.
