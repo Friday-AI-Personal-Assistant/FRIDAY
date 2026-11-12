@@ -80,3 +80,13 @@ Allow FRIDAY to propose and, only after explicit user approval, apply carefully 
 - Audit entries contain metadata only.
 - Cancellation, skill unload, project reselection and app restart invalidate outstanding previews/approvals.
 - Rust unit tests cover every failure path; Windows CI build passes; hands-on Windows acceptance remains required.
+
+
+## Safe apply backend progress
+
+- A backend-only apply_code_change command is implemented and registered. It consumes the one-use approval token before proceeding, revalidates the loaded skill, active project grant, canonical root and file path, allowed file type, regular-file status, bounded UTF-8 content, and original SHA-256.
+- Before replacement it creates a FRIDAY-controlled .friday-code-backups directory, enforces a 500-file / 100 MB storage ceiling, writes and syncs the original backup, then verifies the backup hash.
+- It writes and syncs a same-directory temporary proposal, verifies its hash, stages the original aside, installs the proposal, verifies the installed hash, and attempts restoration on failed installation or verification. A transaction journal and persistent undo metadata are written.
+- This command is intentionally not exposed in the Coding Assistant UI yet. The guarded undo command and fault-injection/recovery coverage must be completed and CI-verified before users can trigger writes.
+- Platform caveat: replacement uses a journaled two-rename sequence with rollback rather than claiming a single universally atomic replace on every supported filesystem. A brief missing-target window may exist between renames; recovery must handle interruption there.
+- New tests cover successful verified backup/undo metadata, stale-original refusal, and symlink-target refusal. These tests are awaiting CI.
