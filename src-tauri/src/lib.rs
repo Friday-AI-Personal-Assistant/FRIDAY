@@ -58,6 +58,8 @@ pub fn run() {
             file_assistant::cancel_file_move_preview,
             file_assistant::apply_file_move,
             file_assistant::list_file_undo_operations,
+            file_assistant::list_file_recovery_items,
+            file_assistant::recover_file_transaction,
             file_assistant::prepare_file_undo,
             file_assistant::issue_file_undo_approval,
             file_assistant::cancel_file_undo_preview,
