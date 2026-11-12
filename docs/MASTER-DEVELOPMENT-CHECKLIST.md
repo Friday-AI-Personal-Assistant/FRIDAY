@@ -119,11 +119,11 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 ## Phase 2 — FRIDAY's original skills
 
 ### File Assistant Stage 6 — comprehensive safety, reliability and edge-case review
-- [~] Audit folder-grant lifetime and root-path revalidation; reject a folder that has been replaced or redirected after approval.
+- [x] Revalidate the selected folder root on every granted operation; reject a root that is no longer the same normal directory or has been redirected after approval.
 - [ ] Review crash/interruption recovery for edit, move, backup and undo transactions.
-- [ ] Make undo-history persistence failures accurately distinguish completed file changes from failed operations.
-- [ ] Harden undo completion markers and recovery after partial failures.
-- [ ] Add tests for symlinks/reparse points, path traversal, stale grants, occupied destinations, changed files, missing/corrupt backups, duplicate/replayed approvals and interrupted operations.
+- [x] File edit/move results now distinguish a completed file change from a failure to persist undo history; the UI warns that the original backup remains but one-click Undo may be unavailable.
+- [~] Undo completion markers are flushed to disk; if a marker cannot be written, FRIDAY detects an already-restored file from its backup and avoids presenting it as undoable. Full crash-transaction recovery remains pending.
+- [~] Added tests for approved-root validation (including symlink rejection on Unix), undo completion detection without a marker, and existing path traversal/backup validation. Remaining edge-case tests: Windows reparse points, stale grants, occupied destinations, changed files, missing/corrupt backups, duplicate/replayed approvals and interrupted operations.
 - [ ] Review temporary-file cleanup, backup integrity, permissions and audit-history consistency.
 - [ ] Run frontend build, Rust tests and Windows installer CI after fixes; keep Windows user acceptance testing for the final release phase.
 
