@@ -267,6 +267,270 @@ fn validate_undo_record(record: &CodingUndoRecord) -> Result<(), String> {
     Ok(())
 }
 
+fn read_recovery_file(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("FRIDAY could not inspect a recovery file.".into()),
+    };
+    if is_redirected(&meta) || !meta.is_file() || meta.len() == 0 || meta.len() > limit {
+        return Err("A recovery item is not a safe bounded regular file. No automatic cleanup was attempted.".into());
+    }
+    let bytes = fs::read(path).map_err(|_| "FRIDAY could not read a recovery file.".to_string())?;
+    if bytes.len() as u64 != meta.len() {
+        return Err("A recovery file changed while FRIDAY was reading it.".into());
+    }
+    Ok(Some(bytes))
+}
+
+fn safe_recovery_target(root: &Path, record: &CodingUndoRecord) -> Result<PathBuf, String> {
+    validate_undo_record(record)?;
+    let canonical_root = validate_granted_root(root)?;
+    let target = canonical_root.join(&record.relative_path);
+    if !supported_project_file(&target) {
+        return Err("A recovery journal points to a file type outside the Coding Assistant allowlist.".into());
+    }
+    let parent = target.parent().ok_or("A recovery target has no parent folder.")?;
+    let parent_meta = fs::symlink_metadata(parent)
+        .map_err(|_| "The recovery target folder is missing. Recovery copies were preserved.".to_string())?;
+    if is_redirected(&parent_meta) || !parent_meta.is_dir() {
+        return Err("A recovery target folder is redirected or is not a normal folder.".into());
+    }
+    let canonical_parent = fs::canonicalize(parent)
+        .map_err(|_| "FRIDAY could not validate a recovery target folder.".to_string())?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err("A recovery target folder resolves outside the selected project.".into());
+    }
+    if let Some(meta) = fs::symlink_metadata(&target).ok() {
+        if is_redirected(&meta) || !meta.is_file() || meta.len() == 0 || meta.len() > MAX_FILE_BYTES {
+            return Err("A recovery target is not a safe bounded regular file. Recovery copies were preserved.".into());
+        }
+    }
+    Ok(target)
+}
+
+fn recovery_hash(path: &Path, expected_limit: u64) -> Result<Option<String>, String> {
+    Ok(read_recovery_file(path, expected_limit)?.map(|bytes| sha256_hex(&bytes)))
+}
+
+fn remove_recovery_copy(path: &Path, expected_hash: &str) -> Result<(), String> {
+    match recovery_hash(path, MAX_PROPOSED_FILE_BYTES.max(MAX_FILE_BYTES))? {
+        None => Ok(()),
+        Some(actual) if actual == expected_hash => fs::remove_file(path)
+            .map_err(|_| "FRIDAY could not safely clean up a verified recovery copy.".to_string()),
+        Some(_) => Err("A temporary recovery copy has unexpected contents. FRIDAY preserved it for manual review.".into()),
+    }
+}
+
+fn write_recovery_copy(path: &Path, bytes: &[u8], expected_hash: &str) -> Result<(), String> {
+    if bytes.is_empty() || bytes.len() as u64 > MAX_FILE_BYTES || sha256_hex(bytes) != expected_hash {
+        return Err("The verified recovery source failed its integrity check.".into());
+    }
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)
+        .map_err(|_| "FRIDAY could not create a new recovery temporary file.".to_string())?;
+    file.write_all(bytes).and_then(|_| file.sync_all())
+        .map_err(|_| "FRIDAY could not flush a recovery temporary file.".to_string())?;
+    drop(file);
+    let installed = read_recovery_file(path, MAX_FILE_BYTES)?
+        .ok_or("The recovery temporary file disappeared.")?;
+    if sha256_hex(&installed) != expected_hash {
+        return Err("The recovery temporary file failed SHA-256 verification.".into());
+    }
+    Ok(())
+}
+
+fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoRecord) -> Result<(), String> {
+    validate_undo_record(record)?;
+    let target = safe_recovery_target(root, record)?;
+    let backup = backup_dir.join(format!("{}.bak", record.id));
+    let original = read_recovery_file(&backup, MAX_FILE_BYTES)?
+        .ok_or("The original backup for an interrupted Undo is missing. Recovery files were preserved.")?;
+    if sha256_hex(&original) != record.original_sha256 {
+        return Err("The original backup for an interrupted Undo failed SHA-256 verification. Recovery files were preserved.".into());
+    }
+    let target_hash = recovery_hash(&target, MAX_FILE_BYTES)?;
+    let displaced = target.parent().unwrap().join(format!(".friday-code-undone-{}.tmp", record.id));
+    let temporary = target.parent().unwrap().join(format!(".friday-code-undo-{}.tmp", record.id));
+    let displaced_hash = recovery_hash(&displaced, MAX_FILE_BYTES)?;
+    let temporary_hash = recovery_hash(&temporary, MAX_FILE_BYTES)?;
+
+    match target_hash.as_deref() {
+        Some(hash) if hash == record.original_sha256 => {
+            if let Some(hash) = displaced_hash.as_deref() { if hash != record.resulting_sha256 { return Err("An interrupted Undo left an unexpected displaced file. Nothing was deleted.".into()); } }
+            if let Some(hash) = temporary_hash.as_deref() { if hash != record.original_sha256 { return Err("An interrupted Undo left an unexpected temporary file. Nothing was deleted.".into()); } }
+            let undo_path = backup_dir.join(format!("{}.undo.json", record.id));
+            let consumed = backup_dir.join(format!("{}.undone.json", record.id));
+            match fs::symlink_metadata(&undo_path) {
+                Ok(meta) if !is_redirected(&meta) && meta.is_file() => {
+                    if fs::symlink_metadata(&consumed).is_ok() { return Err("Both active and consumed Undo records exist. Manual review is required.".into()); }
+                    fs::rename(&undo_path, &consumed).map_err(|_| "FRIDAY could not mark the recovered Undo as consumed.".to_string())?;
+                }
+                Ok(_) => return Err("The active Undo record is unsafe. Recovery copies were preserved.".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(_) => return Err("FRIDAY could not inspect the active Undo record.".into()),
+            }
+            if displaced_hash.is_some() { remove_recovery_copy(&displaced, &record.resulting_sha256)?; }
+            if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.original_sha256)?; }
+        }
+        Some(hash) if hash == record.resulting_sha256 => {
+            if displaced_hash.is_some() {
+                return Err("An interrupted Undo has both the edited target and a displaced copy. FRIDAY preserved all files for manual review.".into());
+            }
+            if let Some(hash) = temporary_hash.as_deref() {
+                if hash != record.original_sha256 { return Err("An interrupted Undo temporary file has unexpected contents.".into()); }
+                remove_recovery_copy(&temporary, &record.original_sha256)?;
+            }
+        }
+        None => {
+            if let Some(hash) = displaced_hash.as_deref() {
+                if hash != record.resulting_sha256 { return Err("The displaced file from an interrupted Undo failed verification.".into()); }
+                fs::rename(&displaced, &target)
+                    .map_err(|_| "FRIDAY could not restore the edited file after an interrupted Undo. Recovery copies were preserved.".to_string())?;
+                if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.original_sha256)?; }
+            } else if temporary_hash.as_deref() == Some(record.original_sha256) {
+                fs::rename(&temporary, &target)
+                    .map_err(|_| "FRIDAY could not finish restoring the verified original after an interrupted Undo.".to_string())?;
+                let undo_path = backup_dir.join(format!("{}.undo.json", record.id));
+                let consumed = backup_dir.join(format!("{}.undone.json", record.id));
+                if fs::symlink_metadata(&undo_path).is_ok() && fs::symlink_metadata(&consumed).is_err() {
+                    fs::rename(&undo_path, &consumed).map_err(|_| "FRIDAY restored the original but could not mark Undo as consumed.".to_string())?;
+                }
+            } else {
+                return Err("The target and displaced copy are missing after an interrupted Undo. FRIDAY preserved the verified backup; manual recovery is required.".into());
+            }
+        }
+        Some(_) => return Err("The project file has contents that match neither side of an interrupted Undo. FRIDAY preserved every recovery copy.".into()),
+    }
+    let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
+    fs::remove_file(journal).map_err(|_| "FRIDAY completed recovery but could not remove the resolved Undo journal.".to_string())?;
+    Ok(())
+}
+
+fn recover_apply_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoRecord) -> Result<(), String> {
+    validate_undo_record(record)?;
+    let target = safe_recovery_target(root, record)?;
+    let backup = backup_dir.join(format!("{}.bak", record.id));
+    let original = read_recovery_file(&backup, MAX_FILE_BYTES)?
+        .ok_or("The original backup for an interrupted Apply is missing. Recovery files were preserved.")?;
+    if sha256_hex(&original) != record.original_sha256 {
+        return Err("The original backup for an interrupted Apply failed SHA-256 verification. Recovery files were preserved.".into());
+    }
+    let target_hash = recovery_hash(&target, MAX_PROPOSED_FILE_BYTES.max(MAX_FILE_BYTES))?;
+    let temporary = target.parent().unwrap().join(format!(".friday-code-edit-{}.tmp", record.id));
+    let displaced = target.parent().unwrap().join(format!(".friday-code-original-{}.tmp", record.id));
+    let temporary_hash = recovery_hash(&temporary, MAX_PROPOSED_FILE_BYTES)?;
+    let displaced_hash = recovery_hash(&displaced, MAX_FILE_BYTES)?;
+
+    match target_hash.as_deref() {
+        Some(hash) if hash == record.resulting_sha256 => {
+            if let Some(hash) = displaced_hash.as_deref() {
+                if hash != record.original_sha256 { return Err("The displaced original from an interrupted Apply failed verification.".into()); }
+            }
+            if let Some(hash) = temporary_hash.as_deref() {
+                if hash != record.resulting_sha256 { return Err("The replacement temporary file from an interrupted Apply has unexpected contents.".into()); }
+            }
+            let undo_path = backup_dir.join(format!("{}.undo.json", record.id));
+            match fs::symlink_metadata(&undo_path) {
+                Ok(meta) if !is_redirected(&meta) && meta.is_file() => {
+                    let bytes = read_recovery_file(&undo_path, 16 * 1024)?.ok_or("The Undo record disappeared.")?;
+                    let saved: CodingUndoRecord = serde_json::from_slice(&bytes)
+                        .map_err(|_| "The Undo record for a completed Apply is damaged.".to_string())?;
+                    validate_undo_record(&saved)?;
+                    if saved.id != record.id || saved.resulting_sha256 != record.resulting_sha256 || saved.original_sha256 != record.original_sha256 {
+                        return Err("The Undo record does not match the completed Apply journal.".into());
+                    }
+                }
+                Ok(_) => return Err("The Undo record for a completed Apply is unsafe.".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let bytes = serde_json::to_vec(record).map_err(|_| "Could not prepare a recovered Undo record.".to_string())?;
+                    let mut file = OpenOptions::new().write(true).create_new(true).open(&undo_path)
+                        .map_err(|_| "FRIDAY could not create the missing Undo record after Apply recovery.".to_string())?;
+                    file.write_all(&bytes).and_then(|_| file.sync_all())
+                        .map_err(|_| "FRIDAY could not flush the recovered Undo record.".to_string())?;
+                }
+                Err(_) => return Err("FRIDAY could not inspect the Undo record for a completed Apply.".into()),
+            }
+            if displaced_hash.is_some() { remove_recovery_copy(&displaced, &record.original_sha256)?; }
+            if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.resulting_sha256)?; }
+        }
+        Some(hash) if hash == record.original_sha256 => {
+            if let Some(hash) = displaced_hash.as_deref() {
+                if hash != record.original_sha256 { return Err("An interrupted Apply left an unexpected displaced file. Recovery copies were preserved.".into()); }
+                remove_recovery_copy(&displaced, &record.original_sha256)?;
+            }
+            if let Some(hash) = temporary_hash.as_deref() {
+                if hash != record.resulting_sha256 { return Err("An interrupted Apply left an unexpected replacement temporary file.".into()); }
+                remove_recovery_copy(&temporary, &record.resulting_sha256)?;
+            }
+        }
+        None => {
+            if displaced_hash.as_deref() == Some(record.original_sha256) {
+                fs::rename(&displaced, &target)
+                    .map_err(|_| "FRIDAY could not restore the displaced original after interrupted Apply. The backup remains available.".to_string())?;
+                if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.resulting_sha256)?; }
+            } else if displaced_hash.is_none() {
+                let restore_temp = target.parent().unwrap().join(format!(".friday-code-recovery-{}.tmp", record.id));
+                write_recovery_copy(&restore_temp, &original, &record.original_sha256)?;
+                fs::rename(&restore_temp, &target)
+                    .map_err(|_| "FRIDAY could not reinstall the verified original backup. The backup remains available.".to_string())?;
+                if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.resulting_sha256)?; }
+            } else {
+                return Err("The displaced original from interrupted Apply failed verification. All copies were preserved.".into());
+            }
+        }
+        Some(_) => return Err("The project file has contents that match neither side of an interrupted Apply. FRIDAY preserved every recovery copy.".into()),
+    }
+    fs::remove_file(backup_dir.join(format!("{}.txn.json", record.id)))
+        .map_err(|_| "FRIDAY resolved the Apply transaction but could not remove its journal.".to_string())?;
+    Ok(())
+}
+
+fn recover_project_code_transactions(root: &Path) -> Result<usize, String> {
+    let backup_dir = root.join(".friday-code-backups");
+    let meta = match fs::symlink_metadata(&backup_dir) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(_) => return Err("FRIDAY could not inspect the project recovery folder.".into()),
+    };
+    if is_redirected(&meta) || !meta.is_dir() {
+        return Err("The project recovery folder is redirected or unsafe. No automatic recovery was attempted.".into());
+    }
+    let canonical = fs::canonicalize(&backup_dir)
+        .map_err(|_| "FRIDAY could not validate the project recovery folder.".to_string())?;
+    if !canonical.starts_with(root) { return Err("The project recovery folder resolves outside the selected project.".into()); }
+    let mut undo_journals = Vec::new();
+    let mut apply_journals = Vec::new();
+    for entry in fs::read_dir(&canonical).map_err(|_| "FRIDAY could not list project recovery records.".to_string())? {
+        let entry = entry.map_err(|_| "FRIDAY could not inspect a project recovery record.".to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".undo-txn.json") { undo_journals.push(entry.path()); }
+        else if name.ends_with(".txn.json") { apply_journals.push(entry.path()); }
+        if undo_journals.len().saturating_add(apply_journals.len()) > MAX_CODE_BACKUP_FILES {
+            return Err("The project contains too many recovery journals for automatic processing. Manual review is required.".into());
+        }
+    }
+    undo_journals.sort();
+    apply_journals.sort();
+    let mut recovered = 0usize;
+    for (paths, is_undo) in [(undo_journals, true), (apply_journals, false)] {
+        for journal in paths {
+            let bytes = read_recovery_file(&journal, 16 * 1024)?
+                .ok_or("A recovery journal disappeared during recovery.")?;
+            let record: CodingUndoRecord = serde_json::from_slice(&bytes)
+                .map_err(|_| "A recovery journal is invalid or damaged. Recovery files were preserved.".to_string())?;
+            validate_undo_record(&record)?;
+            let expected_name = if is_undo { format!("{}.undo-txn.json", record.id) } else { format!("{}.txn.json", record.id) };
+            if journal.file_name().and_then(|v| v.to_str()) != Some(expected_name.as_str()) {
+                return Err("A recovery journal filename does not match its transaction identifier.".into());
+            }
+            if is_undo { recover_undo_transaction(root, &canonical, &record)?; }
+            else { recover_apply_transaction(root, &canonical, &record)?; }
+            recovered = recovered.saturating_add(1);
+        }
+    }
+    Ok(recovered)
+}
+
 fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(PathBuf, PathBuf), String> {
     validate_undo_record(record)?;
     let canonical_root = validate_granted_root(root)?;
@@ -637,6 +901,7 @@ pub async fn pick_project_folder_and_list_files(app: AppHandle) -> Result<Coding
     }
     let root = fs::canonicalize(&path).map_err(|_| "FRIDAY could not open the selected project folder.".to_string())?;
     validate_granted_root(&root)?;
+    let recovered_transactions = recover_project_code_transactions(&root)?;
     let mut candidates = Vec::new();
     let mut grants = BTreeMap::new();
     let mut scanned = 0usize;
@@ -645,7 +910,7 @@ pub async fn pick_project_folder_and_list_files(app: AppHandle) -> Result<Coding
     let truncated = scanned >= MAX_SCANNED_ENTRIES || candidates.len() >= MAX_PROJECT_CANDIDATES;
     *PROJECT_GRANTS.lock().map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())? = grants;
     let project_name = root.file_name().and_then(|value| value.to_str()).unwrap_or("Selected project").chars().take(160).collect();
-    let _ = crate::tools::record(&app, "coding.list_project", &format!("Listed {} bounded source/configuration files from a folder explicitly selected by the user.", candidates.len()), true);
+    let _ = crate::tools::record(&app, "coding.list_project", &format!("Listed {} bounded source/configuration files from a folder explicitly selected by the user; recovered {} interrupted code transaction(s).", candidates.len(), recovered_transactions), true);
     Ok(CodingProjectScan { project_name, files: candidates, scanned_entries: scanned, truncated })
 }
 
@@ -1092,6 +1357,86 @@ mod tests {
         fs::write(&backup, "corrupted").unwrap();
         assert!(undo_code_change_on_disk(&root, &record).is_err());
         assert_eq!(fs::read_to_string(&file).unwrap(), "friday edit");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn recovery_restores_original_when_apply_crashes_between_renames() {
+        let temp = std::env::temp_dir().join(format!("friday-code-recovery-apply-{}", make_token()));
+        fs::create_dir_all(&temp).unwrap();
+        let root = fs::canonicalize(&temp).unwrap();
+        let file = root.join("main.rs");
+        let original = b"original source";
+        let proposed = b"proposed source";
+        fs::write(&file, original).unwrap();
+        let token = make_token();
+        let backup_dir = ensure_code_backup_dir(&root).unwrap();
+        fs::write(backup_dir.join(format!("{token}.bak")), original).unwrap();
+        let record = CodingUndoRecord {
+            id: token.clone(), relative_path: "main.rs".into(),
+            backup_relative_path: format!(".friday-code-backups/{token}.bak"),
+            original_sha256: sha256_hex(original), resulting_sha256: sha256_hex(proposed), created_at: 123,
+        };
+        fs::write(backup_dir.join(format!("{token}.txn.json")), serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(root.join(format!(".friday-code-original-{token}.tmp")), original).unwrap();
+        fs::write(root.join(format!(".friday-code-edit-{token}.tmp")), proposed).unwrap();
+        fs::remove_file(&file).unwrap();
+        assert_eq!(recover_project_code_transactions(&root).unwrap(), 1);
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert!(!root.join(format!(".friday-code-edit-{token}.tmp")).exists());
+        assert!(!backup_dir.join(format!("{token}.txn.json")).exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn recovery_finishes_undo_when_original_is_already_installed() {
+        let temp = std::env::temp_dir().join(format!("friday-code-recovery-undo-{}", make_token()));
+        fs::create_dir_all(&temp).unwrap();
+        let root = fs::canonicalize(&temp).unwrap();
+        let file = root.join("main.rs");
+        let original = b"original source";
+        let proposed = b"proposed source";
+        fs::write(&file, original).unwrap();
+        let token = make_token();
+        let backup_dir = ensure_code_backup_dir(&root).unwrap();
+        fs::write(backup_dir.join(format!("{token}.bak")), original).unwrap();
+        let record = CodingUndoRecord {
+            id: token.clone(), relative_path: "main.rs".into(),
+            backup_relative_path: format!(".friday-code-backups/{token}.bak"),
+            original_sha256: sha256_hex(original), resulting_sha256: sha256_hex(proposed), created_at: 123,
+        };
+        fs::write(backup_dir.join(format!("{token}.undo.json")), serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(backup_dir.join(format!("{token}.undo-txn.json")), serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(root.join(format!(".friday-code-undone-{token}.tmp")), proposed).unwrap();
+        assert_eq!(recover_project_code_transactions(&root).unwrap(), 1);
+        assert!(backup_dir.join(format!("{token}.undone.json")).is_file());
+        assert!(!backup_dir.join(format!("{token}.undo.json")).exists());
+        assert!(!backup_dir.join(format!("{token}.undo-txn.json")).exists());
+        assert_eq!(fs::read(&file).unwrap(), original);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn recovery_preserves_unknown_target_contents_and_journal() {
+        let temp = std::env::temp_dir().join(format!("friday-code-recovery-unknown-{}", make_token()));
+        fs::create_dir_all(&temp).unwrap();
+        let root = fs::canonicalize(&temp).unwrap();
+        let file = root.join("main.rs");
+        let token = make_token();
+        let backup_dir = ensure_code_backup_dir(&root).unwrap();
+        let original = b"original source";
+        let proposed = b"proposed source";
+        fs::write(&file, b"user changed this").unwrap();
+        fs::write(backup_dir.join(format!("{token}.bak")), original).unwrap();
+        let record = CodingUndoRecord {
+            id: token.clone(), relative_path: "main.rs".into(),
+            backup_relative_path: format!(".friday-code-backups/{token}.bak"),
+            original_sha256: sha256_hex(original), resulting_sha256: sha256_hex(proposed), created_at: 123,
+        };
+        fs::write(backup_dir.join(format!("{token}.txn.json")), serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"user changed this");
+        assert!(backup_dir.join(format!("{token}.txn.json")).exists());
         fs::remove_dir_all(&root).unwrap();
     }
 
