@@ -514,8 +514,26 @@ fn scan_folder(
     Ok(())
 }
 
+pub fn revoke_session_access() -> Result<(), String> {
+    FOLDER_GRANTS.lock().map_err(|_| "File access grants are temporarily unavailable.".to_string())?.clear();
+    PENDING_FILE_EDITS.lock().map_err(|_| "File edit previews are temporarily unavailable.".to_string())?.clear();
+    PENDING_FILE_MOVES.lock().map_err(|_| "File move previews are temporarily unavailable.".to_string())?.clear();
+    PENDING_FILE_UNDOS.lock().map_err(|_| "File undo previews are temporarily unavailable.".to_string())?.clear();
+    Ok(())
+}
+
+fn ensure_skill_loaded() -> Result<(), String> {
+    if crate::skills::is_skill_loaded("file-assistant") {
+        Ok(())
+    } else {
+        Err("Load the File Assistant skill before using its file access.".into())
+    }
+}
+
 #[tauri::command]
 pub async fn pick_folder_and_list_text_files(app: AppHandle) -> Result<FolderScanResult, String> {
+    ensure_skill_loaded()?;
+    revoke_session_access()?;
     let selected = app.dialog().file().blocking_pick_folder();
     let Some(selected) = selected else {
         return Err("Folder selection was cancelled.".into());
@@ -551,6 +569,7 @@ pub async fn read_granted_text_files(
     app: AppHandle,
     file_ids: Vec<String>,
 ) -> Result<Vec<SelectedTextFile>, String> {
+    ensure_skill_loaded()?;
     if file_ids.is_empty() || file_ids.len() > MAX_SELECTED_FILES {
         return Err("Select between 1 and 8 files to read.".into());
     }
@@ -594,6 +613,7 @@ pub async fn read_granted_text_files(
 
 #[tauri::command]
 pub fn prepare_file_edit(file_id: String, proposed_content: String) -> Result<FileEditPreview, String> {
+    ensure_skill_loaded()?;
     if file_id.len() != 48 || !file_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("This file selection is invalid. Choose the folder and file again.".into());
     }
@@ -646,6 +666,7 @@ pub fn prepare_file_edit(file_id: String, proposed_content: String) -> Result<Fi
 
 #[tauri::command]
 pub fn issue_file_edit_approval(preview_id: String) -> Result<String, String> {
+    ensure_skill_loaded()?;
     let mut pending = PENDING_FILE_EDITS.lock().map_err(|_| "File editing is temporarily unavailable.".to_string())?;
     let expired = pending.get(&preview_id)
         .ok_or("This preview has expired. Prepare the edit again.")?
@@ -663,6 +684,7 @@ pub fn issue_file_edit_approval(preview_id: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn cancel_file_edit_preview(preview_id: String) -> Result<(), String> {
+    ensure_skill_loaded()?;
     let mut pending = PENDING_FILE_EDITS.lock().map_err(|_| "File editing is temporarily unavailable.".to_string())?;
     pending.remove(&preview_id);
     Ok(())
@@ -674,6 +696,7 @@ pub fn apply_file_edit(
     preview_id: String,
     approval_token: String,
 ) -> Result<FileEditResult, String> {
+    ensure_skill_loaded()?;
     let edit = {
         let mut pending = PENDING_FILE_EDITS.lock().map_err(|_| "File editing is temporarily unavailable.".to_string())?;
         pending.remove(&preview_id).ok_or("This preview has expired or was already used. Prepare the edit again.")?
@@ -744,6 +767,7 @@ fn validate_relative_destination(value: &str) -> Result<PathBuf, String> {
 
 #[tauri::command]
 pub fn prepare_file_move(file_id: String, destination_relative_path: String) -> Result<FileMovePreview, String> {
+    ensure_skill_loaded()?;
     if file_id.len() != 48 || !file_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("This file selection is invalid. Choose the folder and file again.".into());
     }
@@ -796,6 +820,7 @@ pub fn prepare_file_move(file_id: String, destination_relative_path: String) -> 
 
 #[tauri::command]
 pub fn issue_file_move_approval(preview_id: String) -> Result<String, String> {
+    ensure_skill_loaded()?;
     let mut pending = PENDING_FILE_MOVES.lock().map_err(|_| "File operations are temporarily unavailable.".to_string())?;
     let expired = pending.get(&preview_id).ok_or("This preview has expired. Prepare the move again.")?.expires_at < edit_now();
     if expired { pending.remove(&preview_id); return Err("This preview has expired. Prepare the move again.".into()); }
@@ -806,12 +831,14 @@ pub fn issue_file_move_approval(preview_id: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn cancel_file_move_preview(preview_id: String) -> Result<(), String> {
+    ensure_skill_loaded()?;
     PENDING_FILE_MOVES.lock().map_err(|_| "File operations are temporarily unavailable.".to_string())?.remove(&preview_id);
     Ok(())
 }
 
 #[tauri::command]
 pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: String) -> Result<FileMoveResult, String> {
+    ensure_skill_loaded()?;
     let operation = PENDING_FILE_MOVES.lock().map_err(|_| "File operations are temporarily unavailable.".to_string())?
         .remove(&preview_id).ok_or("This preview has expired or was already used. Prepare it again.")?;
     if operation.expires_at < edit_now() || operation.approval_token.as_deref() != Some(approval_token.as_str()) {
@@ -896,6 +923,7 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
 
 #[tauri::command]
 pub fn list_file_undo_operations(file_id: String) -> Result<Vec<FileUndoOperation>, String> {
+    ensure_skill_loaded()?;
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
     let grant = grants.get(&file_id).ok_or("Select the folder again to view its undo history.")?;
     let root = validate_granted_root(&grant.root)?;
@@ -904,6 +932,7 @@ pub fn list_file_undo_operations(file_id: String) -> Result<Vec<FileUndoOperatio
 
 #[tauri::command]
 pub fn prepare_file_undo(file_id: String, operation_id: String) -> Result<FileUndoPreview, String> {
+    ensure_skill_loaded()?;
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
     let grant = grants.get(&file_id).ok_or("Select the folder again to undo this operation.")?;
     let root = validate_granted_root(&grant.root)?;
@@ -956,6 +985,7 @@ pub fn prepare_file_undo(file_id: String, operation_id: String) -> Result<FileUn
 
 #[tauri::command]
 pub fn issue_file_undo_approval(preview_id: String) -> Result<String, String> {
+    ensure_skill_loaded()?;
     let mut pending = PENDING_FILE_UNDOS.lock().map_err(|_| "File undo is temporarily unavailable.".to_string())?;
     let expired = pending.get(&preview_id).ok_or("This undo preview has expired.")?.expires_at < edit_now();
     if expired { pending.remove(&preview_id); return Err("This undo preview has expired. Prepare it again.".into()); }
@@ -966,12 +996,14 @@ pub fn issue_file_undo_approval(preview_id: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn cancel_file_undo_preview(preview_id: String) -> Result<(), String> {
+    ensure_skill_loaded()?;
     PENDING_FILE_UNDOS.lock().map_err(|_| "File undo is temporarily unavailable.".to_string())?.remove(&preview_id);
     Ok(())
 }
 
 #[tauri::command]
 pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: String) -> Result<String, String> {
+    ensure_skill_loaded()?;
     let pending = PENDING_FILE_UNDOS.lock().map_err(|_| "File undo is temporarily unavailable.".to_string())?
         .remove(&preview_id).ok_or("This undo preview has expired or was already used.")?;
     if pending.expires_at < edit_now() || pending.approval_token.as_deref() != Some(approval_token.as_str()) {
@@ -1066,6 +1098,8 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
 
 #[tauri::command]
 pub async fn pick_and_read_text_files(app: AppHandle) -> Result<Vec<SelectedTextFile>, String> {
+    ensure_skill_loaded()?;
+    revoke_session_access()?;
     let selected = app.dialog().file()
         .add_filter("Supported text and code files", &[
             "txt", "md", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml",
