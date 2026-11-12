@@ -99,3 +99,20 @@ jobs:
           path: src-tauri/target/release/bundle/**
           if-no-files-found: error
           retention-days: 14
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file libssl-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev patchelf libwebkit2gtk-4.1-dev
+
+      - name: Run Rust unit tests on Linux
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
