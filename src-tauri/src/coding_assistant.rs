@@ -1530,12 +1530,14 @@ mod tests {
         assert!(is_redirected(&meta), "Windows junction must be recognized as a reparse point");
         assert!(recover_project_code_transactions(&root).is_err());
         assert_eq!(fs::read(outside.join("keep.txt")).unwrap(), b"outside user data");
+        fs::remove_dir(&link).unwrap();
         fs::remove_dir_all(&root).unwrap();
         fs::remove_dir_all(&outside).unwrap();
         fs::remove_dir_all(&temp).unwrap();
     }
 
-fn recovery_refuses_malformed_active_undo_record_and_preserves_journal() {
+    #[test]
+    fn recovery_refuses_malformed_active_undo_record_and_preserves_journal() {
         let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("malformed-active-undo", b"edge original source");
         let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
         fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
