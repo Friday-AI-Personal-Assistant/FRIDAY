@@ -1221,8 +1221,9 @@ mod tests {
 
     #[test]
     fn replacement_preserves_original_backup_and_updates_selected_file() {
-        let root = std::env::temp_dir().join(format!("friday-file-edit-{}", make_token()));
-        fs::create_dir_all(root.join("src")).unwrap();
+        let root_path = std::env::temp_dir().join(format!("friday-file-edit-{}", make_token()));
+        fs::create_dir_all(root_path.join("src")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
         let file = root.join("src").join("notes.txt");
         fs::write(&file, "before").unwrap();
         let backup = replace_file_with_backup(&root, &file, b"after", &content_hash(b"before"), &make_token()).unwrap();
@@ -1235,8 +1236,9 @@ mod tests {
 
     #[test]
     fn undo_history_records_are_persisted_and_backup_paths_are_bound_to_ids() {
-        let root = std::env::temp_dir().join(format!("friday-undo-history-{}", make_token()));
-        fs::create_dir_all(root.join(".friday-backups")).unwrap();
+        let root_path = std::env::temp_dir().join(format!("friday-undo-history-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
         let record = UndoRecord {
             id: make_token(), kind: "edit".into(),
             original_relative_path: "notes.txt".into(), current_relative_path: "notes.txt".into(),
@@ -1256,11 +1258,13 @@ mod tests {
     }
 
     #[test]
-    fn backup_directory_rejects_symlink_redirection() {
-        let root = std::env::temp_dir().join(format!("friday-backup-root-{}", make_token()));
-        let outside = std::env::temp_dir().join(format!("friday-backup-outside-{}", make_token()));
-        fs::create_dir_all(&root).unwrap();
-        fs::create_dir_all(&outside).unwrap();
+    fn backup_directory_is_created_when_missing_and_symlink_redirection_is_rejected() {
+        let root_path = std::env::temp_dir().join(format!("friday-backup-root-{}", make_token()));
+        let outside_path = std::env::temp_dir().join(format!("friday-backup-outside-{}", make_token()));
+        fs::create_dir_all(&root_path).unwrap();
+        fs::create_dir_all(&outside_path).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        let outside = fs::canonicalize(&outside_path).unwrap();
 
         #[cfg(unix)]
         {
