@@ -28,6 +28,13 @@ pub struct SelectedTextFile {
     pub grant_id: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderScanResult {
+    pub folder_id: String,
+    pub files: Vec<FileCandidate>,
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FileCandidate {
@@ -427,7 +434,7 @@ fn scan_folder(
 }
 
 #[tauri::command]
-pub async fn pick_folder_and_list_text_files(app: AppHandle) -> Result<Vec<FileCandidate>, String> {
+pub async fn pick_folder_and_list_text_files(app: AppHandle) -> Result<FolderScanResult, String> {
     let selected = app.dialog().file().blocking_pick_folder();
     let Some(selected) = selected else {
         return Err("Folder selection was cancelled.".into());
@@ -446,6 +453,8 @@ pub async fn pick_folder_and_list_text_files(app: AppHandle) -> Result<Vec<FileC
     let mut grants = BTreeMap::new();
     let mut scanned = 0usize;
     scan_folder(&root, &root, 0, &mut scanned, &mut candidates, &mut grants)?;
+    let folder_id = make_token();
+    grants.insert(folder_id.clone(), GrantedFile { root: root.clone(), path: root });
     *FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())? = grants;
     let _ = crate::tools::record(
         &app,
@@ -453,7 +462,7 @@ pub async fn pick_folder_and_list_text_files(app: AppHandle) -> Result<Vec<FileC
         &format!("Listed up to {} supported text files in a folder explicitly selected by the user.", candidates.len()),
         true,
     );
-    Ok(candidates)
+    Ok(FolderScanResult { folder_id, files: candidates })
 }
 
 #[tauri::command]
