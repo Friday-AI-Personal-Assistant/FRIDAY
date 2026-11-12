@@ -759,17 +759,17 @@ fn restore_missing_file_without_overwrite(current: &Path, bytes: &[u8], permissi
     let temp = parent.join(format!(".friday-recovery-{}.tmp", make_token()));
     let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)
         .map_err(|e| format!("Could not prepare the recovered file: {e}"))?;
-    if let Some(permissions) = permissions {
-        if let Err(error) = file.set_permissions(permissions) {
-            drop(file);
-            let _ = fs::remove_file(&temp);
-            return Err(format!("Could not preserve the original file permissions: {error}"));
-        }
-    }
     if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
         drop(file);
         let _ = fs::remove_file(&temp);
         return Err(format!("Could not write the recovered file: {error}"));
+    }
+    if let Some(permissions) = permissions {
+        if let Err(error) = file.set_permissions(permissions).and_then(|_| file.sync_all()) {
+            drop(file);
+            let _ = fs::remove_file(&temp);
+            return Err(format!("Could not preserve the original file permissions: {error}"));
+        }
     }
     drop(file);
     // Hard-link creation is atomic and refuses to replace a file created after
@@ -1311,16 +1311,16 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
     let backup = backup_dir.join(format!("{token}.move.bak"));
     let mut backup_file = OpenOptions::new().write(true).create_new(true).open(&backup)
         .map_err(|e| format!("Could not create a new backup without overwriting anything: {e}"))?;
-    if let Err(error) = backup_file.set_permissions(source_meta.permissions()) {
-        drop(backup_file);
-        let _ = fs::remove_file(&backup);
-        let _ = mark_file_transaction_phase(&root, &token, "aborted");
-        return Err(format!("Could not preserve the source file permissions in its backup: {error}"));
-    }
     if let Err(error) = backup_file.write_all(&bytes).and_then(|_| backup_file.sync_all()) {
         drop(backup_file);
         let _ = fs::remove_file(&backup);
         return Err(format!("Could not safely write the original backup: {error}"));
+    }
+    if let Err(error) = backup_file.set_permissions(source_meta.permissions()).and_then(|_| backup_file.sync_all()) {
+        drop(backup_file);
+        let _ = fs::remove_file(&backup);
+        let _ = mark_file_transaction_phase(&root, &token, "aborted");
+        return Err(format!("Could not preserve the source file permissions in its backup: {error}"));
     }
     drop(backup_file);
     mark_file_transaction_phase(&root, &token, "backup_created")?;
