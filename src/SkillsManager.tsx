@@ -109,6 +109,7 @@ export default function SkillsManager() {
       }
       if (skill.id === "file-assistant" && (action === "uninstall" || action === "disable" || action === "unload")) {
         setSelectedTextFiles([]); setFolderCandidates([]); setSelectedFolderIds([]);
+        setFolderGrantId(""); setUndoOperations([]);
         setFolderSearch(""); setFileContentSearch(""); setFileAnswer(""); setFileError(""); setFileNotice("");
         setEditingFileId(""); setDraftContent(""); setEditPreview(null);
         setFileQuestion("Summarise these files and explain their important points.");
