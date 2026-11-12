@@ -118,12 +118,22 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 
 ## Phase 2 — FRIDAY's original skills
 
+### File Assistant Stage 6 — comprehensive safety, reliability and edge-case review
+- [~] Audit folder-grant lifetime and root-path revalidation; reject a folder that has been replaced or redirected after approval.
+- [ ] Review crash/interruption recovery for edit, move, backup and undo transactions.
+- [ ] Make undo-history persistence failures accurately distinguish completed file changes from failed operations.
+- [ ] Harden undo completion markers and recovery after partial failures.
+- [ ] Add tests for symlinks/reparse points, path traversal, stale grants, occupied destinations, changed files, missing/corrupt backups, duplicate/replayed approvals and interrupted operations.
+- [ ] Review temporary-file cleanup, backup integrity, permissions and audit-history consistency.
+- [ ] Run frontend build, Rust tests and Windows installer CI after fixes; keep Windows user acceptance testing for the final release phase.
+
 Implement each as a real end-to-end capability, including permissions, errors, settings, data handling and Windows tests.
 
 - [~] **PDF Reader** — native Windows file picker, local text extraction with page numbers, extracted-text preview, and local Ollama Q&A with page-citation instructions are implemented. Mixed documents can be queried when some pages contain readable text; pages without selectable text are identified. Encrypted/damaged PDFs return a clear error; file size (25 MB), page count (500), per-page decompression (2 MB) and extracted text (120,000 UTF-8 bytes) are bounded. A real minimal-PDF extraction fixture test has been added. OCR, stronger parser isolation/hardening, latest Rust/TypeScript/Windows build results and end-to-end Windows verification remain pending.
 - [~] **Web Research** — multi-source implementation is present: user-initiated DuckDuckGo HTML search; up to four explicitly selected HTTPS sources; bounded downloads and extraction; public-IP/DNS validation with pinned connections; manual redirect revalidation; HTML5 text extraction; BOM/header/meta charset decoding; publisher-declared author/date metadata; local Ollama synthesis with source labels; and visible citation-limit warning. CI Run #137 passed frontend build, Rust unit tests, Windows installer build and artifact upload. Remaining: live provider/page compatibility checks, deeper source-claim review, Windows end-to-end acceptance, and ongoing security review. Citation-label validation does not prove that a cited page supports a claim.
-- [~] **File Assistant** — Stage 2 folder discovery passed CI Run #158 (frontend build, Rust tests, Windows installer build and artifact upload): native folder picker; canonical-root-scoped traversal to depth 3; skips symlinks, hidden folders and common dependency/build directories; scans at most 2,000 entries and returns up to 200 supported text-file candidates; filename/path search and local full-text search; user chooses up to 8 files (64 KB each, 180 KB combined); session-scoped opaque file grants. Stage 3 edit workflow now added on the development branch: edit one folder-selected text file at a time, preview original and proposed content, explicit per-file approval, one-use short-lived approval token, stale-original hash check, and preservation of the original in .friday-backups before replacement. File editing is limited to UTF-8 text up to 64 KB; no move, rename, delete or command execution. Stage 3 CI and Windows acceptance testing are pending.
+- [~] **File Assistant** — Stages 1–5 implemented on the development branch. CI verification: Stage 2 Run #158, Stage 3 Run #176, Stage 4 Run #183, and Stage 5 Run #191 passed frontend build, Rust unit tests, Windows installer build and artifact upload. Folder scanning is bounded and session-scoped; text reading is limited; edits and moves require previews and explicit one-use approval; originals are backed up; undo history supports approved edits and moves and protects newer changes. Windows desktop acceptance testing remains pending. Stage 6 comprehensive safety, reliability and edge-case review is now in progress.
 - [ ] **Coding Assistant** — inspect selected project files, explain and propose edits; sandbox tests/commands with strict time/resource limits; show diffs and require approval before applying changes.
+- [ ] **Excel Intelligence (newly requested)** — a dedicated FRIDAY skill for installed Microsoft Excel on Windows. Research open-source GitHub blueprints before implementation; support accounting/finance first, plus general office/administration, sales, inventory, data analysis, reporting, dashboards, formulas and controlled automation. Use actual Excel recalculation where available, independent formula checks, previews, backups, approval and undo. Do not promise 100% accuracy; measure accuracy with a growing workbook evaluation suite.
 - [ ] **Email Management** — official OAuth, least-privilege scopes, inbox summaries, search/labels, draft replies; explicit approval before sending; disconnect and revoke access.
 - [ ] **Job Finder** — permitted job sources, saved searches and alerts, location/preferences filters, duplicate detection and application tracking; no unauthorised scraping or mass applications.
 - [ ] **CV Studio** — import PDF/DOCX, edit and preview, ATS-friendly templates, export; never invent qualifications or work history.
@@ -223,7 +233,11 @@ Use the upstream project as a design reference and verify current upstream docum
 
 Do not copy code or dependencies without checking their licences and compatibility. Preserve required notices. Prefer adapting concepts to FRIDAY's native stack.
 
-## Immediate next work item
+## Current next work item
+
+**Phase 2C — File Assistant Stage 6:** complete the safety, reliability and edge-case review above before moving on to the Coding Assistant. Excel Intelligence is explicitly recorded as a planned FRIDAY skill; its open-source blueprint research and implementation will follow the agreed skill-development order.
+
+## Core platform implementation notes
 
 **Phase 1C — Persistent chat history:** encrypted local conversation storage, conversation list/create/switch/rename/delete, title search and persistence of completed or stopped responses are implemented in the development branch. Rust/TypeScript checks and Windows end-to-end verification remain pending.
 
