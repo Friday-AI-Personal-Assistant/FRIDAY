@@ -518,12 +518,20 @@ fn classify_file_transaction(root: &Path, journal: &FileTransactionJournal) -> S
         "move" if backup_hash.as_deref() == Some(journal.expected_original_sha256.as_str())
             && current_hash.as_deref() == Some(journal.expected_current_sha256.as_str()) && original_missing => "finish_undo_history".into(),
         "move" if backup_hash.as_deref() == Some(journal.expected_original_sha256.as_str()) && current_missing && original_missing => "restore_original".into(),
-        "move" if original_hash.as_deref() == Some(journal.expected_original_sha256.as_str()) && current_missing && backup_hash.is_none() => "operation_not_started".into(),
+        "move" if original_hash.as_deref() == Some(journal.expected_original_sha256.as_str()) && current_missing => "operation_not_started".into(),
         _ => "manual_review".into(),
     }
 }
 
 fn list_file_transactions(root: &Path) -> Result<Vec<FileRecoveryItem>, String> {
+    match fs::symlink_metadata(root.join(".friday-backups")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("Could not safely inspect FRIDAY's backup folder.".into()),
+        Ok(metadata) if is_redirected(&metadata) || !metadata.is_dir() => {
+            return Err("FRIDAY's backup folder is not a safe normal directory.".into());
+        }
+        Ok(_) => {}
+    }
     let dir = undo_backup_dir(root)?;
     let mut items = Vec::new();
     for entry in fs::read_dir(&dir).map_err(|_| "Could not inspect file-operation recovery records.".to_string())? {
@@ -1744,6 +1752,15 @@ mod tests {
         fs::write(root.join("new.txt"), b"moved").unwrap();
         assert_eq!(classify_file_transaction(&root, &moved), "finish_undo_history");
 
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn recovery_scan_is_empty_when_no_backup_folder_exists() {
+        let root_path = std::env::temp_dir().join(format!("friday-no-recovery-folder-{}", make_token()));
+        fs::create_dir_all(&root_path).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        assert!(list_file_transactions(&root).unwrap().is_empty());
         fs::remove_dir_all(&root).unwrap();
     }
 
