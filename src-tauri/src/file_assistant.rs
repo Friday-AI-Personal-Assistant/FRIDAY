@@ -1,5 +1,5 @@
 use rand::RngCore;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -94,6 +94,46 @@ pub struct FileEditResult {
     pub bytes_written: usize,
 }
 
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UndoRecord {
+    id: String,
+    kind: String,
+    original_relative_path: String,
+    current_relative_path: String,
+    backup_relative_path: String,
+    expected_current_sha256: String,
+    created_at: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUndoOperation {
+    pub id: String,
+    pub kind: String,
+    pub original_relative_path: String,
+    pub current_relative_path: String,
+    pub created_at: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUndoPreview {
+    pub preview_id: String,
+    pub kind: String,
+    pub original_relative_path: String,
+    pub current_relative_path: String,
+}
+
+struct PendingFileUndo {
+    grant_id: String,
+    record: UndoRecord,
+    expires_at: u64,
+    approval_token: Option<String>,
+}
+
+static PENDING_FILE_UNDOS: Mutex<BTreeMap<String, PendingFileUndo>> = Mutex::new(BTreeMap::new());
 static FOLDER_GRANTS: Mutex<BTreeMap<String, GrantedFile>> = Mutex::new(BTreeMap::new());
 static PENDING_FILE_EDITS: Mutex<BTreeMap<String, PendingFileEdit>> = Mutex::new(BTreeMap::new());
 static PENDING_FILE_MOVES: Mutex<BTreeMap<String, PendingFileMove>> = Mutex::new(BTreeMap::new());
@@ -223,6 +263,97 @@ fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], expect
         });
     }
     Ok(backup_path)
+}
+
+
+fn safe_relative_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    let path = Path::new(relative);
+    if relative.is_empty() || relative.len() > 512 || path.is_absolute()
+        || path.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+        || !supported_text_file(path) {
+        return Err("The undo record contains an unsafe file path.".into());
+    }
+    let full = root.join(path);
+    let parent = full.parent().ok_or("The undo file has no parent folder.")?;
+    let parent_meta = fs::symlink_metadata(parent)
+        .map_err(|_| "The undo file's folder is no longer available.".to_string())?;
+    if parent_meta.file_type().is_symlink() || !parent_meta.is_dir()
+        || !fs::canonicalize(parent).map_err(|_| "Could not verify the undo folder.".to_string())?.starts_with(root) {
+        return Err("The undo file's folder is not safe or is outside the selected folder.".into());
+    }
+    Ok(full)
+}
+
+fn undo_backup_dir(root: &Path) -> Result<PathBuf, String> {
+    let dir = root.join(".friday-backups");
+    let meta = fs::symlink_metadata(&dir)
+        .map_err(|_| "The FRIDAY backup folder is no longer available.".to_string())?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err("The FRIDAY backup folder is not safe.".into());
+    }
+    Ok(dir)
+}
+
+fn save_undo_record(root: &Path, record: &UndoRecord) -> Result<(), String> {
+    let dir = undo_backup_dir(root)?;
+    let path = dir.join(format!("{}.undo.json", record.id));
+    let bytes = serde_json::to_vec(record).map_err(|_| "Could not prepare the undo history record.".to_string())?;
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&path)
+        .map_err(|e| format!("The file operation completed, but FRIDAY could not save its undo history: {e}"))?;
+    file.write_all(&bytes).and_then(|_| file.sync_all())
+        .map_err(|e| format!("The file operation completed and its backup remains, but undo history could not be saved: {e}"))
+}
+
+fn load_undo_record(root: &Path, id: &str) -> Result<UndoRecord, String> {
+    if id.len() != 48 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("This undo item is invalid.".into());
+    }
+    let dir = undo_backup_dir(root)?;
+    let path = dir.join(format!("{id}.undo.json"));
+    let meta = fs::symlink_metadata(&path).map_err(|_| "This undo item is no longer available.".to_string())?;
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > 16_384 {
+        return Err("The undo history record is not a safe file.".into());
+    }
+    let record: UndoRecord = serde_json::from_slice(&fs::read(path)
+        .map_err(|_| "Could not read the undo history record.".to_string())?)
+        .map_err(|_| "The undo history record is invalid.".to_string())?;
+    if record.id != id || !matches!(record.kind.as_str(), "edit" | "move") {
+        return Err("The undo history record failed validation.".into());
+    }
+    Ok(record)
+}
+
+fn list_undo_records(root: &Path) -> Result<Vec<FileUndoOperation>, String> {
+    let dir = match undo_backup_dir(root) {
+        Ok(value) => value,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut items = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|_| "Could not read FRIDAY's undo history.".to_string())? {
+        let entry = match entry { Ok(value) => value, Err(_) => continue };
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".undo.json") { continue; }
+        let id = name.trim_end_matches(".undo.json");
+        let record = match load_undo_record(root, id) { Ok(value) => value, Err(_) => continue };
+        if dir.join(format!("{id}.undone")).exists() { continue; }
+        items.push(FileUndoOperation {
+            id: record.id,
+            kind: record.kind,
+            original_relative_path: record.original_relative_path,
+            current_relative_path: record.current_relative_path,
+            created_at: record.created_at,
+        });
+    }
+    items.sort_by(|a,b| b.created_at.cmp(&a.created_at));
+    items.truncate(50);
+    Ok(items)
+}
+
+fn write_undone_marker(root: &Path, id: &str) -> Result<(), String> {
+    let dir = undo_backup_dir(root)?;
+    let marker = dir.join(format!("{id}.undone"));
+    OpenOptions::new().write(true).create_new(true).open(marker)
+        .map(|_| ()).map_err(|e| format!("The file was restored, but FRIDAY could not update its undo history: {e}"))
 }
 
 fn make_token() -> String {
@@ -480,6 +611,13 @@ pub fn apply_file_edit(
     let backup_token = make_token();
     let backup = replace_file_with_backup(&root, &current, edit.proposed_content.as_bytes(), &edit.original_sha256, &backup_token)?;
     let relative_backup = backup.strip_prefix(&root).unwrap_or(&backup).to_string_lossy().replace('\\', "/");
+    let relative_current = current.strip_prefix(&root).unwrap_or(&current).to_string_lossy().replace('\\', "/");
+    save_undo_record(&root, &UndoRecord {
+        id: backup_token.clone(), kind: "edit".into(),
+        original_relative_path: relative_current.clone(), current_relative_path: relative_current,
+        backup_relative_path: relative_backup.clone(),
+        expected_current_sha256: content_hash(edit.proposed_content.as_bytes()), created_at: edit_now(),
+    })?;
     let file_name = current.file_name().and_then(|name| name.to_str()).unwrap_or("Selected file").to_string();
     let bytes_written = edit.proposed_content.len();
     let _ = crate::tools::record(
@@ -639,11 +777,183 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
         return Err(format!("Could not finish moving the file. The original remains in place: {error}"));
     }
     let backup_relative = backup.strip_prefix(&root).unwrap_or(&backup).to_string_lossy().replace('\\', "/");
+    let source_relative = source.strip_prefix(&root).unwrap_or(&source).to_string_lossy().replace('\\', "/");
     let destination_relative = destination.strip_prefix(&root).unwrap_or(&destination).to_string_lossy().replace('\\', "/");
+    save_undo_record(&root, &UndoRecord {
+        id: token.clone(), kind: "move".into(),
+        original_relative_path: source_relative, current_relative_path: destination_relative.clone(),
+        backup_relative_path: backup_relative.clone(),
+        expected_current_sha256: content_hash(&bytes), created_at: edit_now(),
+    })?;
     let file_name = destination.file_name().and_then(|name| name.to_str()).unwrap_or("Selected file").to_string();
     let _ = crate::tools::record(&app, "file.move_selected_file",
         &format!("Moved a selected file to {destination_relative}; backup preserved at {backup_relative}."), true);
     Ok(FileMoveResult { file_name, destination_relative_path: destination_relative, backup_path: backup_relative })
+}
+
+
+#[tauri::command]
+pub fn list_file_undo_operations(file_id: String) -> Result<Vec<FileUndoOperation>, String> {
+    let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
+    let grant = grants.get(&file_id).ok_or("Select the folder again to view its undo history.")?;
+    let root = fs::canonicalize(&grant.root).map_err(|_| "The selected folder is no longer available.".to_string())?;
+    list_undo_records(&root)
+}
+
+#[tauri::command]
+pub fn prepare_file_undo(file_id: String, operation_id: String) -> Result<FileUndoPreview, String> {
+    let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
+    let grant = grants.get(&file_id).ok_or("Select the folder again to undo this operation.")?;
+    let root = fs::canonicalize(&grant.root).map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let record = load_undo_record(&root, &operation_id)?;
+    if undo_backup_dir(&root)?.join(format!("{}.undone", record.id)).exists() {
+        return Err("This operation has already been undone.".into());
+    }
+    let current = safe_relative_file(&root, &record.current_relative_path)?;
+    let current_meta = fs::symlink_metadata(&current).map_err(|_| "The current file is missing; FRIDAY cannot safely undo this operation.".to_string())?;
+    if current_meta.file_type().is_symlink() || !current_meta.is_file() || current_meta.len() > MAX_FILE_BYTES {
+        return Err("The current file is no longer a safe regular text file.".into());
+    }
+    let current_bytes = fs::read(&current).map_err(|_| "Could not read the current file.".to_string())?;
+    if content_hash(&current_bytes) != record.expected_current_sha256 {
+        return Err("This file has changed since FRIDAY's operation. To protect your newer work, undo is unavailable.".into());
+    }
+    let backup = root.join(&record.backup_relative_path);
+    if !backup.starts_with(undo_backup_dir(&root)?) {
+        return Err("The backup path failed safety validation.".into());
+    }
+    let backup_meta = fs::symlink_metadata(&backup).map_err(|_| "The original backup is missing.".to_string())?;
+    if backup_meta.file_type().is_symlink() || !backup_meta.is_file() || backup_meta.len() > MAX_FILE_BYTES {
+        return Err("The original backup is not a safe regular text file.".into());
+    }
+    let backup_bytes = fs::read(&backup).map_err(|_| "Could not read the original backup.".to_string())?;
+    if backup_bytes.contains(&0) { return Err("The backup contains binary data; undo is not supported.".into()); }
+    let original = safe_relative_file(&root, &record.original_relative_path)?;
+    if record.kind == "move" {
+        match fs::symlink_metadata(&original) {
+            Ok(_) => return Err("The original location is occupied. Move or rename that item first; FRIDAY will not overwrite it.".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(_) => return Err("Could not safely inspect the original location.".into()),
+        }
+        if content_hash(&backup_bytes) != record.expected_current_sha256 {
+            return Err("The move backup does not match the moved file. Undo is unavailable.".into());
+        }
+    } else if record.kind != "edit" || original != current {
+        return Err("The undo record is not a supported file edit.".into());
+    }
+    let preview_id = make_token();
+    let mut pending = PENDING_FILE_UNDOS.lock().map_err(|_| "File undo is temporarily unavailable.".to_string())?;
+    pending.retain(|_, item| item.expires_at >= edit_now());
+    if pending.len() >= 32 { return Err("Too many pending undo previews. Close one and try again.".into()); }
+    pending.insert(preview_id.clone(), PendingFileUndo {
+        grant_id: file_id, record: record.clone(), expires_at: edit_now() + 300, approval_token: None,
+    });
+    Ok(FileUndoPreview { preview_id, kind: record.kind, original_relative_path: record.original_relative_path, current_relative_path: record.current_relative_path })
+}
+
+#[tauri::command]
+pub fn issue_file_undo_approval(preview_id: String) -> Result<String, String> {
+    let mut pending = PENDING_FILE_UNDOS.lock().map_err(|_| "File undo is temporarily unavailable.".to_string())?;
+    let expired = pending.get(&preview_id).ok_or("This undo preview has expired.")?.expires_at < edit_now();
+    if expired { pending.remove(&preview_id); return Err("This undo preview has expired. Prepare it again.".into()); }
+    let token = make_token();
+    pending.get_mut(&preview_id).ok_or("This undo preview has expired.")?.approval_token = Some(token.clone());
+    Ok(token)
+}
+
+#[tauri::command]
+pub fn cancel_file_undo_preview(preview_id: String) -> Result<(), String> {
+    PENDING_FILE_UNDOS.lock().map_err(|_| "File undo is temporarily unavailable.".to_string())?.remove(&preview_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: String) -> Result<String, String> {
+    let pending = PENDING_FILE_UNDOS.lock().map_err(|_| "File undo is temporarily unavailable.".to_string())?
+        .remove(&preview_id).ok_or("This undo preview has expired or was already used.")?;
+    if pending.expires_at < edit_now() || pending.approval_token.as_deref() != Some(approval_token.as_str()) {
+        return Err("Undo requires a fresh, explicit approval.".into());
+    }
+    let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
+    let grant = grants.get(&pending.grant_id).ok_or("Select the folder again before undoing.")?;
+    let root = fs::canonicalize(&grant.root).map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let record = load_undo_record(&root, &pending.record.id)?;
+    if undo_backup_dir(&root)?.join(format!("{}.undone", record.id)).exists() {
+        return Err("This operation has already been undone.".into());
+    }
+    let current = safe_relative_file(&root, &record.current_relative_path)?;
+    let current_meta = fs::symlink_metadata(&current).map_err(|_| "The current file is missing.".to_string())?;
+    if current_meta.file_type().is_symlink() || !current_meta.is_file() || current_meta.len() > MAX_FILE_BYTES {
+        return Err("The current file is no longer safe to restore.".into());
+    }
+    let current_bytes = fs::read(&current).map_err(|_| "Could not re-check the current file.".to_string())?;
+    if content_hash(&current_bytes) != record.expected_current_sha256 {
+        return Err("The file changed after the undo preview. No changes were made.".into());
+    }
+    let backup = root.join(&record.backup_relative_path);
+    let backup_dir = undo_backup_dir(&root)?;
+    if !backup.starts_with(&backup_dir) { return Err("The backup path failed safety validation.".into()); }
+    let backup_meta = fs::symlink_metadata(&backup).map_err(|_| "The original backup is missing.".to_string())?;
+    if backup_meta.file_type().is_symlink() || !backup_meta.is_file() || backup_meta.len() > MAX_FILE_BYTES {
+        return Err("The original backup is not a safe regular file.".into());
+    }
+    let original_bytes = fs::read(&backup).map_err(|_| "Could not read the original backup.".to_string())?;
+    if original_bytes.contains(&0) { return Err("The original backup is not valid text.".into()); }
+    let original = safe_relative_file(&root, &record.original_relative_path)?;
+    if record.kind == "move" {
+        match fs::symlink_metadata(&original) {
+            Ok(_) => return Err("The original location is occupied. Nothing was overwritten.".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(_) => return Err("Could not safely inspect the original location.".into()),
+        }
+        if content_hash(&original_bytes) != record.expected_current_sha256 {
+            return Err("The original backup failed its integrity check.".into());
+        }
+        fs::hard_link(&backup, &original).map_err(|e| format!("Could not safely restore the original location: {e}"))?;
+        if let Err(error) = fs::remove_file(&current) {
+            let _ = fs::remove_file(&original);
+            return Err(format!("Could not finish undoing the move; the moved file remains in place: {error}"));
+        }
+    } else if record.kind == "edit" && original == current {
+        if content_hash(&original_bytes) == record.expected_current_sha256 {
+            return Err("The backup is identical to the current file; undo is unnecessary.".into());
+        }
+        let parent = current.parent().ok_or("The file has no parent folder.")?;
+        let temp = parent.join(format!(".friday-undo-{}.tmp", make_token()));
+        let redo = backup_dir.join(format!("{}.redo.bak", record.id));
+        let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temp)
+            .map_err(|e| format!("Could not prepare the restored file: {e}"))?;
+        if let Err(error) = temp_file.write_all(&original_bytes).and_then(|_| temp_file.sync_all()) {
+            drop(temp_file); let _ = fs::remove_file(&temp);
+            return Err(format!("Could not write the restored file: {error}"));
+        }
+        drop(temp_file);
+        let mut redo_file = OpenOptions::new().write(true).create_new(true).open(&redo)
+            .map_err(|e| { let _ = fs::remove_file(&temp); format!("Could not preserve the current version: {e}") })?;
+        if let Err(error) = redo_file.write_all(&current_bytes).and_then(|_| redo_file.sync_all()) {
+            drop(redo_file); let _ = fs::remove_file(&redo); let _ = fs::remove_file(&temp);
+            return Err(format!("Could not preserve the current version: {error}"));
+        }
+        drop(redo_file);
+        let displaced = parent.join(format!(".friday-undo-current-{}.tmp", make_token()));
+        if let Err(error) = fs::rename(&current, &displaced) {
+            let _ = fs::remove_file(&temp); let _ = fs::remove_file(&redo);
+            return Err(format!("Could not safely stage the current file: {error}"));
+        }
+        if let Err(error) = fs::rename(&temp, &current) {
+            let restored = fs::rename(&displaced, &current).is_ok();
+            let _ = fs::remove_file(&temp);
+            return Err(if restored { format!("Could not install the original version; the current file was restored: {error}") }
+                else { format!("Could not install the original version. The current version remains at {}: {error}", displaced.display()) });
+        }
+        let _ = fs::remove_file(&displaced);
+    } else {
+        return Err("This undo operation is not supported.".into());
+    }
+    write_undone_marker(&root, &record.id)?;
+    let _ = crate::tools::record(&app, "file.undo_operation",
+        &format!("Undid a {} operation for {}.", record.kind, record.original_relative_path), true);
+    Ok(format!("Restored {}.", record.original_relative_path))
 }
 
 #[tauri::command]
