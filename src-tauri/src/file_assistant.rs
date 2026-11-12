@@ -503,8 +503,12 @@ fn validate_transaction_journal(journal: &FileTransactionJournal, id: &str) -> R
 fn classify_file_transaction(root: &Path, journal: &FileTransactionJournal) -> String {
     let backup = root.join(&journal.backup_relative_path);
     let backup_hash = bounded_regular_file_hash(&backup);
-    let original = root.join(&journal.original_relative_path);
-    let current = root.join(&journal.current_relative_path);
+    let original = match safe_relative_file(root, &journal.original_relative_path) {
+        Ok(path) => path, Err(_) => return "manual_review".into(),
+    };
+    let current = match safe_relative_file(root, &journal.current_relative_path) {
+        Ok(path) => path, Err(_) => return "manual_review".into(),
+    };
     let original_hash = bounded_regular_file_hash(&original);
     let current_hash = bounded_regular_file_hash(&current);
     let original_missing = matches!(fs::symlink_metadata(&original), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
@@ -755,8 +759,12 @@ fn undo_recovery_status(root: &Path, record: &UndoRecord) -> String {
     if undo_is_already_applied(root, record) { return "finish_undo_history".into(); }
     let backup = root.join(&record.backup_relative_path);
     let backup_hash = bounded_regular_file_hash(&backup);
-    let current = root.join(&record.current_relative_path);
-    let original = root.join(&record.original_relative_path);
+    let current = match safe_relative_file(root, &record.current_relative_path) {
+        Ok(path) => path, Err(_) => return "manual_review".into(),
+    };
+    let original = match safe_relative_file(root, &record.original_relative_path) {
+        Ok(path) => path, Err(_) => return "manual_review".into(),
+    };
     let current_hash = bounded_regular_file_hash(&current);
     let original_hash = bounded_regular_file_hash(&original);
     let current_missing = matches!(fs::symlink_metadata(&current), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
