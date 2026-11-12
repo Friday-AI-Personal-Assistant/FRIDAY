@@ -53,6 +53,7 @@ pub fn run() {
             coding_assistant::preview_code_change,
             coding_assistant::issue_code_change_approval,
             coding_assistant::cancel_code_change_preview,
+            coding_assistant::apply_code_change,
             coding_intelligence::analyze_project_intelligence,
             file_assistant::pick_and_read_text_files,
             file_assistant::pick_folder_and_list_text_files,
