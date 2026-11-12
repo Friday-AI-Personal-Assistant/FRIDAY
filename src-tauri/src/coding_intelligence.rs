@@ -286,14 +286,14 @@ mod tests {
 
     #[test]
     fn extracts_package_json_dependencies() {
-        let result = analyze_project_intelligence(vec![file("package.json", "JSON", r#"{"dependencies":{"react":"^19"},"devDependencies":{"vite":"^6"}}"#)]).await.unwrap();
+        let result = analyze_project_intelligence(vec![file("package.json", "JSON", r#"{"dependencies":{"react":"^19"},"devDependencies":{"vite":"^6"}}"#)]).unwrap();
         assert!(result.dependencies.contains(&"react".to_string()));
         assert!(result.dependencies.contains(&"vite".to_string()));
     }
 
     #[test]
     fn flags_are_review_hints_not_errors() {
-        let result = analyze_project_intelligence(vec![file("src/lib.rs", "Rust", "fn work() { value.unwrap(); } // TODO review\n")]).await.unwrap();
+        let result = analyze_project_intelligence(vec![file("src/lib.rs", "Rust", "fn work() { value.unwrap(); } // TODO review\n")]).unwrap();
         assert!(result.diagnostics.iter().any(|d| d.code == "RUST_PANIC_PATH"));
         assert!(result.diagnostics.iter().any(|d| d.code == "ANNOTATION"));
         assert!(result.limitations.iter().any(|s| s.contains("heuristic")));
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn rejects_unsafe_paths_duplicate_paths_and_oversized_input() {
         assert!(analyze_project_intelligence(vec![file("../secret.rs", "Rust", "fn main() {}")]).is_err());
-        assert!(analyze_project_intelligence(vec![file("src/a.rs", "Rust", "fn a() {}"), file("src/a.rs", "Rust", "fn b() {}")]).await.is_err());
-        assert!(analyze_project_intelligence(vec![file("src/a.rs", "Rust", &"x".repeat(MAX_FILE_BYTES + 1))]).await.is_err());
+        assert!(analyze_project_intelligence(vec![file("src/a.rs", "Rust", "fn a() {}"), file("src/a.rs", "Rust", "fn b() {}")]).is_err());
+        assert!(analyze_project_intelligence(vec![file("src/a.rs", "Rust", &"x".repeat(MAX_FILE_BYTES + 1))]).is_err());
     }
 }
