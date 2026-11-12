@@ -515,6 +515,16 @@ fn validate_transaction_journal(journal: &FileTransactionJournal, id: &str) -> R
             return Err("The file-operation recovery path is invalid.".into());
         }
     }
+    match journal.kind.as_str() {
+        "edit" if journal.original_relative_path != journal.current_relative_path => {
+            return Err("An edit recovery record must refer to the same original and current path.".into());
+        }
+        "move" if journal.original_relative_path == journal.current_relative_path
+            || journal.expected_original_sha256 != journal.expected_current_sha256 => {
+            return Err("A move recovery record must refer to two distinct paths with unchanged file contents.".into());
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -2065,6 +2075,28 @@ mod tests {
         journal.current_relative_path = "notes.txt".into();
         journal.backup_relative_path = ".friday-backups/other.bak".into();
         assert!(validate_transaction_journal(&journal, &id).is_err());
+    }
+
+    #[test]
+    fn transaction_journal_rejects_inconsistent_edit_and_move_semantics() {
+        let id = make_token();
+        let mut journal = FileTransactionJournal {
+            id: id.clone(), kind: "edit".into(), original_relative_path: "notes.txt".into(),
+            current_relative_path: "notes.txt".into(), backup_relative_path: format!(".friday-backups/{id}.bak"),
+            expected_original_sha256: content_hash(b"before"),
+            expected_current_sha256: content_hash(b"after"), created_at: edit_now(),
+        };
+        assert!(validate_transaction_journal(&journal, &id).is_ok());
+        journal.current_relative_path = "other.txt".into();
+        assert!(validate_transaction_journal(&journal, &id).is_err());
+        journal.kind = "move".into();
+        journal.backup_relative_path = format!(".friday-backups/{id}.move.bak");
+        assert!(validate_transaction_journal(&journal, &id).is_err());
+        journal.current_relative_path = "notes.txt".into();
+        journal.expected_current_sha256 = journal.expected_original_sha256.clone();
+        assert!(validate_transaction_journal(&journal, &id).is_err());
+        journal.current_relative_path = "other.txt".into();
+        assert!(validate_transaction_journal(&journal, &id).is_ok());
     }
 
     #[test]
