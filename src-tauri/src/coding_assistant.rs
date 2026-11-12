@@ -348,7 +348,7 @@ pub async fn preview_code_change(file_id: String, proposed_content: String) -> R
     }
     let original_bytes = fs::read(&canonical)
         .map_err(|_| "FRIDAY could not read the current file for preview.".to_string())?;
-    if original_bytes.len() > MAX_FILE_BYTES || original_bytes.len() as u64 != metadata.len() || original_bytes.contains(&0) {
+    if original_bytes.len() as u64 > MAX_FILE_BYTES || original_bytes.len() as u64 != metadata.len() || original_bytes.contains(&0) {
         return Err("The current file changed or is no longer eligible for a safe preview.".into());
     }
     let original_content = String::from_utf8(original_bytes)
