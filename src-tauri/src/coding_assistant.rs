@@ -247,6 +247,8 @@ fn apply_code_preview_to_disk(root: &Path, current: &Path, proposed: &[u8], expe
     if let Err(e) = fs::remove_file(&displaced) {
         return Err(format!("The change was verified and its undo record saved, but FRIDAY could not remove its temporary displaced copy: {e}. The verified original backup remains."));
     }
+    fs::remove_file(&journal_path)
+        .map_err(|e| format!("The change was applied and its Undo record saved, but FRIDAY could not clean up the resolved transaction journal: {e}. Recovery will reconcile it before the next edit."))?;
     Ok((backup, record))
 }
 
@@ -699,6 +701,8 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
         .map_err(|e| format!("The original was restored and verified, but FRIDAY could not mark this undo as consumed: {e}. A repeat undo will still be blocked by the file hash check."))?;
     fs::remove_file(&displaced)
         .map_err(|e| format!("The original was restored and verified, but FRIDAY could not clean up its staged copy: {e}"))?;
+    fs::remove_file(&journal_path)
+        .map_err(|e| format!("The original was restored and Undo was consumed, but FRIDAY could not clean up the resolved transaction journal: {e}. Recovery will reconcile it before the next edit."))?;
     Ok((canonical_target, backup))
 }
 
@@ -1090,6 +1094,9 @@ pub fn apply_code_change(app: AppHandle, preview_id: String, approval_token: Str
     if root != preview.root || grant.path != preview.path {
         return Err("The project permission changed after preview. Select the project folder again.".into());
     }
+    // Reconcile any interrupted transaction before trusting a fresh approval.
+    // If recovery changes the file, the preview hash check below will reject it.
+    recover_project_code_transactions(&root)?;
     let current = fs::canonicalize(&grant.path).map_err(|_| "The selected project file is no longer available.".to_string())?;
     if current != preview.path || !current.starts_with(&root) {
         return Err("The selected project file moved or was redirected. No changes were made.".into());
@@ -1126,6 +1133,8 @@ pub fn undo_code_change(app: AppHandle, undo_record_id: String) -> Result<String
     let mut selected: Option<(PathBuf, PathBuf, CodingUndoRecord)> = None;
     for grant in grants.values() {
         let root = validate_granted_root(&grant.root)?;
+        // Resolve interrupted Apply/Undo journals before looking up an active Undo record.
+        recover_project_code_transactions(&root)?;
         let backup_dir = ensure_code_backup_dir(&root)?;
         let record_path = backup_dir.join(format!("{}.undo.json", undo_record_id));
         match fs::symlink_metadata(&record_path) {
@@ -1867,9 +1876,220 @@ mod tests {
         (root, file, record, original, proposed)
     }
 
+    #[test]
+    fn successful_apply_and_undo_remove_resolved_transaction_journals() {
+        let root = std::env::temp_dir().join(format!("friday-code-journal-cleanup-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        let original = b"original source";
+        let proposed = b"first approved edit";
+        fs::write(&file, original).unwrap();
+
+        let first_token = make_token();
+        let (backup, first_record) = apply_code_preview_to_disk(
+            &root, &file, proposed, &sha256_hex(original), &first_token, 123,
+        ).unwrap();
+        let backup_dir = root.join(".friday-code-backups");
+        assert!(!backup_dir.join(format!("{}.txn.json", first_record.id)).exists());
+        assert!(backup.is_file());
+        assert!(backup_dir.join(format!("{}.undo.json", first_record.id)).is_file());
+
+        let (restored, _) = undo_code_change_on_disk(&root, &first_record).unwrap();
+        assert_eq!(restored, file);
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert!(!backup_dir.join(format!("{}.undo-txn.json", first_record.id)).exists());
+        assert!(backup_dir.join(format!("{}.undone.json", first_record.id)).is_file());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn sequential_edits_can_be_undone_in_reverse_order_without_stale_journals() {
+        let root = std::env::temp_dir().join(format!("friday-code-sequential-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        let original = b"original source";
+        let first = b"first edit";
+        let second = b"second edit";
+        fs::write(&file, original).unwrap();
+
+        let (_, first_record) = apply_code_preview_to_disk(
+            &root, &file, first, &sha256_hex(original), &make_token(), 123,
+        ).unwrap();
+        let (_, second_record) = apply_code_preview_to_disk(
+            &root, &file, second, &sha256_hex(first), &make_token(), 124,
+        ).unwrap();
+        let backup_dir = root.join(".friday-code-backups");
+        assert!(!backup_dir.join(format!("{}.txn.json", first_record.id)).exists());
+        assert!(!backup_dir.join(format!("{}.txn.json", second_record.id)).exists());
+
+        undo_code_change_on_disk(&root, &second_record).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), first);
+        undo_code_change_on_disk(&root, &first_record).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert!(!backup_dir.join(format!("{}.undo-txn.json", first_record.id)).exists());
+        assert!(!backup_dir.join(format!("{}.undo-txn.json", second_record.id)).exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn recovery_restores_original_unix_permissions_when_rebuilding_missing_target() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, file, record, original, _proposed) = recovery_fixture("unix-mode");
+        let mut record = record;
+        record.original_unix_mode = Some(0o751);
+        let backup_dir = root.join(".friday-code-backups");
+        fs::write(backup_dir.join(format!("{}.txn.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+
+        // Model a crash after the target was displaced, followed by loss of that
+        // staged copy: recovery must rebuild only from the verified original backup.
+        assert!(!file.exists());
+        assert_eq!(recover_project_code_transactions(&root).unwrap(), 1);
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o751);
+        assert!(!backup_dir.join(format!("{}.txn.json", record.id)).exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn legacy_undo_record_without_unix_mode_remains_readable() {
+        let json = r#"{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","relativePath":"main.rs","backupRelativePath":".friday-code-backups/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bak","originalSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resultingSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","createdAt":123}"#;
+        let record: CodingUndoRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.original_unix_mode, None);
+        assert!(validate_undo_record(&record).is_ok());
+    }
+
+    #[test]
+    fn recovery_handles_apply_crash_at_each_transaction_boundary() {
+        // Snapshots model abrupt process termination after the journal, temp write,
+        // first rename, second rename, and post-install verification/undo persistence.
+        for stage in ["journal", "temporary", "first-rename", "second-rename", "verified"] {
+            let (root, file, record, original, proposed) = recovery_fixture(stage);
+            let backup_dir = root.join(".friday-code-backups");
+            fs::write(backup_dir.join(format!("{}.txn.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+            match stage {
+                "journal" => fs::write(&file, &original).unwrap(),
+                "temporary" => {
+                    fs::write(&file, &original).unwrap();
+                    fs::write(root.join(format!(".friday-code-edit-{}.tmp", record.id)), &proposed).unwrap();
+                }
+                "first-rename" => {
+                    fs::write(root.join(format!(".friday-code-original-{}.tmp", record.id)), &original).unwrap();
+                    fs::write(root.join(format!(".friday-code-edit-{}.tmp", record.id)), &proposed).unwrap();
+                }
+                "second-rename" | "verified" => {
+                    fs::write(&file, &proposed).unwrap();
+                    fs::write(root.join(format!(".friday-code-original-{}.tmp", record.id)), &original).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(recover_project_code_transactions(&root).unwrap(), 1, "stage {stage}");
+            let installed = fs::read(&file).unwrap();
+            if stage == "second-rename" || stage == "verified" {
+                assert_eq!(installed, proposed, "stage {stage}");
+                let undo = read_recovery_file(&backup_dir.join(format!("{}.undo.json", record.id)), 16 * 1024).unwrap().unwrap();
+                let saved: CodingUndoRecord = serde_json::from_slice(&undo).unwrap();
+                assert_eq!(saved.resulting_sha256, record.resulting_sha256);
+            } else {
+                assert_eq!(installed, original, "stage {stage}");
+                assert!(!backup_dir.join(format!("{}.undo.json", record.id)).exists());
+            }
+            assert!(!backup_dir.join(format!("{}.txn.json", record.id)).exists(), "stage {stage}");
+            assert!(!root.join(format!(".friday-code-edit-{}.tmp", record.id)).exists(), "stage {stage}");
+            assert!(!root.join(format!(".friday-code-original-{}.tmp", record.id)).exists(), "stage {stage}");
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn recovery_handles_undo_crash_at_each_transaction_boundary() {
+        // Snapshots model abrupt termination after the journal, temp write,
+        // first rename, second rename, and before/after consuming the Undo record.
+        for stage in ["journal", "temporary", "first-rename", "second-rename", "verified"] {
+            let (root, file, record, original, proposed) = recovery_fixture(stage);
+            let backup_dir = root.join(".friday-code-backups");
+            fs::write(backup_dir.join(format!("{}.undo.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+            fs::write(backup_dir.join(format!("{}.undo-txn.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+            match stage {
+                "journal" => fs::write(&file, &proposed).unwrap(),
+                "temporary" => {
+                    fs::write(&file, &proposed).unwrap();
+                    fs::write(root.join(format!(".friday-code-undo-{}.tmp", record.id)), &original).unwrap();
+                }
+                "first-rename" => {
+                    fs::write(root.join(format!(".friday-code-undone-{}.tmp", record.id)), &proposed).unwrap();
+                    fs::write(root.join(format!(".friday-code-undo-{}.tmp", record.id)), &original).unwrap();
+                }
+                "second-rename" | "verified" => {
+                    fs::write(&file, &original).unwrap();
+                    fs::write(root.join(format!(".friday-code-undone-{}.tmp", record.id)), &proposed).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(recover_project_code_transactions(&root).unwrap(), 1, "stage {stage}");
+            if stage == "second-rename" || stage == "verified" {
+                assert_eq!(fs::read(&file).unwrap(), original, "stage {stage}");
+                assert!(backup_dir.join(format!("{}.undone.json", record.id)).is_file(), "stage {stage}");
+                assert!(!backup_dir.join(format!("{}.undo.json", record.id)).exists(), "stage {stage}");
+            } else {
+                assert_eq!(fs::read(&file).unwrap(), proposed, "stage {stage}");
+                assert!(backup_dir.join(format!("{}.undo.json", record.id)).is_file(), "stage {stage}");
+                assert!(!backup_dir.join(format!("{}.undone.json", record.id)).exists(), "stage {stage}");
+            }
+            assert!(!backup_dir.join(format!("{}.undo-txn.json", record.id)).exists(), "stage {stage}");
+            assert!(!root.join(format!(".friday-code-undo-{}.tmp", record.id)).exists(), "stage {stage}");
+            assert!(!root.join(format!(".friday-code-undone-{}.tmp", record.id)).exists(), "stage {stage}");
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn guarded_code_apply_refuses_stale_original_without_modifying_it() {
+        let root = std::env::temp_dir().join(format!("friday-code-stale-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "externally changed").unwrap();
+        let result = apply_code_preview_to_disk(&root, &file, b"proposed", &sha256_hex(b"old"), &make_token(), 123);
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "externally changed");
+        assert!(!root.join(".friday-code-backups").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn guarded_code_apply_refuses_symlink_targets() {
+        let root = std::env::temp_dir().join(format!("friday-code-link-{}", make_token()));
+        let outside = std::env::temp_dir().join(format!("friday-code-outside-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&outside, "outside").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("linked.rs")).unwrap();
+        #[cfg(windows)]
+        { let _ = fs::remove_dir_all(&root); let _ = fs::remove_file(&outside); return; }
+        #[cfg(unix)]
+        {
+            let result = apply_code_preview_to_disk(&root, &root.join("linked.rs"), b"changed", &sha256_hex(b"outside"), &make_token(), 123);
+            assert!(result.is_err());
+            assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
+        }
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_file(&outside).unwrap();
+    }
+
+    #[test]
+    fn sha256_hash_is_stable_and_content_sensitive() {
+        assert_eq!(sha256_hex(b"hello"), sha256_hex(b"hello"));
+        assert_ne!(sha256_hex(b"hello"), sha256_hex(b"world"));
+    }
+
+    #[test]
+    fn relative_paths_are_project_scoped() {
+        let root = Path::new("/workspace/project");
+        assert_eq!(relative_path(root, Path::new("/workspace/project/src/main.rs")).as_deref(), Some("src/main.rs"));
+        assert!(relative_path(root, Path::new("/workspace/other/main.rs")).is_none());
+    }
+}
+
         use std::os::unix::fs::PermissionsExt;
         let (root, file, record, original, _proposed) = recovery_fixture("unix-mode");
         let mut record = record;
