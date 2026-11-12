@@ -94,7 +94,8 @@ fn sha256_hex(content: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-// A bounded single-hunk unified diff. This preview function never writes to disk.
+// A bounded single-hunk unified diff with up to three context lines on each side.
+// This preview function never writes to disk.
 fn unified_diff(original: &str, proposed: &str) -> String {
     let old_lines: Vec<&str> = original.split('\n').collect();
     let new_lines: Vec<&str> = proposed.split('\n').collect();
@@ -103,12 +104,36 @@ fn unified_diff(original: &str, proposed: &str) -> String {
     let mut suffix = 0usize;
     while suffix < old_lines.len().saturating_sub(prefix).min(new_lines.len().saturating_sub(prefix))
         && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix] { suffix += 1; }
+
     let old_end = old_lines.len().saturating_sub(suffix);
     let new_end = new_lines.len().saturating_sub(suffix);
-    let mut output = format!("@@ -{},{} +{},{} @@\n", prefix + 1, old_end.saturating_sub(prefix), prefix + 1, new_end.saturating_sub(prefix));
-    for line in &old_lines[prefix..old_end] { output.push('-'); output.push_str(line); output.push('\n'); }
-    for line in &new_lines[prefix..new_end] { output.push('+'); output.push_str(line); output.push('\n'); }
-    if suffix > 0 { for line in &old_lines[old_end..] { output.push(' '); output.push_str(line); output.push('\n'); } }
+    let prefix_context = prefix.min(3);
+    let suffix_context = suffix.min(3);
+    let old_count = prefix_context + old_end.saturating_sub(prefix) + suffix_context;
+    let new_count = prefix_context + new_end.saturating_sub(prefix) + suffix_context;
+    let start_line = prefix - prefix_context + 1;
+    let mut output = format!("@@ -{},{} +{},{} @@\n", start_line, old_count, start_line, new_count);
+
+    for line in &old_lines[prefix - prefix_context..prefix] {
+        output.push(' ');
+        output.push_str(line);
+        output.push('\n');
+    }
+    for line in &old_lines[prefix..old_end] {
+        output.push('-');
+        output.push_str(line);
+        output.push('\n');
+    }
+    for line in &new_lines[prefix..new_end] {
+        output.push('+');
+        output.push_str(line);
+        output.push('\n');
+    }
+    for line in &old_lines[old_end..old_end + suffix_context] {
+        output.push(' ');
+        output.push_str(line);
+        output.push('\n');
+    }
     output
 }
 
@@ -497,7 +522,7 @@ mod tests {
     #[test]
     fn preview_diff_shows_changed_middle_with_context() {
         let diff = unified_diff("alpha\nbeta\ngamma", "alpha\nBETA\ngamma");
-        assert!(diff.contains(" beta"));
+        assert!(diff.contains(" alpha"));
         assert!(diff.contains("-beta"));
         assert!(diff.contains("+BETA"));
         assert!(diff.contains(" gamma"));
