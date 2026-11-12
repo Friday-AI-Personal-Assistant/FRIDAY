@@ -851,6 +851,7 @@ mod tests {
     fn guarded_code_apply_creates_verified_backup_and_undo_record() {
         let root = std::env::temp_dir().join(format!("friday-code-apply-{}", make_token()));
         fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(&root).unwrap();
         let file = root.join("main.rs");
         fs::write(&file, "fn main() {}").unwrap();
         let original_hash = sha256_hex(b"fn main() {}");
