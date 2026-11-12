@@ -4,7 +4,9 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
+    time::{SystemTime, UNIX_EPOCH},
 };
+use sha2::{Digest, Sha256};
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
@@ -44,12 +46,71 @@ pub struct CodingProjectFile {
     size_bytes: usize,
 }
 
+#[derive(Clone)]
 struct ProjectGrant {
     root: PathBuf,
     path: PathBuf,
 }
 
 static PROJECT_GRANTS: Mutex<BTreeMap<String, ProjectGrant>> = Mutex::new(BTreeMap::new());
+
+const MAX_PROPOSED_FILE_BYTES: usize = 128 * 1024;
+const CODE_PREVIEW_TTL_SECONDS: u64 = 120;
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingChangePreview {
+    preview_id: String,
+    file_name: String,
+    relative_path: String,
+    original_sha256: String,
+    proposed_sha256: String,
+    original_size_bytes: usize,
+    proposed_size_bytes: usize,
+    unified_diff: String,
+    expires_in_seconds: u64,
+}
+
+struct StoredCodePreview {
+    file_id: String,
+    root: PathBuf,
+    path: PathBuf,
+    original_sha256: String,
+    proposed_sha256: String,
+    proposed_content: String,
+    expires_at: u64,
+}
+
+static CODE_PREVIEWS: Mutex<BTreeMap<String, StoredCodePreview>> = Mutex::new(BTreeMap::new());
+
+fn current_epoch_seconds() -> Result<u64, String> {
+    SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| "The system clock is invalid; FRIDAY cannot create a safe preview.".to_string())
+}
+
+fn sha256_hex(content: &[u8]) -> String {
+    let digest = Sha256::digest(content);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+// A bounded single-hunk unified diff. This preview function never writes to disk.
+fn unified_diff(original: &str, proposed: &str) -> String {
+    let old_lines: Vec<&str> = original.split('\n').collect();
+    let new_lines: Vec<&str> = proposed.split('\n').collect();
+    let mut prefix = 0usize;
+    while prefix < old_lines.len().min(new_lines.len()) && old_lines[prefix] == new_lines[prefix] { prefix += 1; }
+    let mut suffix = 0usize;
+    while suffix < old_lines.len().saturating_sub(prefix).min(new_lines.len().saturating_sub(prefix))
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix] { suffix += 1; }
+    let old_end = old_lines.len().saturating_sub(suffix);
+    let new_end = new_lines.len().saturating_sub(suffix);
+    let mut output = format!("@@ -{},{} +{},{} @@\n", prefix + 1, old_end.saturating_sub(prefix), prefix + 1, new_end.saturating_sub(prefix));
+    for line in &old_lines[prefix..old_end] { output.push('-'); output.push_str(line); output.push('\n'); }
+    for line in &new_lines[prefix..new_end] { output.push('+'); output.push_str(line); output.push('\n'); }
+    if suffix > 0 { for line in &old_lines[old_end..] { output.push(' '); output.push_str(line); output.push('\n'); } }
+    output
+}
 
 fn make_token() -> String {
     let mut bytes = [0u8; 24];
@@ -225,6 +286,9 @@ pub fn revoke_session_access() -> Result<(), String> {
     PROJECT_GRANTS.lock()
         .map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())?
         .clear();
+    CODE_PREVIEWS.lock()
+        .map_err(|_| "Coding Assistant preview storage is temporarily unavailable.".to_string())?
+        .clear();
     Ok(())
 }
 
@@ -251,6 +315,69 @@ pub async fn pick_project_folder_and_list_files(app: AppHandle) -> Result<Coding
     let project_name = root.file_name().and_then(|value| value.to_str()).unwrap_or("Selected project").chars().take(160).collect();
     let _ = crate::tools::record(&app, "coding.list_project", &format!("Listed {} bounded source/configuration files from a folder explicitly selected by the user.", candidates.len()), true);
     Ok(CodingProjectScan { project_name, files: candidates, scanned_entries: scanned, truncated })
+}
+
+
+#[tauri::command]
+pub async fn preview_code_change(file_id: String, proposed_content: String) -> Result<CodingChangePreview, String> {
+    ensure_skill_loaded()?;
+    if file_id.len() != 48 || !file_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Select a project file again before creating a change preview.".into());
+    }
+    if proposed_content.is_empty() || proposed_content.len() > MAX_PROPOSED_FILE_BYTES || proposed_content.as_bytes().contains(&0) {
+        return Err("The proposed file must be non-empty UTF-8 text no larger than 128 KB, with no binary NUL bytes.".into());
+    }
+    let now = current_epoch_seconds()?;
+    let grant = {
+        let grants = PROJECT_GRANTS.lock().map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())?;
+        grants.get(&file_id).cloned().ok_or("This project file grant has expired. Select the project folder again.")?
+    };
+    let root = validate_granted_root(&grant.root)?;
+    let metadata = fs::symlink_metadata(&grant.path)
+        .map_err(|_| "The selected project file is no longer available. Select it again.".to_string())?;
+    if is_redirected(&metadata) || !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES {
+        return Err("The selected project file is no longer an allowed regular file.".into());
+    }
+    if !supported_project_file(&grant.path) {
+        return Err("This file type is not permitted for a Coding Assistant preview.".into());
+    }
+    let canonical = fs::canonicalize(&grant.path)
+        .map_err(|_| "FRIDAY could not revalidate the selected project file.".to_string())?;
+    if canonical != grant.path || !canonical.starts_with(&root) {
+        return Err("The selected file moved or was redirected outside the approved project folder.".into());
+    }
+    let original_bytes = fs::read(&canonical)
+        .map_err(|_| "FRIDAY could not read the current file for preview.".to_string())?;
+    if original_bytes.len() > MAX_FILE_BYTES || original_bytes.len() as u64 != metadata.len() || original_bytes.contains(&0) {
+        return Err("The current file changed or is no longer eligible for a safe preview.".into());
+    }
+    let original_content = String::from_utf8(original_bytes)
+        .map_err(|_| "The current file is not valid UTF-8 text.".to_string())?;
+    if original_content == proposed_content {
+        return Err("The proposed content is identical to the current file; there is nothing to preview.".into());
+    }
+    let original_sha256 = sha256_hex(original_content.as_bytes());
+    let proposed_sha256 = sha256_hex(proposed_content.as_bytes());
+    let proposed_size_bytes = proposed_content.len();
+    let preview_id = make_token();
+    let relative = relative_path(&root, &canonical).ok_or("The selected file is outside the approved project folder.")?;
+    let file_name = canonical.file_name().and_then(|value| value.to_str()).unwrap_or("Project file").chars().take(180).collect();
+    let diff = unified_diff(&original_content, &proposed_content);
+    let mut previews = CODE_PREVIEWS.lock().map_err(|_| "Coding Assistant preview storage is temporarily unavailable.".to_string())?;
+    previews.retain(|_, preview| preview.expires_at > now);
+    if previews.len() >= 10 {
+        return Err("There are already 10 pending code previews. Wait for them to expire or select the project again.".into());
+    }
+    previews.insert(preview_id.clone(), StoredCodePreview {
+        file_id, root, path: canonical, original_sha256: original_sha256.clone(),
+        proposed_sha256: proposed_sha256.clone(), proposed_content,
+        expires_at: now.saturating_add(CODE_PREVIEW_TTL_SECONDS),
+    });
+    Ok(CodingChangePreview {
+        preview_id, file_name, relative_path: relative, original_sha256, proposed_sha256,
+        original_size_bytes: original_content.len(), proposed_size_bytes,
+        unified_diff: diff, expires_in_seconds: CODE_PREVIEW_TTL_SECONDS,
+    })
 }
 
 #[tauri::command]
@@ -365,6 +492,21 @@ mod tests {
         assert!(candidates.len() <= MAX_PROJECT_CANDIDATES);
         assert_eq!(grants.len(), candidates.len());
         fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn preview_diff_shows_changed_middle_with_context() {
+        let diff = unified_diff("alpha\nbeta\ngamma", "alpha\nBETA\ngamma");
+        assert!(diff.contains(" beta"));
+        assert!(diff.contains("-beta"));
+        assert!(diff.contains("+BETA"));
+        assert!(diff.contains(" gamma"));
+    }
+
+    #[test]
+    fn sha256_hash_is_stable_and_content_sensitive() {
+        assert_eq!(sha256_hex(b"hello"), sha256_hex(b"hello"));
+        assert_ne!(sha256_hex(b"hello"), sha256_hex(b"world"));
     }
 
     #[test]
