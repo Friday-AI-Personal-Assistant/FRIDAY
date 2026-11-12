@@ -269,6 +269,13 @@ fn validate_edit_content(content: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_edit_changes(original: &[u8], proposed: &str) -> Result<(), String> {
+    if original == proposed.as_bytes() {
+        return Err("The proposed content is identical to the original. There is nothing to save.".into());
+    }
+    Ok(())
+}
+
 fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], expected_sha256: &str, token: &str) -> Result<PathBuf, String> {
     if !current.starts_with(root) {
         return Err("The file is no longer inside the approved folder.".into());
@@ -1062,6 +1069,7 @@ pub fn prepare_file_edit(file_id: String, proposed_content: String) -> Result<Fi
     }
     let original_content = String::from_utf8(original_bytes.clone())
         .map_err(|_| "Only valid UTF-8 text files can be edited.".to_string())?;
+    validate_edit_changes(&original_bytes, &proposed_content)?;
     if original_content.contains('\0') {
         return Err("This file appears to contain binary data and cannot be edited.".into());
     }
@@ -1144,6 +1152,7 @@ pub fn apply_file_edit(
     if content_hash(&original) != edit.original_sha256 {
         return Err("This file changed after the preview was prepared. No changes were made; prepare a fresh preview.".into());
     }
+    validate_edit_changes(&original, &edit.proposed_content)?;
     let backup_token = make_token();
     let backup = replace_file_with_backup(&root, &current, edit.proposed_content.as_bytes(), &edit.original_sha256, &backup_token)?;
     let relative_backup = backup.strip_prefix(&root).unwrap_or(&backup).to_string_lossy().replace('\\', "/");
@@ -1804,6 +1813,12 @@ mod tests {
         });
         assert!(PENDING_FILE_EDITS.lock().unwrap().remove(&id).is_some());
         assert!(PENDING_FILE_EDITS.lock().unwrap().remove(&id).is_none());
+    }
+
+    #[test]
+    fn identical_edit_content_is_rejected_before_creating_an_undo_record() {
+        assert!(validate_edit_changes(b"same content", "same content").is_err());
+        assert!(validate_edit_changes(b"original", "changed").is_ok());
     }
 
     #[test]
