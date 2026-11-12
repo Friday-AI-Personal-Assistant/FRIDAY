@@ -113,6 +113,45 @@ struct CodingUndoRecord {
     original_unix_mode: Option<u32>,
 }
 
+#[cfg(windows)]
+#[link(name = "Kernel32")]
+extern "system" {
+    fn ReplaceFileW(
+        replaced_file_name: *const u16,
+        replacement_file_name: *const u16,
+        backup_file_name: *const u16,
+        replace_flags: u32,
+        exclude: *mut std::ffi::c_void,
+        reserved: *mut std::ffi::c_void,
+    ) -> i32;
+    fn GetLastError() -> u32;
+}
+
+#[cfg(windows)]
+fn replace_file_with_backup(target: &Path, replacement: &Path, displaced: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide = |path: &Path| path.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let target_wide = wide(target);
+    let replacement_wide = wide(replacement);
+    let displaced_wide = wide(displaced);
+    // Flags are deliberately zero: in particular, never ignore ACL merge failures.
+    let succeeded = unsafe {
+        ReplaceFileW(
+            target_wide.as_ptr(),
+            replacement_wide.as_ptr(),
+            displaced_wide.as_ptr(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if succeeded == 0 {
+        let code = unsafe { GetLastError() };
+        return Err(format!("Windows ReplaceFileW failed with error {code}"));
+    }
+    Ok(())
+}
+
 fn ensure_code_backup_dir(root: &Path) -> Result<PathBuf, String> {
     let dir = root.join(".friday-code-backups");
     match fs::symlink_metadata(&dir) {
@@ -216,15 +255,22 @@ fn apply_code_preview_to_disk(root: &Path, current: &Path, proposed: &[u8], expe
     }
 
     let displaced = parent.join(format!(".friday-code-original-{token}.tmp"));
-    if let Err(e) = fs::rename(current, &displaced) {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("Could not safely stage the original file: {e}"));
+    #[cfg(windows)]
+    if let Err(error) = replace_file_with_backup(current, &temporary, &displaced) {
+        return Err(format!("{error}. FRIDAY retained the transaction journal and recovery files; it will reconcile the transaction before another edit."));
     }
-    if let Err(e) = fs::rename(&temporary, current) {
-        let restored = fs::rename(&displaced, current).is_ok();
-        let _ = fs::remove_file(&temporary);
-        return Err(if restored { format!("Could not install the approved change; the original file was restored: {e}") }
-            else { format!("Could not install the change or restore the original automatically. The original remains at {}: {e}", displaced.display()) });
+    #[cfg(not(windows))]
+    {
+        if let Err(e) = fs::rename(current, &displaced) {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("Could not safely stage the original file: {e}"));
+        }
+        if let Err(e) = fs::rename(&temporary, current) {
+            let restored = fs::rename(&displaced, current).is_ok();
+            let _ = fs::remove_file(&temporary);
+            return Err(if restored { format!("Could not install the approved change; the original file was restored: {e}") }
+                else { format!("Could not install the change or restore the original automatically. The original remains at {}: {e}", displaced.display()) });
+        }
     }
     let installed = fs::read(current).map_err(|_| format!("The replacement was installed but could not be verified. The original backup remains at {}.", backup.display()))?;
     if sha256_hex(&installed) != resulting_hash {
@@ -669,17 +715,24 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
     }
 
     let displaced = parent.join(format!(".friday-code-undone-{}.tmp", record.id));
-    fs::rename(&canonical_target, &displaced)
-        .map_err(|e| format!("Could not safely stage the current edited file: {e}"))?;
-    if let Err(error) = fs::rename(&temporary, &canonical_target) {
-        let restored = fs::rename(&displaced, &canonical_target).is_ok();
-        let _ = fs::remove_file(&temporary);
-        return Err(if restored {
-            format!("Could not restore the original file; the edited file was put back: {error}")
-        } else {
-            format!("Undo installation and automatic rollback both failed. The edited file remains at {} and the original backup remains at {}.",
-                displaced.display(), backup.display())
-        });
+    #[cfg(windows)]
+    if let Err(error) = replace_file_with_backup(&canonical_target, &temporary, &displaced) {
+        return Err(format!("{error}. FRIDAY retained the Undo journal and recovery files; it will reconcile the transaction before another edit."));
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(&canonical_target, &displaced)
+            .map_err(|e| format!("Could not safely stage the current edited file: {e}"))?;
+        if let Err(error) = fs::rename(&temporary, &canonical_target) {
+            let restored = fs::rename(&displaced, &canonical_target).is_ok();
+            let _ = fs::remove_file(&temporary);
+            return Err(if restored {
+                format!("Could not restore the original file; the edited file was put back: {error}")
+            } else {
+                format!("Undo installation and automatic rollback both failed. The edited file remains at {} and the original backup remains at {}.",
+                    displaced.display(), backup.display())
+            });
+        }
     }
     let restored_bytes = fs::read(&canonical_target)
         .map_err(|_| format!("The original was installed but could not be verified. The backup remains at {}.", backup.display()))?;
@@ -2091,4 +2144,50 @@ mod tests {
         assert_eq!(relative_path(root, Path::new("/workspace/project/src/main.rs")).as_deref(), Some("src/main.rs"));
         assert!(relative_path(root, Path::new("/workspace/other/main.rs")).is_none());
     }
+ 
+    #[cfg(windows)]
+    #[test]
+    fn windows_apply_and_undo_preserve_a_custom_file_dacl() {
+        use std::process::Command;
+        let root = std::env::temp_dir().join(format!("friday-code-windows-acl-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(&root).unwrap();
+        let file = root.join("main.rs");
+        let original = b"original source";
+        let proposed = b"approved replacement";
+        fs::write(&file, original).unwrap();
+
+        let whoami = Command::new("whoami").output().expect("whoami must be available");
+        assert!(whoami.status.success());
+        let account = String::from_utf8_lossy(&whoami.stdout).trim().to_string();
+        let grant = format!("{account}:(F)");
+        let set_acl = Command::new("icacls")
+            .arg(&file)
+            .args(["/inheritance:r", "/grant:r", &grant])
+            .output()
+            .expect("icacls must be available on Windows");
+        assert!(set_acl.status.success(), "{}", String::from_utf8_lossy(&set_acl.stderr));
+
+        let snapshot_acl = |path: &Path| -> String {
+            let output = Command::new("icacls").arg(path).output().expect("icacls must be available");
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let original_acl = snapshot_acl(&file);
+        let (_, record) = apply_code_preview_to_disk(
+            &root, &file, proposed, &sha256_hex(original), &make_token(), 123,
+        ).unwrap();
+        assert_eq!(snapshot_acl(&file), original_acl, "Apply must preserve the original DACL");
+
+        undo_code_change_on_disk(&root, &record).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert_eq!(snapshot_acl(&file), original_acl, "Undo must preserve the original DACL");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+
 }
