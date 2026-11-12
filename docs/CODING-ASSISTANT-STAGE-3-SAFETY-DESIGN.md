@@ -56,8 +56,8 @@ Allow FRIDAY to propose and, only after explicit user approval, apply carefully 
 ## Implementation progress
 
 - Preview-only slice: implemented and CI-verified in Run #279. It provides a one-file bounded preview, hashes, diff, short expiry and no disk writes.
-- Approval groundwork: implemented on the development branch. The backend can issue a token for an exact pending preview, rotate a previous token on re-approval, cancel a preview, and consume an approval record only once. Unit coverage exercises wrong-token, expiry and replay rejection.
-- No apply/write command is registered for Coding Assistant yet. The token is not a write authorization by itself; it must be consumed by a future apply command after full path/grant/hash/backup revalidation.
+- Approval groundwork and explicit UI: backend token issuance is wired to an explicit per-preview approval button. The token is held only in component state, approval is rotated if requested again, cancellation removes the pending preview, and editing the proposed content or changing the selected file invalidates the visible approval and cancels the backend preview. The backend consume helper rejects wrong-token, expiry and replay attempts. The UI explicitly states that approval does not change the file.
+- No apply/write command is registered for Coding Assistant yet. The token is not a write authorization by itself; it must be consumed by a future apply command after full path/grant/hash/backup revalidation. The UI approval increment is awaiting CI verification.
 
 ## Remaining implementation sequence
 
