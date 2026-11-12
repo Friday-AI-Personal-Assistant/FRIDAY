@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -100,8 +100,8 @@ pub struct CodingApplyResult {
     undo_record_id: String,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CodingUndoRecord {
     id: String,
     relative_path: String,
@@ -245,6 +245,132 @@ fn apply_code_preview_to_disk(root: &Path, current: &Path, proposed: &[u8], expe
         return Err(format!("The change was verified and its undo record saved, but FRIDAY could not remove its temporary displaced copy: {e}. The verified original backup remains."));
     }
     Ok((backup, record))
+}
+
+fn validate_undo_record(record: &CodingUndoRecord) -> Result<(), String> {
+    if record.id.len() != 48 || !record.id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("The undo record identifier is invalid.".into());
+    }
+    let relative = Path::new(&record.relative_path);
+    if relative.as_os_str().is_empty() || relative.is_absolute()
+        || relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+        return Err("The undo record contains an unsafe project path.".into());
+    }
+    let expected_backup = format!(".friday-code-backups/{}.bak", record.id);
+    if record.backup_relative_path != expected_backup || record.original_sha256.len() != 64
+        || record.resulting_sha256.len() != 64
+        || !record.original_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+        || !record.resulting_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+        || record.original_sha256 == record.resulting_sha256 {
+        return Err("The undo record failed its integrity checks.".into());
+    }
+    Ok(())
+}
+
+fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(PathBuf, PathBuf), String> {
+    validate_undo_record(record)?;
+    let canonical_root = validate_granted_root(root)?;
+    let target = canonical_root.join(Path::new(&record.relative_path));
+    let metadata = fs::symlink_metadata(&target)
+        .map_err(|_| "The edited project file is no longer available. No undo was performed.".to_string())?;
+    if is_redirected(&metadata) || !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES {
+        return Err("Undo is allowed only for the original bounded regular project file.".into());
+    }
+    if metadata.permissions().readonly() || !supported_project_file(&target) {
+        return Err("The project file is read-only or is not an allowed code file. Undo was refused.".into());
+    }
+    let canonical_target = fs::canonicalize(&target)
+        .map_err(|_| "FRIDAY could not revalidate the edited project file.".to_string())?;
+    if canonical_target != target || !canonical_target.starts_with(&canonical_root) {
+        return Err("The edited project file moved or was redirected. Undo was refused.".into());
+    }
+    let current = fs::read(&canonical_target)
+        .map_err(|_| "FRIDAY could not verify the current edited file.".to_string())?;
+    if current.len() as u64 != metadata.len() || current.len() as u64 > MAX_FILE_BYTES
+        || current.contains(&0) || std::str::from_utf8(&current).is_err() {
+        return Err("The current edited file is no longer bounded UTF-8 text. Undo was refused.".into());
+    }
+    if sha256_hex(&current) != record.resulting_sha256 {
+        return Err("This file has changed since FRIDAY edited it. Undo will not overwrite your newer changes.".into());
+    }
+
+    let backup_dir = ensure_code_backup_dir(&canonical_root)?;
+    let backup = backup_dir.join(format!("{}.bak", record.id));
+    let backup_meta = fs::symlink_metadata(&backup)
+        .map_err(|_| "The verified original backup is missing. Undo was refused.".to_string())?;
+    if is_redirected(&backup_meta) || !backup_meta.is_file() || backup_meta.len() == 0
+        || backup_meta.len() > MAX_FILE_BYTES {
+        return Err("The original backup is not a safe regular file. Undo was refused.".into());
+    }
+    let original = fs::read(&backup)
+        .map_err(|_| "FRIDAY could not read the original backup.".to_string())?;
+    if original.len() as u64 != backup_meta.len() || original.contains(&0)
+        || std::str::from_utf8(&original).is_err() || sha256_hex(&original) != record.original_sha256 {
+        return Err("The original backup failed integrity verification. Undo was refused.".into());
+    }
+
+    let journal_path = backup_dir.join(format!("{}.undo-txn.json", record.id));
+    let journal_bytes = serde_json::to_vec(record)
+        .map_err(|_| "FRIDAY could not prepare the undo recovery journal.".to_string())?;
+    let mut journal = OpenOptions::new().write(true).create_new(true).open(&journal_path)
+        .map_err(|e| format!("Could not create the undo recovery journal: {e}"))?;
+    journal.write_all(&journal_bytes).and_then(|_| journal.sync_all())
+        .map_err(|e| format!("Could not flush the undo recovery journal: {e}"))?;
+    drop(journal);
+
+    let parent = canonical_target.parent().ok_or("The edited file has no parent directory.")?;
+    let temporary = parent.join(format!(".friday-code-undo-{}.tmp", record.id));
+    let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temporary)
+        .map_err(|e| format!("Could not prepare the original-file restoration: {e}"))?;
+    if let Err(error) = temp_file.set_permissions(metadata.permissions())
+        .and_then(|_| temp_file.write_all(&original))
+        .and_then(|_| temp_file.sync_all()) {
+        drop(temp_file);
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("Could not prepare the original-file restoration: {error}"));
+    }
+    drop(temp_file);
+    let prepared = fs::read(&temporary)
+        .map_err(|_| "Could not verify the prepared original-file restoration.".to_string())?;
+    if sha256_hex(&prepared) != record.original_sha256 {
+        let _ = fs::remove_file(&temporary);
+        return Err("The prepared original-file restoration failed SHA-256 verification.".into());
+    }
+
+    let displaced = parent.join(format!(".friday-code-undone-{}.tmp", record.id));
+    fs::rename(&canonical_target, &displaced)
+        .map_err(|e| format!("Could not safely stage the current edited file: {e}"))?;
+    if let Err(error) = fs::rename(&temporary, &canonical_target) {
+        let restored = fs::rename(&displaced, &canonical_target).is_ok();
+        let _ = fs::remove_file(&temporary);
+        return Err(if restored {
+            format!("Could not restore the original file; the edited file was put back: {error}")
+        } else {
+            format!("Undo installation and automatic rollback both failed. The edited file remains at {} and the original backup remains at {}.",
+                displaced.display(), backup.display())
+        });
+    }
+    let restored_bytes = fs::read(&canonical_target)
+        .map_err(|_| format!("The original was installed but could not be verified. The backup remains at {}.", backup.display()))?;
+    if sha256_hex(&restored_bytes) != record.original_sha256 {
+        let failed = parent.join(format!(".friday-code-undo-failed-{}.tmp", record.id));
+        let _ = fs::rename(&canonical_target, &failed);
+        let rolled_back = fs::rename(&displaced, &canonical_target).is_ok();
+        let _ = fs::remove_file(&failed);
+        return Err(if rolled_back {
+            "The restored file failed verification; FRIDAY put the edited version back.".into()
+        } else {
+            format!("The restored file failed verification and rollback failed. Recovery copies remain in {}.", backup.display())
+        });
+    }
+
+    let undo_path = backup_dir.join(format!("{}.undo.json", record.id));
+    let consumed_path = backup_dir.join(format!("{}.undone.json", record.id));
+    fs::rename(&undo_path, &consumed_path)
+        .map_err(|e| format!("The original was restored and verified, but FRIDAY could not mark this undo as consumed: {e}. A repeat undo will still be blocked by the file hash check."))?;
+    fs::remove_file(&displaced)
+        .map_err(|e| format!("The original was restored and verified, but FRIDAY could not clean up its staged copy: {e}"))?;
+    Ok((canonical_target, backup))
 }
 
 fn take_approved_preview(
@@ -658,6 +784,55 @@ pub fn apply_code_change(app: AppHandle, preview_id: String, approval_token: Str
     })
 }
 
+/// Restores a previously applied change only while the target still matches FRIDAY's exact post-edit hash.
+#[tauri::command]
+pub fn undo_code_change(app: AppHandle, undo_record_id: String) -> Result<String, String> {
+    ensure_skill_loaded()?;
+    if undo_record_id.len() != 48 || !undo_record_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("The undo request is invalid.".into());
+    }
+    let grants = PROJECT_GRANTS.lock()
+        .map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())?;
+    let mut selected: Option<(PathBuf, PathBuf)> = None;
+    for grant in grants.values() {
+        let root = validate_granted_root(&grant.root)?;
+        let backup_dir = ensure_code_backup_dir(&root)?;
+        let record_path = backup_dir.join(format!("{}.undo.json", undo_record_id));
+        if fs::symlink_metadata(&record_path).is_ok() {
+            let bytes = fs::read(&record_path)
+                .map_err(|_| "FRIDAY could not read the guarded undo record.".to_string())?;
+            if bytes.len() > 16 * 1024 {
+                return Err("The guarded undo record exceeds its safety limit.".into());
+            }
+            let record: CodingUndoRecord = serde_json::from_slice(&bytes)
+                .map_err(|_| "The guarded undo record is invalid or damaged.".to_string())?;
+            validate_undo_record(&record)?;
+            let target = root.join(&record.relative_path);
+            if target == grant.path {
+                selected = Some((root, target));
+                break;
+            }
+        }
+    }
+    drop(grants);
+    let (root, target) = selected.ok_or("No unused undo record for this file exists in the currently approved project. Select the project folder again if needed.")?;
+    let backup_dir = ensure_code_backup_dir(&root)?;
+    let undo_path = backup_dir.join(format!("{}.undo.json", undo_record_id));
+    let bytes = fs::read(&undo_path).map_err(|_| "The guarded undo record is no longer available.".to_string())?;
+    let record: CodingUndoRecord = serde_json::from_slice(&bytes)
+        .map_err(|_| "The guarded undo record is invalid or damaged.".to_string())?;
+    if root.join(&record.relative_path) != target {
+        return Err("The undo record no longer matches the approved project file.".into());
+    }
+    let (restored, backup) = undo_code_change_on_disk(&root, &record)?;
+    let relative = relative_path(&root, &restored).unwrap_or_else(|| record.relative_path.clone());
+    let backup_relative = backup.strip_prefix(&root).unwrap_or(&backup).to_string_lossy().replace('\\', "/");
+    let _ = crate::tools::record(&app, "coding.undo_code_change",
+        &format!("Undid one approved file change: {relative}; restored SHA-256 {}; retained backup {}.",
+            record.original_sha256, backup_relative), true);
+    Ok(format!("Restored {relative} to its verified original contents. The original backup was retained at {backup_relative}."))
+}
+
 fn validate_proposed_content(content: &str) -> Result<(), String> {
     if content.is_empty() || content.len() > MAX_PROPOSED_FILE_BYTES || content.as_bytes().contains(&0) {
         return Err("The approved proposal is empty, too large, or contains binary NUL bytes.".into());
@@ -864,6 +1039,57 @@ mod tests {
         assert_eq!(record.resulting_sha256, sha256_hex(b"fn main() { println!(\"hi\"); }"));
         assert!(root.join(".friday-code-backups").join(format!("{token}.undo.json")).is_file());
         assert!(root.join(".friday-code-backups").join(format!("{token}.txn.json")).is_file());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn guarded_undo_restores_verified_original_and_prevents_replay() {
+        let temp = std::env::temp_dir().join(format!("friday-code-undo-{}", make_token()));
+        fs::create_dir_all(&temp).unwrap();
+        let root = fs::canonicalize(&temp).unwrap();
+        let file = root.join("main.rs");
+        let original = b"fn main() {}";
+        let proposed = b"fn main() { println!(\\"hi\\"); }";
+        fs::write(&file, original).unwrap();
+        let token = make_token();
+        let (_, record) = apply_code_preview_to_disk(&root, &file, proposed, &sha256_hex(original), &token, 123).unwrap();
+        let (restored, backup) = undo_code_change_on_disk(&root, &record).unwrap();
+        assert_eq!(restored, file);
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        assert!(root.join(".friday-code-backups").join(format!("{token}.undone.json")).is_file());
+        assert!(!root.join(".friday-code-backups").join(format!("{token}.undo.json")).exists());
+        assert!(undo_code_change_on_disk(&root, &record).is_err(), "a consumed undo must not replay");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn guarded_undo_refuses_intervening_user_changes() {
+        let temp = std::env::temp_dir().join(format!("friday-code-undo-stale-{}", make_token()));
+        fs::create_dir_all(&temp).unwrap();
+        let root = fs::canonicalize(&temp).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "original").unwrap();
+        let token = make_token();
+        let (_, record) = apply_code_preview_to_disk(&root, &file, b"friday edit", &sha256_hex(b"original"), &token, 123).unwrap();
+        fs::write(&file, "user's newer edit").unwrap();
+        assert!(undo_code_change_on_disk(&root, &record).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "user's newer edit");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn guarded_undo_refuses_corrupted_backup() {
+        let temp = std::env::temp_dir().join(format!("friday-code-undo-backup-{}", make_token()));
+        fs::create_dir_all(&temp).unwrap();
+        let root = fs::canonicalize(&temp).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "original").unwrap();
+        let token = make_token();
+        let (backup, record) = apply_code_preview_to_disk(&root, &file, b"friday edit", &sha256_hex(b"original"), &token, 123).unwrap();
+        fs::write(&backup, "corrupted").unwrap();
+        assert!(undo_code_change_on_disk(&root, &record).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "friday edit");
         fs::remove_dir_all(&root).unwrap();
     }
 
