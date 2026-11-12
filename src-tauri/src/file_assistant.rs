@@ -2077,6 +2077,24 @@ mod tests {
     }
 
     #[test]
+    fn transaction_recovery_refuses_a_corrupt_original_backup() {
+        let root_path = std::env::temp_dir().join(format!("friday-corrupt-txn-backup-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        let id = make_token();
+        let backup_relative = format!(".friday-backups/{id}.bak");
+        fs::write(root.join(&backup_relative), b"tampered backup").unwrap();
+        let journal = FileTransactionJournal {
+            id, kind: "edit".into(), original_relative_path: "notes.txt".into(),
+            current_relative_path: "notes.txt".into(), backup_relative_path: backup_relative,
+            expected_original_sha256: content_hash(b"original"),
+            expected_current_sha256: content_hash(b"edited"), created_at: edit_now(),
+        };
+        assert_eq!(classify_file_transaction(&root, &journal), "manual_review");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn restored_edit_with_backup_still_present_is_classified_as_no_change_needed() {
         let root_path = std::env::temp_dir().join(format!("friday-edit-rollback-recovery-{}", make_token()));
         fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
