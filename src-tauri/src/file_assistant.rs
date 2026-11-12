@@ -409,7 +409,7 @@ fn ensure_backup_capacity(root: &Path, additional_bytes: u64, additional_files: 
         bytes = bytes.saturating_add(meta.len());
     }
     if files.saturating_add(additional_files) > MAX_BACKUP_STORAGE_FILES || bytes.saturating_add(additional_bytes) > MAX_BACKUP_STORAGE_BYTES {
-        return Err("FRIDAY backup storage has reached its safety limit (500 files or 100 MB). Existing backups were preserved; review or export them before making more changes.".into());
+        return Err("This operation would exceed FRIDAY's backup safety limit (500 files or 100 MB including reserved recovery metadata). Existing backups were preserved; review or export them before making more changes.".into());
     }
     Ok(())
 }
@@ -1787,6 +1787,19 @@ mod tests {
         }
         assert!(ensure_backup_capacity(&root, 1, 1).is_err());
         assert_eq!(fs::read_dir(root.join(".friday-backups")).unwrap().count(), MAX_BACKUP_STORAGE_FILES);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn backup_capacity_reserves_space_for_journal_and_undo_metadata() {
+        let root_path = std::env::temp_dir().join(format!("friday-backup-reserve-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        for index in 0..(MAX_BACKUP_STORAGE_FILES - 7) {
+            fs::write(root.join(".friday-backups").join(format!("item-{index}.bak")), b"x").unwrap();
+        }
+        assert!(ensure_backup_capacity(&root, 1, 8).is_err());
+        assert_eq!(fs::read_dir(root.join(".friday-backups")).unwrap().count(), MAX_BACKUP_STORAGE_FILES - 7);
         fs::remove_dir_all(&root).unwrap();
     }
 
