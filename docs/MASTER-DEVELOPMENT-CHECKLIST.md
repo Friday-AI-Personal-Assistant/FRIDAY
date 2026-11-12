@@ -258,3 +258,6 @@ Do not copy code or dependencies without checking their licences and compatibili
 **Phase 1E — Proper Skills Platform:** four versioned built-in declarative packages can be installed locally, enabled, explicitly loaded/unloaded and integrity-checked. Loaded instructions are added to the next local chat prompt; packages do not execute scripts and do not yet provide their advertised tools. Automated and Windows verification remain pending.
 
 **Phase 1D — Persistent personal memory:** user-entered memory entries are stored separately from transcripts in an encrypted local file. The chat UI supports add, edit, enable/disable and delete; enabled entries are included as bounded context in local Ollama prompts. No memory is silently extracted or saved. Rust/TypeScript checks and Windows end-to-end verification remain pending.
+
+
+- [ ] Coding Assistant Stage 3: startup/session recovery for interrupted Apply and Undo transactions (implemented on `feature/phase-2-skills`; CI verification pending).
