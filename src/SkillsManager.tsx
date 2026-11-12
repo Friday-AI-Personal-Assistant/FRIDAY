@@ -170,7 +170,7 @@ export default function SkillsManager() {
   async function chooseFolder() {
     if (!desktop || fileBusy) return;
     setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
-    setFolderCandidates([]); setSelectedFolderIds([]); setFolderGrantId(""); setUndoOperations([]); setFolderSearch(""); setFileContentSearch("");
+    setFolderCandidates([]); setSelectedFolderIds([]); setFolderGrantId(""); setUndoOperations([]); setRecoveryItems([]); setFolderSearch(""); setFileContentSearch("");
     setEditingFileId(""); setDraftContent(""); setEditPreview(null); setFileNotice("");
     try {
       const scan = await invoke<FolderScanResult>("pick_folder_and_list_text_files");
@@ -200,7 +200,7 @@ export default function SkillsManager() {
   async function chooseTextFiles() {
     if (!desktop || fileBusy) return;
     setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
-    setFolderCandidates([]); setSelectedFolderIds([]); setFolderGrantId(""); setUndoOperations([]); setFileContentSearch("");
+    setFolderCandidates([]); setSelectedFolderIds([]); setFolderGrantId(""); setUndoOperations([]); setRecoveryItems([]); setFileContentSearch("");
     setEditingFileId(""); setDraftContent(""); setEditPreview(null); setFileNotice("");
     try {
       const files = await invoke<SelectedTextFile[]>("pick_and_read_text_files");
