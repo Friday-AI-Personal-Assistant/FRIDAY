@@ -668,15 +668,19 @@ fn load_undo_record(root: &Path, id: &str) -> Result<UndoRecord, String> {
     Ok(record)
 }
 
-fn undo_is_already_applied(root: &Path, record: &UndoRecord) -> bool {
+fn read_validated_undo_backup(root: &Path, record: &UndoRecord) -> Option<Vec<u8>> {
+    let backup_dir = undo_backup_dir(root).ok()?;
     let backup = root.join(&record.backup_relative_path);
-    let backup_meta = match fs::symlink_metadata(&backup) {
-        Ok(meta) if meta.is_file() && !is_redirected(&meta) => meta,
-        _ => return false,
-    };
-    if backup_meta.len() > MAX_FILE_BYTES { return false; }
-    let backup_bytes = match fs::read(&backup) { Ok(bytes) => bytes, Err(_) => return false };
-    if validate_undo_backup(record, &backup_bytes).is_err() { return false; }
+    if !backup.starts_with(&backup_dir) { return None; }
+    let metadata = fs::symlink_metadata(&backup).ok()?;
+    if is_redirected(&metadata) || !metadata.is_file() || metadata.len() > MAX_FILE_BYTES { return None; }
+    let bytes = fs::read(&backup).ok()?;
+    if bytes.len() as u64 != metadata.len() || validate_undo_backup(record, &bytes).is_err() { return None; }
+    Some(bytes)
+}
+
+fn undo_is_already_applied(root: &Path, record: &UndoRecord) -> bool {
+    let backup_bytes = match read_validated_undo_backup(root, record) { Some(bytes) => bytes, None => return false };
     match record.kind.as_str() {
         "edit" => {
             let current = match safe_relative_file(root, &record.current_relative_path) {
@@ -799,8 +803,8 @@ fn write_undo_intent_marker(root: &Path, id: &str) -> Result<(), String> {
 
 fn undo_recovery_status(root: &Path, record: &UndoRecord) -> String {
     if undo_is_already_applied(root, record) { return "finish_undo_history".into(); }
-    let backup = root.join(&record.backup_relative_path);
-    let backup_hash = bounded_regular_file_hash(&backup);
+    let backup_bytes = read_validated_undo_backup(root, record);
+    let backup_hash = backup_bytes.as_ref().map(|bytes| content_hash(bytes));
     let current = match safe_relative_file(root, &record.current_relative_path) {
         Ok(path) => path, Err(_) => return "manual_review".into(),
     };
@@ -1972,6 +1976,24 @@ mod tests {
         assert!(recover_undo_intent(&root, &id).unwrap().contains("Undo option remains available"));
         assert_eq!(fs::read(root.join("notes.txt")).unwrap(), b"edited");
         assert!(!root.join(".friday-backups").join(format!("{id}.undoing")).exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn undo_recovery_never_labels_a_corrupt_backup_as_restorable() {
+        let root_path = std::env::temp_dir().join(format!("friday-undo-corrupt-backup-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        let id = make_token();
+        let backup_relative = format!(".friday-backups/{id}.bak");
+        fs::write(root.join(&backup_relative), b"corrupted").unwrap();
+        let record = UndoRecord {
+            id, kind: "edit".into(), original_relative_path: "notes.txt".into(),
+            current_relative_path: "notes.txt".into(), backup_relative_path: backup_relative,
+            expected_current_sha256: content_hash(b"edited"),
+            backup_sha256: Some(content_hash(b"original")), created_at: edit_now(),
+        };
+        assert_eq!(undo_recovery_status(&root, &record), "manual_review");
         fs::remove_dir_all(&root).unwrap();
     }
 
