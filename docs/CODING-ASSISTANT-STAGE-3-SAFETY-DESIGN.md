@@ -65,7 +65,7 @@ Allow FRIDAY to propose and, only after explicit user approval, apply carefully 
 2. Implement a single-file apply operation that consumes the approval record, revalidates the current grant/root/path/type/reparse status and original SHA-256, and refuses stale files.
 3. Add verified backup creation, safe same-directory temporary write and atomic replacement with fail-closed platform handling.
 4. Verify post-write SHA-256, persist undo metadata and metadata-only audit events.
-5. Implement guarded undo that refuses to overwrite intervening user changes.
+5. Implement guarded undo that refuses to overwrite intervening user changes. (Backend implementation added; CI verification pending.)
 6. Add filesystem fault-injection and failure-path tests before enabling the write capability.
 
 ## Acceptance criteria
@@ -90,3 +90,12 @@ Allow FRIDAY to propose and, only after explicit user approval, apply carefully 
 - This command is intentionally not exposed in the Coding Assistant UI yet. The guarded undo command and fault-injection/recovery coverage must be completed and CI-verified before users can trigger writes.
 - Platform caveat: replacement uses a journaled two-rename sequence with rollback rather than claiming a single universally atomic replace on every supported filesystem. A brief missing-target window may exist between renames; recovery must handle interruption there.
 - New tests cover successful verified backup/undo metadata, stale-original refusal, and symlink-target refusal. These tests are awaiting CI.
+
+
+## Guarded undo backend progress
+
+- Added a backend-only `undo_code_change` command, registered with Tauri but not exposed in the UI.
+- Undo requires the Coding Assistant to be loaded and the original project/file grant to still be active. The stored record is validated, its project-relative path is constrained, and the current file must still match the exact post-apply SHA-256.
+- The original backup must be a normal bounded file and match the recorded original SHA-256. A corrupted/missing backup, redirected target, unsupported file, or intervening user edit causes a refusal without overwriting the target.
+- Restoration uses a synced same-directory temporary file, a journal, a staged displaced copy, post-restore SHA-256 verification, and a consumed-record rename to prevent replay. The verified original backup is retained.
+- Tests cover successful restore and replay refusal, intervening user changes, and corrupted backups. Startup recovery and fault-injection across interrupted rename/journal states remain outstanding; the command stays hidden from the UI until those are complete and CI-verified.
