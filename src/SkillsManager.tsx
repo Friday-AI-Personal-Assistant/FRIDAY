@@ -360,6 +360,7 @@ ${file.content}`
       setSelectedTextFiles([]); setFolderCandidates([]); setSelectedFolderIds([]);
       setFileAnswer("");
       setUndoOperations(await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId }));
+      setRecoveryItems(await invoke<FileRecoveryItem[]>("list_file_recovery_items", { fileId }));
     } catch (e) {
       if (previewId) { try { await invoke("cancel_file_undo_preview", { previewId }); } catch {} }
       setFileError(String(e));
@@ -511,7 +512,7 @@ ${file.content}`
             {recoveryItems.map(item => <div className="file-assistant-candidate" key={item.id}>
               <span>
                 <strong>{item.kind === "move" ? "Interrupted move: " : "Interrupted edit: "}{item.originalRelativePath}</strong>
-                <small>{item.status === "restore_original" ? "Verified backup available; original file is missing." : item.status === "finish_undo_history" ? "File change is present; Undo history needs recovery." : item.status === "operation_not_started" ? "Original file is intact; operation did not start." : "Ambiguous state — no automatic recovery is safe."}</small>
+                <small>{item.status === "restore_original" ? "Verified backup available; original file is missing." : item.status === "finish_undo_history" ? (item.kind.startsWith("undo-") ? "Undo restored the file; its completion marker needs recovery." : "File change is present; Undo history needs recovery.") : item.status === "operation_not_started" ? "Original file is intact; operation did not start." : "Ambiguous state — no automatic recovery is safe."}</small>
               </span>
               <button className="secondary-button" disabled={!!recoveryBusyId || item.status === "manual_review" || editBusy} onClick={() => void recoverFileTransaction(item)}>{recoveryBusyId === item.id ? "Recovering…" : "Review & recover"}</button>
             </div>)}
