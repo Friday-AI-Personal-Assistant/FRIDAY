@@ -273,6 +273,20 @@ fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], expect
 }
 
 
+fn validate_granted_root(root: &Path) -> Result<PathBuf, String> {
+    let metadata = fs::symlink_metadata(root)
+        .map_err(|_| "The selected folder is no longer available.".to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("The selected folder is no longer a normal, approved directory.".into());
+    }
+    let canonical = fs::canonicalize(root)
+        .map_err(|_| "Could not verify the selected folder.".to_string())?;
+    if canonical != root {
+        return Err("The selected folder's location changed after it was approved. Select it again.".into());
+    }
+    Ok(canonical)
+}
+
 fn safe_relative_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let path = Path::new(relative);
     if relative.is_empty() || relative.len() > 512 || path.is_absolute()
@@ -483,8 +497,7 @@ pub async fn read_granted_text_files(
     let mut total_bytes = 0usize;
     for id in &file_ids {
         let grant = grants.get(id).ok_or("This folder selection has expired. Select the folder again.")?;
-        let root = fs::canonicalize(&grant.root)
-            .map_err(|_| "The selected folder is no longer available.".to_string())?;
+        let root = validate_granted_root(&grant.root)?;
         let path_meta = fs::symlink_metadata(&grant.path)
             .map_err(|_| "A selected file is no longer available.".to_string())?;
         if path_meta.file_type().is_symlink() || !path_meta.is_file() {
@@ -520,8 +533,7 @@ pub fn prepare_file_edit(file_id: String, proposed_content: String) -> Result<Fi
     validate_edit_content(&proposed_content)?;
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
     let grant = grants.get(&file_id).ok_or("This file selection has expired. Select the folder again.")?;
-    let root = fs::canonicalize(&grant.root)
-        .map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let root = validate_granted_root(&grant.root)?;
     let path_meta = fs::symlink_metadata(&grant.path)
         .map_err(|_| "The selected file is no longer available.".to_string())?;
     if path_meta.file_type().is_symlink() || !path_meta.is_file() {
@@ -605,8 +617,7 @@ pub fn apply_file_edit(
     validate_edit_content(&edit.proposed_content)?;
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
     let grant = grants.get(&edit.grant_id).ok_or("This folder selection has expired. Select the folder again.")?;
-    let root = fs::canonicalize(&grant.root)
-        .map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let root = validate_granted_root(&grant.root)?;
     let metadata = fs::symlink_metadata(&grant.path)
         .map_err(|_| "The selected file is no longer available.".to_string())?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -667,7 +678,7 @@ pub fn prepare_file_move(file_id: String, destination_relative_path: String) -> 
     let destination = validate_relative_destination(&destination_relative_path)?;
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
     let grant = grants.get(&file_id).ok_or("This file selection has expired. Select the folder again.")?;
-    let root = fs::canonicalize(&grant.root).map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let root = validate_granted_root(&grant.root)?;
     let source_meta = fs::symlink_metadata(&grant.path).map_err(|_| "The selected file is no longer available.".to_string())?;
     if source_meta.file_type().is_symlink() || !source_meta.is_file() || source_meta.len() == 0 || source_meta.len() > MAX_FILE_BYTES {
         return Err("Only regular, non-empty supported text files up to 64 KB can be moved.".into());
@@ -736,7 +747,7 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
     }
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
     let grant = grants.get(&operation.grant_id).ok_or("This folder selection has expired. Select it again.")?;
-    let root = fs::canonicalize(&grant.root).map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let root = validate_granted_root(&grant.root)?;
     let source_meta = fs::symlink_metadata(&grant.path).map_err(|_| "The selected file is no longer available.".to_string())?;
     if source_meta.file_type().is_symlink() || !source_meta.is_file() || source_meta.len() > MAX_FILE_BYTES {
         return Err("The source is no longer a safe regular text file. No changes were made.".into());
@@ -810,7 +821,7 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
 pub fn list_file_undo_operations(file_id: String) -> Result<Vec<FileUndoOperation>, String> {
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
     let grant = grants.get(&file_id).ok_or("Select the folder again to view its undo history.")?;
-    let root = fs::canonicalize(&grant.root).map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let root = validate_granted_root(&grant.root)?;
     list_undo_records(&root)
 }
 
@@ -818,7 +829,7 @@ pub fn list_file_undo_operations(file_id: String) -> Result<Vec<FileUndoOperatio
 pub fn prepare_file_undo(file_id: String, operation_id: String) -> Result<FileUndoPreview, String> {
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
     let grant = grants.get(&file_id).ok_or("Select the folder again to undo this operation.")?;
-    let root = fs::canonicalize(&grant.root).map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let root = validate_granted_root(&grant.root)?;
     let record = load_undo_record(&root, &operation_id)?;
     if undo_backup_dir(&root)?.join(format!("{}.undone", record.id)).exists() {
         return Err("This operation has already been undone.".into());
@@ -890,7 +901,7 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
     }
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
     let grant = grants.get(&pending.grant_id).ok_or("Select the folder again before undoing.")?;
-    let root = fs::canonicalize(&grant.root).map_err(|_| "The selected folder is no longer available.".to_string())?;
+    let root = validate_granted_root(&grant.root)?;
     let record = load_undo_record(&root, &pending.record.id)?;
     if undo_backup_dir(&root)?.join(format!("{}.undone", record.id)).exists() {
         return Err("This operation has already been undone.".into());
@@ -1109,6 +1120,29 @@ mod tests {
         assert_eq!(list_undo_records(&root).unwrap().len(), 1);
         write_undone_marker(&root, &record.id).unwrap();
         assert!(list_undo_records(&root).unwrap().is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn granted_root_must_remain_the_same_real_directory() {
+        let root = std::env::temp_dir().join(format!("friday-granted-root-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        let canonical_root = fs::canonicalize(&root).unwrap();
+        assert_eq!(validate_granted_root(&canonical_root).unwrap(), canonical_root);
+
+        let regular_file = root.join("not-a-folder.txt");
+        fs::write(&regular_file, "text").unwrap();
+        assert!(validate_granted_root(&regular_file).is_err());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let alias = root.with_file_name(format!("friday-granted-root-link-{}", make_token()));
+            symlink(&root, &alias).unwrap();
+            assert!(validate_granted_root(&alias).is_err());
+            fs::remove_file(alias).unwrap();
+        }
+
         fs::remove_dir_all(&root).unwrap();
     }
 
