@@ -78,7 +78,8 @@ fn ignored_directory(name: &str) -> bool {
         name.to_ascii_lowercase().as_str(),
         "node_modules" | "target" | "dist" | "build" | "out" | "vendor"
             | "venv" | ".venv" | "__pycache__" | ".next" | ".cache"
-            | "coverage" | "bin" | "obj" | "packages"
+            | "coverage" | "bin" | "obj" | "packages" | "secrets" | "credentials"
+            | "private" | "private-keys" | "certs" | "certificates"
     )
 }
 
@@ -88,8 +89,19 @@ fn sensitive_file_name(name: &str) -> bool {
         || lower.starts_with(".env.")
         || lower.contains("secret")
         || lower.contains("credential")
+        || lower.starts_with("secret.")
+        || lower.starts_with("token.")
+        || lower.starts_with("auth.")
+        || lower.starts_with("service-account.")
         || lower.ends_with(".pem")
         || lower.ends_with(".key")
+        || lower.ends_with(".p12")
+        || lower.ends_with(".pfx")
+        || lower.ends_with(".jks")
+        || lower.ends_with(".keystore")
+        || lower.ends_with(".asc")
+        || lower.ends_with(".crt")
+        || lower.ends_with(".cer")
         || lower == "id_rsa"
         || lower == "id_ed25519"
 }
@@ -309,14 +321,14 @@ mod tests {
 
     #[test]
     fn project_file_allowlist_excludes_secrets_and_unknown_files() {
-        for name in [".env", ".env.local", "server.pem", "private.key", "credentials.json", "id_rsa", "image.png", "archive.zip"] {
+        for name in [".env", ".env.local", "server.pem", "private.key", "credentials.json", "id_rsa", "token.json", "service-account.json", "client.p12", "signing.jks", "image.png", "archive.zip"] {
             assert!(!supported_project_file(Path::new(name)), "{name}");
         }
     }
 
     #[test]
     fn ignored_directories_exclude_dependencies_builds_and_hidden_data() {
-        for name in [".git", ".vscode", "node_modules", "target", "dist", "coverage", "vendor"] {
+        for name in [".git", ".vscode", "node_modules", "target", "dist", "coverage", "vendor", "secrets", "credentials", "private-keys", "certificates"] {
             assert!(ignored_directory(name), "{name}");
         }
         assert!(!ignored_directory("src"));
@@ -328,6 +340,31 @@ mod tests {
         assert_eq!(language_for(Path::new("src/App.tsx")), "TypeScript");
         assert_eq!(language_for(Path::new("main.py")), "Python");
         assert_eq!(language_for(Path::new("package.json")), "JSON");
+    }
+
+    #[test]
+    fn project_scan_stays_inside_the_selected_root_and_skips_secrets_and_dependencies() {
+        let temp = std::env::temp_dir().join(format!("friday-coding-scan-{}", make_token()));
+        fs::create_dir_all(temp.join("src")).unwrap();
+        fs::create_dir_all(temp.join("node_modules/pkg")).unwrap();
+        fs::create_dir_all(temp.join("secrets")).unwrap();
+        fs::write(temp.join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(temp.join("package.json"), "{ }").unwrap();
+        fs::write(temp.join(".env"), "API_KEY=not-for-reading").unwrap();
+        fs::write(temp.join("secrets/token.txt"), "not-for-reading").unwrap();
+        fs::write(temp.join("node_modules/pkg/index.js"), "ignored").unwrap();
+        let root = fs::canonicalize(&temp).unwrap();
+        let mut candidates = Vec::new();
+        let mut grants = BTreeMap::new();
+        let mut scanned = 0usize;
+        scan_folder(&root, &root, 0, &mut scanned, &mut candidates, &mut grants).unwrap();
+        let paths: BTreeSet<String> = candidates.iter().map(|item| item.relative_path.clone()).collect();
+        assert!(paths.contains("src/main.rs"));
+        assert!(paths.contains("package.json"));
+        assert!(!paths.iter().any(|path| path.contains("node_modules") || path.contains("secrets") || path == ".env"));
+        assert!(candidates.len() <= MAX_PROJECT_CANDIDATES);
+        assert_eq!(grants.len(), candidates.len());
+        fs::remove_dir_all(&temp).unwrap();
     }
 
     #[test]
