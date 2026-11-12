@@ -77,6 +77,7 @@ export default function SkillsManager() {
   const [movePreview, setMovePreview] = useState<FileMovePreview | null>(null);
   const [undoOperations, setUndoOperations] = useState<FileUndoOperation[]>([]);
   const [undoBusyId, setUndoBusyId] = useState("");
+  const [folderGrantId, setFolderGrantId] = useState("");
 
   const refresh = useCallback(async () => {
     if (!desktop) { setLoading(false); return; }
@@ -164,11 +165,12 @@ export default function SkillsManager() {
   async function chooseFolder() {
     if (!desktop || fileBusy) return;
     setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
-    setFolderCandidates([]); setSelectedFolderIds([]); setFolderSearch(""); setFileContentSearch("");
+    setFolderCandidates([]); setSelectedFolderIds([]); setFolderGrantId(""); setUndoOperations([]); setFolderSearch(""); setFileContentSearch("");
     setEditingFileId(""); setDraftContent(""); setEditPreview(null); setFileNotice("");
     try {
       const candidates = await invoke<FileCandidate[]>("pick_folder_and_list_text_files");
       setFolderCandidates(candidates);
+      setFolderGrantId(candidates[0]?.id || "");
       if (candidates.length > 0) {
         const history = await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId: candidates[0].id });
         setUndoOperations(history);
@@ -196,7 +198,7 @@ export default function SkillsManager() {
   async function chooseTextFiles() {
     if (!desktop || fileBusy) return;
     setFileBusy(true); setFileError(""); setFileAnswer(""); setSelectedTextFiles([]);
-    setFolderCandidates([]); setSelectedFolderIds([]); setFileContentSearch("");
+    setFolderCandidates([]); setSelectedFolderIds([]); setFolderGrantId(""); setUndoOperations([]); setFileContentSearch("");
     setEditingFileId(""); setDraftContent(""); setEditPreview(null); setFileNotice("");
     try {
       const files = await invoke<SelectedTextFile[]>("pick_and_read_text_files");
@@ -337,7 +339,7 @@ ${file.content}`
 
   async function undoFileOperation(item: FileUndoOperation) {
     if (!desktop || undoBusyId || editBusy) return;
-    const fileId = folderCandidates[0]?.id || selectedTextFiles.find(file => file.grantId)?.grantId;
+    const fileId = folderGrantId || folderCandidates[0]?.id || selectedTextFiles.find(file => file.grantId)?.grantId;
     if (!fileId) { setFileError("Choose the folder again before using its undo history."); return; }
     setUndoBusyId(item.id); setFileError(""); setFileNotice("");
     let previewId = "";
@@ -355,7 +357,7 @@ ${file.content}`
       setFileNotice(message + " Choose the folder again to refresh the file list.");
       setSelectedTextFiles([]); setFolderCandidates([]); setSelectedFolderIds([]);
       setFileAnswer("");
-      setUndoOperations(current => current.filter(operation => operation.id !== item.id));
+      setUndoOperations(await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId }));
     } catch (e) {
       if (previewId) { try { await invoke("cancel_file_undo_preview", { previewId }); } catch {} }
       setFileError(String(e));
