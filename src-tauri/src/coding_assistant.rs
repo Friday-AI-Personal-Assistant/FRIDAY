@@ -301,10 +301,12 @@ fn safe_recovery_target(root: &Path, record: &CodingUndoRecord) -> Result<PathBu
     if !canonical_parent.starts_with(&canonical_root) {
         return Err("A recovery target folder resolves outside the selected project.".into());
     }
-    if let Some(meta) = fs::symlink_metadata(&target).ok() {
-        if is_redirected(&meta) || !meta.is_file() || meta.len() == 0 || meta.len() > MAX_FILE_BYTES {
-            return Err("A recovery target is not a safe bounded regular file. Recovery copies were preserved.".into());
-        }
+    match fs::symlink_metadata(&target) {
+        Ok(meta) if is_redirected(&meta) || !meta.is_file() || meta.len() == 0 || meta.len() > MAX_FILE_BYTES =>
+            return Err("A recovery target is not a safe bounded regular file. Recovery copies were preserved.".into()),
+        Ok(_) => {},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(_) => return Err("FRIDAY could not inspect the recovery target. Recovery copies were preserved.".into()),
     }
     Ok(target)
 }
@@ -415,7 +417,7 @@ fn recover_apply_transaction(root: &Path, backup_dir: &Path, record: &CodingUndo
     if sha256_hex(&original) != record.original_sha256 {
         return Err("The original backup for an interrupted Apply failed SHA-256 verification. Recovery files were preserved.".into());
     }
-    let target_hash = recovery_hash(&target, MAX_PROPOSED_FILE_BYTES.max(MAX_FILE_BYTES))?;
+    let target_hash = recovery_hash(&target, MAX_FILE_BYTES)?;
     let temporary = target.parent().unwrap().join(format!(".friday-code-edit-{}.tmp", record.id));
     let displaced = target.parent().unwrap().join(format!(".friday-code-original-{}.tmp", record.id));
     let temporary_hash = recovery_hash(&temporary, MAX_PROPOSED_FILE_BYTES)?;
