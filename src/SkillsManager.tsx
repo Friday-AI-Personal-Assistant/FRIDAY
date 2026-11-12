@@ -23,6 +23,7 @@ type FolderScanResult = { folderId: string; files: FileCandidate[] };
 type CodingFileCandidate = { id: string; name: string; relativePath: string; sizeBytes: number; language: string };
 type CodingProjectScan = { projectName: string; files: CodingFileCandidate[]; scannedEntries: number; truncated: boolean };
 type CodingProjectFile = { name: string; relativePath: string; language: string; content: string; sizeBytes: number };
+type CodingChangePreview = { previewId: string; fileName: string; relativePath: string; originalSha256: string; proposedSha256: string; originalSizeBytes: number; proposedSizeBytes: number; unifiedDiff: string; expiresInSeconds: number };
 type ProjectIntelligence = {
   projectMap: string[]; entryPoints: string[]; dependencies: string[];
   imports: { filePath: string; importText: string; matchedProjectFile: string | null; line: number }[];
@@ -100,6 +101,9 @@ export default function SkillsManager() {
   const [codingIntelligence, setCodingIntelligence] = useState<ProjectIntelligence | null>(null);
   const [codingBusy, setCodingBusy] = useState(false);
   const [codingError, setCodingError] = useState("");
+  const [codingProposalFileId, setCodingProposalFileId] = useState("");
+  const [codingProposedContent, setCodingProposedContent] = useState("");
+  const [codingChangePreview, setCodingChangePreview] = useState<CodingChangePreview | null>(null);
 
   const refresh = useCallback(async () => {
     if (!desktop) { setLoading(false); return; }
@@ -137,7 +141,9 @@ export default function SkillsManager() {
       }
       if (skill.id === "coding-assistant" && (action === "uninstall" || action === "disable" || action === "unload")) {
         setCodingProject(null); setSelectedCodingFileIds([]); setCodingFiles([]);
+    setCodingProposalFileId(""); setCodingProposedContent(""); setCodingChangePreview(null);
         setCodingAnswer(""); setCodingError("");
+        setCodingProposalFileId(""); setCodingProposedContent(""); setCodingChangePreview(null);
       }
       await refresh();
     } catch (e) { setError(String(e)); }
@@ -164,6 +170,8 @@ export default function SkillsManager() {
     try {
       const files = await invoke<CodingProjectFile[]>("read_project_files", { fileIds: selectedCodingFileIds });
       setCodingFiles(files);
+      setCodingProposalFileId(selectedCodingFileIds[0] || "");
+      setCodingProposedContent(""); setCodingChangePreview(null);
       const intelligence = await invoke<ProjectIntelligence>("analyze_project_intelligence", { files: files.map(file => ({ relativePath: file.relativePath, language: file.language, content: file.content })) });
       setCodingIntelligence(intelligence);
       const messages: ChatMessage[] = [{
@@ -183,6 +191,20 @@ export default function SkillsManager() {
       messages.push({ role: "user", content: "Now answer the original task using only the supplied files. Give file paths for each important finding. If the supplied selection is insufficient, say exactly what additional file or context is needed." });
       const answer = await invoke<string>("ollama_chat", { model: pdfModel.trim(), messages });
       setCodingAnswer(answer || "FRIDAY did not receive an answer from the local model.");
+    } catch (e) { setCodingError(String(e)); }
+    finally { setCodingBusy(false); }
+  }
+
+
+  async function previewCodingChange() {
+    if (!desktop || codingBusy || !codingProposalFileId || !codingProposedContent.trim()) return;
+    setCodingBusy(true); setCodingError(""); setCodingChangePreview(null);
+    try {
+      const preview = await invoke<CodingChangePreview>("preview_code_change", {
+        fileId: codingProposalFileId,
+        proposedContent: codingProposedContent
+      });
+      setCodingChangePreview(preview);
     } catch (e) { setCodingError(String(e)); }
     finally { setCodingBusy(false); }
   }
@@ -711,6 +733,28 @@ ${file.content}`
               <input value={pdfModel} onChange={event => setPdfModel(event.target.value)} placeholder="e.g. llama3.2:1b" />
             </label>
             <button className="primary-button" disabled={codingBusy || selectedCodingFileIds.length === 0 || !codingQuestion.trim() || !pdfModel.trim()} onClick={() => void analyseCodingProject()}>{codingBusy ? "Analysing selected code…" : "Analyse selected files"}</button>
+
+            {codingFiles.length > 0 && <section className="coding-change-preview">
+              <strong>Stage 3 — Preview a proposed single-file change</strong>
+              <p>Choose one file already read above, paste its complete proposed contents, and review the diff. This first slice cannot approve, save, or modify files.</p>
+              <label>File to preview
+                <select value={codingProposalFileId} onChange={event => { setCodingProposalFileId(event.target.value); setCodingChangePreview(null); }}>
+                  {codingFiles.map((file, index) => <option key={file.relativePath} value={selectedCodingFileIds[index] || ""}>{file.relativePath}</option>)}
+                </select>
+              </label>
+              <label>Complete proposed file contents
+                <textarea value={codingProposedContent} onChange={event => { setCodingProposedContent(event.target.value); setCodingChangePreview(null); }} rows={10} maxLength={131072} placeholder="Paste the complete proposed file contents here…" />
+              </label>
+              <button className="primary-button" disabled={codingBusy || !codingProposalFileId || !codingProposedContent.trim()} onClick={() => void previewCodingChange()}>{codingBusy ? "Preparing preview…" : "Create change preview"}</button>
+              {codingChangePreview && <div className="coding-change-diff">
+                <strong>{codingChangePreview.relativePath}</strong>
+                <small>Original: {codingChangePreview.originalSizeBytes.toLocaleString()} bytes · Proposed: {codingChangePreview.proposedSizeBytes.toLocaleString()} bytes · Expires in {codingChangePreview.expiresInSeconds} seconds</small>
+                <small>Original SHA-256: {codingChangePreview.originalSha256}</small>
+                <small>Proposed SHA-256: {codingChangePreview.proposedSha256}</small>
+                <pre>{codingChangePreview.unifiedDiff}</pre>
+                <p>Preview only. No file has been changed. Approval and writing are not enabled in this step.</p>
+              </div>}
+            </section>}
             {codingFiles.length > 0 && <details className="coding-source-preview">
               <summary>Files read for this analysis ({codingFiles.length})</summary>
               {codingFiles.map(file => <section key={file.relativePath}><strong>{file.relativePath}</strong><pre>{file.content}</pre></section>)}
