@@ -675,7 +675,12 @@ fn undo_is_already_applied(root: &Path, record: &UndoRecord) -> bool {
             let current = match safe_relative_file(root, &record.current_relative_path) {
                 Ok(path) => path, Err(_) => return false,
             };
+            let original_meta = match fs::symlink_metadata(&original) {
+                Ok(meta) if !is_redirected(&meta) && meta.is_file() && meta.len() <= MAX_FILE_BYTES => meta,
+                _ => return false,
+            };
             let original_bytes = match fs::read(&original) { Ok(bytes) => bytes, Err(_) => return false };
+            if original_bytes.len() as u64 != original_meta.len() { return false; }
             let current_missing = matches!(fs::symlink_metadata(&current), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
             current_missing
                 && content_hash(&original_bytes) == content_hash(&backup_bytes)
