@@ -1865,6 +1865,52 @@ mod tests {
     }
 
     #[test]
+    fn recovery_completes_interrupted_undo_when_the_working_file_is_missing() {
+        let root_path = std::env::temp_dir().join(format!("friday-undo-recover-missing-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        let id = make_token();
+        let backup_relative = format!(".friday-backups/{id}.bak");
+        fs::write(root.join(&backup_relative), b"original contents").unwrap();
+        let record = UndoRecord {
+            id: id.clone(), kind: "edit".into(), original_relative_path: "notes.txt".into(),
+            current_relative_path: "notes.txt".into(), backup_relative_path: backup_relative,
+            expected_current_sha256: content_hash(b"edited contents"),
+            backup_sha256: Some(content_hash(b"original contents")), created_at: edit_now(),
+        };
+        save_undo_record(&root, &record).unwrap();
+        write_undo_intent_marker(&root, &id).unwrap();
+        let result = recover_undo_intent(&root, &id).unwrap();
+        assert!(result.contains("Restored the original file"));
+        assert_eq!(fs::read(root.join("notes.txt")).unwrap(), b"original contents");
+        assert!(root.join(".friday-backups").join(format!("{id}.undone")).is_file());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn recovery_does_not_change_a_file_when_undo_never_started() {
+        let root_path = std::env::temp_dir().join(format!("friday-undo-recover-not-started-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        let id = make_token();
+        let backup_relative = format!(".friday-backups/{id}.bak");
+        fs::write(root.join(&backup_relative), b"original").unwrap();
+        fs::write(root.join("notes.txt"), b"edited").unwrap();
+        let record = UndoRecord {
+            id: id.clone(), kind: "edit".into(), original_relative_path: "notes.txt".into(),
+            current_relative_path: "notes.txt".into(), backup_relative_path: backup_relative,
+            expected_current_sha256: content_hash(b"edited"),
+            backup_sha256: Some(content_hash(b"original")), created_at: edit_now(),
+        };
+        save_undo_record(&root, &record).unwrap();
+        write_undo_intent_marker(&root, &id).unwrap();
+        assert!(recover_undo_intent(&root, &id).unwrap().contains("Undo option remains available"));
+        assert_eq!(fs::read(root.join("notes.txt")).unwrap(), b"edited");
+        assert!(!root.join(".friday-backups").join(format!("{id}.undoing")).exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn undo_intent_detects_interrupted_restore_and_preserves_ambiguous_files() {
         let root_path = std::env::temp_dir().join(format!("friday-undo-intent-{}", make_token()));
         fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
