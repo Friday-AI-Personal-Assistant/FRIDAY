@@ -50,6 +50,7 @@ pub fn run() {
             web_research::web_read_pages,
             coding_assistant::pick_project_folder_and_list_files,
             coding_assistant::read_project_files,
+            coding_assistant::preview_code_change,
             coding_intelligence::analyze_project_intelligence,
             file_assistant::pick_and_read_text_files,
             file_assistant::pick_folder_and_list_text_files,
