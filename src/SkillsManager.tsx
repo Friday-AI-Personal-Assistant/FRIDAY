@@ -15,6 +15,8 @@ type FileEditPreview = { previewId: string; fileName: string; relativePath: stri
 type FileEditResult = { fileName: string; backupPath: string; bytesWritten: number };
 type FileMovePreview = { previewId: string; sourceRelativePath: string; destinationRelativePath: string; fileName: string; sizeBytes: number };
 type FileMoveResult = { fileName: string; destinationRelativePath: string; backupPath: string };
+type FileUndoOperation = { id: string; kind: string; originalRelativePath: string; currentRelativePath: string; createdAt: number };
+type FileUndoPreview = { previewId: string; kind: string; originalRelativePath: string; currentRelativePath: string };
 type FileCandidate = { id: string; name: string; relativePath: string; sizeBytes: number };
 const ICONS: Record<string, string> = {
   "web-research": "⌕", "pdf-reader": "▤", "file-assistant": "▣", "coding-assistant": "</>"
@@ -73,6 +75,8 @@ export default function SkillsManager() {
   const [movingFileId, setMovingFileId] = useState("");
   const [moveDestination, setMoveDestination] = useState("");
   const [movePreview, setMovePreview] = useState<FileMovePreview | null>(null);
+  const [undoOperations, setUndoOperations] = useState<FileUndoOperation[]>([]);
+  const [undoBusyId, setUndoBusyId] = useState("");
 
   const refresh = useCallback(async () => {
     if (!desktop) { setLoading(false); return; }
@@ -165,7 +169,13 @@ export default function SkillsManager() {
     try {
       const candidates = await invoke<FileCandidate[]>("pick_folder_and_list_text_files");
       setFolderCandidates(candidates);
-      if (candidates.length === 0) setFileError("No supported text files were found within the folder search limits.");
+      if (candidates.length > 0) {
+        const history = await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId: candidates[0].id });
+        setUndoOperations(history);
+      } else {
+        setUndoOperations([]);
+        setFileError("No supported text files were found within the folder search limits.");
+      }
     } catch (e) {
       const message = String(e);
       if (!message.toLowerCase().includes("cancel")) setFileError(message);
@@ -272,6 +282,7 @@ ${file.content}`
       setFolderCandidates(current => current.map(file => file.id === editingFileId ? { ...file, sizeBytes: newSize } : file));
       setFileAnswer("");
       setFileNotice("Saved " + result.fileName + ". Original backup: " + result.backupPath + " (" + result.bytesWritten.toLocaleString() + " bytes written).");
+      if (folderCandidates[0]?.id) setUndoOperations(await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId: folderCandidates[0].id }));
       setEditingFileId(""); setDraftContent(""); setEditPreview(null);
     } catch (e) { setFileError(String(e)); setEditPreview(null); }
     finally { setEditBusy(false); }
@@ -317,9 +328,38 @@ ${file.content}`
       const result = await invoke<FileMoveResult>("apply_file_move", { previewId: movePreview.previewId, approvalToken });
       setSelectedTextFiles([]); setFolderCandidates([]); setSelectedFolderIds([]); setFileAnswer("");
       setFileNotice("Moved " + result.fileName + " to " + result.destinationRelativePath + ". Original backup: " + result.backupPath + ". Choose the folder again to refresh its file list.");
+      if (folderCandidates[0]?.id) setUndoOperations(await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId: folderCandidates[0].id }));
       setMovingFileId(""); setMoveDestination(""); setMovePreview(null);
     } catch (e) { setFileError(String(e)); setMovePreview(null); }
     finally { setEditBusy(false); }
+  }
+
+
+  async function undoFileOperation(item: FileUndoOperation) {
+    if (!desktop || undoBusyId || editBusy) return;
+    const fileId = folderCandidates[0]?.id || selectedTextFiles.find(file => file.grantId)?.grantId;
+    if (!fileId) { setFileError("Choose the folder again before using its undo history."); return; }
+    setUndoBusyId(item.id); setFileError(""); setFileNotice("");
+    let previewId = "";
+    try {
+      const preview = await invoke<FileUndoPreview>("prepare_file_undo", { fileId, operationId: item.id });
+      previewId = preview.previewId;
+      const action = preview.kind === "move" ? "restore the file to its original location" : "restore the previous contents";
+      const approved = window.confirm("Undo this " + preview.kind + " operation? FRIDAY will " + action + ": " + preview.originalRelativePath + ". It will not overwrite files or discard newer changes.");
+      if (!approved) {
+        await invoke("cancel_file_undo_preview", { previewId });
+        return;
+      }
+      const approvalToken = await invoke<string>("issue_file_undo_approval", { previewId });
+      const message = await invoke<string>("apply_file_undo", { previewId, approvalToken });
+      setFileNotice(message + " Choose the folder again to refresh the file list.");
+      setSelectedTextFiles([]); setFolderCandidates([]); setSelectedFolderIds([]);
+      setFileAnswer("");
+      setUndoOperations(current => current.filter(operation => operation.id !== item.id));
+    } catch (e) {
+      if (previewId) { try { await invoke("cancel_file_undo_preview", { previewId }); } catch {} }
+      setFileError(String(e));
+    } finally { setUndoBusyId(""); }
   }
 
   async function choosePdf() {
@@ -436,6 +476,14 @@ ${file.content}`
           </div>
           <small>Folder scanning stays inside the folder you choose, skips hidden and common dependency/build folders, checks at most 2,000 entries and shows up to 200 supported files (maximum depth: 3 folders).</small>
           {fileError && <div className="skills-error" role="alert">{fileError}</div>}
+          {undoOperations.length > 0 && <div className="file-assistant-folder-list">
+            <strong>Undo history</strong>
+            <small>FRIDAY keeps up to 50 recent approved edits and moves here. Undo is available only while the affected file and backup still match; newer changes are protected.</small>
+            {undoOperations.map(item => <div className="file-assistant-candidate" key={item.id}>
+              <span><strong>{item.kind === "move" ? "Moved: " : "Edited: "}{item.currentRelativePath}</strong><small>{item.kind === "move" ? "Restore to " + item.originalRelativePath : "Restore previous contents"} · {new Date(item.createdAt * 1000).toLocaleString()}</small></span>
+              <button className="secondary-button" disabled={!!undoBusyId || editBusy} onClick={() => void undoFileOperation(item)}>{undoBusyId === item.id ? "Undoing…" : "Undo"}</button>
+            </div>)}
+          </div>}
           {folderCandidates.length > 0 && <div className="file-assistant-folder-list">
             <strong>Found {folderCandidates.length} candidate files</strong>
             <input aria-label="Search files by name or folder" value={folderSearch} onChange={event => setFolderSearch(event.target.value)} placeholder="Search file names or folders…" />
