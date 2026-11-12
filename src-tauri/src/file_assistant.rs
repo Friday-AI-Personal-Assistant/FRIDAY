@@ -151,6 +151,22 @@ static FOLDER_GRANTS: Mutex<BTreeMap<String, GrantedFile>> = Mutex::new(BTreeMap
 static PENDING_FILE_EDITS: Mutex<BTreeMap<String, PendingFileEdit>> = Mutex::new(BTreeMap::new());
 static PENDING_FILE_MOVES: Mutex<BTreeMap<String, PendingFileMove>> = Mutex::new(BTreeMap::new());
 
+fn is_redirected(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 fn supported_text_file(path: &Path) -> bool {
     const EXTENSIONS: &[&str] = &[
         "txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "yaml", "yml",
@@ -166,7 +182,7 @@ fn supported_text_file(path: &Path) -> bool {
 fn read_selected_text_file(path: &Path, remaining_bytes: usize) -> Result<SelectedTextFile, String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|_| "FRIDAY could not inspect one of the selected files.".to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if is_redirected(&metadata) || !metadata.is_file() {
         return Err("For safety, FRIDAY can read regular files only, not folders or symbolic links.".into());
     }
     if !supported_text_file(path) {
@@ -229,7 +245,7 @@ fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], expect
     }
     let metadata = fs::symlink_metadata(current)
         .map_err(|_| "FRIDAY could not inspect the file before saving.".to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if is_redirected(&metadata) || !metadata.is_file() {
         return Err("For safety, FRIDAY can edit regular files only, not symbolic links.".into());
     }
     if metadata.len() > MAX_FILE_BYTES {
@@ -275,7 +291,7 @@ fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], expect
 fn validate_granted_root(root: &Path) -> Result<PathBuf, String> {
     let metadata = fs::symlink_metadata(root)
         .map_err(|_| "The selected folder is no longer available.".to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if is_redirected(&metadata) || !metadata.is_dir() {
         return Err("The selected folder is no longer a normal, approved directory.".into());
     }
     let canonical = fs::canonicalize(root)
@@ -297,7 +313,7 @@ fn safe_relative_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let parent = full.parent().ok_or("The undo file has no parent folder.")?;
     let parent_meta = fs::symlink_metadata(parent)
         .map_err(|_| "The undo file's folder is no longer available.".to_string())?;
-    if parent_meta.file_type().is_symlink() || !parent_meta.is_dir()
+    if is_redirected(&parent_meta) || !parent_meta.is_dir()
         || !fs::canonicalize(parent).map_err(|_| "Could not verify the undo folder.".to_string())?.starts_with(root) {
         return Err("The undo file's folder is not safe or is outside the selected folder.".into());
     }
@@ -307,7 +323,7 @@ fn safe_relative_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
 fn ensure_backup_dir(root: &Path, create: bool) -> Result<PathBuf, String> {
     let dir = root.join(".friday-backups");
     match fs::symlink_metadata(&dir) {
-        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+        Ok(meta) if is_redirected(&meta) || !meta.is_dir() => {
             return Err("The FRIDAY backup location is not a normal folder.".into());
         }
         Ok(_) => {}
@@ -322,7 +338,7 @@ fn ensure_backup_dir(root: &Path, create: bool) -> Result<PathBuf, String> {
     }
     let meta = fs::symlink_metadata(&dir)
         .map_err(|_| "The FRIDAY backup folder is no longer available.".to_string())?;
-    if meta.file_type().is_symlink() || !meta.is_dir() {
+    if is_redirected(&meta) || !meta.is_dir() {
         return Err("The FRIDAY backup location is not a normal folder.".into());
     }
     let canonical = fs::canonicalize(&dir)
@@ -374,7 +390,7 @@ fn load_undo_record(root: &Path, id: &str) -> Result<UndoRecord, String> {
     let dir = undo_backup_dir(root)?;
     let path = dir.join(format!("{id}.undo.json"));
     let meta = fs::symlink_metadata(&path).map_err(|_| "This undo item is no longer available.".to_string())?;
-    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > 16_384 {
+    if is_redirected(&meta) || !meta.is_file() || meta.len() > 16_384 {
         return Err("The undo history record is not a safe file.".into());
     }
     let record: UndoRecord = serde_json::from_slice(&fs::read(path)
@@ -396,7 +412,7 @@ fn load_undo_record(root: &Path, id: &str) -> Result<UndoRecord, String> {
 fn undo_is_already_applied(root: &Path, record: &UndoRecord) -> bool {
     let backup = root.join(&record.backup_relative_path);
     let backup_meta = match fs::symlink_metadata(&backup) {
-        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => meta,
+        Ok(meta) if meta.is_file() && !is_redirected(&meta) => meta,
         _ => return false,
     };
     if backup_meta.len() > MAX_FILE_BYTES { return false; }
@@ -408,7 +424,7 @@ fn undo_is_already_applied(root: &Path, record: &UndoRecord) -> bool {
                 Ok(path) => path, Err(_) => return false,
             };
             let meta = match fs::symlink_metadata(&current) {
-                Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => meta,
+                Ok(meta) if meta.is_file() && !is_redirected(&meta) => meta,
                 _ => return false,
             };
             if meta.len() > MAX_FILE_BYTES { return false; }
@@ -495,7 +511,7 @@ fn scan_folder(
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         let metadata = match fs::symlink_metadata(&path) { Ok(value) => value, Err(_) => continue };
-        if metadata.file_type().is_symlink() { continue; }
+        if is_redirected(&metadata) { continue; }
 
         if metadata.is_dir() {
             if depth < MAX_FOLDER_DEPTH && !ignored_folder(&name) {
@@ -558,14 +574,14 @@ pub async fn pick_folder_and_list_text_files(app: AppHandle) -> Result<FolderSca
         .map_err(|_| "FRIDAY could not access the selected folder.".to_string())?;
     let selected_meta = fs::symlink_metadata(&path)
         .map_err(|_| "FRIDAY could not inspect the selected folder.".to_string())?;
-    if !selected_meta.is_dir() || selected_meta.file_type().is_symlink() {
+    if !selected_meta.is_dir() || is_redirected(&selected_meta) {
         return Err("Please select a normal folder, not a symbolic link or redirected folder.".into());
     }
     let root = fs::canonicalize(&path)
         .map_err(|_| "FRIDAY could not open the selected folder.".to_string())?;
     let root_meta = fs::symlink_metadata(&root)
         .map_err(|_| "FRIDAY could not inspect the selected folder.".to_string())?;
-    if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
+    if !root_meta.is_dir() || is_redirected(&root_meta) {
         return Err("Please select a normal folder, not a symbolic link or redirected folder.".into());
     }
 
@@ -607,7 +623,7 @@ pub async fn read_granted_text_files(
         let root = validate_granted_root(&grant.root)?;
         let path_meta = fs::symlink_metadata(&grant.path)
             .map_err(|_| "A selected file is no longer available.".to_string())?;
-        if path_meta.file_type().is_symlink() || !path_meta.is_file() {
+        if is_redirected(&path_meta) || !path_meta.is_file() {
             return Err("A selected file is no longer a regular file. Symbolic links are not read.".into());
         }
         let current = fs::canonicalize(&grant.path)
@@ -644,7 +660,7 @@ pub fn prepare_file_edit(file_id: String, proposed_content: String) -> Result<Fi
     let root = validate_granted_root(&grant.root)?;
     let path_meta = fs::symlink_metadata(&grant.path)
         .map_err(|_| "The selected file is no longer available.".to_string())?;
-    if path_meta.file_type().is_symlink() || !path_meta.is_file() {
+    if is_redirected(&path_meta) || !path_meta.is_file() {
         return Err("For safety, FRIDAY can edit regular files only, not symbolic links.".into());
     }
     let current = fs::canonicalize(&grant.path)
@@ -731,7 +747,7 @@ pub fn apply_file_edit(
     let root = validate_granted_root(&grant.root)?;
     let metadata = fs::symlink_metadata(&grant.path)
         .map_err(|_| "The selected file is no longer available.".to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if is_redirected(&metadata) || !metadata.is_file() {
         return Err("The selected file is no longer a regular file. No changes were made.".into());
     }
     let current = fs::canonicalize(&grant.path)
@@ -797,7 +813,7 @@ pub fn prepare_file_move(file_id: String, destination_relative_path: String) -> 
     let grant = grants.get(&file_id).ok_or("This file selection has expired. Select the folder again.")?;
     let root = validate_granted_root(&grant.root)?;
     let source_meta = fs::symlink_metadata(&grant.path).map_err(|_| "The selected file is no longer available.".to_string())?;
-    if source_meta.file_type().is_symlink() || !source_meta.is_file() || source_meta.len() == 0 || source_meta.len() > MAX_FILE_BYTES {
+    if is_redirected(&source_meta) || !source_meta.is_file() || source_meta.len() == 0 || source_meta.len() > MAX_FILE_BYTES {
         return Err("Only regular, non-empty supported text files up to 64 KB can be moved.".into());
     }
     let source = fs::canonicalize(&grant.path).map_err(|_| "The selected file is no longer available.".to_string())?;
@@ -807,7 +823,7 @@ pub fn prepare_file_move(file_id: String, destination_relative_path: String) -> 
     let destination_path = root.join(&destination);
     let parent = destination_path.parent().ok_or("Choose a destination inside an existing subfolder.")?;
     let parent_meta = fs::symlink_metadata(parent).map_err(|_| "The destination folder must already exist inside the selected folder.".to_string())?;
-    if parent_meta.file_type().is_symlink() || !parent_meta.is_dir() {
+    if is_redirected(&parent_meta) || !parent_meta.is_dir() {
         return Err("The destination must be a normal existing folder, not a symbolic link.".into());
     }
     let canonical_parent = fs::canonicalize(parent).map_err(|_| "FRIDAY could not verify the destination folder.".to_string())?;
@@ -869,7 +885,7 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
     let grant = grants.get(&operation.grant_id).ok_or("This folder selection has expired. Select it again.")?;
     let root = validate_granted_root(&grant.root)?;
     let source_meta = fs::symlink_metadata(&grant.path).map_err(|_| "The selected file is no longer available.".to_string())?;
-    if source_meta.file_type().is_symlink() || !source_meta.is_file() || source_meta.len() > MAX_FILE_BYTES {
+    if is_redirected(&source_meta) || !source_meta.is_file() || source_meta.len() > MAX_FILE_BYTES {
         return Err("The source is no longer a safe regular text file. No changes were made.".into());
     }
     let source = fs::canonicalize(&grant.path).map_err(|_| "The selected file is no longer available.".to_string())?;
@@ -880,7 +896,7 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
     let destination = root.join(relative);
     let parent = destination.parent().ok_or("Invalid destination folder.")?;
     let parent_meta = fs::symlink_metadata(parent).map_err(|_| "The destination folder is no longer available.".to_string())?;
-    if parent_meta.file_type().is_symlink() || !parent_meta.is_dir() { return Err("The destination folder is no longer safe. No changes were made.".into()); }
+    if is_redirected(&parent_meta) || !parent_meta.is_dir() { return Err("The destination folder is no longer safe. No changes were made.".into()); }
     let canonical_parent = fs::canonicalize(parent).map_err(|_| "Could not verify the destination folder.".to_string())?;
     if !canonical_parent.starts_with(&root) {
         return Err("The destination is outside the selected folder. No changes were made.".into());
@@ -959,7 +975,7 @@ pub fn prepare_file_undo(file_id: String, operation_id: String) -> Result<FileUn
     }
     let current = safe_relative_file(&root, &record.current_relative_path)?;
     let current_meta = fs::symlink_metadata(&current).map_err(|_| "The current file is missing; FRIDAY cannot safely undo this operation.".to_string())?;
-    if current_meta.file_type().is_symlink() || !current_meta.is_file() || current_meta.len() > MAX_FILE_BYTES {
+    if is_redirected(&current_meta) || !current_meta.is_file() || current_meta.len() > MAX_FILE_BYTES {
         return Err("The current file is no longer a safe regular text file.".into());
     }
     let current_bytes = fs::read(&current).map_err(|_| "Could not read the current file.".to_string())?;
@@ -971,7 +987,7 @@ pub fn prepare_file_undo(file_id: String, operation_id: String) -> Result<FileUn
         return Err("The backup path failed safety validation.".into());
     }
     let backup_meta = fs::symlink_metadata(&backup).map_err(|_| "The original backup is missing.".to_string())?;
-    if backup_meta.file_type().is_symlink() || !backup_meta.is_file() || backup_meta.len() > MAX_FILE_BYTES {
+    if is_redirected(&backup_meta) || !backup_meta.is_file() || backup_meta.len() > MAX_FILE_BYTES {
         return Err("The original backup is not a safe regular text file.".into());
     }
     let backup_bytes = fs::read(&backup).map_err(|_| "Could not read the original backup.".to_string())?;
@@ -1035,7 +1051,7 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
     }
     let current = safe_relative_file(&root, &record.current_relative_path)?;
     let current_meta = fs::symlink_metadata(&current).map_err(|_| "The current file is missing.".to_string())?;
-    if current_meta.file_type().is_symlink() || !current_meta.is_file() || current_meta.len() > MAX_FILE_BYTES {
+    if is_redirected(&current_meta) || !current_meta.is_file() || current_meta.len() > MAX_FILE_BYTES {
         return Err("The current file is no longer safe to restore.".into());
     }
     let current_bytes = fs::read(&current).map_err(|_| "Could not re-check the current file.".to_string())?;
@@ -1046,7 +1062,7 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
     let backup_dir = undo_backup_dir(&root)?;
     if !backup.starts_with(&backup_dir) { return Err("The backup path failed safety validation.".into()); }
     let backup_meta = fs::symlink_metadata(&backup).map_err(|_| "The original backup is missing.".to_string())?;
-    if backup_meta.file_type().is_symlink() || !backup_meta.is_file() || backup_meta.len() > MAX_FILE_BYTES {
+    if is_redirected(&backup_meta) || !backup_meta.is_file() || backup_meta.len() > MAX_FILE_BYTES {
         return Err("The original backup is not a safe regular file.".into());
     }
     let original_bytes = fs::read(&backup).map_err(|_| "Could not read the original backup.".to_string())?;
@@ -1273,7 +1289,18 @@ mod tests {
             assert!(ensure_backup_dir(&root, false).is_err());
         }
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::symlink_dir;
+            let link = root.join(".friday-backups");
+            if symlink_dir(&outside, &link).is_ok() {
+                assert!(ensure_backup_dir(&root, false).is_err());
+            } else {
+                assert!(ensure_backup_dir(&root, true).is_ok());
+            }
+        }
+
+        #[cfg(not(any(unix, windows))]
         {
             assert!(ensure_backup_dir(&root, true).is_ok());
         }
@@ -1300,6 +1327,16 @@ mod tests {
             symlink(&root, &alias).unwrap();
             assert!(validate_granted_root(&alias).is_err());
             fs::remove_file(alias).unwrap();
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::symlink_dir;
+            let alias = root.with_file_name(format!("friday-granted-root-link-{}", make_token()));
+            if symlink_dir(&root, &alias).is_ok() {
+                assert!(validate_granted_root(&alias).is_err());
+                fs::remove_dir(alias).unwrap();
+            }
         }
 
         fs::remove_dir_all(&root).unwrap();
