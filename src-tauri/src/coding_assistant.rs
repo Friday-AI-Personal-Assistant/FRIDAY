@@ -111,6 +111,97 @@ struct CodingUndoRecord {
     created_at: u64,
     #[serde(default)]
     original_unix_mode: Option<u32>,
+    // Self-relative Windows security descriptor containing the original DACL,
+    // hex-encoded so older records remain readable and no new crate is needed.
+    #[serde(default)]
+    original_windows_dacl: Option<String>,
+}
+
+#[cfg(windows)]
+#[link(name = "Advapi32")]
+extern "system" {
+    fn GetFileSecurityW(
+        file_name: *const u16,
+        requested_information: u32,
+        security_descriptor: *mut std::ffi::c_void,
+        descriptor_length: u32,
+        length_needed: *mut u32,
+    ) -> i32;
+    fn SetFileSecurityW(
+        file_name: *const u16,
+        security_information: u32,
+        security_descriptor: *mut std::ffi::c_void,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+fn windows_dacl_descriptor(path: &Path) -> Result<Vec<u8>, String> {
+    use std::os::windows::ffi::OsStrExt;
+    const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
+    let wide = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let mut needed = 0u32;
+    let first = unsafe {
+        GetFileSecurityW(wide.as_ptr(), DACL_SECURITY_INFORMATION, std::ptr::null_mut(), 0, &mut needed)
+    };
+    if first != 0 || needed == 0 {
+        return Err("Windows could not determine the original file DACL size.".into());
+    }
+    let mut descriptor = vec![0u8; needed as usize];
+    let succeeded = unsafe {
+        GetFileSecurityW(
+            wide.as_ptr(), DACL_SECURITY_INFORMATION,
+            descriptor.as_mut_ptr() as *mut std::ffi::c_void,
+            needed, &mut needed,
+        )
+    };
+    if succeeded == 0 || needed as usize > descriptor.len() {
+        return Err(format!("Windows could not capture the original file DACL (error {}).", unsafe { GetLastError() }));
+    }
+    descriptor.truncate(needed as usize);
+    Ok(descriptor)
+}
+
+#[cfg(windows)]
+fn original_windows_dacl(path: &Path) -> Result<Option<String>, String> {
+    let descriptor = windows_dacl_descriptor(path)?;
+    let mut encoded = String::with_capacity(descriptor.len() * 2);
+    for byte in descriptor { use std::fmt::Write as _; let _ = write!(&mut encoded, "{byte:02x}"); }
+    Ok(Some(encoded))
+}
+
+#[cfg(not(windows))]
+fn original_windows_dacl(_path: &Path) -> Result<Option<String>, String> { Ok(None) }
+
+#[cfg(windows)]
+fn restore_windows_dacl(path: &Path, encoded: &str) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
+    if encoded.is_empty() || encoded.len() % 2 != 0 || encoded.len() > 128 * 1024 {
+        return Err("The saved Windows DACL metadata is malformed or outside its size limit.".into());
+    }
+    let mut descriptor = Vec::with_capacity(encoded.len() / 2);
+    for pair in encoded.as_bytes().chunks_exact(2) {
+        let digit = |b: u8| -> Option<u8> {
+            match b { b'0'..=b'9' => Some(b - b'0'), b'a'..=b'f' => Some(b - b'a' + 10), b'A'..=b'F' => Some(b - b'A' + 10), _ => None }
+        };
+        let high = digit(pair[0]).ok_or("The saved Windows DACL metadata contains invalid hexadecimal data.")?;
+        let low = digit(pair[1]).ok_or("The saved Windows DACL metadata contains invalid hexadecimal data.")?;
+        descriptor.push((high << 4) | low);
+    }
+    if descriptor.len() < 20 {
+        return Err("The saved Windows security descriptor is too short.".into());
+    }
+    let wide = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let succeeded = unsafe {
+        SetFileSecurityW(
+            wide.as_ptr(), DACL_SECURITY_INFORMATION,
+            descriptor.as_mut_ptr() as *mut std::ffi::c_void,
+        )
+    };
+    if succeeded == 0 {
+        return Err(format!("Windows could not restore the original file DACL (error {}).", unsafe { GetLastError() }));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -205,6 +296,7 @@ fn apply_code_preview_to_disk(root: &Path, current: &Path, proposed: &[u8], expe
         return Err("The selected project file changed or is no longer bounded UTF-8 text.".into());
     }
     let original_hash = sha256_hex(&original);
+    let original_windows_dacl = original_windows_dacl(&canonical)?;
     if original_hash != expected_sha256 { return Err("The file changed after preview. No changes were made; create a fresh preview.".into()); }
     let resulting_hash = sha256_hex(proposed);
     if resulting_hash == original_hash { return Err("The proposed content matches the original; there is nothing to apply.".into()); }
@@ -230,6 +322,7 @@ fn apply_code_preview_to_disk(root: &Path, current: &Path, proposed: &[u8], expe
         backup_relative_path: format!(".friday-code-backups/{token}.bak"),
         original_sha256: original_hash.clone(), resulting_sha256: resulting_hash.clone(), created_at: now,
         original_unix_mode: original_unix_mode(&meta),
+        original_windows_dacl,
     };
     let journal_path = backup_dir.join(format!("{token}.txn.json"));
     let journal_bytes = serde_json::to_vec(&record).map_err(|_| "Could not prepare the code-change recovery journal.".to_string())?;
@@ -393,7 +486,11 @@ fn apply_recovery_permissions(path: &Path, record: &CodingUndoRecord) -> Result<
         fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o777))
             .map_err(|_| "FRIDAY could not restore the original file permissions.".to_string())?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    if let Some(ref dacl) = record.original_windows_dacl {
+        restore_windows_dacl(path, dacl)?;
+    }
+    #[cfg(not(any(unix, windows)))]
     let _ = (path, record);
     Ok(())
 }
@@ -447,7 +544,8 @@ fn inspect_recovery_undo_state(backup_dir: &Path, expected: &CodingUndoRecord) -
         || saved.backup_relative_path != expected.backup_relative_path
         || saved.original_sha256 != expected.original_sha256
         || saved.resulting_sha256 != expected.resulting_sha256
-        || saved.created_at != expected.created_at {
+        || saved.created_at != expected.created_at
+        || saved.original_windows_dacl != expected.original_windows_dacl {
         return Err("An Undo state record does not match its transaction journal. Recovery evidence was preserved.".into());
     }
     Ok(Some(active_exists))
@@ -1505,6 +1603,7 @@ mod tests {
             backup_relative_path: format!(".friday-code-backups/{token}.bak"),
             original_sha256: sha256_hex(original), resulting_sha256: sha256_hex(proposed), created_at: 123,
             original_unix_mode: None,
+            original_windows_dacl: None,
         };
         fs::write(backup_dir.join(format!("{token}.txn.json")), serde_json::to_vec(&record).unwrap()).unwrap();
         fs::write(root.join(format!(".friday-code-original-{token}.tmp")), original).unwrap();
@@ -1534,6 +1633,7 @@ mod tests {
             backup_relative_path: format!(".friday-code-backups/{token}.bak"),
             original_sha256: sha256_hex(original), resulting_sha256: sha256_hex(proposed), created_at: 123,
             original_unix_mode: None,
+            original_windows_dacl: None,
         };
         fs::write(backup_dir.join(format!("{token}.undo.json")), serde_json::to_vec(&record).unwrap()).unwrap();
         fs::write(backup_dir.join(format!("{token}.undo-txn.json")), serde_json::to_vec(&record).unwrap()).unwrap();
@@ -2145,6 +2245,39 @@ mod tests {
         assert!(relative_path(root, Path::new("/workspace/other/main.rs")).is_none());
     }
  
+    #[cfg(windows)]
+    #[test]
+    fn windows_backup_recovery_restores_the_original_custom_file_dacl() {
+        use std::process::Command;
+        let (root, file, record, original, _) = recovery_fixture("windows-dacl-recovery");
+        fs::write(&file, &original).unwrap();
+        let whoami = Command::new("whoami").output().expect("whoami must be available");
+        assert!(whoami.status.success());
+        let account = String::from_utf8_lossy(&whoami.stdout).trim().to_string();
+        let grant = format!("{account}:(F)");
+        let set_acl = Command::new("icacls")
+            .arg(&file)
+            .args(["/inheritance:r", "/grant:r", &grant])
+            .output().expect("icacls must be available");
+        assert!(set_acl.status.success(), "{}", String::from_utf8_lossy(&set_acl.stderr));
+        let snapshot_acl = |path: &Path| -> String {
+            let output = Command::new("icacls").arg(path).output().expect("icacls must be available");
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            String::from_utf8_lossy(&output.stdout).lines()
+                .filter(|line| !line.trim().is_empty()).collect::<Vec<_>>().join("\n")
+        };
+        let mut record = record;
+        record.original_windows_dacl = original_windows_dacl(&file).unwrap();
+        let expected_acl = snapshot_acl(&file);
+        fs::write(root.join(".friday-code-backups").join(format!("{}.txn.json", record.id)),
+            serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::remove_file(&file).unwrap();
+        assert_eq!(recover_project_code_transactions(&root).unwrap(), 1);
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert_eq!(snapshot_acl(&file), expected_acl, "backup recovery must restore the original DACL");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_apply_and_undo_preserve_a_custom_file_dacl() {
