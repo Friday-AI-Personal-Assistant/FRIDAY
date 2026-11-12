@@ -505,6 +505,18 @@ fn write_undone_marker(root: &Path, id: &str) -> Result<(), String> {
     file.sync_all().map_err(|e| format!("The file was restored, but its undo-history marker could not be saved: {e}"))
 }
 
+fn original_path_is_occupied_by_other_item(root: &Path, original_relative: &str, current_relative: &str) -> Result<bool, String> {
+    if original_relative != current_relative {
+        return Ok(true);
+    }
+    let path = safe_relative_file(root, original_relative)?;
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("Could not safely inspect the original file location.".into()),
+    }
+}
+
 fn make_token() -> String {
     let mut bytes = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -999,13 +1011,22 @@ pub fn prepare_file_undo(file_id: String, operation_id: String) -> Result<FileUn
         return Err("This operation has already been undone.".into());
     }
     let current = safe_relative_file(&root, &record.current_relative_path)?;
-    let current_meta = fs::symlink_metadata(&current).map_err(|_| "The current file is missing; FRIDAY cannot safely undo this operation.".to_string())?;
-    if is_redirected(&current_meta) || !current_meta.is_file() || current_meta.len() > MAX_FILE_BYTES {
-        return Err("The current file is no longer a safe regular text file.".into());
-    }
-    let current_bytes = fs::read(&current).map_err(|_| "Could not read the current file.".to_string())?;
-    if content_hash(&current_bytes) != record.expected_current_sha256 {
-        return Err("This file has changed since FRIDAY's operation. To protect your newer work, undo is unavailable.".into());
+    let current_bytes = match fs::symlink_metadata(&current) {
+        Ok(meta) => {
+            if is_redirected(&meta) || !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+                return Err("The current file is no longer a safe regular text file.".into());
+            }
+            let bytes = fs::read(&current).map_err(|_| "Could not read the current file.".to_string())?;
+            if content_hash(&bytes) != record.expected_current_sha256 {
+                return Err("This file has changed since FRIDAY's operation. To protect your newer work, undo is unavailable.".into());
+            }
+            Some(bytes)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err("Could not safely inspect the current file.".into()),
+    };
+    if current_bytes.is_none() && record.kind == "edit" && original_path_is_occupied_by_other_item(&root, &record.original_relative_path, &record.current_relative_path)? {
+        return Err("The original location is occupied. FRIDAY will not overwrite it.".into());
     }
     let backup = root.join(&record.backup_relative_path);
     if !backup.starts_with(undo_backup_dir(&root)?) {
@@ -1075,14 +1096,20 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
         return Err("This operation has already been undone.".into());
     }
     let current = safe_relative_file(&root, &record.current_relative_path)?;
-    let current_meta = fs::symlink_metadata(&current).map_err(|_| "The current file is missing.".to_string())?;
-    if is_redirected(&current_meta) || !current_meta.is_file() || current_meta.len() > MAX_FILE_BYTES {
-        return Err("The current file is no longer safe to restore.".into());
-    }
-    let current_bytes = fs::read(&current).map_err(|_| "Could not re-check the current file.".to_string())?;
-    if content_hash(&current_bytes) != record.expected_current_sha256 {
-        return Err("The file changed after the undo preview. No changes were made.".into());
-    }
+    let (current_meta, current_bytes) = match fs::symlink_metadata(&current) {
+        Ok(meta) => {
+            if is_redirected(&meta) || !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+                return Err("The current file is no longer safe to restore.".into());
+            }
+            let bytes = fs::read(&current).map_err(|_| "Could not re-check the current file.".to_string())?;
+            if content_hash(&bytes) != record.expected_current_sha256 {
+                return Err("The file changed after the undo preview. No changes were made.".into());
+            }
+            (Some(meta), Some(bytes))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, None),
+        Err(_) => return Err("Could not safely inspect the current file.".into()),
+    };
     let backup = root.join(&record.backup_relative_path);
     let backup_dir = undo_backup_dir(&root)?;
     if !backup.starts_with(&backup_dir) { return Err("The backup path failed safety validation.".into()); }
@@ -1103,44 +1130,59 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
             return Err("The original backup failed its integrity check.".into());
         }
         fs::hard_link(&backup, &original).map_err(|e| format!("Could not safely restore the original location: {e}"))?;
-        if let Err(error) = fs::remove_file(&current) {
-            let _ = fs::remove_file(&original);
-            return Err(format!("Could not finish undoing the move; the moved file remains in place: {error}"));
+        if current_bytes.is_some() {
+            if let Err(error) = fs::remove_file(&current) {
+                let _ = fs::remove_file(&original);
+                return Err(format!("Could not finish undoing the move; the moved file remains in place: {error}"));
+            }
         }
     } else if record.kind == "edit" && original == current {
-        if content_hash(&original_bytes) == record.expected_current_sha256 {
+        if current_bytes.as_ref().is_some_and(|bytes| content_hash(&original_bytes) == content_hash(bytes)) {
             return Err("The backup is identical to the current file; undo is unnecessary.".into());
         }
         let parent = current.parent().ok_or("The file has no parent folder.")?;
         let temp = parent.join(format!(".friday-undo-{}.tmp", make_token()));
-        let redo = backup_dir.join(format!("{}.redo.bak", record.id));
         let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temp)
             .map_err(|e| format!("Could not prepare the restored file: {e}"))?;
-        let current_permissions = current_meta.permissions();
-        if let Err(error) = temp_file.set_permissions(current_permissions).and_then(|_| temp_file.write_all(&original_bytes)).and_then(|_| temp_file.sync_all()) {
+        if let Some(meta) = current_meta.as_ref() {
+            if let Err(error) = temp_file.set_permissions(meta.permissions()) {
+                drop(temp_file); let _ = fs::remove_file(&temp);
+                return Err(format!("Could not preserve the current file permissions: {error}"));
+            }
+        }
+        if let Err(error) = temp_file.write_all(&original_bytes).and_then(|_| temp_file.sync_all()) {
             drop(temp_file); let _ = fs::remove_file(&temp);
             return Err(format!("Could not write the restored file: {error}"));
         }
         drop(temp_file);
-        let mut redo_file = OpenOptions::new().write(true).create_new(true).open(&redo)
-            .map_err(|e| { let _ = fs::remove_file(&temp); format!("Could not preserve the current version: {e}") })?;
-        if let Err(error) = redo_file.write_all(&current_bytes).and_then(|_| redo_file.sync_all()) {
-            drop(redo_file); let _ = fs::remove_file(&redo); let _ = fs::remove_file(&temp);
-            return Err(format!("Could not preserve the current version: {error}"));
-        }
-        drop(redo_file);
-        let displaced = parent.join(format!(".friday-undo-current-{}.tmp", make_token()));
-        if let Err(error) = fs::rename(&current, &displaced) {
-            let _ = fs::remove_file(&temp); let _ = fs::remove_file(&redo);
-            return Err(format!("Could not safely stage the current file: {error}"));
-        }
-        if let Err(error) = fs::rename(&temp, &current) {
-            let restored = fs::rename(&displaced, &current).is_ok();
+        if let Some(current_bytes) = current_bytes.as_ref() {
+            let redo = backup_dir.join(format!("{}.redo.bak", record.id));
+            let mut redo_file = OpenOptions::new().write(true).create_new(true).open(&redo)
+                .map_err(|e| { let _ = fs::remove_file(&temp); format!("Could not preserve the current version: {e}") })?;
+            if let Err(error) = redo_file.write_all(current_bytes).and_then(|_| redo_file.sync_all()) {
+                drop(redo_file); let _ = fs::remove_file(&redo); let _ = fs::remove_file(&temp);
+                return Err(format!("Could not preserve the current version: {error}"));
+            }
+            drop(redo_file);
+            let displaced = parent.join(format!(".friday-undo-current-{}.tmp", make_token()));
+            if let Err(error) = fs::rename(&current, &displaced) {
+                let _ = fs::remove_file(&temp); let _ = fs::remove_file(&redo);
+                return Err(format!("Could not safely stage the current file: {error}"));
+            }
+            if let Err(error) = fs::rename(&temp, &current) {
+                let restored = fs::rename(&displaced, &current).is_ok();
+                let _ = fs::remove_file(&temp);
+                return Err(if restored { format!("Could not install the original version; the current file was restored: {error}") }
+                    else { format!("Could not install the original version. The current version remains at {}: {error}", displaced.display()) });
+            }
+            let _ = fs::remove_file(&displaced);
+        } else {
+            // A hard link fails if another file appears after the missing-file check;
+            // this avoids replacing a newly created user file.
+            fs::hard_link(&temp, &current)
+                .map_err(|e| format!("The original backup is ready, but FRIDAY could not restore the missing file without overwriting: {e}"))?;
             let _ = fs::remove_file(&temp);
-            return Err(if restored { format!("Could not install the original version; the current file was restored: {error}") }
-                else { format!("Could not install the original version. The current version remains at {}: {error}", displaced.display()) });
         }
-        let _ = fs::remove_file(&displaced);
     } else {
         return Err("This undo operation is not supported.".into());
     }
