@@ -104,6 +104,7 @@ export default function SkillsManager() {
   const [codingProposalFileId, setCodingProposalFileId] = useState("");
   const [codingProposedContent, setCodingProposedContent] = useState("");
   const [codingChangePreview, setCodingChangePreview] = useState<CodingChangePreview | null>(null);
+  const [codingApprovalToken, setCodingApprovalToken] = useState("");
 
   const refresh = useCallback(async () => {
     if (!desktop) { setLoading(false); return; }
@@ -154,6 +155,7 @@ export default function SkillsManager() {
     if (!desktop || codingBusy) return;
     setCodingBusy(true); setCodingError(""); setCodingAnswer("");
     setCodingProject(null); setSelectedCodingFileIds([]); setCodingFiles([]);
+    setCodingChangePreview(null); setCodingApprovalToken("");
     try {
       const project = await invoke<CodingProjectScan>("pick_project_folder_and_list_files");
       setCodingProject(project);
@@ -171,7 +173,7 @@ export default function SkillsManager() {
       const files = await invoke<CodingProjectFile[]>("read_project_files", { fileIds: selectedCodingFileIds });
       setCodingFiles(files);
       setCodingProposalFileId(selectedCodingFileIds[0] || "");
-      setCodingProposedContent(""); setCodingChangePreview(null);
+      setCodingProposedContent(""); setCodingChangePreview(null); setCodingApprovalToken("");
       const intelligence = await invoke<ProjectIntelligence>("analyze_project_intelligence", { files: files.map(file => ({ relativePath: file.relativePath, language: file.language, content: file.content })) });
       setCodingIntelligence(intelligence);
       const messages: ChatMessage[] = [{
@@ -196,15 +198,38 @@ export default function SkillsManager() {
   }
 
 
+  async function cancelCodingPreview() {
+    const previewId = codingChangePreview?.previewId;
+    setCodingChangePreview(null);
+    setCodingApprovalToken("");
+    if (desktop && previewId) {
+      try { await invoke("cancel_code_change_preview", { previewId }); }
+      catch (e) { setCodingError(String(e)); }
+    }
+  }
+
   async function previewCodingChange() {
     if (!desktop || codingBusy || !codingProposalFileId || !codingProposedContent.trim()) return;
-    setCodingBusy(true); setCodingError(""); setCodingChangePreview(null);
+    setCodingBusy(true); setCodingError("");
+    const previousPreviewId = codingChangePreview?.previewId;
+    setCodingChangePreview(null); setCodingApprovalToken("");
     try {
+      if (previousPreviewId) await invoke("cancel_code_change_preview", { previewId: previousPreviewId });
       const preview = await invoke<CodingChangePreview>("preview_code_change", {
         fileId: codingProposalFileId,
         proposedContent: codingProposedContent
       });
       setCodingChangePreview(preview);
+    } catch (e) { setCodingError(String(e)); }
+    finally { setCodingBusy(false); }
+  }
+
+  async function approveCodingChange() {
+    if (!desktop || codingBusy || !codingChangePreview || codingApprovalToken) return;
+    setCodingBusy(true); setCodingError("");
+    try {
+      const token = await invoke<string>("issue_code_change_approval", { previewId: codingChangePreview.previewId });
+      setCodingApprovalToken(token);
     } catch (e) { setCodingError(String(e)); }
     finally { setCodingBusy(false); }
   }
@@ -736,14 +761,14 @@ ${file.content}`
 
             {codingFiles.length > 0 && <section className="coding-change-preview">
               <strong>Stage 3 — Preview a proposed single-file change</strong>
-              <p>Choose one file already read above, paste its complete proposed contents, and review the diff. This first slice cannot approve, save, or modify files.</p>
+              <p>Choose one file already read above, paste its complete proposed contents, and review the diff. Approval records your consent for this exact preview; writing remains disabled until the guarded apply workflow is complete.</p>
               <label>File to preview
-                <select value={codingProposalFileId} onChange={event => { setCodingProposalFileId(event.target.value); setCodingChangePreview(null); }}>
+                <select value={codingProposalFileId} onChange={event => { setCodingProposalFileId(event.target.value); void cancelCodingPreview(); }}>
                   {codingFiles.map((file, index) => <option key={file.relativePath} value={selectedCodingFileIds[index] || ""}>{file.relativePath}</option>)}
                 </select>
               </label>
               <label>Complete proposed file contents
-                <textarea value={codingProposedContent} onChange={event => { setCodingProposedContent(event.target.value); setCodingChangePreview(null); }} rows={10} maxLength={131072} placeholder="Paste the complete proposed file contents here…" />
+                <textarea value={codingProposedContent} onChange={event => { setCodingProposedContent(event.target.value); void cancelCodingPreview(); }} rows={10} maxLength={131072} placeholder="Paste the complete proposed file contents here…" />
               </label>
               <button className="primary-button" disabled={codingBusy || !codingProposalFileId || !codingProposedContent.trim()} onClick={() => void previewCodingChange()}>{codingBusy ? "Preparing preview…" : "Create change preview"}</button>
               {codingChangePreview && <div className="coding-change-diff">
@@ -752,7 +777,10 @@ ${file.content}`
                 <small>Original SHA-256: {codingChangePreview.originalSha256}</small>
                 <small>Proposed SHA-256: {codingChangePreview.proposedSha256}</small>
                 <pre>{codingChangePreview.unifiedDiff}</pre>
-                <p>Preview only. No file has been changed. Approval and writing are not enabled in this step.</p>
+                <p>No file has been changed. This approval is bound to the exact preview and expires with it. The safe apply operation is not enabled yet.</p>
+                {!codingApprovalToken && <button className="primary-button" disabled={codingBusy} onClick={() => void approveCodingChange()}>{codingBusy ? "Recording approval…" : "Approve this exact preview"}</button>}
+                {codingApprovalToken && <p role="status">Approved for this exact preview. No file has been changed; FRIDAY is still unable to write it.</p>}
+                <button className="secondary-button" disabled={codingBusy} onClick={() => void cancelCodingPreview()}>Cancel preview</button>
               </div>}
             </section>}
             {codingFiles.length > 0 && <details className="coding-source-preview">
