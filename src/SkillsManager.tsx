@@ -18,6 +18,7 @@ type FileMoveResult = { fileName: string; destinationRelativePath: string; backu
 type FileUndoOperation = { id: string; kind: string; originalRelativePath: string; currentRelativePath: string; createdAt: number };
 type FileUndoPreview = { previewId: string; kind: string; originalRelativePath: string; currentRelativePath: string };
 type FileCandidate = { id: string; name: string; relativePath: string; sizeBytes: number };
+type FolderScanResult = { folderId: string; files: FileCandidate[] };
 const ICONS: Record<string, string> = {
   "web-research": "⌕", "pdf-reader": "▤", "file-assistant": "▣", "coding-assistant": "</>"
 };
@@ -168,16 +169,12 @@ export default function SkillsManager() {
     setFolderCandidates([]); setSelectedFolderIds([]); setFolderGrantId(""); setUndoOperations([]); setFolderSearch(""); setFileContentSearch("");
     setEditingFileId(""); setDraftContent(""); setEditPreview(null); setFileNotice("");
     try {
-      const candidates = await invoke<FileCandidate[]>("pick_folder_and_list_text_files");
+      const scan = await invoke<FolderScanResult>("pick_folder_and_list_text_files");
+      const candidates = scan.files;
       setFolderCandidates(candidates);
-      setFolderGrantId(candidates[0]?.id || "");
-      if (candidates.length > 0) {
-        const history = await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId: candidates[0].id });
-        setUndoOperations(history);
-      } else {
-        setUndoOperations([]);
-        setFileError("No supported text files were found within the folder search limits.");
-      }
+      setFolderGrantId(scan.folderId);
+      setUndoOperations(await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId: scan.folderId }));
+      if (candidates.length === 0) setFileError("No supported text files were found within the folder search limits. You can still use any available undo history below.");
     } catch (e) {
       const message = String(e);
       if (!message.toLowerCase().includes("cancel")) setFileError(message);
