@@ -733,6 +733,6 @@ ${file.content}`
         </div>}
       </article>)}
     </div>}
-    <div className="skills-safety"><strong>How skills work</strong><p>Installed skills stay on disk; only explicitly loaded skills enter the current session. The PDF Reader and File Assistant process files you select on this device. Selected text is sent only to your configured local Ollama model when you ask a question. The File Assistant is read-only in this first version.</p></div>
+    <div className="skills-safety"><strong>How skills work</strong><p>Installed skills stay on disk; only explicitly loaded skills enter the current session. File and project access is limited to folders and files you select. Selected text is sent only to your configured local Ollama model when you ask a question. The Coding Assistant is read-only at this stage; code editing and sandboxed execution will be added only with separate previews, permissions and safety controls.</p></div>
   </section>;
 }
