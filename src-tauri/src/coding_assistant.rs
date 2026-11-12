@@ -408,6 +408,12 @@ fn validate_undo_record(record: &CodingUndoRecord) -> Result<(), String> {
         || record.original_sha256 == record.resulting_sha256 {
         return Err("The undo record failed its integrity checks.".into());
     }
+    if let Some(ref dacl) = record.original_windows_dacl {
+        if dacl.len() < 40 || dacl.len() > 128 * 1024 || dacl.len() % 2 != 0
+            || !dacl.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("The saved Windows DACL metadata is malformed or outside its size limit.".into());
+        }
+    }
     Ok(())
 }
 
@@ -2116,6 +2122,20 @@ mod tests {
         let record: CodingUndoRecord = serde_json::from_str(json).unwrap();
         assert_eq!(record.original_unix_mode, None);
         assert!(validate_undo_record(&record).is_ok());
+    }
+
+    #[test]
+    fn undo_record_rejects_malformed_windows_dacl_metadata_but_accepts_legacy_records() {
+        let (_, _, mut record, _, _) = recovery_fixture("dacl-metadata-validation");
+        assert!(validate_undo_record(&record).is_ok(), "legacy records without DACL metadata remain readable");
+
+        for malformed in ["", "abc", "zz".repeat(20).as_str(), "aa".repeat(65_537).as_str(), "aa".repeat(19).as_str()] {
+            record.original_windows_dacl = Some(malformed.to_string());
+            assert!(validate_undo_record(&record).is_err(), "malformed DACL metadata must be rejected");
+        }
+
+        record.original_windows_dacl = Some("ab".repeat(20));
+        assert!(validate_undo_record(&record).is_ok(), "bounded hexadecimal DACL metadata is structurally accepted");
     }
 
     #[test]
