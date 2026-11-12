@@ -1433,7 +1433,6 @@ pub fn prepare_file_undo(file_id: String, operation_id: String) -> Result<FileUn
     let backup_bytes = fs::read(&backup).map_err(|_| "Could not read the original backup.".to_string())?;
     validate_undo_backup(&record, &backup_bytes)?;
     let original = safe_relative_file(&root, &record.original_relative_path)?;
-    write_undo_intent_marker(&root, &record.id)?;
     if record.kind == "move" {
         match fs::symlink_metadata(&original) {
             Ok(_) => return Err("The original location is occupied. Move or rename that item first; FRIDAY will not overwrite it.".into()),
@@ -1524,6 +1523,7 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
         if content_hash(&original_bytes) != record.expected_current_sha256 {
             return Err("The original backup failed its integrity check.".into());
         }
+        write_undo_intent_marker(&root, &record.id)?;
         fs::hard_link(&backup, &original).map_err(|e| format!("Could not safely restore the original location: {e}"))?;
         if current_bytes.is_some() {
             if let Err(error) = fs::remove_file(&current) {
@@ -1535,6 +1535,7 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
         if current_bytes.as_ref().is_some_and(|bytes| content_hash(&original_bytes) == content_hash(bytes)) {
             return Err("The backup is identical to the current file; undo is unnecessary.".into());
         }
+        write_undo_intent_marker(&root, &record.id)?;
         let parent = current.parent().ok_or("The file has no parent folder.")?;
         let temp = parent.join(format!(".friday-undo-{}.tmp", make_token()));
         let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temp)
