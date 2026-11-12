@@ -14,6 +14,8 @@ use tauri_plugin_dialog::DialogExt;
 
 const MAX_SELECTED_FILES: usize = 8;
 const MAX_FILE_BYTES: u64 = 64 * 1024;
+const MAX_BACKUP_STORAGE_BYTES: u64 = 100 * 1024 * 1024;
+const MAX_BACKUP_STORAGE_FILES: usize = 500;
 const MAX_TOTAL_BYTES: usize = 180 * 1024;
 const MAX_FOLDER_DEPTH: usize = 3;
 const MAX_SCANNED_ENTRIES: usize = 2_000;
@@ -260,7 +262,8 @@ fn replace_file_with_backup(root: &Path, current: &Path, proposed: &[u8], expect
         return Err("The original file changed immediately before saving. No changes were made.".into());
     }
     let original_permissions = metadata.permissions();
-    let backup_dir = ensure_backup_dir(root, true)?;
+    ensure_backup_capacity(root)?;
+    let backup_dir = ensure_backup_dir(root, false)?;
     let backup_path = backup_dir.join(format!("{token}.bak"));
     let parent = current.parent().ok_or("The selected file has no parent folder.")?;
     let temporary = parent.join(format!(".friday-edit-{token}.tmp"));
@@ -351,6 +354,27 @@ fn ensure_backup_dir(root: &Path, create: bool) -> Result<PathBuf, String> {
 
 fn undo_backup_dir(root: &Path) -> Result<PathBuf, String> {
     ensure_backup_dir(root, false)
+}
+
+// Never automatically delete recovery data. Refuse new changes at a bounded
+// storage ceiling so users can review/export backups without losing recovery points.
+fn ensure_backup_capacity(root: &Path) -> Result<(), String> {
+    let dir = ensure_backup_dir(root, true)?;
+    let mut bytes = 0u64;
+    let mut files = 0usize;
+    for entry in fs::read_dir(&dir).map_err(|_| "Could not inspect FRIDAY backup storage.".to_string())? {
+        let entry = entry.map_err(|_| "Could not inspect a FRIDAY backup item.".to_string())?;
+        let meta = fs::symlink_metadata(entry.path()).map_err(|_| "Could not inspect a FRIDAY backup item.".to_string())?;
+        if is_redirected(&meta) || !meta.is_file() {
+            return Err("FRIDAY backup storage contains an unexpected item. Review it before continuing.".into());
+        }
+        files = files.saturating_add(1);
+        bytes = bytes.saturating_add(meta.len());
+    }
+    if files >= MAX_BACKUP_STORAGE_FILES || bytes >= MAX_BACKUP_STORAGE_BYTES {
+        return Err("FRIDAY backup storage has reached its safety limit (500 files or 100 MB). Existing backups were preserved; review or export them before making more changes.".into());
+    }
+    Ok(())
 }
 
 fn save_undo_record(root: &Path, record: &UndoRecord) -> Result<(), String> {
@@ -906,7 +930,8 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
         Err(_) => return Err("FRIDAY could not safely inspect the destination. No changes were made.".into()),
     }
-    let backup_dir = ensure_backup_dir(&root, true)?;
+    ensure_backup_capacity(&root)?;
+    let backup_dir = ensure_backup_dir(&root, false)?;
     let token = make_token();
     let backup = backup_dir.join(format!("{token}.move.bak"));
     let mut backup_file = OpenOptions::new().write(true).create_new(true).open(&backup)
@@ -1307,6 +1332,19 @@ mod tests {
 
         fs::remove_dir_all(&root).unwrap();
         fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn backup_storage_capacity_refuses_growth_without_deleting_existing_backups() {
+        let root_path = std::env::temp_dir().join(format!("friday-backup-cap-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        for index in 0..MAX_BACKUP_STORAGE_FILES {
+            fs::write(root.join(".friday-backups").join(format!("item-{index}.bak")), b"keep").unwrap();
+        }
+        assert!(ensure_backup_capacity(&root).is_err());
+        assert_eq!(fs::read_dir(root.join(".friday-backups")).unwrap().count(), MAX_BACKUP_STORAGE_FILES);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
