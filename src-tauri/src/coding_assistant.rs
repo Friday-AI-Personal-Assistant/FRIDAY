@@ -1603,7 +1603,6 @@ mod tests {
             backup_relative_path: format!(".friday-code-backups/{token}.bak"),
             original_sha256: sha256_hex(original), resulting_sha256: sha256_hex(proposed), created_at: 123,
             original_unix_mode: None,
-           original_windows_dacl: None,
             original_windows_dacl: None,
         };
         fs::write(backup_dir.join(format!("{token}.txn.json")), serde_json::to_vec(&record).unwrap()).unwrap();
@@ -1634,7 +1633,6 @@ mod tests {
             backup_relative_path: format!(".friday-code-backups/{token}.bak"),
             original_sha256: sha256_hex(original), resulting_sha256: sha256_hex(proposed), created_at: 123,
             original_unix_mode: None,
-           original_windows_dacl: None,
             original_windows_dacl: None,
         };
         fs::write(backup_dir.join(format!("{token}.undo.json")), serde_json::to_vec(&record).unwrap()).unwrap();
