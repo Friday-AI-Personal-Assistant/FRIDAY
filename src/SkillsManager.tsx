@@ -24,6 +24,8 @@ type CodingFileCandidate = { id: string; name: string; relativePath: string; siz
 type CodingProjectScan = { projectName: string; files: CodingFileCandidate[]; scannedEntries: number; truncated: boolean };
 type CodingProjectFile = { name: string; relativePath: string; language: string; content: string; sizeBytes: number };
 type CodingChangePreview = { previewId: string; fileName: string; relativePath: string; originalSha256: string; proposedSha256: string; originalSizeBytes: number; proposedSizeBytes: number; unifiedDiff: string; expiresInSeconds: number };
+type CodingApplyResult = { fileName: string; relativePath: string; backupRelativePath: string; bytesWritten: number; originalSha256: string; resultingSha256: string; undoRecordId: string };
+type CodingChangeHistoryItem = { id: string; relativePath: string; backupRelativePath: string; createdAt: number; status: "applied" | "undone"; undoRecordId: string };
 type ProjectIntelligence = {
   projectMap: string[]; entryPoints: string[]; dependencies: string[];
   imports: { filePath: string; importText: string; matchedProjectFile: string | null; line: number }[];
@@ -105,6 +107,9 @@ export default function SkillsManager() {
   const [codingProposedContent, setCodingProposedContent] = useState("");
   const [codingChangePreview, setCodingChangePreview] = useState<CodingChangePreview | null>(null);
   const [codingApprovalToken, setCodingApprovalToken] = useState("");
+  const [codingApplyResult, setCodingApplyResult] = useState<CodingApplyResult | null>(null);
+  const [codingHistory, setCodingHistory] = useState<CodingChangeHistoryItem[]>([]);
+  const [codingUndoBusy, setCodingUndoBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!desktop) { setLoading(false); return; }
@@ -232,6 +237,33 @@ export default function SkillsManager() {
       setCodingApprovalToken(token);
     } catch (e) { setCodingError(String(e)); }
     finally { setCodingBusy(false); }
+  }
+
+  async function applyCodingChange() {
+    if (!desktop || codingBusy || !codingChangePreview || !codingApprovalToken || codingApplyResult) return;
+    if (!window.confirm("Apply this approved change to " + codingChangePreview.relativePath + "?\\n\\nFRIDAY will verify the original file, retain a verified backup, and verify the result.")) return;
+    setCodingBusy(true); setCodingError("");
+    try {
+      const result = await invoke<CodingApplyResult>("apply_code_change", { previewId: codingChangePreview.previewId, approvalToken: codingApprovalToken });
+      setCodingApplyResult(result);
+      setCodingHistory(items => [{ id: result.undoRecordId, undoRecordId: result.undoRecordId, relativePath: result.relativePath, backupRelativePath: result.backupRelativePath, createdAt: Date.now(), status: "applied" }, ...items]);
+      setCodingChangePreview(null); setCodingApprovalToken("");
+      setNotice("Approved change applied and verified. Original backup retained.");
+    } catch (e) { setCodingError(String(e)); setCodingApprovalToken(""); }
+    finally { setCodingBusy(false); }
+  }
+
+  async function undoCodingChange(item: CodingChangeHistoryItem) {
+    if (!desktop || codingUndoBusy || item.status !== "applied") return;
+    if (!window.confirm("Undo FRIDAY's change to " + item.relativePath + "? Undo is refused if the file has changed since FRIDAY applied it.")) return;
+    setCodingUndoBusy(true); setCodingError("");
+    try {
+      await invoke<string>("undo_code_change", { undoRecordId: item.undoRecordId });
+      setCodingHistory(items => items.map(entry => entry.id === item.id ? { ...entry, status: "undone" } : entry));
+      setNotice("Undo completed. The original file was restored and verified.");
+      setCodingApplyResult(null);
+    } catch (e) { setCodingError(String(e)); }
+    finally { setCodingUndoBusy(false); }
   }
 
   async function readSelectedWebSources() {
@@ -761,7 +793,7 @@ ${file.content}`
 
             {codingFiles.length > 0 && <section className="coding-change-preview">
               <strong>Stage 3 — Preview a proposed single-file change</strong>
-              <p>Choose one file already read above, paste its complete proposed contents, and review the diff. Approval records your consent for this exact preview; writing remains disabled until the guarded apply workflow is complete.</p>
+              <p>Choose one file already read above, paste its complete proposed contents, and review the diff. Approval records your consent for this exact preview; FRIDAY can write only this one file after your separate approval and Apply confirmation. No code is executed.</p>
               <label>File to preview
                 <select value={codingProposalFileId} onChange={event => { setCodingProposalFileId(event.target.value); void cancelCodingPreview(); }}>
                   {codingFiles.map((file, index) => <option key={file.relativePath} value={selectedCodingFileIds[index] || ""}>{file.relativePath}</option>)}
@@ -777,11 +809,30 @@ ${file.content}`
                 <small>Original SHA-256: {codingChangePreview.originalSha256}</small>
                 <small>Proposed SHA-256: {codingChangePreview.proposedSha256}</small>
                 <pre>{codingChangePreview.unifiedDiff}</pre>
-                <p>No file has been changed. This approval is bound to the exact preview and expires with it. The safe apply operation is not enabled yet.</p>
+                <p>No file has been changed yet. Approval is bound to this exact preview and expires automatically. Applying requires a second confirmation.</p>
                 {!codingApprovalToken && <button className="primary-button" disabled={codingBusy} onClick={() => void approveCodingChange()}>{codingBusy ? "Recording approval…" : "Approve this exact preview"}</button>}
-                {codingApprovalToken && <p role="status">Approved for this exact preview. No file has been changed; FRIDAY is still unable to write it.</p>}
+                {codingApprovalToken && <p role="status">Approved for this exact preview. The file is still unchanged.</p>}
+                {codingApprovalToken && <button className="primary-button" disabled={codingBusy} onClick={() => void applyCodingChange()}>{codingBusy ? "Applying and verifying…" : "Apply approved change"}</button>}
                 <button className="secondary-button" disabled={codingBusy} onClick={() => void cancelCodingPreview()}>Cancel preview</button>
               </div>}
+            </section>}
+            {codingApplyResult && <section className="coding-change-diff" role="status">
+              <strong>Change applied and verified</strong>
+              <small>File: {codingApplyResult.relativePath}</small>
+              <small>Backup retained: {codingApplyResult.backupRelativePath}</small>
+              <small>{codingApplyResult.bytesWritten.toLocaleString()} bytes written</small>
+              <small>Original SHA-256: {codingApplyResult.originalSha256}</small>
+              <small>Result SHA-256: {codingApplyResult.resultingSha256}</small>
+              <p>The resulting file was verified and the original backup retained.</p>
+            </section>}
+            {codingHistory.length > 0 && <section className="coding-change-preview">
+              <strong>Change history (this session)</strong>
+              {codingHistory.map(item => <div className="coding-change-diff" key={item.id}>
+                <strong>{item.relativePath}</strong><small>Backup: {item.backupRelativePath}</small>
+                <small>{new Date(item.createdAt).toLocaleString()} · {item.status === "undone" ? "Undone" : "Applied"}</small>
+                {item.status === "applied" && <button className="secondary-button" disabled={codingUndoBusy || codingBusy} onClick={() => void undoCodingChange(item)}>{codingUndoBusy ? "Restoring…" : "Undo this change"}</button>}
+              </div>)}
+              <small>History is held for this app session. Backup and undo records remain in the selected project.</small>
             </section>}
             {codingFiles.length > 0 && <details className="coding-source-preview">
               <summary>Files read for this analysis ({codingFiles.length})</summary>
@@ -802,7 +853,7 @@ ${file.content}`
             </div>}
             {codingAnswer && <div className="coding-answer"><strong>FRIDAY's code analysis</strong><p>{codingAnswer}</p></div>}
           </>}
-          <small className="coding-safety-note">Read-only first stage: up to 25 selected files, 128 KB per file and 180 KB combined. Hidden folders, dependency/build folders, credentials, private keys and binaries are excluded. Source text is sent only to the configured local Ollama model when you press Analyse.</small>
+          <small className="coding-safety-note">Project inspection is read-only. Stage 3 writes are limited to one explicitly selected, allowlisted file per approved preview. Hidden folders, dependency/build folders, credentials, private keys and binaries are excluded. Source text is sent only to the configured local Ollama model when you press Analyse.</small>
         </div>}
         {skill.id === "pdf-reader" && skill.loaded && <div className="pdf-reader-panel">
           <strong>Read a PDF on this device</strong>
