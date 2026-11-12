@@ -14,6 +14,10 @@ const SKILLS: &[(&str, &str, &str, &[&str], &str)] = &[
 static SKILLS_LOCK: Mutex<()> = Mutex::new(());
 static LOADED_SKILLS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
+pub fn is_skill_loaded(skill_id: &str) -> bool {
+    LOADED_SKILLS.lock().map(|loaded| loaded.contains(skill_id)).unwrap_or(false)
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct SkillRegistry {
     // Kept as bool values so registries from the first Skills Store build remain readable.
@@ -210,6 +214,9 @@ pub fn set_skill_enabled(app: AppHandle, skill_id: String, enabled: bool) -> Res
     *state = enabled;
     save_registry(&registry_file, &registry)?;
     if !enabled {
+        if skill_id == "file-assistant" {
+            crate::file_assistant::revoke_session_access()?;
+        }
         LOADED_SKILLS.lock().map_err(|_| "Skills runtime is busy.".to_string())?.remove(&skill_id);
     }
     Ok(if enabled { "Skill enabled. It remains unloaded until you choose Load." } else { "Skill disabled and unloaded." }.into())
@@ -253,6 +260,9 @@ pub fn loaded_skill_instructions(app: AppHandle) -> Result<String, String> {
 pub fn unload_skill(skill_id: String) -> Result<String, String> {
     let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
     LOADED_SKILLS.lock().map_err(|_| "Skills runtime is busy.".to_string())?.remove(&skill_id);
+    if skill_id == "file-assistant" {
+        crate::file_assistant::revoke_session_access()?;
+    }
     Ok("Skill unloaded from session memory.".into())
 }
 
@@ -260,6 +270,9 @@ pub fn unload_skill(skill_id: String) -> Result<String, String> {
 pub fn uninstall_skill(app: AppHandle, skill_id: String) -> Result<String, String> {
     let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
     if !known_skill(&skill_id) { return Err("This skill is not in FRIDAY's built-in catalogue.".into()); }
+    if skill_id == "file-assistant" {
+        crate::file_assistant::revoke_session_access()?;
+    }
     let path = package_path(&app, &skill_id)?;
     if let Ok(meta) = fs::symlink_metadata(&path) {
         if meta.file_type().is_symlink() || !meta.is_dir() {
