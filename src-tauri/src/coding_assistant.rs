@@ -2121,6 +2121,59 @@ mod tests {
     }
 
     #[test]
+    fn replace_file_failure_snapshots_reconcile_all_documented_windows_outcomes() {
+        // ReplaceFileW documents 1175/1176 as leaving the target and replacement
+        // names intact, and 1177 as moving the replaced file to the supplied
+        // backup name while the replacement remains at its temporary name.
+        // These snapshots exercise FRIDAY's recovery decisions, not API fault injection.
+        for error_code in [1175u32, 1176, 1177] {
+            let (root, file, record, original, proposed) = recovery_fixture(&format!("replace-apply-{error_code}"));
+            let backup_dir = root.join(".friday-code-backups");
+            let journal = backup_dir.join(format!("{}.txn.json", record.id));
+            let temporary = root.join(format!(".friday-code-edit-{}.tmp", record.id));
+            let displaced = root.join(format!(".friday-code-original-{}.tmp", record.id));
+            fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+            fs::write(&temporary, &proposed).unwrap();
+            if error_code == 1177 {
+                fs::write(&displaced, &original).unwrap();
+            } else {
+                fs::write(&file, &original).unwrap();
+            }
+            assert_eq!(recover_project_code_transactions(&root).unwrap(), 1, "Apply error {error_code}");
+            assert_eq!(fs::read(&file).unwrap(), original, "Apply error {error_code}");
+            assert!(!temporary.exists(), "Apply temporary for error {error_code}");
+            assert!(!displaced.exists(), "Apply displaced file for error {error_code}");
+            assert!(!journal.exists(), "Apply journal for error {error_code}");
+            fs::remove_dir_all(&root).unwrap();
+        }
+
+        for error_code in [1175u32, 1176, 1177] {
+            let (root, file, record, original, proposed) = recovery_fixture(&format!("replace-undo-{error_code}"));
+            let backup_dir = root.join(".friday-code-backups");
+            let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
+            let active = backup_dir.join(format!("{}.undo.json", record.id));
+            let temporary = root.join(format!(".friday-code-undo-{}.tmp", record.id));
+            let displaced = root.join(format!(".friday-code-undone-{}.tmp", record.id));
+            fs::write(&active, serde_json::to_vec(&record).unwrap()).unwrap();
+            fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+            fs::write(&temporary, &original).unwrap();
+            if error_code == 1177 {
+                fs::write(&displaced, &proposed).unwrap();
+            } else {
+                fs::write(&file, &proposed).unwrap();
+            }
+            assert_eq!(recover_project_code_transactions(&root).unwrap(), 1, "Undo error {error_code}");
+            assert_eq!(fs::read(&file).unwrap(), proposed, "Undo error {error_code}");
+            assert!(active.is_file(), "Undo must remain available after error {error_code}");
+            assert!(!backup_dir.join(format!("{}.undone.json", record.id)).exists());
+            assert!(!temporary.exists(), "Undo temporary for error {error_code}");
+            assert!(!displaced.exists(), "Undo displaced file for error {error_code}");
+            assert!(!journal.exists(), "Undo journal for error {error_code}");
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
     fn recovery_handles_apply_crash_at_each_transaction_boundary() {
         // Snapshots model abrupt process termination after the journal, temp write,
         // first rename, second rename, and post-install verification/undo persistence.
