@@ -16,6 +16,7 @@ type FileEditResult = { fileName: string; backupPath: string; bytesWritten: numb
 type FileMovePreview = { previewId: string; sourceRelativePath: string; destinationRelativePath: string; fileName: string; sizeBytes: number };
 type FileMoveResult = { fileName: string; destinationRelativePath: string; backupPath: string; undoAvailable: boolean; warning?: string | null };
 type FileUndoOperation = { id: string; kind: string; originalRelativePath: string; currentRelativePath: string; createdAt: number };
+type FileRecoveryItem = { id: string; kind: string; originalRelativePath: string; currentRelativePath: string; status: string; createdAt: number };
 type FileUndoPreview = { previewId: string; kind: string; originalRelativePath: string; currentRelativePath: string };
 type FileCandidate = { id: string; name: string; relativePath: string; sizeBytes: number };
 type FolderScanResult = { folderId: string; files: FileCandidate[] };
@@ -77,7 +78,9 @@ export default function SkillsManager() {
   const [moveDestination, setMoveDestination] = useState("");
   const [movePreview, setMovePreview] = useState<FileMovePreview | null>(null);
   const [undoOperations, setUndoOperations] = useState<FileUndoOperation[]>([]);
+  const [recoveryItems, setRecoveryItems] = useState<FileRecoveryItem[]>([]);
   const [undoBusyId, setUndoBusyId] = useState("");
+  const [recoveryBusyId, setRecoveryBusyId] = useState("");
   const [folderGrantId, setFolderGrantId] = useState("");
 
   const refresh = useCallback(async () => {
@@ -109,7 +112,7 @@ export default function SkillsManager() {
       }
       if (skill.id === "file-assistant" && (action === "uninstall" || action === "disable" || action === "unload")) {
         setSelectedTextFiles([]); setFolderCandidates([]); setSelectedFolderIds([]);
-        setFolderGrantId(""); setUndoOperations([]);
+        setFolderGrantId(""); setUndoOperations([]); setRecoveryItems([]);
         setFolderSearch(""); setFileContentSearch(""); setFileAnswer(""); setFileError(""); setFileNotice("");
         setEditingFileId(""); setDraftContent(""); setEditPreview(null);
         setFileQuestion("Summarise these files and explain their important points.");
@@ -175,6 +178,7 @@ export default function SkillsManager() {
       setFolderCandidates(candidates);
       setFolderGrantId(scan.folderId);
       setUndoOperations(await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId: scan.folderId }));
+      setRecoveryItems(await invoke<FileRecoveryItem[]>("list_file_recovery_items", { fileId: scan.folderId }));
       if (candidates.length === 0) setFileError("No supported text files were found within the folder search limits. You can still use any available undo history below.");
     } catch (e) {
       const message = String(e);
@@ -362,6 +366,31 @@ ${file.content}`
     } finally { setUndoBusyId(""); }
   }
 
+  async function recoverFileTransaction(item: FileRecoveryItem) {
+    if (!desktop || recoveryBusyId || editBusy) return;
+    const fileId = folderGrantId;
+    if (!fileId) { setFileError("Choose the folder again before recovering an interrupted operation."); return; }
+    if (item.status === "manual_review") {
+      setFileError("This recovery state is ambiguous. FRIDAY will not change files automatically; inspect the original, destination and backup manually.");
+      return;
+    }
+    const explanation = item.status === "restore_original"
+      ? "restore the original file from its verified backup without overwriting anything"
+      : item.status === "finish_undo_history"
+        ? "rebuild the missing Undo history from the verified backup"
+        : "close a transaction that did not change the original file";
+    if (!window.confirm("FRIDAY detected an interrupted " + item.kind + " operation. It will " + explanation + ". Continue?")) return;
+    setRecoveryBusyId(item.id); setFileError(""); setFileNotice("");
+    try {
+      const message = await invoke<string>("recover_file_transaction", { fileId, transactionId: item.id });
+      setFileNotice(message);
+      setRecoveryItems(await invoke<FileRecoveryItem[]>("list_file_recovery_items", { fileId }));
+      setUndoOperations(await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId }));
+      setFolderCandidates([]); setSelectedTextFiles([]); setSelectedFolderIds([]); setFileAnswer("");
+    } catch (e) { setFileError(String(e)); }
+    finally { setRecoveryBusyId(""); }
+  }
+
   async function choosePdf() {
     if (!desktop || pdfBusy) return;
     setPdfBusy(true); setPdfError(""); setPdfAnswer("");
@@ -476,6 +505,17 @@ ${file.content}`
           </div>
           <small>Folder scanning stays inside the folder you choose, skips hidden and common dependency/build folders, checks at most 2,000 entries and shows up to 200 supported files (maximum depth: 3 folders).</small>
           {fileError && <div className="skills-error" role="alert">{fileError}</div>}
+          {recoveryItems.length > 0 && <div className="file-assistant-folder-list">
+            <strong>Interrupted operations — recovery review</strong>
+            <small>FRIDAY checks its transaction journal when you choose this folder. Recovery is explicit and never overwrites an existing file. Ambiguous cases are left for manual review.</small>
+            {recoveryItems.map(item => <div className="file-assistant-candidate" key={item.id}>
+              <span>
+                <strong>{item.kind === "move" ? "Interrupted move: " : "Interrupted edit: "}{item.originalRelativePath}</strong>
+                <small>{item.status === "restore_original" ? "Verified backup available; original file is missing." : item.status === "finish_undo_history" ? "File change is present; Undo history needs recovery." : item.status === "operation_not_started" ? "Original file is intact; operation did not start." : "Ambiguous state — no automatic recovery is safe."}</small>
+              </span>
+              <button className="secondary-button" disabled={!!recoveryBusyId || item.status === "manual_review" || editBusy} onClick={() => void recoverFileTransaction(item)}>{recoveryBusyId === item.id ? "Recovering…" : "Review & recover"}</button>
+            </div>)}
+          </div>}
           {undoOperations.length > 0 && <div className="file-assistant-folder-list">
             <strong>Undo history</strong>
             <small>FRIDAY keeps up to 50 recent approved edits and moves here. Undo is available only while the affected file and backup still match; newer changes are protected.</small>
