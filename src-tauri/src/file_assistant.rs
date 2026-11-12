@@ -1278,8 +1278,9 @@ mod tests {
 
     #[test]
     fn undo_completion_is_detected_even_if_history_marker_was_not_written() {
-        let root = std::env::temp_dir().join(format!("friday-undo-recovery-{}", make_token()));
-        fs::create_dir_all(root.join(".friday-backups")).unwrap();
+        let root_path = std::env::temp_dir().join(format!("friday-undo-recovery-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
 
         let edit_id = make_token();
         fs::write(root.join("edited.txt"), "before").unwrap();
