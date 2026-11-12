@@ -214,10 +214,10 @@ pub fn set_skill_enabled(app: AppHandle, skill_id: String, enabled: bool) -> Res
     *state = enabled;
     save_registry(&registry_file, &registry)?;
     if !enabled {
+        LOADED_SKILLS.lock().map_err(|_| "Skills runtime is busy.".to_string())?.remove(&skill_id);
         if skill_id == "file-assistant" {
             crate::file_assistant::revoke_session_access()?;
         }
-        LOADED_SKILLS.lock().map_err(|_| "Skills runtime is busy.".to_string())?.remove(&skill_id);
     }
     Ok(if enabled { "Skill enabled. It remains unloaded until you choose Load." } else { "Skill disabled and unloaded." }.into())
 }
@@ -271,6 +271,7 @@ pub fn uninstall_skill(app: AppHandle, skill_id: String) -> Result<String, Strin
     let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
     if !known_skill(&skill_id) { return Err("This skill is not in FRIDAY's built-in catalogue.".into()); }
     if skill_id == "file-assistant" {
+        LOADED_SKILLS.lock().map_err(|_| "Skills runtime is busy.".to_string())?.remove(&skill_id);
         crate::file_assistant::revoke_session_access()?;
     }
     let path = package_path(&app, &skill_id)?;
