@@ -1300,7 +1300,7 @@ mod tests {
             }
         }
 
-        #[cfg(not(any(unix, windows))]
+        #[cfg(not(any(unix, windows)))]
         {
             assert!(ensure_backup_dir(&root, true).is_ok());
         }
