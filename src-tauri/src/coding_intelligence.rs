@@ -153,7 +153,7 @@ fn manifest_dependencies(path: &str, content: &str, output: &mut BTreeSet<String
 }
 
 #[tauri::command]
-pub async fn analyze_project_intelligence(files: Vec<AnalysisFile>) -> Result<ProjectIntelligence, String> {
+pub fn analyze_project_intelligence(files: Vec<AnalysisFile>) -> Result<ProjectIntelligence, String> {
     if files.is_empty() || files.len() > MAX_FILES {
         return Err("Project intelligence requires between 1 and 25 selected files.".into());
     }
@@ -273,35 +273,35 @@ mod tests {
         AnalysisFile { relative_path: path.into(), language: language.into(), content: content.into() }
     }
 
-    #[tokio::test]
-    async fn maps_entry_points_symbols_imports_and_cross_file_links() {
+    #[test]
+    fn maps_entry_points_symbols_imports_and_cross_file_links() {
         let result = analyze_project_intelligence(vec![
             file("src/main.rs", "Rust", "mod helpers;\nfn main() { helpers::run(); }\n"),
             file("src/helpers.rs", "Rust", "pub fn run() {}\n"),
-        ]).await.unwrap();
+        ]).unwrap();
         assert_eq!(result.entry_points, vec!["src/main.rs"]);
         assert!(result.symbols.iter().any(|s| s.name == "run" && s.references > 0));
         assert!(result.imports.iter().any(|i| i.matched_project_file.as_deref() == Some("src/helpers.rs")));
     }
 
-    #[tokio::test]
-    async fn extracts_package_json_dependencies() {
+    #[test]
+    fn extracts_package_json_dependencies() {
         let result = analyze_project_intelligence(vec![file("package.json", "JSON", r#"{"dependencies":{"react":"^19"},"devDependencies":{"vite":"^6"}}"#)]).await.unwrap();
         assert!(result.dependencies.contains(&"react".to_string()));
         assert!(result.dependencies.contains(&"vite".to_string()));
     }
 
-    #[tokio::test]
-    async fn flags_are_review_hints_not_errors() {
+    #[test]
+    fn flags_are_review_hints_not_errors() {
         let result = analyze_project_intelligence(vec![file("src/lib.rs", "Rust", "fn work() { value.unwrap(); } // TODO review\n")]).await.unwrap();
         assert!(result.diagnostics.iter().any(|d| d.code == "RUST_PANIC_PATH"));
         assert!(result.diagnostics.iter().any(|d| d.code == "ANNOTATION"));
         assert!(result.limitations.iter().any(|s| s.contains("heuristic")));
     }
 
-    #[tokio::test]
-    async fn rejects_unsafe_paths_duplicate_paths_and_oversized_input() {
-        assert!(analyze_project_intelligence(vec![file("../secret.rs", "Rust", "fn main() {}")]).await.is_err());
+    #[test]
+    fn rejects_unsafe_paths_duplicate_paths_and_oversized_input() {
+        assert!(analyze_project_intelligence(vec![file("../secret.rs", "Rust", "fn main() {}")]).is_err());
         assert!(analyze_project_intelligence(vec![file("src/a.rs", "Rust", "fn a() {}"), file("src/a.rs", "Rust", "fn b() {}")]).await.is_err());
         assert!(analyze_project_intelligence(vec![file("src/a.rs", "Rust", &"x".repeat(MAX_FILE_BYTES + 1))]).await.is_err());
     }
