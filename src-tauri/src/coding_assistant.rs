@@ -793,35 +793,37 @@ pub fn undo_code_change(app: AppHandle, undo_record_id: String) -> Result<String
     }
     let grants = PROJECT_GRANTS.lock()
         .map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())?;
-    let mut selected: Option<(PathBuf, PathBuf)> = None;
+    let mut selected: Option<(PathBuf, PathBuf, CodingUndoRecord)> = None;
     for grant in grants.values() {
         let root = validate_granted_root(&grant.root)?;
         let backup_dir = ensure_code_backup_dir(&root)?;
         let record_path = backup_dir.join(format!("{}.undo.json", undo_record_id));
-        if fs::symlink_metadata(&record_path).is_ok() {
-            let bytes = fs::read(&record_path)
-                .map_err(|_| "FRIDAY could not read the guarded undo record.".to_string())?;
-            if bytes.len() > 16 * 1024 {
-                return Err("The guarded undo record exceeds its safety limit.".into());
+        match fs::symlink_metadata(&record_path) {
+            Ok(meta) => {
+                if is_redirected(&meta) || !meta.is_file() || meta.len() == 0 || meta.len() > 16 * 1024 {
+                    return Err("The guarded undo record is not a safe bounded regular file.".into());
+                }
+                let bytes = fs::read(&record_path)
+                    .map_err(|_| "FRIDAY could not read the guarded undo record.".to_string())?;
+                if bytes.len() as u64 != meta.len() {
+                    return Err("The guarded undo record changed while FRIDAY was reading it.".into());
+                }
+                let record: CodingUndoRecord = serde_json::from_slice(&bytes)
+                    .map_err(|_| "The guarded undo record is invalid or damaged.".to_string())?;
+                validate_undo_record(&record)?;
+                let target = root.join(&record.relative_path);
+                if target == grant.path {
+                    selected = Some((root, target, record));
+                    break;
+                }
             }
-            let record: CodingUndoRecord = serde_json::from_slice(&bytes)
-                .map_err(|_| "The guarded undo record is invalid or damaged.".to_string())?;
-            validate_undo_record(&record)?;
-            let target = root.join(&record.relative_path);
-            if target == grant.path {
-                selected = Some((root, target));
-                break;
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("FRIDAY could not inspect the guarded undo record.".into()),
         }
     }
     drop(grants);
-    let (root, target) = selected.ok_or("No unused undo record for this file exists in the currently approved project. Select the project folder again if needed.")?;
-    let backup_dir = ensure_code_backup_dir(&root)?;
-    let undo_path = backup_dir.join(format!("{}.undo.json", undo_record_id));
-    let bytes = fs::read(&undo_path).map_err(|_| "The guarded undo record is no longer available.".to_string())?;
-    let record: CodingUndoRecord = serde_json::from_slice(&bytes)
-        .map_err(|_| "The guarded undo record is invalid or damaged.".to_string())?;
-    if root.join(&record.relative_path) != target {
+    let (root, target, record) = selected.ok_or("No unused undo record for this file exists in the currently approved project. Select the project folder again if needed.")?;
+    if root.join(&record.relative_path) != target || record.id != undo_record_id {
         return Err("The undo record no longer matches the approved project file.".into());
     }
     let (restored, backup) = undo_code_change_on_disk(&root, &record)?;
@@ -1049,7 +1051,7 @@ mod tests {
         let root = fs::canonicalize(&temp).unwrap();
         let file = root.join("main.rs");
         let original = b"fn main() {}";
-        let proposed = b"fn main() { println!(\\"hi\\"); }";
+        let proposed = b"fn main() { println!(\"hi\"); }";
         fs::write(&file, original).unwrap();
         let token = make_token();
         let (_, record) = apply_code_preview_to_disk(&root, &file, proposed, &sha256_hex(original), &token, 123).unwrap();
