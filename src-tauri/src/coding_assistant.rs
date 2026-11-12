@@ -79,6 +79,7 @@ struct StoredCodePreview {
     proposed_sha256: String,
     proposed_content: String,
     expires_at: u64,
+    approval_token: Option<String>,
 }
 
 static CODE_PREVIEWS: Mutex<BTreeMap<String, StoredCodePreview>> = Mutex::new(BTreeMap::new());
@@ -396,13 +397,49 @@ pub async fn preview_code_change(file_id: String, proposed_content: String) -> R
     previews.insert(preview_id.clone(), StoredCodePreview {
         file_id, root, path: canonical, original_sha256: original_sha256.clone(),
         proposed_sha256: proposed_sha256.clone(), proposed_content,
-        expires_at: now.saturating_add(CODE_PREVIEW_TTL_SECONDS),
+        expires_at: now.saturating_add(CODE_PREVIEW_TTL_SECONDS), approval_token: None,
     });
     Ok(CodingChangePreview {
         preview_id, file_name, relative_path: relative, original_sha256, proposed_sha256,
         original_size_bytes: original_content.len(), proposed_size_bytes,
         unified_diff: diff, expires_in_seconds: CODE_PREVIEW_TTL_SECONDS,
     })
+}
+
+
+/// Issues a short-lived, one-use token for the exact preview currently shown to the user.
+/// This command does not modify project files; a later apply operation must consume the token.
+#[tauri::command]
+pub fn issue_code_change_approval(preview_id: String) -> Result<String, String> {
+    ensure_skill_loaded()?;
+    if preview_id.len() != 48 || !preview_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Review the code preview again before approving it.".into());
+    }
+    let now = current_epoch_seconds()?;
+    let mut previews = CODE_PREVIEWS.lock()
+        .map_err(|_| "Coding Assistant preview storage is temporarily unavailable.".to_string())?;
+    let preview = previews.get_mut(&preview_id)
+        .ok_or("This code preview has expired or was already cancelled. Create it again.")?;
+    if preview.expires_at <= now {
+        previews.remove(&preview_id);
+        return Err("This code preview has expired. Create a fresh preview before approving.".into());
+    }
+    // Re-approval rotates the token, immediately invalidating any previously issued token.
+    let token = make_token();
+    preview.approval_token = Some(token.clone());
+    Ok(token)
+}
+
+#[tauri::command]
+pub fn cancel_code_change_preview(preview_id: String) -> Result<(), String> {
+    ensure_skill_loaded()?;
+    if preview_id.len() != 48 || !preview_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("The code preview identifier is invalid.".into());
+    }
+    CODE_PREVIEWS.lock()
+        .map_err(|_| "Coding Assistant preview storage is temporarily unavailable.".to_string())?
+        .remove(&preview_id);
+    Ok(())
 }
 
 #[tauri::command]
