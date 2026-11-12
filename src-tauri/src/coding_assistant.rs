@@ -1490,6 +1490,128 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn recovery_refuses_malformed_active_undo_record_and_preserves_journal() {
+        let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("malformed-active-undo", b"edge original source");
+        let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        let active = backup_dir.join(format!("{}.undo.json", record.id));
+        fs::write(&active, b"{ not valid undo json").unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert!(journal.is_file());
+        assert!(active.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_mismatched_consumed_undo_record() {
+        let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("mismatched-consumed-undo", b"edge original source");
+        let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        let mut wrong = record.clone();
+        wrong.relative_path = "other.rs".into();
+        let consumed = backup_dir.join(format!("{}.undone.json", record.id));
+        fs::write(&consumed, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert!(journal.is_file());
+        assert!(consumed.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_unexpected_displaced_apply_copy() {
+        let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("unexpected-displaced-apply", b"edge original source");
+        let journal = backup_dir.join(format!("{}.txn.json", record.id));
+        let displaced = root.join(format!(".friday-code-original-{}.tmp", record.id));
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(&displaced, b"unexpected displaced user data").unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert_eq!(fs::read(&displaced).unwrap(), b"unexpected displaced user data");
+        assert!(journal.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_unexpected_displaced_undo_copy() {
+        let (root, file, backup_dir, record, _, proposed) = recovery_edge_fixture("unexpected-displaced-undo", b"edge proposed source");
+        let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
+        let displaced = root.join(format!(".friday-code-undone-{}.tmp", record.id));
+        fs::write(&backup_dir.join(format!("{}.undo.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(&displaced, b"unexpected displaced user data").unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), proposed);
+        assert_eq!(fs::read(&displaced).unwrap(), b"unexpected displaced user data");
+        assert!(journal.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_unexpected_undo_temporary_copy() {
+        let (root, file, backup_dir, record, _, proposed) = recovery_edge_fixture("unexpected-undo-temp", b"edge proposed source");
+        let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
+        let temporary = root.join(format!(".friday-code-undo-{}.tmp", record.id));
+        fs::write(&backup_dir.join(format!("{}.undo.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(&temporary, b"unexpected temporary user data").unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), proposed);
+        assert_eq!(fs::read(&temporary).unwrap(), b"unexpected temporary user data");
+        assert!(journal.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_refuses_symlink_target_without_touching_outside_file() {
+        use std::os::unix::fs::symlink;
+        let (root, file, backup_dir, record, _, _) = recovery_edge_fixture("symlink-target", b"edge original source");
+        let journal = backup_dir.join(format!("{}.txn.json", record.id));
+        let outside = root.parent().unwrap().join(format!("friday-code-target-outside-{}", make_token()));
+        fs::write(&outside, b"outside user data").unwrap();
+        fs::remove_file(&file).unwrap();
+        symlink(&outside, &file).unwrap();
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&outside).unwrap(), b"outside user data");
+        assert!(fs::symlink_metadata(&file).unwrap().file_type().is_symlink());
+        assert!(journal.is_file());
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_file(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_refuses_symlink_displaced_and_temporary_files() {
+        use std::os::unix::fs::symlink;
+        for mode in ["apply-displaced", "apply-temporary", "undo-displaced", "undo-temporary"] {
+            let target_bytes = if mode.starts_with("undo") { b"edge proposed source".as_slice() } else { b"edge original source".as_slice() };
+            let (root, file, backup_dir, record, _, _) = recovery_edge_fixture(mode, target_bytes);
+            let outside = root.parent().unwrap().join(format!("friday-code-copy-outside-{}", make_token()));
+            fs::write(&outside, b"outside user data").unwrap();
+            let (journal, copy) = match mode {
+                "apply-displaced" => (backup_dir.join(format!("{}.txn.json", record.id)), root.join(format!(".friday-code-original-{}.tmp", record.id))),
+                "apply-temporary" => (backup_dir.join(format!("{}.txn.json", record.id)), root.join(format!(".friday-code-edit-{}.tmp", record.id))),
+                "undo-displaced" => (backup_dir.join(format!("{}.undo-txn.json", record.id)), root.join(format!(".friday-code-undone-{}.tmp", record.id))),
+                _ => (backup_dir.join(format!("{}.undo-txn.json", record.id)), root.join(format!(".friday-code-undo-{}.tmp", record.id))),
+            };
+            if mode.starts_with("undo") {
+                fs::write(backup_dir.join(format!("{}.undo.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+            }
+            fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+            symlink(&outside, &copy).unwrap();
+            assert!(recover_project_code_transactions(&root).is_err(), "mode {mode}");
+            assert_eq!(fs::read(&outside).unwrap(), b"outside user data", "mode {mode}");
+            assert!(fs::symlink_metadata(&copy).unwrap().file_type().is_symlink(), "mode {mode}");
+            assert!(journal.is_file(), "mode {mode}");
+            fs::remove_dir_all(&root).unwrap();
+            fs::remove_file(outside).unwrap();
+        }
+    }
+
     fn recovery_refuses_missing_original_backup_and_preserves_journal() {
         let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("missing-backup", b"edge original source");
         let journal = backup_dir.join(format!("{}.txn.json", record.id));
