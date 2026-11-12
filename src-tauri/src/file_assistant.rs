@@ -505,16 +505,30 @@ fn write_undone_marker(root: &Path, id: &str) -> Result<(), String> {
     file.sync_all().map_err(|e| format!("The file was restored, but its undo-history marker could not be saved: {e}"))
 }
 
-fn original_path_is_occupied_by_other_item(root: &Path, original_relative: &str, current_relative: &str) -> Result<bool, String> {
-    if original_relative != current_relative {
-        return Ok(true);
+fn restore_missing_file_without_overwrite(current: &Path, bytes: &[u8]) -> Result<(), String> {
+    match fs::symlink_metadata(current) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => return Err("The original location is occupied. FRIDAY will not overwrite it.".into()),
+        Err(_) => return Err("Could not safely inspect the original file location.".into()),
     }
-    let path = safe_relative_file(root, original_relative)?;
-    match fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(_) => Err("Could not safely inspect the original file location.".into()),
+    let parent = current.parent().ok_or("The original file has no parent folder.")?;
+    let temp = parent.join(format!(".friday-recovery-{}.tmp", make_token()));
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)
+        .map_err(|e| format!("Could not prepare the recovered file: {e}"))?;
+    if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&temp);
+        return Err(format!("Could not write the recovered file: {error}"));
     }
+    drop(file);
+    // Hard-link creation is atomic and refuses to replace a file created after
+    // the initial vacancy check. Both paths are in the same parent directory.
+    if let Err(error) = fs::hard_link(&temp, current) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("The original backup is safe, but FRIDAY could not restore without overwriting: {error}"));
+    }
+    let _ = fs::remove_file(&temp);
+    Ok(())
 }
 
 fn make_token() -> String {
@@ -1025,9 +1039,6 @@ pub fn prepare_file_undo(file_id: String, operation_id: String) -> Result<FileUn
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(_) => return Err("Could not safely inspect the current file.".into()),
     };
-    if current_bytes.is_none() && record.kind == "edit" && original_path_is_occupied_by_other_item(&root, &record.original_relative_path, &record.current_relative_path)? {
-        return Err("The original location is occupied. FRIDAY will not overwrite it.".into());
-    }
     let backup = root.join(&record.backup_relative_path);
     if !backup.starts_with(undo_backup_dir(&root)?) {
         return Err("The backup path failed safety validation.".into());
@@ -1177,11 +1188,8 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
             }
             let _ = fs::remove_file(&displaced);
         } else {
-            // A hard link fails if another file appears after the missing-file check;
-            // this avoids replacing a newly created user file.
-            fs::hard_link(&temp, &current)
-                .map_err(|e| format!("The original backup is ready, but FRIDAY could not restore the missing file without overwriting: {e}"))?;
             let _ = fs::remove_file(&temp);
+            restore_missing_file_without_overwrite(&current, &original_bytes)?;
         }
     } else {
         return Err("This undo operation is not supported.".into());
@@ -1419,6 +1427,25 @@ mod tests {
             }
         }
 
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn missing_file_restore_uses_validated_bytes_and_never_overwrites() {
+        let root = std::env::temp_dir().join(format!("friday-missing-restore-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("notes.txt");
+
+        restore_missing_file_without_overwrite(&target, b"restored original").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"restored original");
+        assert!(restore_missing_file_without_overwrite(&target, b"must not replace").is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"restored original");
+
+        let leftovers = fs::read_dir(&root).unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".friday-recovery-"))
+            .count();
+        assert_eq!(leftovers, 0);
         fs::remove_dir_all(&root).unwrap();
     }
 
