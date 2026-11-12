@@ -12,9 +12,9 @@ type WebSearchResult = { title: string; url: string; snippet: string; domain: st
 type WebPage = { title: string; url: string; text: string; domain: string; author?: string | null; publishedDate?: string | null };
 type SelectedTextFile = { name: string; content: string; sizeBytes: number; grantId?: string | null };
 type FileEditPreview = { previewId: string; fileName: string; relativePath: string; originalContent: string; proposedContent: string };
-type FileEditResult = { fileName: string; backupPath: string; bytesWritten: number };
+type FileEditResult = { fileName: string; backupPath: string; bytesWritten: number; undoAvailable: boolean; warning?: string | null };
 type FileMovePreview = { previewId: string; sourceRelativePath: string; destinationRelativePath: string; fileName: string; sizeBytes: number };
-type FileMoveResult = { fileName: string; destinationRelativePath: string; backupPath: string };
+type FileMoveResult = { fileName: string; destinationRelativePath: string; backupPath: string; undoAvailable: boolean; warning?: string | null };
 type FileUndoOperation = { id: string; kind: string; originalRelativePath: string; currentRelativePath: string; createdAt: number };
 type FileUndoPreview = { previewId: string; kind: string; originalRelativePath: string; currentRelativePath: string };
 type FileCandidate = { id: string; name: string; relativePath: string; sizeBytes: number };
@@ -280,7 +280,7 @@ ${file.content}`
         : file));
       setFolderCandidates(current => current.map(file => file.id === editingFileId ? { ...file, sizeBytes: newSize } : file));
       setFileAnswer("");
-      setFileNotice("Saved " + result.fileName + ". Original backup: " + result.backupPath + " (" + result.bytesWritten.toLocaleString() + " bytes written).");
+      setFileNotice("Saved " + result.fileName + ". Original backup: " + result.backupPath + " (" + result.bytesWritten.toLocaleString() + " bytes written)." + (result.undoAvailable ? " One-click Undo is available in Undo history." : " WARNING: " + (result.warning || "Undo history could not be saved; the original backup remains.")));
       if (folderCandidates[0]?.id) setUndoOperations(await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId: folderCandidates[0].id }));
       setEditingFileId(""); setDraftContent(""); setEditPreview(null);
     } catch (e) { setFileError(String(e)); setEditPreview(null); }
@@ -326,7 +326,7 @@ ${file.content}`
       const approvalToken = await invoke<string>("issue_file_move_approval", { previewId: movePreview.previewId });
       const result = await invoke<FileMoveResult>("apply_file_move", { previewId: movePreview.previewId, approvalToken });
       setSelectedTextFiles([]); setFolderCandidates([]); setSelectedFolderIds([]); setFileAnswer("");
-      setFileNotice("Moved " + result.fileName + " to " + result.destinationRelativePath + ". Original backup: " + result.backupPath + ". Choose the folder again to refresh its file list.");
+      setFileNotice("Moved " + result.fileName + " to " + result.destinationRelativePath + ". Original backup: " + result.backupPath + "." + (result.undoAvailable ? " One-click Undo is available in Undo history." : " WARNING: " + (result.warning || "Undo history could not be saved; the original backup remains.")) + " Choose the folder again to refresh its file list.");
       if (folderCandidates[0]?.id) setUndoOperations(await invoke<FileUndoOperation[]>("list_file_undo_operations", { fileId: folderCandidates[0].id }));
       setMovingFileId(""); setMoveDestination(""); setMovePreview(null);
     } catch (e) { setFileError(String(e)); setMovePreview(null); }
