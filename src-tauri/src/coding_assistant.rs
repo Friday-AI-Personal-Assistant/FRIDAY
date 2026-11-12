@@ -2,6 +2,8 @@ use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Write,
+    fs::OpenOptions,
     path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -56,6 +58,8 @@ static PROJECT_GRANTS: Mutex<BTreeMap<String, ProjectGrant>> = Mutex::new(BTreeM
 
 const MAX_PROPOSED_FILE_BYTES: usize = 128 * 1024;
 const CODE_PREVIEW_TTL_SECONDS: u64 = 120;
+const MAX_CODE_BACKUP_FILES: usize = 500;
+const MAX_CODE_BACKUP_BYTES: u64 = 100 * 1024 * 1024;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -83,6 +87,156 @@ struct StoredCodePreview {
 }
 
 static CODE_PREVIEWS: Mutex<BTreeMap<String, StoredCodePreview>> = Mutex::new(BTreeMap::new());
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingApplyResult {
+    file_name: String,
+    relative_path: String,
+    backup_relative_path: String,
+    bytes_written: usize,
+    original_sha256: String,
+    resulting_sha256: String,
+    undo_record_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodingUndoRecord {
+    id: String,
+    relative_path: String,
+    backup_relative_path: String,
+    original_sha256: String,
+    resulting_sha256: String,
+    created_at: u64,
+}
+
+fn ensure_code_backup_dir(root: &Path) -> Result<PathBuf, String> {
+    let dir = root.join(".friday-code-backups");
+    match fs::symlink_metadata(&dir) {
+        Ok(meta) if is_redirected(&meta) || !meta.is_dir() =>
+            return Err("FRIDAY's code backup folder is not a safe normal directory.".into()),
+        Ok(_) => {},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+            fs::create_dir(&dir).map_err(|e| format!("Could not create the code backup folder: {e}"))?,
+        Err(_) => return Err("Could not inspect FRIDAY's code backup folder.".into()),
+    }
+    let meta = fs::symlink_metadata(&dir).map_err(|_| "Could not verify the code backup folder.".to_string())?;
+    if is_redirected(&meta) || !meta.is_dir() { return Err("FRIDAY's code backup folder is not safe.".into()); }
+    let canonical = fs::canonicalize(&dir).map_err(|_| "Could not verify FRIDAY's code backup folder.".to_string())?;
+    if !canonical.starts_with(root) { return Err("FRIDAY's code backup folder is outside the selected project.".into()); }
+    Ok(canonical)
+}
+
+fn check_code_backup_capacity(dir: &Path, additional_bytes: u64) -> Result<(), String> {
+    let mut count = 0usize;
+    let mut bytes = 0u64;
+    for entry in fs::read_dir(dir).map_err(|_| "Could not inspect code backup storage.".to_string())? {
+        let entry = entry.map_err(|_| "Could not inspect a code backup item.".to_string())?;
+        let meta = fs::symlink_metadata(entry.path()).map_err(|_| "Could not inspect a code backup item.".to_string())?;
+        if is_redirected(&meta) || !meta.is_file() { return Err("Code backup storage contains an unexpected item. Review it before continuing.".into()); }
+        count = count.saturating_add(1);
+        bytes = bytes.saturating_add(meta.len());
+    }
+    if count.saturating_add(3) > MAX_CODE_BACKUP_FILES || bytes.saturating_add(additional_bytes) > MAX_CODE_BACKUP_BYTES {
+        return Err("FRIDAY's code backup limit (500 files or 100 MB) would be exceeded. Existing backups will not be deleted.".into());
+    }
+    Ok(())
+}
+
+fn apply_code_preview_to_disk(root: &Path, current: &Path, proposed: &[u8], expected_sha256: &str, token: &str, now: u64)
+    -> Result<(PathBuf, CodingUndoRecord), String>
+{
+    if !current.starts_with(root) || proposed.is_empty() || proposed.len() > MAX_PROPOSED_FILE_BYTES || proposed.contains(&0) {
+        return Err("The approved code change failed its project or content bounds.".into());
+    }
+    let meta = fs::symlink_metadata(current).map_err(|_| "The selected project file is no longer available.".to_string())?;
+    if is_redirected(&meta) || !meta.is_file() || meta.len() == 0 || meta.len() > MAX_FILE_BYTES {
+        return Err("The selected project file is no longer an allowed regular file.".into());
+    }
+    if meta.permissions().readonly() { return Err("The selected project file is read-only.".into()); }
+    if !supported_project_file(current) { return Err("This file type is not allowed for safe code editing.".into()); }
+    let canonical = fs::canonicalize(current).map_err(|_| "Could not revalidate the selected project file.".to_string())?;
+    if canonical != current || !canonical.starts_with(root) { return Err("The selected project file moved or was redirected.".into()); }
+    let original = fs::read(&canonical).map_err(|_| "Could not re-read the selected project file.".to_string())?;
+    if original.len() as u64 != meta.len() || original.len() as u64 > MAX_FILE_BYTES || original.contains(&0)
+        || std::str::from_utf8(&original).is_err() {
+        return Err("The selected project file changed or is no longer bounded UTF-8 text.".into());
+    }
+    let original_hash = sha256_hex(&original);
+    if original_hash != expected_sha256 { return Err("The file changed after preview. No changes were made; create a fresh preview.".into()); }
+    let resulting_hash = sha256_hex(proposed);
+    if resulting_hash == original_hash { return Err("The proposed content matches the original; there is nothing to apply.".into()); }
+
+    let backup_dir = ensure_code_backup_dir(root)?;
+    check_code_backup_capacity(&backup_dir, (original.len() as u64).saturating_add(16_384))?;
+    let backup = backup_dir.join(format!("{token}.bak"));
+    let mut backup_file = OpenOptions::new().write(true).create_new(true).open(&backup)
+        .map_err(|e| format!("Could not create a new original-file backup: {e}"))?;
+    if let Err(e) = backup_file.write_all(&original).and_then(|_| backup_file.sync_all()) {
+        drop(backup_file); let _ = fs::remove_file(&backup);
+        return Err(format!("Could not write the original-file backup: {e}"));
+    }
+    drop(backup_file);
+    let verified_backup = fs::read(&backup).map_err(|_| "Could not verify the original-file backup.".to_string())?;
+    if sha256_hex(&verified_backup) != original_hash {
+        return Err("The original-file backup failed SHA-256 verification. The project file was not changed.".into());
+    }
+
+    let relative = relative_path(root, current).ok_or("The project file is outside the selected folder.")?;
+    let record = CodingUndoRecord {
+        id: token.to_string(), relative_path: relative.clone(),
+        backup_relative_path: format!(".friday-code-backups/{token}.bak"),
+        original_sha256: original_hash.clone(), resulting_sha256: resulting_hash.clone(), created_at: now,
+    };
+    let journal_path = backup_dir.join(format!("{token}.txn.json"));
+    let journal_bytes = serde_json::to_vec(&record).map_err(|_| "Could not prepare the code-change recovery journal.".to_string())?;
+    let mut journal = OpenOptions::new().write(true).create_new(true).open(&journal_path)
+        .map_err(|e| format!("Could not create the code-change recovery journal: {e}"))?;
+    journal.write_all(&journal_bytes).and_then(|_| journal.sync_all())
+        .map_err(|e| format!("Could not flush the code-change recovery journal: {e}"))?;
+    drop(journal);
+
+    let parent = current.parent().ok_or("The selected project file has no parent folder.")?;
+    let temporary = parent.join(format!(".friday-code-edit-{token}.tmp"));
+    let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temporary)
+        .map_err(|e| format!("Could not prepare the replacement file: {e}"))?;
+    if let Err(e) = temp_file.set_permissions(meta.permissions()).and_then(|_| temp_file.write_all(proposed)).and_then(|_| temp_file.sync_all()) {
+        drop(temp_file); let _ = fs::remove_file(&temporary);
+        return Err(format!("Could not prepare the replacement contents: {e}"));
+    }
+    drop(temp_file);
+    let temp_bytes = fs::read(&temporary).map_err(|_| "Could not verify the replacement file.".to_string())?;
+    if sha256_hex(&temp_bytes) != resulting_hash {
+        let _ = fs::remove_file(&temporary);
+        return Err("The replacement file failed SHA-256 verification. The original was not changed.".into());
+    }
+
+    let displaced = parent.join(format!(".friday-code-original-{token}.tmp"));
+    if let Err(e) = fs::rename(current, &displaced) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("Could not safely stage the original file: {e}"));
+    }
+    if let Err(e) = fs::rename(&temporary, current) {
+        let restored = fs::rename(&displaced, current).is_ok();
+        let _ = fs::remove_file(&temporary);
+        return Err(if restored { format!("Could not install the approved change; the original file was restored: {e}") }
+            else { format!("Could not install the change or restore the original automatically. The original remains at {}: {e}", displaced.display()) });
+    }
+    let installed = fs::read(current).map_err(|_| format!("The replacement was installed but could not be verified. The original backup remains at {}.", backup.display()))?;
+    if sha256_hex(&installed) != resulting_hash {
+        let failed = parent.join(format!(".friday-code-failed-{token}.tmp"));
+        let _ = fs::rename(current, &failed);
+        let restored = fs::rename(&displaced, current).is_ok();
+        let _ = fs::remove_file(&failed);
+        return Err(if restored { "The installed file failed verification; FRIDAY restored the original.".into() }
+            else { format!("The installed file failed verification and automatic restore failed. The original backup remains at {}.", backup.display()) });
+    }
+    if let Err(e) = fs::remove_file(&displaced) {
+        return Err(format!("The change was verified, but FRIDAY could not remove its temporary displaced copy: {e}. The verified original backup remains."));
+    }
+    Ok((backup, record))
+}
 
 fn take_approved_preview(
     previews: &mut BTreeMap<String, StoredCodePreview>,
@@ -445,6 +599,61 @@ pub fn issue_code_change_approval(preview_id: String) -> Result<String, String> 
     let token = make_token();
     preview.approval_token = Some(token.clone());
     Ok(token)
+}
+
+/// Applies one exact, freshly approved preview. The command is deliberately not exposed in
+/// the UI until guarded undo is implemented and verified.
+#[tauri::command]
+pub fn apply_code_change(app: AppHandle, preview_id: String, approval_token: String) -> Result<CodingApplyResult, String> {
+    ensure_skill_loaded()?;
+    if preview_id.len() != 48 || !preview_id.bytes().all(|b| b.is_ascii_hexdigit())
+        || approval_token.len() != 48 || !approval_token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("The code approval is invalid. Review and approve the preview again.".into());
+    }
+    let now = current_epoch_seconds()?;
+    let preview = {
+        let mut previews = CODE_PREVIEWS.lock().map_err(|_| "Coding Assistant preview storage is temporarily unavailable.".to_string())?;
+        take_approved_preview(&mut previews, &preview_id, &approval_token, now)?
+    };
+    validate_proposed_content(&preview.proposed_content)?;
+    if sha256_hex(preview.proposed_content.as_bytes()) != preview.proposed_sha256 {
+        return Err("The approved proposal failed its integrity check. Create a fresh preview.".into());
+    }
+    let grants = PROJECT_GRANTS.lock().map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())?;
+    let grant = grants.get(&preview.file_id).ok_or("The project permission expired. Select the project folder again.")?;
+    let root = validate_granted_root(&grant.root)?;
+    if root != preview.root || grant.path != preview.path {
+        return Err("The project permission changed after preview. Select the project folder again.".into());
+    }
+    let current = fs::canonicalize(&grant.path).map_err(|_| "The selected project file is no longer available.".to_string())?;
+    if current != preview.path || !current.starts_with(&root) {
+        return Err("The selected project file moved or was redirected. No changes were made.".into());
+    }
+    let original = fs::read(&current).map_err(|_| "Could not re-read the selected project file.".to_string())?;
+    if sha256_hex(&original) != preview.original_sha256 {
+        return Err("The file changed after preview. No changes were made; create a fresh preview.".into());
+    }
+    let token = make_token();
+    let (backup, record) = apply_code_preview_to_disk(&root, &current, preview.proposed_content.as_bytes(),
+        &preview.original_sha256, &token, now)?;
+    let relative = relative_path(&root, &current).ok_or("The changed file is outside the project folder.")?;
+    let backup_relative = backup.strip_prefix(&root).unwrap_or(&backup).to_string_lossy().replace('\\', "/");
+    let file_name = current.file_name().and_then(|v| v.to_str()).unwrap_or("Project file").to_string();
+    let _ = crate::tools::record(&app, "coding.apply_code_change",
+        &format!("Applied one explicitly approved file change: {relative}; original SHA-256 {}; resulting SHA-256 {}; backup {}.",
+            record.original_sha256, record.resulting_sha256, backup_relative), true);
+    Ok(CodingApplyResult {
+        file_name, relative_path: relative, backup_relative_path: backup_relative,
+        bytes_written: preview.proposed_content.len(), original_sha256: record.original_sha256,
+        resulting_sha256: record.resulting_sha256, undo_record_id: record.id,
+    })
+}
+
+fn validate_proposed_content(content: &str) -> Result<(), String> {
+    if content.is_empty() || content.len() > MAX_PROPOSED_FILE_BYTES || content.as_bytes().contains(&0) {
+        return Err("The approved proposal is empty, too large, or contains binary NUL bytes.".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
