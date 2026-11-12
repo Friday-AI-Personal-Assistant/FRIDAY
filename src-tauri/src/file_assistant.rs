@@ -1733,12 +1733,26 @@ mod tests {
     }
 
     #[test]
-    fn approval_tokens_reject_expiry_replay_and_mismatches() {
+    fn approval_tokens_reject_expiry_and_mismatches() {
         assert!(approval_is_valid(100, Some("one-use-token"), "one-use-token", 100));
         assert!(!approval_is_valid(99, Some("one-use-token"), "one-use-token", 100));
         assert!(!approval_is_valid(100, Some("one-use-token"), "different-token", 100));
         assert!(!approval_is_valid(100, None, "one-use-token", 100));
         assert!(!approval_is_valid(100, Some("one-use-token"), "", 100));
+    }
+
+    #[test]
+    fn pending_edit_approval_can_only_be_consumed_once() {
+        let id = make_token();
+        PENDING_FILE_EDITS.lock().unwrap().insert(id.clone(), PendingFileEdit {
+            grant_id: make_token(),
+            original_sha256: content_hash(b"before"),
+            proposed_content: "after".into(),
+            expires_at: edit_now() + 60,
+            approval_token: Some(make_token()),
+        });
+        assert!(PENDING_FILE_EDITS.lock().unwrap().remove(&id).is_some());
+        assert!(PENDING_FILE_EDITS.lock().unwrap().remove(&id).is_none());
     }
 
     #[test]
