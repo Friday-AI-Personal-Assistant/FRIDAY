@@ -53,9 +53,20 @@ Allow FRIDAY to propose and, only after explicit user approval, apply carefully 
 - Verify restored hash and mark the undo record consumed.
 - Refuse undo if user or another process has changed the target since FRIDAY's edit.
 
-## First implementation slice
+## Implementation progress
 
-Implement a single-file preview API and UI first, with no write path enabled. Add tests for diff generation, content limits, invalid paths, stale preview detection and preview expiry. Only after that passes CI should the approval token, backup, atomic apply and guarded undo be implemented and enabled.
+- Preview-only slice: implemented and CI-verified in Run #279. It provides a one-file bounded preview, hashes, diff, short expiry and no disk writes.
+- Approval groundwork: implemented on the development branch. The backend can issue a token for an exact pending preview, rotate a previous token on re-approval, cancel a preview, and consume an approval record only once. Unit coverage exercises wrong-token, expiry and replay rejection.
+- No apply/write command is registered for Coding Assistant yet. The token is not a write authorization by itself; it must be consumed by a future apply command after full path/grant/hash/backup revalidation.
+
+## Remaining implementation sequence
+
+1. Complete approval UI so the user can explicitly approve the exact displayed preview.
+2. Implement a single-file apply operation that consumes the approval record, revalidates the current grant/root/path/type/reparse status and original SHA-256, and refuses stale files.
+3. Add verified backup creation, safe same-directory temporary write and atomic replacement with fail-closed platform handling.
+4. Verify post-write SHA-256, persist undo metadata and metadata-only audit events.
+5. Implement guarded undo that refuses to overwrite intervening user changes.
+6. Add filesystem fault-injection and failure-path tests before enabling the write capability.
 
 ## Acceptance criteria
 
