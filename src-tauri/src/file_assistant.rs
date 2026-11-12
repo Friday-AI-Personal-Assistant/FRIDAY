@@ -1889,6 +1889,46 @@ mod tests {
     }
 
     #[test]
+    fn transaction_journal_rejects_traversal_and_unexpected_backup_paths() {
+        let id = make_token();
+        let mut journal = FileTransactionJournal {
+            id: id.clone(), kind: "edit".into(),
+            original_relative_path: "notes.txt".into(), current_relative_path: "notes.txt".into(),
+            backup_relative_path: format!(".friday-backups/{id}.bak"),
+            expected_original_sha256: content_hash(b"before"),
+            expected_current_sha256: content_hash(b"after"), created_at: edit_now(),
+        };
+        assert!(validate_transaction_journal(&journal, &id).is_ok());
+        journal.current_relative_path = "../outside.txt".into();
+        assert!(validate_transaction_journal(&journal, &id).is_err());
+        journal.current_relative_path = "notes.txt".into();
+        journal.backup_relative_path = ".friday-backups/other.bak".into();
+        assert!(validate_transaction_journal(&journal, &id).is_err());
+    }
+
+    #[test]
+    fn interrupted_move_with_both_paths_present_requires_manual_review() {
+        let root_path = std::env::temp_dir().join(format!("friday-move-manual-review-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        let id = make_token();
+        fs::write(root.join(".friday-backups").join(format!("{id}.move.bak")), b"same bytes").unwrap();
+        fs::write(root.join("old.txt"), b"same bytes").unwrap();
+        fs::write(root.join("new.txt"), b"same bytes").unwrap();
+        let journal = FileTransactionJournal {
+            id, kind: "move".into(), original_relative_path: "old.txt".into(),
+            current_relative_path: "new.txt".into(),
+            backup_relative_path: format!(".friday-backups/{}.move.bak", "000000000000000000000000000000000000000000000000"),
+            expected_original_sha256: content_hash(b"same bytes"),
+            expected_current_sha256: content_hash(b"same bytes"), created_at: edit_now(),
+        };
+        // The journal must be bound to its own identifier and backup name before
+        // any recovery classifier can treat it as trusted.
+        assert_eq!(validate_transaction_journal(&journal, &journal.id).unwrap_err(), "The file-operation recovery backup path is invalid.");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn transaction_journal_markers_are_create_new_and_durable() {
         let root_path = std::env::temp_dir().join(format!("friday-transaction-markers-{}", make_token()));
         fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
