@@ -1867,6 +1867,34 @@ mod tests {
         (root, file, record, original, proposed)
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn recovery_restores_original_unix_permissions_when_rebuilding_missing_target() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, file, record, original, _proposed) = recovery_fixture("unix-mode");
+        let mut record = record;
+        record.original_unix_mode = Some(0o751);
+        let backup_dir = root.join(".friday-code-backups");
+        fs::write(backup_dir.join(format!("{}.txn.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+
+        // Model a crash after the target was displaced, followed by loss of that
+        // staged copy: recovery must rebuild only from the verified original backup.
+        assert!(!file.exists());
+        assert_eq!(recover_project_code_transactions(&root).unwrap(), 1);
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o751);
+        assert!(!backup_dir.join(format!("{}.txn.json", record.id)).exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn legacy_undo_record_without_unix_mode_remains_readable() {
+        let json = r#"{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","relativePath":"main.rs","backupRelativePath":".friday-code-backups/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bak","originalSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resultingSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","createdAt":123}"#;
+        let record: CodingUndoRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.original_unix_mode, None);
+        assert!(validate_undo_record(&record).is_ok());
+    }
+
     #[test]
     fn recovery_handles_apply_crash_at_each_transaction_boundary() {
         // Snapshots model abrupt process termination after the journal, temp write,
