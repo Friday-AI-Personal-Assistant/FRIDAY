@@ -84,6 +84,23 @@ struct StoredCodePreview {
 
 static CODE_PREVIEWS: Mutex<BTreeMap<String, StoredCodePreview>> = Mutex::new(BTreeMap::new());
 
+fn take_approved_preview(
+    previews: &mut BTreeMap<String, StoredCodePreview>,
+    preview_id: &str,
+    approval_token: &str,
+    now: u64,
+) -> Result<StoredCodePreview, String> {
+    let preview = previews.remove(preview_id)
+        .ok_or("This code preview has expired or was already used. Create it again.")?;
+    if preview.expires_at <= now {
+        return Err("This code preview has expired. Create a fresh preview.".into());
+    }
+    if preview.approval_token.as_deref() != Some(approval_token) || approval_token.is_empty() {
+        return Err("The exact code preview was not approved with a valid token.".into());
+    }
+    Ok(preview)
+}
+
 fn current_epoch_seconds() -> Result<u64, String> {
     SystemTime::now().duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -563,6 +580,53 @@ mod tests {
         assert!(diff.contains("-beta"));
         assert!(diff.contains("+BETA"));
         assert!(diff.contains(" gamma"));
+    }
+
+    #[test]
+    fn code_preview_approval_is_exact_expiring_and_one_use() {
+        let mut previews = BTreeMap::new();
+        let preview = StoredCodePreview {
+            file_id: "file".into(),
+            root: PathBuf::from("/project"),
+            path: PathBuf::from("/project/src/main.rs"),
+            original_sha256: "original".into(),
+            proposed_sha256: "proposed".into(),
+            proposed_content: "fn main() {}".into(),
+            expires_at: 120,
+            approval_token: Some("approved-token".into()),
+        };
+        previews.insert("preview-id".into(), preview);
+
+        assert!(take_approved_preview(&mut previews, "preview-id", "wrong-token", 100).is_err());
+        assert!(!previews.contains_key("preview-id"), "failed attempts must consume the pending approval");
+        
+        let expired = StoredCodePreview {
+            file_id: "file".into(),
+            root: PathBuf::from("/project"),
+            path: PathBuf::from("/project/src/main.rs"),
+            original_sha256: "original".into(),
+            proposed_sha256: "proposed".into(),
+            proposed_content: "fn main() {}".into(),
+            expires_at: 120,
+            approval_token: Some("approved-token".into()),
+        };
+        previews.insert("expired-preview".into(), expired);
+        assert!(take_approved_preview(&mut previews, "expired-preview", "approved-token", 120).is_err());
+        assert!(!previews.contains_key("expired-preview"));
+
+        let valid = StoredCodePreview {
+            file_id: "file".into(),
+            root: PathBuf::from("/project"),
+            path: PathBuf::from("/project/src/main.rs"),
+            original_sha256: "original".into(),
+            proposed_sha256: "proposed".into(),
+            proposed_content: "fn main() {}".into(),
+            expires_at: 121,
+            approval_token: Some("approved-token".into()),
+        };
+        previews.insert("valid-preview".into(), valid);
+        assert!(take_approved_preview(&mut previews, "valid-preview", "approved-token", 120).is_ok());
+        assert!(take_approved_preview(&mut previews, "valid-preview", "approved-token", 120).is_err());
     }
 
     #[test]
