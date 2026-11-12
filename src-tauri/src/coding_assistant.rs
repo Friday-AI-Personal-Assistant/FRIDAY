@@ -1498,7 +1498,6 @@ mod tests {
     }
 
     #[test]
-        #[test]
     fn recovery_refuses_directory_in_place_of_active_undo_record() {
         let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("directory-active-undo", b"edge original source");
         let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
@@ -1523,13 +1522,31 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("keep.txt"), b"outside user data").unwrap();
-        let command = format!("mklink /J \"{}\" \"{}\"", link.display(), outside.display());
-        let result = Command::new("cmd.exe").args(["/C", &command]).status().unwrap();
-        assert!(result.success(), "Could not create a Windows directory junction for the test");
+
+        // Use PowerShell environment variables rather than constructing a quoted
+        // cmd.exe command string; this safely handles spaces and Windows path syntax.
+        let result = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "New-Item -ItemType Junction -Path $env:FRIDAY_JUNCTION_PATH -Target $env:FRIDAY_JUNCTION_TARGET | Out-Null",
+            ])
+            .env("FRIDAY_JUNCTION_PATH", &link)
+            .env("FRIDAY_JUNCTION_TARGET", &outside)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "Could not create a Windows directory junction for the test: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+
         let meta = fs::symlink_metadata(&link).unwrap();
         assert!(is_redirected(&meta), "Windows junction must be recognized as a reparse point");
         assert!(recover_project_code_transactions(&root).is_err());
         assert_eq!(fs::read(outside.join("keep.txt")).unwrap(), b"outside user data");
+
         fs::remove_dir(&link).unwrap();
         fs::remove_dir_all(&root).unwrap();
         fs::remove_dir_all(&outside).unwrap();
