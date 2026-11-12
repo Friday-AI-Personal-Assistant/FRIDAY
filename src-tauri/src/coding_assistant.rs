@@ -109,6 +109,8 @@ struct CodingUndoRecord {
     original_sha256: String,
     resulting_sha256: String,
     created_at: u64,
+    #[serde(default)]
+    original_unix_mode: Option<u32>,
 }
 
 fn ensure_code_backup_dir(root: &Path) -> Result<PathBuf, String> {
@@ -188,6 +190,7 @@ fn apply_code_preview_to_disk(root: &Path, current: &Path, proposed: &[u8], expe
         id: token.to_string(), relative_path: relative.clone(),
         backup_relative_path: format!(".friday-code-backups/{token}.bak"),
         original_sha256: original_hash.clone(), resulting_sha256: resulting_hash.clone(), created_at: now,
+        original_unix_mode: original_unix_mode(&meta),
     };
     let journal_path = backup_dir.join(format!("{token}.txn.json"));
     let journal_bytes = serde_json::to_vec(&record).map_err(|_| "Could not prepare the code-change recovery journal.".to_string())?;
@@ -324,14 +327,42 @@ fn remove_recovery_copy(path: &Path, expected_hash: &str) -> Result<(), String> 
     }
 }
 
-fn write_recovery_copy(path: &Path, bytes: &[u8], expected_hash: &str) -> Result<(), String> {
+#[cfg(unix)]
+fn original_unix_mode(metadata: &fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+fn original_unix_mode(_metadata: &fs::Metadata) -> Option<u32> {
+    None
+}
+
+fn apply_recovery_permissions(path: &Path, record: &CodingUndoRecord) -> Result<(), String> {
+    #[cfg(unix)]
+    if let Some(mode) = record.original_unix_mode {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o777))
+            .map_err(|_| "FRIDAY could not restore the original file permissions.".to_string())?;
+    }
+    #[cfg(not(unix))]
+    let _ = (path, record);
+    Ok(())
+}
+
+fn write_recovery_copy(path: &Path, bytes: &[u8], expected_hash: &str, record: &CodingUndoRecord) -> Result<(), String> {
     if bytes.is_empty() || bytes.len() as u64 > MAX_FILE_BYTES || sha256_hex(bytes) != expected_hash {
         return Err("The verified recovery source failed its integrity check.".into());
     }
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)
         .map_err(|_| "FRIDAY could not create a new recovery temporary file.".to_string())?;
-    file.write_all(bytes).and_then(|_| file.sync_all())
-        .map_err(|_| "FRIDAY could not flush a recovery temporary file.".to_string())?;
+    file.write_all(bytes)
+        .map_err(|_| "FRIDAY could not write a recovery temporary file.".to_string())?;
+    drop(file);
+    apply_recovery_permissions(path, record)?;
+    let file = OpenOptions::new().write(true).open(path)
+        .map_err(|_| "FRIDAY could not reopen a recovery temporary file for flushing.".to_string())?;
+    file.sync_all().map_err(|_| "FRIDAY could not flush a recovery temporary file.".to_string())?;
     drop(file);
     let installed = read_recovery_file(path, MAX_FILE_BYTES)?
         .ok_or("The recovery temporary file disappeared.")?;
@@ -504,7 +535,7 @@ fn recover_apply_transaction(root: &Path, backup_dir: &Path, record: &CodingUndo
                 if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.resulting_sha256)?; }
             } else if displaced_hash.is_none() {
                 let restore_temp = target.parent().unwrap().join(format!(".friday-code-recovery-{}.tmp", record.id));
-                write_recovery_copy(&restore_temp, &original, &record.original_sha256)?;
+                write_recovery_copy(&restore_temp, &original, &record.original_sha256, record)?;
                 fs::rename(&restore_temp, &target)
                     .map_err(|_| "FRIDAY could not reinstall the verified original backup. The backup remains available.".to_string())?;
                 if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.resulting_sha256)?; }
@@ -1410,6 +1441,7 @@ mod tests {
             id: token.clone(), relative_path: "main.rs".into(),
             backup_relative_path: format!(".friday-code-backups/{token}.bak"),
             original_sha256: sha256_hex(original), resulting_sha256: sha256_hex(proposed), created_at: 123,
+            original_unix_mode: None,
         };
         fs::write(backup_dir.join(format!("{token}.txn.json")), serde_json::to_vec(&record).unwrap()).unwrap();
         fs::write(root.join(format!(".friday-code-original-{token}.tmp")), original).unwrap();
@@ -1438,6 +1470,7 @@ mod tests {
             id: token.clone(), relative_path: "main.rs".into(),
             backup_relative_path: format!(".friday-code-backups/{token}.bak"),
             original_sha256: sha256_hex(original), resulting_sha256: sha256_hex(proposed), created_at: 123,
+            original_unix_mode: None,
         };
         fs::write(backup_dir.join(format!("{token}.undo.json")), serde_json::to_vec(&record).unwrap()).unwrap();
         fs::write(backup_dir.join(format!("{token}.undo-txn.json")), serde_json::to_vec(&record).unwrap()).unwrap();
@@ -1466,6 +1499,7 @@ mod tests {
             id: token.clone(), relative_path: "main.rs".into(),
             backup_relative_path: format!(".friday-code-backups/{token}.bak"),
             original_sha256: sha256_hex(original), resulting_sha256: sha256_hex(proposed), created_at: 123,
+            original_unix_mode: None,
         };
         fs::write(backup_dir.join(format!("{token}.txn.json")), serde_json::to_vec(&record).unwrap()).unwrap();
         assert!(recover_project_code_transactions(&root).is_err());
@@ -1493,6 +1527,7 @@ mod tests {
             original_sha256: sha256_hex(&original),
             resulting_sha256: sha256_hex(&proposed),
             created_at: 456,
+            original_unix_mode: None,
         };
         (root, file, backup_dir, record, original, proposed)
     }
@@ -1827,6 +1862,7 @@ mod tests {
             original_sha256: sha256_hex(&original),
             resulting_sha256: sha256_hex(&proposed),
             created_at: 123,
+            original_unix_mode: None,
         };
         (root, file, record, original, proposed)
     }
