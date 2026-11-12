@@ -319,7 +319,7 @@ ${file.content}`
 
   async function applyFileMove() {
     if (!desktop || !movePreview || editBusy) return;
-    const approved = window.confirm("Move " + movePreview.sourceRelativePath + " to " + movePreview.destinationRelativePath + "? FRIDAY will preserve a copy of the original in .friday-backups. This cannot be automatically undone in this stage.");
+    const approved = window.confirm("Move " + movePreview.sourceRelativePath + " to " + movePreview.destinationRelativePath + "? FRIDAY will preserve a copy of the original in .friday-backups. You can use Undo history to restore it after the move.");
     if (!approved) { await cancelFileMove(); return; }
     setEditBusy(true); setFileError(""); setFileNotice("");
     try {
@@ -467,8 +467,8 @@ ${file.content}`
           </div>}
         </div>}
         {skill.id === "file-assistant" && skill.loaded && <div className="file-assistant-panel">
-          <strong>Read and carefully edit selected text files</strong>
-          <p>Choose a folder or individual files. FRIDAY reads text locally. For files selected from a folder, you can prepare a replacement, compare the original and proposed versions, then explicitly approve saving one file at a time. The original is backed up first.</p>
+          <strong>Read, edit, move and restore selected text files</strong>
+          <p>Choose a folder or individual files. FRIDAY reads text locally. For files selected from a folder, you can prepare a replacement, compare the original and proposed versions, then explicitly approve saving one file at a time. The original is backed up first, and approved edits and moves can be restored from Undo history.</p>
           <div className="file-assistant-picker-actions">
             <button className="primary-button" disabled={fileBusy} onClick={() => void chooseFolder()}>{fileBusy ? "Scanning…" : "Choose a folder"}</button>
             <button className="secondary-button" disabled={fileBusy} onClick={() => void chooseTextFiles()}>Choose individual files</button>
