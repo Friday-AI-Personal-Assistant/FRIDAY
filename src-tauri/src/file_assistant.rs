@@ -1916,15 +1916,14 @@ mod tests {
         fs::write(root.join("old.txt"), b"same bytes").unwrap();
         fs::write(root.join("new.txt"), b"same bytes").unwrap();
         let journal = FileTransactionJournal {
-            id, kind: "move".into(), original_relative_path: "old.txt".into(),
+            id: id.clone(), kind: "move".into(), original_relative_path: "old.txt".into(),
             current_relative_path: "new.txt".into(),
-            backup_relative_path: format!(".friday-backups/{}.move.bak", "000000000000000000000000000000000000000000000000"),
+            backup_relative_path: format!(".friday-backups/{id}.move.bak"),
             expected_original_sha256: content_hash(b"same bytes"),
             expected_current_sha256: content_hash(b"same bytes"), created_at: edit_now(),
         };
-        // The journal must be bound to its own identifier and backup name before
-        // any recovery classifier can treat it as trusted.
-        assert_eq!(validate_transaction_journal(&journal, &journal.id).unwrap_err(), "The file-operation recovery backup path is invalid.");
+        assert!(validate_transaction_journal(&journal, &journal.id).is_ok());
+        assert_eq!(classify_file_transaction(&root, &journal), "manual_review");
         fs::remove_dir_all(&root).unwrap();
     }
 
