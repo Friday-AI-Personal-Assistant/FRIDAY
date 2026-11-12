@@ -317,7 +317,12 @@ fn load_undo_record(root: &Path, id: &str) -> Result<UndoRecord, String> {
     let record: UndoRecord = serde_json::from_slice(&fs::read(path)
         .map_err(|_| "Could not read the undo history record.".to_string())?)
         .map_err(|_| "The undo history record is invalid.".to_string())?;
-    if record.id != id || !matches!(record.kind.as_str(), "edit" | "move") {
+    let expected_backup = match record.kind.as_str() {
+        "edit" => format!(".friday-backups/{id}.bak"),
+        "move" => format!(".friday-backups/{id}.move.bak"),
+        _ => return Err("The undo history record failed validation.".into()),
+    };
+    if record.id != id || record.backup_relative_path != expected_backup {
         return Err("The undo history record failed validation.".into());
     }
     Ok(record)
@@ -923,7 +928,8 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
         let redo = backup_dir.join(format!("{}.redo.bak", record.id));
         let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temp)
             .map_err(|e| format!("Could not prepare the restored file: {e}"))?;
-        if let Err(error) = temp_file.write_all(&original_bytes).and_then(|_| temp_file.sync_all()) {
+        let current_permissions = current_meta.permissions();
+        if let Err(error) = temp_file.set_permissions(current_permissions).and_then(|_| temp_file.write_all(&original_bytes)).and_then(|_| temp_file.sync_all()) {
             drop(temp_file); let _ = fs::remove_file(&temp);
             return Err(format!("Could not write the restored file: {error}"));
         }
@@ -1074,6 +1080,38 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+
+    #[test]
+    fn undo_history_records_are_persisted_and_backup_paths_are_bound_to_ids() {
+        let root = std::env::temp_dir().join(format!("friday-undo-history-{}", make_token()));
+        fs::create_dir_all(root.join(".friday-backups")).unwrap();
+        let record = UndoRecord {
+            id: make_token(), kind: "edit".into(),
+            original_relative_path: "notes.txt".into(), current_relative_path: "notes.txt".into(),
+            backup_relative_path: String::new(), expected_current_sha256: content_hash(b"after"),
+            created_at: edit_now(),
+        };
+        let mut record = record;
+        record.backup_relative_path = format!(".friday-backups/{}.bak", record.id);
+        fs::write(root.join(&record.backup_relative_path), b"before").unwrap();
+        save_undo_record(&root, &record).unwrap();
+        let loaded = load_undo_record(&root, &record.id).unwrap();
+        assert_eq!(loaded.backup_relative_path, record.backup_relative_path);
+        assert_eq!(list_undo_records(&root).unwrap().len(), 1);
+        write_undone_marker(&root, &record.id).unwrap();
+        assert!(list_undo_records(&root).unwrap().is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn undo_paths_reject_parent_traversal_and_unsupported_files() {
+        let root = std::env::temp_dir().join(format!("friday-undo-path-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        assert!(safe_relative_file(&root, "../outside.txt").is_err());
+        assert!(safe_relative_file(&root, "nested/../../outside.txt").is_err());
+        assert!(safe_relative_file(&root, "photo.png").is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn move_destination_must_be_safe_relative_supported_path() {
