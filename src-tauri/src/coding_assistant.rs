@@ -1881,6 +1881,7 @@ mod tests {
     fn successful_apply_and_undo_remove_resolved_transaction_journals() {
         let root = std::env::temp_dir().join(format!("friday-code-journal-cleanup-{}", make_token()));
         fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(&root).unwrap();
         let file = root.join("main.rs");
         let original = b"original source";
         let proposed = b"first approved edit";
@@ -1907,6 +1908,7 @@ mod tests {
     fn sequential_edits_can_be_undone_in_reverse_order_without_stale_journals() {
         let root = std::env::temp_dir().join(format!("friday-code-sequential-{}", make_token()));
         fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(&root).unwrap();
         let file = root.join("main.rs");
         let original = b"original source";
         let first = b"first edit";
