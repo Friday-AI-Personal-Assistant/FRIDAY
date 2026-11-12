@@ -120,11 +120,15 @@ Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Co
 
 ### File Assistant Stage 6 — comprehensive safety, reliability and edge-case review
 - [x] Revalidate the selected folder root on every granted operation; reject a root that is no longer the same normal directory or has been redirected after approval.
+- [x] Reject Windows reparse points as well as symbolic links for selected files, folders, destination parents and backup locations; add platform-specific symlink checks where the runner permits.
 - [x] Revoke folder grants and pending edit/move/undo previews when selecting a different folder, switching to individual-file selection, or disabling, unloading or uninstalling File Assistant; backend file commands now require the skill to be loaded.
 - [ ] Review crash/interruption recovery for edit, move, backup and undo transactions.
+- [ ] Allow undo to restore from an intact backup when the edited/moved working copy is missing, provided the destination/original location is safe and unoccupied.
+- [ ] Add a transaction journal/recovery workflow for crashes between backup creation, file replacement/move, undo and history persistence.
+- [ ] Bound backup storage growth and define safe retention/cleanup without deleting backups needed for recovery.
 - [x] File edit/move results now distinguish a completed file change from a failure to persist undo history; the UI warns that the original backup remains but one-click Undo may be unavailable.
 - [x] Undo completion markers are flushed to disk; if a marker cannot be written, FRIDAY detects an already-restored file from its backup and avoids presenting it as undoable. Full crash-transaction recovery remains pending.
-- [~] Added tests for approved-root validation (including symlink rejection on Unix), undo completion detection without a marker, and existing path traversal/backup validation. Remaining edge-case tests: Windows reparse points, stale grants, occupied destinations, changed files, missing/corrupt backups, duplicate/replayed approvals and interrupted operations.
+- [~] Added tests for approved-root validation, undo completion detection without a marker, backup integrity, path traversal and backup-directory redirection. Windows reparse-point checks and platform-specific symlink tests are implemented; remaining edge-case tests include stale grants, occupied destinations, changed files, missing/corrupt backups, duplicate/replayed approvals and interrupted operations.
 - [x] Add SHA-256 integrity metadata for newly created undo backups and validate UTF-8/size/hash before restoration; legacy Stage 5 records remain readable with UTF-8/size validation but cannot retroactively verify an original backup hash. Continue reviewing temporary-file cleanup, permissions and audit-history consistency.
 - [ ] Run frontend build, Rust tests and Windows installer CI after fixes; keep Windows user acceptance testing for the final release phase.
 
