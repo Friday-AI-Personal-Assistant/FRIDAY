@@ -956,7 +956,8 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
     let grant = grants.get(&pending.grant_id).ok_or("Select the folder again before undoing.")?;
     let root = validate_granted_root(&grant.root)?;
     let record = load_undo_record(&root, &pending.record.id)?;
-    if undo_backup_dir(&root)?.join(format!("{}.undone", record.id)).exists() {
+    if undo_backup_dir(&root)?.join(format!("{}.undone", record.id)).exists()
+        || undo_is_already_applied(&root, &record) {
         return Err("This operation has already been undone.".into());
     }
     let current = safe_relative_file(&root, &record.current_relative_path)?;
@@ -1199,6 +1200,38 @@ mod tests {
             fs::remove_file(alias).unwrap();
         }
 
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn undo_completion_is_detected_even_if_history_marker_was_not_written() {
+        let root = std::env::temp_dir().join(format!("friday-undo-recovery-{}", make_token()));
+        fs::create_dir_all(root.join(".friday-backups")).unwrap();
+
+        let edit_id = make_token();
+        fs::write(root.join("edited.txt"), "before").unwrap();
+        fs::write(root.join(".friday-backups").join(format!("{edit_id}.bak")), "before").unwrap();
+        let edit_record = UndoRecord {
+            id: edit_id.clone(), kind: "edit".into(),
+            original_relative_path: "edited.txt".into(), current_relative_path: "edited.txt".into(),
+            backup_relative_path: format!(".friday-backups/{edit_id}.bak"),
+            expected_current_sha256: content_hash(b"after"), created_at: edit_now(),
+        };
+        assert!(undo_is_already_applied(&root, &edit_record));
+
+        let move_id = make_token();
+        fs::write(root.join("original.txt"), "moved bytes").unwrap();
+        fs::write(root.join(".friday-backups").join(format!("{move_id}.move.bak")), "moved bytes").unwrap();
+        let move_record = UndoRecord {
+            id: move_id.clone(), kind: "move".into(),
+            original_relative_path: "original.txt".into(), current_relative_path: "renamed.txt".into(),
+            backup_relative_path: format!(".friday-backups/{move_id}.move.bak"),
+            expected_current_sha256: content_hash(b"moved bytes"), created_at: edit_now(),
+        };
+        assert!(undo_is_already_applied(&root, &move_record));
+
+        fs::write(root.join("renamed.txt"), "still here").unwrap();
+        assert!(!undo_is_already_applied(&root, &move_record));
         fs::remove_dir_all(&root).unwrap();
     }
 
