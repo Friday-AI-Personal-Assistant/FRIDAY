@@ -511,7 +511,7 @@ ${file.content}`
             <small>FRIDAY checks its transaction journal when you choose this folder. Recovery is explicit and never overwrites an existing file. Ambiguous cases are left for manual review.</small>
             {recoveryItems.map(item => <div className="file-assistant-candidate" key={item.id}>
               <span>
-                <strong>{item.kind === "move" ? "Interrupted move: " : "Interrupted edit: "}{item.originalRelativePath}</strong>
+                <strong>{item.kind.includes("move") ? "Interrupted move: " : item.kind.startsWith("undo-") ? "Interrupted Undo: " : "Interrupted edit: "}{item.originalRelativePath}</strong>
                 <small>{item.status === "restore_original" ? "Verified backup available; original file is missing." : item.status === "finish_undo_history" ? (item.kind.startsWith("undo-") ? "Undo restored the file; its completion marker needs recovery." : "File change is present; Undo history needs recovery.") : item.status === "operation_not_started" ? "Original file is intact; operation did not start." : "Ambiguous state — no automatic recovery is safe."}</small>
               </span>
               <button className="secondary-button" disabled={!!recoveryBusyId || item.status === "manual_review" || editBusy} onClick={() => void recoverFileTransaction(item)}>{recoveryBusyId === item.id ? "Recovering…" : "Review & recover"}</button>
@@ -519,7 +519,7 @@ ${file.content}`
           </div>}
           {undoOperations.length > 0 && <div className="file-assistant-folder-list">
             <strong>Undo history</strong>
-            <small>FRIDAY keeps up to 50 recent approved edits and moves here. Undo is available only while the affected file and backup still match; newer changes are protected.</small>
+            <small>FRIDAY keeps up to 50 recent approved edits and moves here. Undo requires a valid backup and a safe, unoccupied destination; newer changes are protected.</small>
             {undoOperations.map(item => <div className="file-assistant-candidate" key={item.id}>
               <span><strong>{item.kind === "move" ? "Moved: " : "Edited: "}{item.currentRelativePath}</strong><small>{item.kind === "move" ? "Restore to " + item.originalRelativePath : "Restore previous contents"} · {new Date(item.createdAt * 1000).toLocaleString()}</small></span>
               <button className="secondary-button" disabled={!!undoBusyId || editBusy} onClick={() => void undoFileOperation(item)}>{undoBusyId === item.id ? "Undoing…" : "Undo"}</button>
