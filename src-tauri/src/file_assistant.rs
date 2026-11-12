@@ -2183,8 +2183,12 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let target = root.join("notes.txt");
 
-        let mut permissions = fs::metadata(&root).unwrap().permissions();
+        let permission_source = root.join("permission-source.txt");
+        fs::write(&permission_source, b"permission sample").unwrap();
+        let mut permissions = fs::metadata(&permission_source).unwrap().permissions();
         permissions.set_readonly(true);
+        fs::set_permissions(&permission_source, permissions).unwrap();
+        let permissions = fs::metadata(&permission_source).unwrap().permissions();
         restore_missing_file_without_overwrite(&target, b"restored original", Some(permissions)).unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"restored original");
         assert!(fs::metadata(&target).unwrap().permissions().readonly());
@@ -2199,6 +2203,9 @@ mod tests {
         let mut restored_permissions = fs::metadata(&target).unwrap().permissions();
         restored_permissions.set_readonly(false);
         fs::set_permissions(&target, restored_permissions).unwrap();
+        let mut source_permissions = fs::metadata(&permission_source).unwrap().permissions();
+        source_permissions.set_readonly(false);
+        fs::set_permissions(&permission_source, source_permissions).unwrap();
         fs::remove_dir_all(&root).unwrap();
     }
 
