@@ -1442,6 +1442,164 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+
+    fn recovery_edge_fixture(label: &str, target_bytes: &[u8]) -> (PathBuf, PathBuf, PathBuf, CodingUndoRecord, Vec<u8>, Vec<u8>) {
+        let temp = std::env::temp_dir().join(format!("friday-code-edge-{label}-{}", make_token()));
+        fs::create_dir_all(&temp).unwrap();
+        let root = fs::canonicalize(&temp).unwrap();
+        let file = root.join("main.rs");
+        let original = b"edge original source".to_vec();
+        let proposed = b"edge proposed source".to_vec();
+        fs::write(&file, target_bytes).unwrap();
+        let token = make_token();
+        let backup_dir = ensure_code_backup_dir(&root).unwrap();
+        fs::write(backup_dir.join(format!("{token}.bak")), &original).unwrap();
+        let record = CodingUndoRecord {
+            id: token.clone(),
+            relative_path: "main.rs".into(),
+            backup_relative_path: format!(".friday-code-backups/{token}.bak"),
+            original_sha256: sha256_hex(&original),
+            resulting_sha256: sha256_hex(&proposed),
+            created_at: 456,
+        };
+        (root, file, backup_dir, record, original, proposed)
+    }
+
+    #[test]
+    fn recovery_refuses_missing_original_backup_and_preserves_journal() {
+        let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("missing-backup", b"edge original source");
+        let journal = backup_dir.join(format!("{}.txn.json", record.id));
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::remove_file(backup_dir.join(format!("{}.bak", record.id))).unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert!(journal.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_corrupted_original_backup_and_preserves_evidence() {
+        let (root, file, backup_dir, record, _, _) = recovery_edge_fixture("corrupt-backup", b"edge original source");
+        let journal = backup_dir.join(format!("{}.txn.json", record.id));
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(backup_dir.join(format!("{}.bak", record.id)), b"corrupted backup").unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"edge original source");
+        assert!(journal.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_malformed_journal_without_cleanup() {
+        let (root, file, backup_dir, record, _, _) = recovery_edge_fixture("malformed-journal", b"edge original source");
+        let journal = backup_dir.join(format!("{}.txn.json", record.id));
+        fs::write(&journal, b"{ definitely not valid json").unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"edge original source");
+        assert!(journal.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_journal_filename_identifier_mismatch() {
+        let (root, file, backup_dir, record, _, _) = recovery_edge_fixture("journal-name-mismatch", b"edge original source");
+        let wrong_name = backup_dir.join(format!("{}.txn.json", make_token()));
+        fs::write(&wrong_name, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"edge original source");
+        assert!(wrong_name.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_path_traversal_journal() {
+        let (root, file, backup_dir, mut record, _, _) = recovery_edge_fixture("path-traversal", b"edge original source");
+        record.relative_path = "../outside.rs".into();
+        let journal = backup_dir.join(format!("{}.txn.json", record.id));
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"edge original source");
+        assert!(journal.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_unexpected_temporary_contents_and_preserves_them() {
+        let (root, file, backup_dir, record, _, _) = recovery_edge_fixture("unexpected-temp", b"edge original source");
+        let journal = backup_dir.join(format!("{}.txn.json", record.id));
+        let temporary = root.join(format!(".friday-code-edit-{}.tmp", record.id));
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(&temporary, b"user-owned unexpected contents").unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"edge original source");
+        assert_eq!(fs::read(&temporary).unwrap(), b"user-owned unexpected contents");
+        assert!(journal.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_mismatched_undo_record_for_completed_apply() {
+        let (root, file, backup_dir, record, _, proposed) = recovery_edge_fixture("mismatched-undo", b"edge proposed source");
+        let journal = backup_dir.join(format!("{}.txn.json", record.id));
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        let mut wrong = record.clone();
+        wrong.resulting_sha256 = "a".repeat(64);
+        fs::write(backup_dir.join(format!("{}.undo.json", record.id)), serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), proposed);
+        assert!(journal.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_both_active_and_consumed_undo_records() {
+        let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("duplicate-undo-state", b"edge original source");
+        let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(backup_dir.join(format!("{}.undo.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(backup_dir.join(format!("{}.undone.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert!(journal.is_file());
+        assert!(backup_dir.join(format!("{}.undo.json", record.id)).is_file());
+        assert!(backup_dir.join(format!("{}.undone.json", record.id)).is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_refuses_symlink_journal_and_preserves_link() {
+        use std::os::unix::fs::symlink;
+        let (root, file, backup_dir, record, _, _) = recovery_edge_fixture("symlink-journal", b"edge original source");
+        let real = backup_dir.join("journal-source.json");
+        fs::write(&real, serde_json::to_vec(&record).unwrap()).unwrap();
+        let journal = backup_dir.join(format!("{}.txn.json", record.id));
+        symlink(&real, &journal).unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"edge original source");
+        assert!(fs::symlink_metadata(&journal).unwrap().file_type().is_symlink());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_refuses_symlink_backup_and_target_without_touching_outside_file() {
+        use std::os::unix::fs::symlink;
+        let (root, file, backup_dir, record, _, _) = recovery_edge_fixture("symlink-backup-target", b"edge original source");
+        let journal = backup_dir.join(format!("{}.txn.json", record.id));
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        let outside = root.parent().unwrap().join(format!("friday-code-outside-{}", make_token()));
+        fs::write(&outside, b"outside user data").unwrap();
+        fs::remove_file(backup_dir.join(format!("{}.bak", record.id))).unwrap();
+        symlink(&outside, backup_dir.join(format!("{}.bak", record.id))).unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&outside).unwrap(), b"outside user data");
+        assert!(journal.is_file());
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_file(outside).unwrap();
+        let _ = file;
+    }
+    
     fn recovery_fixture(label: &str) -> (PathBuf, PathBuf, CodingUndoRecord, Vec<u8>, Vec<u8>) {
         let temp = std::env::temp_dir().join(format!("friday-code-fault-{label}-{}", make_token()));
         fs::create_dir_all(&temp).unwrap();
