@@ -344,8 +344,16 @@ fn write_recovery_copy(path: &Path, bytes: &[u8], expected_hash: &str) -> Result
 fn inspect_recovery_undo_state(backup_dir: &Path, expected: &CodingUndoRecord) -> Result<Option<bool>, String> {
     let active = backup_dir.join(format!("{}.undo.json", expected.id));
     let consumed = backup_dir.join(format!("{}.undone.json", expected.id));
-    let active_exists = fs::symlink_metadata(&active).is_ok();
-    let consumed_exists = fs::symlink_metadata(&consumed).is_ok();
+    let active_exists = match fs::symlink_metadata(&active) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => return Err("FRIDAY could not inspect the active Undo record. Recovery evidence was preserved.".into()),
+    };
+    let consumed_exists = match fs::symlink_metadata(&consumed) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => return Err("FRIDAY could not inspect the consumed Undo record. Recovery evidence was preserved.".into()),
+    };
     if active_exists && consumed_exists {
         return Err("Both active and consumed Undo records exist. Manual review is required.".into());
     }
@@ -1490,7 +1498,44 @@ mod tests {
     }
 
     #[test]
-    fn recovery_refuses_malformed_active_undo_record_and_preserves_journal() {
+        #[test]
+    fn recovery_refuses_directory_in_place_of_active_undo_record() {
+        let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("directory-active-undo", b"edge original source");
+        let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        let active = backup_dir.join(format!("{}.undo.json", record.id));
+        fs::create_dir(&active).unwrap();
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert!(journal.is_file());
+        assert!(active.is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reparse_point_junction_is_rejected_as_recovery_folder() {
+        use std::process::Command;
+        let temp = std::env::temp_dir().join(format!("friday-code-junction-{}", make_token()));
+        let root = temp.join("project");
+        let outside = temp.join("outside");
+        let link = root.join(".friday-code-backups");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), b"outside user data").unwrap();
+        let command = format!("mklink /J \"{}\" \"{}\"", link.display(), outside.display());
+        let result = Command::new("cmd.exe").args(["/C", &command]).status().unwrap();
+        assert!(result.success(), "Could not create a Windows directory junction for the test");
+        let meta = fs::symlink_metadata(&link).unwrap();
+        assert!(is_redirected(&meta), "Windows junction must be recognized as a reparse point");
+        assert!(recover_project_code_transactions(&root).is_err());
+        assert_eq!(fs::read(outside.join("keep.txt")).unwrap(), b"outside user data");
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+        fs::remove_dir_all(&temp).unwrap();
+    }
+
+fn recovery_refuses_malformed_active_undo_record_and_preserves_journal() {
         let (root, file, backup_dir, record, original, _) = recovery_edge_fixture("malformed-active-undo", b"edge original source");
         let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
         fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
