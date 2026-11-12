@@ -447,8 +447,13 @@ fn mark_file_transaction_phase(root: &Path, id: &str, phase: &str) -> Result<(),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let metadata = fs::symlink_metadata(&marker)
                 .map_err(|_| "Could not inspect an existing recovery phase marker.".to_string())?;
-            if is_redirected(&metadata) || !metadata.is_file() {
+            if is_redirected(&metadata) || !metadata.is_file() || metadata.len() > 64 {
                 return Err("An existing recovery phase marker is not a safe regular file.".into());
+            }
+            let contents = fs::read_to_string(&marker)
+                .map_err(|_| "An existing recovery phase marker could not be validated.".to_string())?;
+            if contents != phase {
+                return Err("An existing recovery phase marker is incomplete or inconsistent.".into());
             }
             return Ok(());
         }
@@ -461,7 +466,12 @@ fn mark_file_transaction_phase(root: &Path, id: &str, phase: &str) -> Result<(),
 fn transaction_phase_exists(root: &Path, id: &str, phase: &str) -> bool {
     let Ok(dir) = undo_backup_dir(root) else { return false; };
     let path = dir.join(format!("{id}.txn-{phase}"));
-    matches!(fs::symlink_metadata(path), Ok(metadata) if !is_redirected(&metadata) && metadata.is_file())
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if !is_redirected(&metadata) && metadata.is_file() && metadata.len() <= 64 => {
+            fs::read_to_string(path).map(|contents| contents == phase).unwrap_or(false)
+        }
+        _ => false,
+    }
 }
 
 fn bounded_regular_file_hash(path: &Path) -> Option<String> {
@@ -744,8 +754,13 @@ fn write_undo_intent_marker(root: &Path, id: &str) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let metadata = fs::symlink_metadata(&marker)
                 .map_err(|_| "Could not inspect the existing undo recovery marker.".to_string())?;
-            if is_redirected(&metadata) || !metadata.is_file() {
+            if is_redirected(&metadata) || !metadata.is_file() || metadata.len() > 64 {
                 return Err("The undo recovery marker is not a safe regular file.".into());
+            }
+            let contents = fs::read_to_string(&marker)
+                .map_err(|_| "The existing undo recovery marker could not be validated.".to_string())?;
+            if contents != "undoing" {
+                return Err("The existing undo recovery marker is incomplete or inconsistent.".into());
             }
             return Ok(());
         }
