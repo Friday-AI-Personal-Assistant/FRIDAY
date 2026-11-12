@@ -1379,7 +1379,8 @@ mod tests {
         assert_eq!(record.original_sha256, original_hash);
         assert_eq!(record.resulting_sha256, sha256_hex(b"fn main() { println!(\"hi\"); }"));
         assert!(root.join(".friday-code-backups").join(format!("{token}.undo.json")).is_file());
-        assert!(root.join(".friday-code-backups").join(format!("{token}.txn.json")).is_file());
+        assert!(!root.join(".friday-code-backups").join(format!("{token}.txn.json")).exists(),
+            "a completed Apply must remove its resolved transaction journal");
         fs::remove_dir_all(&root).unwrap();
     }
 
