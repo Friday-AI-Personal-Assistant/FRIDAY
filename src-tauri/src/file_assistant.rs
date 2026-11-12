@@ -532,7 +532,10 @@ fn classify_file_transaction(root: &Path, journal: &FileTransactionJournal) -> S
         "edit" if backup_hash.as_deref() == Some(journal.expected_original_sha256.as_str())
             && current_hash.as_deref() == Some(journal.expected_current_sha256.as_str()) => "finish_undo_history".into(),
         "edit" if backup_hash.as_deref() == Some(journal.expected_original_sha256.as_str()) && current_missing => "restore_original".into(),
-        "edit" if original_hash.as_deref() == Some(journal.expected_original_sha256.as_str()) && backup_hash.is_none() => "operation_not_started".into(),
+        // If the original bytes are present at the original path, the edit
+        // either never began or its interrupted rollback already restored it.
+        // In both cases it is safe to close the journal without changing files.
+        "edit" if original_hash.as_deref() == Some(journal.expected_original_sha256.as_str()) => "operation_not_started".into(),
         "move" if backup_hash.as_deref() == Some(journal.expected_original_sha256.as_str())
             && current_hash.as_deref() == Some(journal.expected_current_sha256.as_str()) && original_missing => "finish_undo_history".into(),
         "move" if backup_hash.as_deref() == Some(journal.expected_original_sha256.as_str()) && current_missing && original_missing => "restore_original".into(),
@@ -2004,6 +2007,25 @@ mod tests {
         fs::create_dir_all(&root_path).unwrap();
         let root = fs::canonicalize(&root_path).unwrap();
         assert!(list_file_transactions(&root).unwrap().is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn restored_edit_with_backup_still_present_is_classified_as_no_change_needed() {
+        let root_path = std::env::temp_dir().join(format!("friday-edit-rollback-recovery-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        let id = make_token();
+        let backup_relative = format!(".friday-backups/{id}.bak");
+        fs::write(root.join(&backup_relative), b"original").unwrap();
+        fs::write(root.join("notes.txt"), b"original").unwrap();
+        let journal = FileTransactionJournal {
+            id: id.clone(), kind: "edit".into(), original_relative_path: "notes.txt".into(),
+            current_relative_path: "notes.txt".into(), backup_relative_path: backup_relative,
+            expected_original_sha256: content_hash(b"original"),
+            expected_current_sha256: content_hash(b"edited"), created_at: edit_now(),
+        };
+        assert_eq!(classify_file_transaction(&root, &journal), "operation_not_started");
         fs::remove_dir_all(&root).unwrap();
     }
 
