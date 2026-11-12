@@ -555,6 +555,22 @@ fn list_file_transactions(root: &Path) -> Result<Vec<FileRecoveryItem>, String> 
             created_at: journal.created_at,
         });
     }
+    for entry in fs::read_dir(&dir).map_err(|_| "Could not inspect undo recovery markers.".to_string())? {
+        let entry = entry.map_err(|_| "Could not inspect an undo recovery marker.".to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".undoing") { continue; }
+        let id = name.trim_end_matches(".undoing");
+        if dir.join(format!("{id}.undone")).exists() { continue; }
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|_| "Could not inspect an undo recovery marker.".to_string())?;
+        if is_redirected(&metadata) || !metadata.is_file() { continue; }
+        let record = match load_undo_record(root, id) { Ok(value) => value, Err(_) => continue };
+        items.push(FileRecoveryItem {
+            id: record.id.clone(), kind: format!("undo-{}", record.kind),
+            original_relative_path: record.original_relative_path.clone(),
+            current_relative_path: record.current_relative_path.clone(),
+            status: undo_recovery_status(root, &record), created_at: record.created_at,
+        });
+    }
     items.sort_by(|a,b| b.created_at.cmp(&a.created_at));
     items.truncate(50);
     Ok(items)
@@ -712,6 +728,79 @@ fn restore_missing_file_without_overwrite(current: &Path, bytes: &[u8]) -> Resul
     }
     let _ = fs::remove_file(&temp);
     Ok(())
+}
+
+fn write_undo_intent_marker(root: &Path, id: &str) -> Result<(), String> {
+    if id.len() != 48 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("The undo transaction identifier is invalid.".into());
+    }
+    let marker = undo_backup_dir(root)?.join(format!("{id}.undoing"));
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(&marker) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = fs::symlink_metadata(&marker)
+                .map_err(|_| "Could not inspect the existing undo recovery marker.".to_string())?;
+            if is_redirected(&metadata) || !metadata.is_file() {
+                return Err("The undo recovery marker is not a safe regular file.".into());
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(format!("Could not start the undo recovery record: {error}")),
+    };
+    file.write_all(b"undoing").and_then(|_| file.sync_all())
+        .map_err(|e| format!("Could not flush the undo recovery record: {e}"))
+}
+
+fn undo_recovery_status(root: &Path, record: &UndoRecord) -> String {
+    if undo_is_already_applied(root, record) { return "finish_undo_history".into(); }
+    let backup = root.join(&record.backup_relative_path);
+    let backup_hash = bounded_regular_file_hash(&backup);
+    let current = root.join(&record.current_relative_path);
+    let original = root.join(&record.original_relative_path);
+    let current_hash = bounded_regular_file_hash(&current);
+    let original_hash = bounded_regular_file_hash(&original);
+    let current_missing = matches!(fs::symlink_metadata(&current), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+    let original_missing = matches!(fs::symlink_metadata(&original), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+    match record.kind.as_str() {
+        "edit" if backup_hash.is_some() && current_missing => "restore_original".into(),
+        "edit" if backup_hash.is_some() && current_hash.as_deref() == Some(record.expected_current_sha256.as_str()) => "operation_not_started".into(),
+        "move" if backup_hash.as_deref() == Some(record.expected_current_sha256.as_str()) && original_hash.as_deref() == Some(record.expected_current_sha256.as_str()) && current_missing => "finish_undo_history".into(),
+        "move" if backup_hash.as_deref() == Some(record.expected_current_sha256.as_str()) && current_missing && original_missing => "restore_original".into(),
+        "move" if current_hash.as_deref() == Some(record.expected_current_sha256.as_str()) && original_missing => "operation_not_started".into(),
+        _ => "manual_review".into(),
+    }
+}
+
+fn recover_undo_intent(root: &Path, id: &str) -> Result<String, String> {
+    let record = load_undo_record(root, id)?;
+    let status = undo_recovery_status(root, &record);
+    match status.as_str() {
+        "finish_undo_history" => {
+            if !undo_backup_dir(root)?.join(format!("{id}.undone")).exists() {
+                write_undone_marker(root, id)?;
+            }
+            Ok("Completed recovery of the interrupted Undo operation. The original file is restored.".into())
+        }
+        "restore_original" => {
+            let backup = root.join(&record.backup_relative_path);
+            let bytes = fs::read(&backup).map_err(|_| "Could not read the original backup.".to_string())?;
+            validate_undo_backup(&record, &bytes)?;
+            let target = if record.kind == "move" {
+                safe_relative_file(root, &record.original_relative_path)?
+            } else {
+                safe_relative_file(root, &record.current_relative_path)?
+            };
+            restore_missing_file_without_overwrite(&target, &bytes)?;
+            write_undone_marker(root, id)?;
+            Ok("Restored the original file from its verified backup and completed Undo recovery.".into())
+        }
+        "operation_not_started" => {
+            let marker = undo_backup_dir(root)?.join(format!("{id}.undoing"));
+            fs::remove_file(marker).map_err(|e| format!("Undo was not applied, but FRIDAY could not clear its recovery marker: {e}"))?;
+            Ok("Confirmed that Undo had not changed the file. The Undo option remains available.".into())
+        }
+        _ => Err("The interrupted Undo state is ambiguous. FRIDAY made no changes; inspect the file and backup manually.".into()),
+    }
 }
 
 fn make_token() -> String {
@@ -1231,6 +1320,10 @@ pub fn recover_file_transaction(file_id: String, transaction_id: String) -> Resu
         || transaction_phase_exists(&root, &transaction_id, "aborted") {
         return Err("This file operation is already closed.".into());
     }
+    let undo_intent = undo_backup_dir(&root)?.join(format!("{transaction_id}.undoing"));
+    if matches!(fs::symlink_metadata(&undo_intent), Ok(metadata) if !is_redirected(&metadata) && metadata.is_file()) {
+        return recover_undo_intent(&root, &transaction_id);
+    }
     let journal_path = transaction_journal_path(&root, &transaction_id)?;
     let metadata = fs::symlink_metadata(&journal_path)
         .map_err(|_| "The file-operation recovery record is no longer available.".to_string())?;
@@ -1340,6 +1433,7 @@ pub fn prepare_file_undo(file_id: String, operation_id: String) -> Result<FileUn
     let backup_bytes = fs::read(&backup).map_err(|_| "Could not read the original backup.".to_string())?;
     validate_undo_backup(&record, &backup_bytes)?;
     let original = safe_relative_file(&root, &record.original_relative_path)?;
+    write_undo_intent_marker(&root, &record.id)?;
     if record.kind == "move" {
         match fs::symlink_metadata(&original) {
             Ok(_) => return Err("The original location is occupied. Move or rename that item first; FRIDAY will not overwrite it.".into()),
@@ -1717,6 +1811,27 @@ mod tests {
             }
         }
 
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn undo_intent_detects_interrupted_restore_and_preserves_ambiguous_files() {
+        let root_path = std::env::temp_dir().join(format!("friday-undo-intent-{}", make_token()));
+        fs::create_dir_all(root_path.join(".friday-backups")).unwrap();
+        let root = fs::canonicalize(&root_path).unwrap();
+        let id = make_token();
+        fs::write(root.join(".friday-backups").join(format!("{id}.bak")), b"before").unwrap();
+        let record = UndoRecord {
+            id: id.clone(), kind: "edit".into(), original_relative_path: "notes.txt".into(),
+            current_relative_path: "notes.txt".into(), backup_relative_path: format!(".friday-backups/{id}.bak"),
+            expected_current_sha256: content_hash(b"after"), backup_sha256: Some(content_hash(b"before")),
+            created_at: edit_now(),
+        };
+        save_undo_record(&root, &record).unwrap();
+        write_undo_intent_marker(&root, &id).unwrap();
+        assert_eq!(undo_recovery_status(&root, &record), "restore_original");
+        fs::write(root.join("notes.txt"), b"unexpected").unwrap();
+        assert_eq!(undo_recovery_status(&root, &record), "manual_review");
         fs::remove_dir_all(&root).unwrap();
     }
 
