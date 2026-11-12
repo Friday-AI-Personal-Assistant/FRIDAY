@@ -1191,7 +1191,7 @@ mod tests {
             id: make_token(), kind: "edit".into(),
             original_relative_path: "notes.txt".into(), current_relative_path: "notes.txt".into(),
             backup_relative_path: String::new(), expected_current_sha256: content_hash(b"after"),
-            created_at: edit_now(),
+            backup_sha256: Some(content_hash(b"before")), created_at: edit_now(),
         };
         let mut record = record;
         record.backup_relative_path = format!(".friday-backups/{}.bak", record.id);
