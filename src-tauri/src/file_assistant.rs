@@ -255,6 +255,10 @@ fn content_hash(content: &[u8]) -> String {
     format!("{:x}", Sha256::digest(content))
 }
 
+fn approval_is_valid(expires_at: u64, expected: Option<&str>, provided: &str, now: u64) -> bool {
+    expires_at >= now && !provided.is_empty() && expected.is_some_and(|value| value == provided)
+}
+
 fn validate_edit_content(content: &str) -> Result<(), String> {
     if content.len() > MAX_FILE_BYTES as usize {
         return Err("An edited file must remain 64 KB or smaller.".into());
@@ -1089,7 +1093,7 @@ pub fn apply_file_edit(
         let mut pending = PENDING_FILE_EDITS.lock().map_err(|_| "File editing is temporarily unavailable.".to_string())?;
         pending.remove(&preview_id).ok_or("This preview has expired or was already used. Prepare the edit again.")?
     };
-    if edit.expires_at < edit_now() || edit.approval_token.as_deref() != Some(approval_token.as_str()) {
+    if !approval_is_valid(edit.expires_at, edit.approval_token.as_deref(), &approval_token, edit_now()) {
         return Err("The edit was not approved with a valid, fresh confirmation. Review it again.".into());
     }
     validate_edit_content(&edit.proposed_content)?;
@@ -1233,7 +1237,7 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
     ensure_skill_loaded()?;
     let operation = PENDING_FILE_MOVES.lock().map_err(|_| "File operations are temporarily unavailable.".to_string())?
         .remove(&preview_id).ok_or("This preview has expired or was already used. Prepare it again.")?;
-    if operation.expires_at < edit_now() || operation.approval_token.as_deref() != Some(approval_token.as_str()) {
+    if !approval_is_valid(operation.expires_at, operation.approval_token.as_deref(), &approval_token, edit_now()) {
         return Err("The move was not approved with a valid, fresh confirmation. Review it again.".into());
     }
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
@@ -1519,7 +1523,7 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
     ensure_skill_loaded()?;
     let pending = PENDING_FILE_UNDOS.lock().map_err(|_| "File undo is temporarily unavailable.".to_string())?
         .remove(&preview_id).ok_or("This undo preview has expired or was already used.")?;
-    if pending.expires_at < edit_now() || pending.approval_token.as_deref() != Some(approval_token.as_str()) {
+    if !approval_is_valid(pending.expires_at, pending.approval_token.as_deref(), &approval_token, edit_now()) {
         return Err("Undo requires a fresh, explicit approval.".into());
     }
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
@@ -1726,6 +1730,15 @@ mod tests {
         assert_eq!(MAX_SELECTED_FILES, 8);
         assert_eq!(MAX_FILE_BYTES, 64 * 1024);
         assert_eq!(MAX_TOTAL_BYTES, 180 * 1024);
+    }
+
+    #[test]
+    fn approval_tokens_reject_expiry_replay_and_mismatches() {
+        assert!(approval_is_valid(100, Some("one-use-token"), "one-use-token", 100));
+        assert!(!approval_is_valid(99, Some("one-use-token"), "one-use-token", 100));
+        assert!(!approval_is_valid(100, Some("one-use-token"), "different-token", 100));
+        assert!(!approval_is_valid(100, None, "one-use-token", 100));
+        assert!(!approval_is_valid(100, Some("one-use-token"), "", 100));
     }
 
     #[test]
