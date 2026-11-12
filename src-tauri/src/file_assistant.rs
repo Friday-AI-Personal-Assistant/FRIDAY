@@ -749,7 +749,7 @@ fn write_undone_marker(root: &Path, id: &str) -> Result<(), String> {
     file.sync_all().map_err(|e| format!("The file was restored, but its undo-history marker could not be saved: {e}"))
 }
 
-fn restore_missing_file_without_overwrite(current: &Path, bytes: &[u8]) -> Result<(), String> {
+fn restore_missing_file_without_overwrite(current: &Path, bytes: &[u8], permissions: Option<fs::Permissions>) -> Result<(), String> {
     match fs::symlink_metadata(current) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Ok(_) => return Err("The original location is occupied. FRIDAY will not overwrite it.".into()),
@@ -759,6 +759,13 @@ fn restore_missing_file_without_overwrite(current: &Path, bytes: &[u8]) -> Resul
     let temp = parent.join(format!(".friday-recovery-{}.tmp", make_token()));
     let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)
         .map_err(|e| format!("Could not prepare the recovered file: {e}"))?;
+    if let Some(permissions) = permissions {
+        if let Err(error) = file.set_permissions(permissions) {
+            drop(file);
+            let _ = fs::remove_file(&temp);
+            return Err(format!("Could not preserve the original file permissions: {error}"));
+        }
+    }
     if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
         drop(file);
         let _ = fs::remove_file(&temp);
@@ -844,7 +851,8 @@ fn recover_undo_intent(root: &Path, id: &str) -> Result<String, String> {
             } else {
                 safe_relative_file(root, &record.current_relative_path)?
             };
-            restore_missing_file_without_overwrite(&target, &bytes)?;
+            let backup_permissions = fs::symlink_metadata(&backup).map_err(|_| "Could not inspect the original backup permissions.".to_string())?.permissions();
+            restore_missing_file_without_overwrite(&target, &bytes, Some(backup_permissions))?;
             write_undone_marker(root, id)?;
             Ok("Restored the original file from its verified backup and completed Undo recovery.".into())
         }
@@ -1303,6 +1311,12 @@ pub fn apply_file_move(app: AppHandle, preview_id: String, approval_token: Strin
     let backup = backup_dir.join(format!("{token}.move.bak"));
     let mut backup_file = OpenOptions::new().write(true).create_new(true).open(&backup)
         .map_err(|e| format!("Could not create a new backup without overwriting anything: {e}"))?;
+    if let Err(error) = backup_file.set_permissions(source_meta.permissions()) {
+        drop(backup_file);
+        let _ = fs::remove_file(&backup);
+        let _ = mark_file_transaction_phase(&root, &token, "aborted");
+        return Err(format!("Could not preserve the source file permissions in its backup: {error}"));
+    }
     if let Err(error) = backup_file.write_all(&bytes).and_then(|_| backup_file.sync_all()) {
         drop(backup_file);
         let _ = fs::remove_file(&backup);
@@ -1444,7 +1458,8 @@ pub fn recover_file_transaction(file_id: String, transaction_id: String) -> Resu
         "restore_original" => {
             let bytes = original_bytes.as_ref().ok_or("The original backup is unavailable.")?;
             let target = safe_relative_file(&root, &journal.original_relative_path)?;
-            restore_missing_file_without_overwrite(&target, bytes)?;
+            let backup_permissions = fs::symlink_metadata(&backup).map_err(|_| "Could not inspect the original backup permissions.".to_string())?.permissions();
+            restore_missing_file_without_overwrite(&target, bytes, Some(backup_permissions))?;
             mark_file_transaction_phase(&root, &journal.id, "complete")?;
             Ok(format!("Restored the original file at {} from its verified backup. No existing file was overwritten.", journal.original_relative_path))
         }
@@ -1648,7 +1663,7 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
             let _ = fs::remove_file(&displaced);
         } else {
             let _ = fs::remove_file(&temp);
-            restore_missing_file_without_overwrite(&current, &original_bytes)?;
+            restore_missing_file_without_overwrite(&current, &original_bytes, Some(backup_meta.permissions()))?;
         }
     } else {
         return Err("This undo operation is not supported.".into());
@@ -2168,9 +2183,12 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let target = root.join("notes.txt");
 
-        restore_missing_file_without_overwrite(&target, b"restored original").unwrap();
+        let mut permissions = fs::metadata(&root).unwrap().permissions();
+        permissions.set_readonly(true);
+        restore_missing_file_without_overwrite(&target, b"restored original", Some(permissions)).unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"restored original");
-        assert!(restore_missing_file_without_overwrite(&target, b"must not replace").is_err());
+        assert!(fs::metadata(&target).unwrap().permissions().readonly());
+        assert!(restore_missing_file_without_overwrite(&target, b"must not replace", None).is_err());
         assert_eq!(fs::read(&target).unwrap(), b"restored original");
 
         let leftovers = fs::read_dir(&root).unwrap()
@@ -2178,6 +2196,9 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().starts_with(".friday-recovery-"))
             .count();
         assert_eq!(leftovers, 0);
+        let mut restored_permissions = fs::metadata(&target).unwrap().permissions();
+        restored_permissions.set_readonly(false);
+        fs::set_permissions(&target, restored_permissions).unwrap();
         fs::remove_dir_all(&root).unwrap();
     }
 
