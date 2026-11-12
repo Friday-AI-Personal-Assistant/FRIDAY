@@ -57,6 +57,11 @@ pub fn run() {
             file_assistant::issue_file_move_approval,
             file_assistant::cancel_file_move_preview,
             file_assistant::apply_file_move,
+            file_assistant::list_file_undo_operations,
+            file_assistant::prepare_file_undo,
+            file_assistant::issue_file_undo_approval,
+            file_assistant::cancel_file_undo_preview,
+            file_assistant::apply_file_undo,
             skills::uninstall_skill
         ])
         .run(tauri::generate_context!())
