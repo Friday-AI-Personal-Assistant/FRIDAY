@@ -418,8 +418,12 @@ fn ensure_backup_capacity(root: &Path, additional_bytes: u64, additional_files: 
     Ok(())
 }
 
+fn valid_transaction_id(id: &str) -> bool {
+    id.len() == 48 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn transaction_journal_path(root: &Path, id: &str) -> Result<PathBuf, String> {
-    if id.len() != 48 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !valid_transaction_id(id) {
         return Err("The transaction identifier is invalid.".into());
     }
     Ok(undo_backup_dir(root)?.join(format!("{id}.txn.json")))
@@ -1349,6 +1353,9 @@ pub fn list_file_undo_operations(file_id: String) -> Result<Vec<FileUndoOperatio
 #[tauri::command]
 pub fn recover_file_transaction(file_id: String, transaction_id: String) -> Result<String, String> {
     ensure_skill_loaded()?;
+    if transaction_id.len() != 48 || !transaction_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("The recovery transaction identifier is invalid.".into());
+    }
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
     let grant = grants.get(&file_id).ok_or("Select the folder again before recovering files.")?;
     let root = validate_granted_root(&grant.root)?;
@@ -1571,6 +1578,7 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
         if content_hash(&original_bytes) != record.expected_current_sha256 {
             return Err("The original backup failed its integrity check.".into());
         }
+        ensure_backup_capacity(&root, 0, 2)?;
         write_undo_intent_marker(&root, &record.id)?;
         fs::hard_link(&backup, &original).map_err(|e| format!("Could not safely restore the original location: {e}"))?;
         if current_bytes.is_some() {
@@ -1583,6 +1591,10 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
         if current_bytes.as_ref().is_some_and(|bytes| content_hash(&original_bytes) == content_hash(bytes)) {
             return Err("The backup is identical to the current file; undo is unnecessary.".into());
         }
+        // Reserve space for the durable intent/completion markers and the
+        // preserved post-edit version (when one still exists).
+        ensure_backup_capacity(&root, current_bytes.as_ref().map(|bytes| bytes.len() as u64).unwrap_or(0),
+            if current_bytes.is_some() { 3 } else { 2 })?;
         write_undo_intent_marker(&root, &record.id)?;
         let parent = current.parent().ok_or("The file has no parent folder.")?;
         let temp = parent.join(format!(".friday-undo-{}.tmp", make_token()));
@@ -1733,6 +1745,14 @@ mod tests {
         assert_eq!(MAX_SELECTED_FILES, 8);
         assert_eq!(MAX_FILE_BYTES, 64 * 1024);
         assert_eq!(MAX_TOTAL_BYTES, 180 * 1024);
+    }
+
+    #[test]
+    fn recovery_transaction_ids_must_be_fixed_length_hex_tokens() {
+        assert!(valid_transaction_id(&"a".repeat(48)));
+        assert!(!valid_transaction_id("../outside"));
+        assert!(!valid_transaction_id(&"g".repeat(48)));
+        assert!(!valid_transaction_id(&"a".repeat(47)));
     }
 
     #[test]
