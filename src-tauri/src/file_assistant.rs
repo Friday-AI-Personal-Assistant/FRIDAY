@@ -442,14 +442,26 @@ fn mark_file_transaction_phase(root: &Path, id: &str, phase: &str) -> Result<(),
         return Err("The file-operation recovery phase is invalid.".into());
     }
     let marker = undo_backup_dir(root)?.join(format!("{id}.txn-{phase}"));
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&marker)
-        .map_err(|e| format!("The file change may have completed, but FRIDAY could not persist its recovery phase: {e}"))?;
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(&marker) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = fs::symlink_metadata(&marker)
+                .map_err(|_| "Could not inspect an existing recovery phase marker.".to_string())?;
+            if is_redirected(&metadata) || !metadata.is_file() {
+                return Err("An existing recovery phase marker is not a safe regular file.".into());
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(format!("The file change may have completed, but FRIDAY could not persist its recovery phase: {error}")),
+    };
     file.write_all(phase.as_bytes()).and_then(|_| file.sync_all())
         .map_err(|e| format!("FRIDAY could not flush its recovery phase marker: {e}"))
 }
 
 fn transaction_phase_exists(root: &Path, id: &str, phase: &str) -> bool {
-    undo_backup_dir(root).map(|dir| dir.join(format!("{id}.txn-{phase}")).is_file()).unwrap_or(false)
+    let Ok(dir) = undo_backup_dir(root) else { return false; };
+    let path = dir.join(format!("{id}.txn-{phase}"));
+    matches!(fs::symlink_metadata(path), Ok(metadata) if !is_redirected(&metadata) && metadata.is_file())
 }
 
 fn bounded_regular_file_hash(path: &Path) -> Option<String> {
@@ -1202,6 +1214,79 @@ pub fn list_file_undo_operations(file_id: String) -> Result<Vec<FileUndoOperatio
 }
 
 #[tauri::command]
+pub fn recover_file_transaction(file_id: String, transaction_id: String) -> Result<String, String> {
+    ensure_skill_loaded()?;
+    let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
+    let grant = grants.get(&file_id).ok_or("Select the folder again before recovering files.")?;
+    let root = validate_granted_root(&grant.root)?;
+    if transaction_phase_exists(&root, &transaction_id, "complete")
+        || transaction_phase_exists(&root, &transaction_id, "aborted") {
+        return Err("This file operation is already closed.".into());
+    }
+    let journal_path = transaction_journal_path(&root, &transaction_id)?;
+    let metadata = fs::symlink_metadata(&journal_path)
+        .map_err(|_| "The file-operation recovery record is no longer available.".to_string())?;
+    if is_redirected(&metadata) || !metadata.is_file() || metadata.len() > 16_384 {
+        return Err("The file-operation recovery record is not a safe regular file.".into());
+    }
+    let journal: FileTransactionJournal = serde_json::from_slice(&fs::read(&journal_path)
+        .map_err(|_| "Could not read the file-operation recovery record.".to_string())?)
+        .map_err(|_| "The file-operation recovery record is invalid.".to_string())?;
+    validate_transaction_journal(&journal, &transaction_id)?;
+    let status = classify_file_transaction(&root, &journal);
+    let backup = root.join(&journal.backup_relative_path);
+    let original_bytes = if status == "restore_original" || status == "finish_undo_history" {
+        let backup_meta = fs::symlink_metadata(&backup)
+            .map_err(|_| "The original backup is missing; FRIDAY made no recovery changes.".to_string())?;
+        if is_redirected(&backup_meta) || !backup_meta.is_file() || backup_meta.len() > MAX_FILE_BYTES {
+            return Err("The original backup is not a safe regular file; FRIDAY made no recovery changes.".into());
+        }
+        let bytes = fs::read(&backup).map_err(|_| "Could not read the original backup; no recovery changes were made.".to_string())?;
+        if content_hash(&bytes) != journal.expected_original_sha256
+            || bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+            return Err("The original backup failed its integrity check; FRIDAY made no recovery changes.".into());
+        }
+        Some(bytes)
+    } else { None };
+
+    match status.as_str() {
+        "finish_undo_history" => {
+            let backup_bytes = original_bytes.as_ref().ok_or("The original backup is unavailable.")?;
+            let record_path = undo_backup_dir(&root)?.join(format!("{}.undo.json", journal.id));
+            match fs::symlink_metadata(&record_path) {
+                Ok(_) => { let _ = load_undo_record(&root, &journal.id)?; }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    save_undo_record(&root, &UndoRecord {
+                        id: journal.id.clone(), kind: journal.kind.clone(),
+                        original_relative_path: journal.original_relative_path.clone(),
+                        current_relative_path: journal.current_relative_path.clone(),
+                        backup_relative_path: journal.backup_relative_path.clone(),
+                        expected_current_sha256: journal.expected_current_sha256.clone(),
+                        backup_sha256: Some(content_hash(backup_bytes)), created_at: journal.created_at,
+                    })?;
+                }
+                Err(_) => return Err("Could not safely inspect the undo-history record.".into()),
+            }
+            mark_file_transaction_phase(&root, &journal.id, "history_saved")?;
+            mark_file_transaction_phase(&root, &journal.id, "complete")?;
+            Ok("Recovered the completed file operation and restored its Undo history. No user files were overwritten.".into())
+        }
+        "restore_original" => {
+            let bytes = original_bytes.as_ref().ok_or("The original backup is unavailable.")?;
+            let target = safe_relative_file(&root, &journal.original_relative_path)?;
+            restore_missing_file_without_overwrite(&target, bytes)?;
+            mark_file_transaction_phase(&root, &journal.id, "complete")?;
+            Ok(format!("Restored the original file at {} from its verified backup. No existing file was overwritten.", journal.original_relative_path))
+        }
+        "operation_not_started" => {
+            mark_file_transaction_phase(&root, &journal.id, "aborted")?;
+            Ok("Confirmed that the file operation had not changed the original file. No user files were changed.".into())
+        }
+        _ => Err("FRIDAY found an ambiguous recovery state. It made no changes; review the files and backup manually.".into()),
+    }
+}
+
+#[tauri::command]
 pub fn list_file_recovery_items(file_id: String) -> Result<Vec<FileRecoveryItem>, String> {
     ensure_skill_loaded()?;
     let grants = FOLDER_GRANTS.lock().map_err(|_| "File Assistant is busy.".to_string())?;
@@ -1678,7 +1763,7 @@ mod tests {
         begin_file_transaction(&root, &journal).unwrap();
         mark_file_transaction_phase(&root, &id, "backup_created").unwrap();
         assert!(transaction_phase_exists(&root, &id, "backup_created"));
-        assert!(mark_file_transaction_phase(&root, &id, "backup_created").is_err());
+        mark_file_transaction_phase(&root, &id, "backup_created").unwrap();
         fs::remove_dir_all(&root).unwrap();
     }
 
