@@ -1625,22 +1625,22 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
         ensure_backup_capacity(&root, current_bytes.as_ref().map(|bytes| bytes.len() as u64).unwrap_or(0),
             if current_bytes.is_some() { 3 } else { 2 })?;
         write_undo_intent_marker(&root, &record.id)?;
-        let parent = current.parent().ok_or("The file has no parent folder.")?;
-        let temp = parent.join(format!(".friday-undo-{}.tmp", make_token()));
-        let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temp)
-            .map_err(|e| format!("Could not prepare the restored file: {e}"))?;
-        if let Some(meta) = current_meta.as_ref() {
-            if let Err(error) = temp_file.set_permissions(meta.permissions()) {
-                drop(temp_file); let _ = fs::remove_file(&temp);
-                return Err(format!("Could not preserve the current file permissions: {error}"));
-            }
-        }
-        if let Err(error) = temp_file.write_all(&original_bytes).and_then(|_| temp_file.sync_all()) {
-            drop(temp_file); let _ = fs::remove_file(&temp);
-            return Err(format!("Could not write the restored file: {error}"));
-        }
-        drop(temp_file);
         if let Some(current_bytes) = current_bytes.as_ref() {
+            let parent = current.parent().ok_or("The file has no parent folder.")?;
+            let temp = parent.join(format!(".friday-undo-{}.tmp", make_token()));
+            let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temp)
+                .map_err(|e| format!("Could not prepare the restored file: {e}"))?;
+            if let Some(meta) = current_meta.as_ref() {
+                if let Err(error) = temp_file.set_permissions(meta.permissions()) {
+                    drop(temp_file); let _ = fs::remove_file(&temp);
+                    return Err(format!("Could not preserve the current file permissions: {error}"));
+                }
+            }
+            if let Err(error) = temp_file.write_all(&original_bytes).and_then(|_| temp_file.sync_all()) {
+                drop(temp_file); let _ = fs::remove_file(&temp);
+                return Err(format!("Could not write the restored file: {error}"));
+            }
+            drop(temp_file);
             let redo = backup_dir.join(format!("{}.redo.bak", record.id));
             let mut redo_file = OpenOptions::new().write(true).create_new(true).open(&redo)
                 .map_err(|e| { let _ = fs::remove_file(&temp); format!("Could not preserve the current version: {e}") })?;
@@ -1662,7 +1662,6 @@ pub fn apply_file_undo(app: AppHandle, preview_id: String, approval_token: Strin
             }
             let _ = fs::remove_file(&displaced);
         } else {
-            let _ = fs::remove_file(&temp);
             restore_missing_file_without_overwrite(&current, &original_bytes, Some(backup_meta.permissions()))?;
         }
     } else {
