@@ -576,7 +576,8 @@ fn list_file_transactions(root: &Path) -> Result<Vec<FileRecoveryItem>, String> 
         let id = name.trim_end_matches(".undoing");
         if dir.join(format!("{id}.undone")).exists() { continue; }
         let metadata = fs::symlink_metadata(entry.path()).map_err(|_| "Could not inspect an undo recovery marker.".to_string())?;
-        if is_redirected(&metadata) || !metadata.is_file() { continue; }
+        if is_redirected(&metadata) || !metadata.is_file() || metadata.len() > 64
+            || fs::read_to_string(entry.path()).ok().as_deref() != Some("undoing") { continue; }
         let record = match load_undo_record(root, id) { Ok(value) => value, Err(_) => continue };
         items.push(FileRecoveryItem {
             id: record.id.clone(), kind: format!("undo-{}", record.kind),
@@ -1344,7 +1345,8 @@ pub fn recover_file_transaction(file_id: String, transaction_id: String) -> Resu
         return Err("This file operation is already closed.".into());
     }
     let undo_intent = undo_backup_dir(&root)?.join(format!("{transaction_id}.undoing"));
-    if matches!(fs::symlink_metadata(&undo_intent), Ok(metadata) if !is_redirected(&metadata) && metadata.is_file()) {
+    if matches!(fs::symlink_metadata(&undo_intent), Ok(metadata) if !is_redirected(&metadata) && metadata.is_file() && metadata.len() <= 64)
+        && fs::read_to_string(&undo_intent).ok().as_deref() == Some("undoing") {
         return recover_undo_intent(&root, &transaction_id);
     }
     let journal_path = transaction_journal_path(&root, &transaction_id)?;
