@@ -94,6 +94,9 @@ fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
     const FILE_OPEN: u32 = 0x0000_0001;
     const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    // Rust File performs synchronous ReadFile calls; request a synchronous
+    // native handle rather than merely granting SYNCHRONIZE access.
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
 
     #[link(name = "ntdll")]
     extern "system" {
@@ -141,7 +144,7 @@ fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
             0,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_OPEN,
-            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
             ptr::null(),
             0,
         )
