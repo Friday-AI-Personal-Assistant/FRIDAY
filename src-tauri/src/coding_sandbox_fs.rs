@@ -382,6 +382,53 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn capability_walk_never_traverses_windows_junctions() {
+        use std::process::Command;
+
+        let root_path = make_test_directory("windows-junction-root");
+        let outside = make_test_directory("windows-junction-outside");
+        fs::write(outside.join("secret.rs"), b"must never be listed").unwrap();
+        fs::write(root_path.join("safe.rs"), b"safe").unwrap();
+
+        let junction_path = root_path.join("junction");
+        let command = format!(
+            "mklink /J \"{}\" \"{}\"" ,
+            junction_path.display(),
+            outside.display()
+        );
+        let output = Command::new("cmd")
+            .args(["/C", &command])
+            .output()
+            .expect("cmd.exe should be available on Windows");
+        assert!(
+            output.status.success(),
+            "junction creation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let root = open_test_root(&root_path);
+        let result = collect_regular_file_paths(&root, 12);
+        match result {
+            Ok(files) => {
+                assert!(files.contains(&PathBuf::from("safe.rs")));
+                assert!(
+                    !files.iter().any(|path| path.starts_with("junction")),
+                    "junction contents must never be traversed"
+                );
+            }
+            Err(_) => {
+                // Fail-closed rejection of an unrecognised reparse point is safe.
+            }
+        }
+
+        drop(root);
+        fs::remove_dir(&junction_path).unwrap();
+        fs::remove_dir_all(root_path).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn handle_relative_file_open_reads_regular_file_and_rejects_symlinks() {
         use std::io::Read;
         use std::os::windows::fs::symlink_file;
