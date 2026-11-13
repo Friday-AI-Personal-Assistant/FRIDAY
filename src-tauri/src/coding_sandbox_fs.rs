@@ -611,6 +611,247 @@ where
     Ok(())
 }
 
+
+/// Fixed limits for the experimental in-memory snapshot reader.
+#[derive(Clone, Copy, Debug)]
+struct BoundedSnapshotLimits {
+    max_depth: usize,
+    max_files: usize,
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+}
+
+/// One bounded file payload captured through a held parent directory handle.
+#[derive(Debug, PartialEq, Eq)]
+struct BoundedSnapshotFile {
+    relative_path: PathBuf,
+    contents: Vec<u8>,
+}
+
+/// Result of the source-side prototype. Payloads remain in memory; this
+/// deliberately does not create destination files or claim destination safety.
+#[derive(Debug, PartialEq, Eq)]
+struct BoundedSnapshotContents {
+    files: Vec<BoundedSnapshotFile>,
+    bytes: u64,
+    truncated: bool,
+}
+
+#[allow(dead_code)]
+fn collect_bounded_snapshot_contents<AF, AD>(
+    root: &File,
+    limits: BoundedSnapshotLimits,
+    include_file: AF,
+    exclude_directory: AD,
+) -> io::Result<BoundedSnapshotContents>
+where
+    AF: Fn(&str) -> bool,
+    AD: Fn(&str) -> bool,
+{
+    collect_bounded_snapshot_contents_with_hook(
+        root,
+        limits,
+        &include_file,
+        &exclude_directory,
+        |_| Ok(()),
+    )
+}
+
+fn collect_bounded_snapshot_contents_with_hook<AF, AD, H>(
+    root: &File,
+    limits: BoundedSnapshotLimits,
+    include_file: &AF,
+    exclude_directory: &AD,
+    mut before_file_open: H,
+) -> io::Result<BoundedSnapshotContents>
+where
+    AF: Fn(&str) -> bool,
+    AD: Fn(&str) -> bool,
+    H: FnMut(&Path) -> io::Result<()>,
+{
+    if limits.max_files == 0 || limits.max_file_bytes == 0 || limits.max_total_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "snapshot limits must be non-zero",
+        ));
+    }
+    let root_metadata = root.metadata()?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "snapshot root handle is not an ordinary directory",
+        ));
+    }
+
+    let mut result = BoundedSnapshotContents {
+        files: Vec::new(),
+        bytes: 0,
+        truncated: false,
+    };
+    collect_bounded_directory(
+        root,
+        Path::new(""),
+        0,
+        limits,
+        include_file,
+        exclude_directory,
+        &mut before_file_open,
+        &mut result,
+    )?;
+    Ok(result)
+}
+
+fn collect_bounded_directory<AF, AD, H>(
+    parent: &File,
+    relative_directory: &Path,
+    depth: usize,
+    limits: BoundedSnapshotLimits,
+    include_file: &AF,
+    exclude_directory: &AD,
+    before_file_open: &mut H,
+    result: &mut BoundedSnapshotContents,
+) -> io::Result<()>
+where
+    AF: Fn(&str) -> bool,
+    AD: Fn(&str) -> bool,
+    H: FnMut(&Path) -> io::Result<()>,
+{
+    if depth > limits.max_depth {
+        result.truncated = true;
+        return Ok(());
+    }
+
+    for entry in read_dir(parent, Path::new("."))? {
+        if result.files.len() >= limits.max_files
+            || result.bytes >= limits.max_total_bytes
+        {
+            result.truncated = true;
+            break;
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                result.truncated = true;
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        if !is_single_normal_component(&name) {
+            result.truncated = true;
+            continue;
+        }
+        let Some(name_text) = name.to_str() else {
+            result.truncated = true;
+            continue;
+        };
+        let entry_type = match entry.file_type() {
+            Ok(kind) => kind,
+            Err(_) => {
+                result.truncated = true;
+                continue;
+            }
+        };
+        if entry_type.is_symlink() {
+            continue;
+        }
+
+        let relative_path = relative_directory.join(&name);
+        if entry_type.is_dir() {
+            if exclude_directory(name_text) {
+                continue;
+            }
+            if depth >= limits.max_depth {
+                result.truncated = true;
+                continue;
+            }
+            // Never recurse through an ambient path. If an enumerated directory
+            // was replaced by a link/reparse point, this no-follow open fails.
+            let child = open_dir_nofollow(parent, Path::new(&name))?;
+            let child_metadata = child.metadata()?;
+            if !child_metadata.is_dir() || is_reparse_or_symlink(&child_metadata) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "opened snapshot child is not an ordinary directory",
+                ));
+            }
+            collect_bounded_directory(
+                &child,
+                &relative_path,
+                depth + 1,
+                limits,
+                include_file,
+                exclude_directory,
+                before_file_open,
+                result,
+            )?;
+            if result.truncated
+                && (result.files.len() >= limits.max_files
+                    || result.bytes >= limits.max_total_bytes)
+            {
+                break;
+            }
+            continue;
+        }
+
+        if !entry_type.is_file() || !include_file(name_text) {
+            continue;
+        }
+
+        before_file_open(&relative_path)?;
+        // The filename is a single component and the parent is the held handle.
+        // No source path assembled from the displayed relative path is opened.
+        let mut file = match open_file_nofollow(parent, &name) {
+            Ok(file) => file,
+            Err(_) => {
+                result.truncated = true;
+                continue;
+            }
+        };
+        let before = file.metadata()?;
+        if !before.is_file() || is_reparse_or_symlink(&before)
+            || before.len() == 0 || before.len() > limits.max_file_bytes
+        {
+            continue;
+        }
+
+        let remaining = limits.max_total_bytes.saturating_sub(result.bytes);
+        let read_limit = limits.max_file_bytes.min(remaining);
+        if read_limit == 0 {
+            result.truncated = true;
+            break;
+        }
+        let mut contents = Vec::with_capacity(
+            before.len().min(read_limit).min(usize::MAX as u64) as usize
+        );
+        file.by_ref().take(read_limit.saturating_add(1)).read_to_end(&mut contents)?;
+        if contents.is_empty() || contents.len() as u64 > read_limit {
+            result.truncated = true;
+            break;
+        }
+
+        // Detect ordinary concurrent size/time changes on the opened object.
+        // This is not an atomic filesystem snapshot; it is a conservative
+        // consistency check around a bounded read from the same file handle.
+        let after = file.metadata()?;
+        if !after.is_file()
+            || is_reparse_or_symlink(&after)
+            || after.len() != before.len()
+            || after.modified()? != before.modified()?
+            || contents.len() as u64 != before.len()
+        {
+            result.truncated = true;
+            continue;
+        }
+
+        result.bytes = result.bytes.saturating_add(contents.len() as u64);
+        result.files.push(BoundedSnapshotFile {
+            relative_path,
+            contents,
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,6 +874,150 @@ mod tests {
             ambient_authority::ambient_authority(),
         )
         .expect("test root should open")
+    }
+
+
+    fn bounded_limits() -> BoundedSnapshotLimits {
+        BoundedSnapshotLimits {
+            max_depth: 12,
+            max_files: 2_000,
+            max_file_bytes: 1024 * 1024,
+            max_total_bytes: 32 * 1024 * 1024,
+        }
+    }
+
+    #[test]
+    fn bounded_snapshot_reads_nested_files_through_held_handles() {
+        let root_path = make_test_directory("bounded-snapshot-nested");
+        fs::create_dir_all(root_path.join("src").join("nested")).unwrap();
+        fs::write(root_path.join("Cargo.toml"), b"[package]").unwrap();
+        fs::write(root_path.join("src").join("lib.rs"), b"pub fn ok() {}").unwrap();
+        fs::write(root_path.join("src").join("nested").join("mod.rs"), b"pub mod nested;").unwrap();
+
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let result = collect_bounded_snapshot_contents(
+            &root,
+            bounded_limits(),
+            |name| name.ends_with(".rs") || name == "Cargo.toml",
+            |_| false,
+        ).unwrap();
+
+        assert_eq!(result.files.len(), 3);
+        assert_eq!(result.bytes, b"[package]".len() as u64
+            + b"pub fn ok() {}".len() as u64
+            + b"pub mod nested;".len() as u64);
+        assert!(!result.truncated);
+        assert!(result.files.iter().any(|file| {
+            file.relative_path == Path::new("src/lib.rs")
+                && file.contents == b"pub fn ok() {}"
+        }));
+
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn bounded_snapshot_enforces_file_count_and_total_byte_limits() {
+        let root_path = make_test_directory("bounded-snapshot-limits");
+        fs::write(root_path.join("a.txt"), b"12345").unwrap();
+        fs::write(root_path.join("b.txt"), b"67890").unwrap();
+        fs::write(root_path.join("c.txt"), b"abcde").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+
+        let mut limits = bounded_limits();
+        limits.max_files = 2;
+        limits.max_total_bytes = 8;
+        let result = collect_bounded_snapshot_contents(
+            &root, limits, |name| name.ends_with(".txt"), |_| false,
+        ).unwrap();
+
+        assert!(result.files.len() <= 2);
+        assert!(result.bytes <= 8);
+        assert!(result.truncated);
+
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_snapshot_never_reads_file_replaced_by_symlink_after_enumeration() {
+        use std::os::unix::fs::symlink;
+
+        let root_path = make_test_directory("bounded-snapshot-file-swap");
+        let outside = make_test_directory("bounded-snapshot-file-swap-outside");
+        fs::write(root_path.join("replace.txt"), b"authorized").unwrap();
+        fs::write(outside.join("secret.txt"), b"outside secret").unwrap();
+        let root = open_verified_root_directory(&root_path);
+        let mut swapped = false;
+
+        let result = collect_bounded_snapshot_contents_with_hook(
+            &root.unwrap(),
+            bounded_limits(),
+            |name| name == "replace.txt",
+            |_| false,
+            |relative| {
+                if relative == Path::new("replace.txt") && !swapped {
+                    fs::remove_file(root_path.join("replace.txt"))?;
+                    symlink(outside.join("secret.txt"), root_path.join("replace.txt"))?;
+                    swapped = true;
+                }
+                Ok(())
+            },
+        ).unwrap();
+
+        assert!(swapped);
+        assert!(result.files.is_empty(), "the replacement target must never be copied");
+        assert!(result.truncated, "a raced file open must be reported as partial");
+        fs::remove_file(root_path.join("replace.txt")).unwrap();
+        fs::remove_dir_all(root_path).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_snapshot_uses_original_held_parent_after_parent_path_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let base = make_test_directory("bounded-snapshot-parent-race");
+        let root_path = base.join("project");
+        let replacement = base.join("replacement");
+        let displaced = base.join("displaced");
+        fs::create_dir(&root_path).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        fs::write(root_path.join("source.rs"), b"authorized").unwrap();
+        fs::write(replacement.join("source.rs"), b"outside").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+
+        fs::rename(&root_path, &displaced).unwrap();
+        symlink(&replacement, &root_path).unwrap();
+        let result = collect_bounded_snapshot_contents(
+            &root,
+            bounded_limits(),
+            |name| name == "source.rs",
+            |_| false,
+        ).unwrap();
+
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].contents, b"authorized");
+        drop(root);
+        fs::remove_file(&root_path).unwrap();
+        fs::remove_dir_all(displaced).unwrap();
+        fs::remove_dir_all(replacement).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn bounded_snapshot_rejects_zero_limits() {
+        let root_path = make_test_directory("bounded-snapshot-zero-limit");
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let mut limits = bounded_limits();
+        limits.max_total_bytes = 0;
+        assert!(collect_bounded_snapshot_contents(
+            &root, limits, |_| true, |_| false,
+        ).is_err());
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
     }
 
     #[test]
