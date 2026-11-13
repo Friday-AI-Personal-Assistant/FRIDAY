@@ -713,7 +713,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn verified_root_handle_rejects_ancestor_replaced_after_its_handle_is_opened() {
+    fn root_walk_stays_on_held_ancestor_after_path_replacement() {
         use std::os::unix::fs::symlink;
 
         let base = make_test_directory("ancestor-held-handle-race");
@@ -747,7 +747,7 @@ mod tests {
         );
         let opened_root = walk.unwrap();
         assert!(
-            opened_root.metadata()?.is_dir(),
+            opened_root.metadata().unwrap().is_dir(),
             "the held original project directory should be opened"
         );
         assert_eq!(
