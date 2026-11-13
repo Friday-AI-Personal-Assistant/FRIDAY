@@ -383,3 +383,20 @@ A capability-oriented Rust filesystem API is now being evaluated for the snapsho
 - Required tests: replace a child directory with an outside-pointing symlink/junction between enumeration and open; replace a parent path while its handle is held; attempt .., absolute and drive-qualified child names; test file and directory reparse points; verify no outside file is copied; and verify normal nested source files still copy. Add Windows CI tests and retain physical Windows acceptance as a separate gate.
 
 No traversal code has been changed based only on API documentation. The dependency and exact Windows semantics must be reviewed before adoption. Until the handle-relative implementation and adversarial tests pass, parent-directory race resistance remains unresolved and guest execution remains disabled.
+
+
+## Capability-directory API review (November 13, 2026)
+
+Runs #436–#438 passed both Windows build and Linux test jobs. The first-party cap-std/cap-primitives source review confirms a useful capability model, but it also exposed an important API-selection trap: cap_std::fs::Dir::open_dir uses the normal open_dir primitive, whose default options follow symlinks. The convenience method must not be used blindly for this feature.
+
+Verified API facts from the published cap-std/cap-primitives 4.0.3 documentation/source:
+
+- cap_std::fs::Dir holds an open directory handle. Its entries, metadata, symlink_metadata, open and open_dir operations are relative to that directory, and DirEntry deliberately has no ambient absolute path. This reduces dependence on mutable parent path strings.
+- cap_primitives::fs::open_dir_nofollow is a public primitive that specifically fails when the requested directory is a symlink. It performs the relative open using the directory handle and no-follow policy. This is a stronger candidate for each one-component child-directory descent than Dir::open_dir.
+- cap_primitives path resolution is component-by-component and rooted at the starting handle; it rejects root/prefix escape attempts. The code also documents explicit manual symlink handling. The exact version must be pinned and regression-tested rather than relying on a moving latest release.
+- cap_std::fs::Dir::from_std_file explicitly warns that on Windows the underlying handle must be opened without FILE_SHARE_DELETE to prevent rename/delete races. This is a required Windows invariant, not an optional optimization.
+- cap-std-ext open_dir_noxdev only blocks crossing mount points; it does not mean no-symlink and is not a substitute for open_dir_nofollow.
+
+Implementation direction: use a pinned cap-std/cap-primitives pair (or a single supported public API surface) and walk exactly one normal filename component at a time. For each entry, inspect no-follow metadata, reject reparse/symlink entries, open child directories using the no-follow primitive relative to the held parent, and open regular files relative to the held parent with final-component no-follow. Never pass an entry's ambient absolute path back into std::fs. Before coding, inspect the Windows open_dir and open_unchecked implementation to confirm FILE_SHARE_DELETE is omitted, and inspect file open options to ensure no-follow is applied to the final component. If the public API cannot express both requirements, use a narrowly reviewed platform-specific helper or fail closed.
+
+Remaining proof obligations: Windows directory handle share flags and junction/reparse-point behavior; no-follow regular-file opening; race behavior when entries are swapped between enumeration and open; device/mount policy; and whether file metadata can be reliably compared to the opened handle. Add deterministic race tests with synchronization hooks rather than timing-only stress tests. Keep physical Windows acceptance separate from CI. No production traversal code or dependency has been changed yet.
