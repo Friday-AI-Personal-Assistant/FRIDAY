@@ -281,10 +281,10 @@ $mappedFolderWritePolicy = if ($null -eq $sandboxPolicy -or $null -eq $sandboxPo
         return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false, "Unknown".into(), "Unknown".into());
     };
     if !status.success() {
-        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false);
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false, "Unknown".into(), "Unknown".into());
     }
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&stdout) else {
-        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false);
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false, "Unknown".into(), "Unknown".into());
     };
     let string_field = |key: &str| value.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("Unknown").to_string();
     let firmware = value.get("virtualizationFirmwareEnabled").and_then(serde_json::Value::as_bool);
