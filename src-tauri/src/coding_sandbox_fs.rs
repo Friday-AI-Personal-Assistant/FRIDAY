@@ -28,6 +28,149 @@ pub(crate) fn collect_regular_file_paths(
     Ok(files)
 }
 
+/// Open one regular file relative to an already-open directory handle on Windows.
+///
+/// This is deliberately test-only. NtCreateFile's RootDirectory pins the
+/// parent handle; OBJ_DONT_REPARSE and FILE_OPEN_REPARSE_POINT prevent
+/// reparse traversal. If the native call is unavailable or rejects the
+/// request, the caller must fail closed rather than fall back to a path open.
+#[cfg(windows)]
+fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
+    use std::{
+        mem,
+        os::windows::{ffi::OsStrExt, io::{AsRawHandle, FromRawHandle}},
+        ptr,
+    };
+
+    if !is_single_normal_component(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "file name must be exactly one normal path component",
+        ));
+    }
+
+    let wide: Vec<u16> = name.encode_wide().collect();
+    if wide.is_empty() || wide.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid file name"));
+    }
+    let byte_len = wide.len().checked_mul(mem::size_of::<u16>())
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file name is too long"))?;
+
+    #[repr(C)]
+    struct UnicodeString {
+        length: u16,
+        maximum_length: u16,
+        buffer: *mut u16,
+    }
+    #[repr(C)]
+    struct ObjectAttributes {
+        length: u32,
+        root_directory: *mut std::ffi::c_void,
+        object_name: *mut UnicodeString,
+        attributes: u32,
+        security_descriptor: *mut std::ffi::c_void,
+        security_quality_of_service: *mut std::ffi::c_void,
+    }
+    #[repr(C)]
+    union IoStatusValue {
+        status: i32,
+        pointer: *mut std::ffi::c_void,
+    }
+    #[repr(C)]
+    struct IoStatusBlock {
+        status: IoStatusValue,
+        information: usize,
+    }
+
+    const OBJ_CASE_INSENSITIVE: u32 = 0x0000_0040;
+    const OBJ_DONT_REPARSE: u32 = 0x0000_1000;
+    const FILE_READ_DATA: u32 = 0x0000_0001;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut *mut std::ffi::c_void,
+            desired_access: u32,
+            object_attributes: *const ObjectAttributes,
+            io_status_block: *mut IoStatusBlock,
+            allocation_size: *const i64,
+            file_attributes: u32,
+            share_access: u32,
+            create_disposition: u32,
+            create_options: u32,
+            ea_buffer: *const std::ffi::c_void,
+            ea_length: u32,
+        ) -> i32;
+    }
+
+    let mut unicode_name = UnicodeString {
+        length: byte_len,
+        maximum_length: byte_len,
+        buffer: wide.as_ptr() as *mut u16,
+    };
+    let object_attributes = ObjectAttributes {
+        length: mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: parent.as_raw_handle(),
+        object_name: &mut unicode_name,
+        attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        security_descriptor: ptr::null_mut(),
+        security_quality_of_service: ptr::null_mut(),
+    };
+    let mut io_status = IoStatusBlock {
+        status: IoStatusValue { status: 0 },
+        information: 0,
+    };
+    let mut handle = ptr::null_mut();
+
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            &object_attributes,
+            &mut io_status,
+            ptr::null(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+            ptr::null(),
+            0,
+        )
+    };
+
+    // NT_SUCCESS(status) is status >= 0. Do not retry with weaker flags.
+    if status < 0 || handle.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("handle-relative no-reparse file open failed (NTSTATUS 0x{:08X})", status as u32),
+        ));
+    }
+
+    let file = unsafe { File::from_raw_handle(handle) };
+    let metadata = file.metadata()?;
+    use std::os::windows::fs::MetadataExt;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || (metadata.file_attributes() & 0x0000_0400 != 0)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "opened entry is not an ordinary regular file",
+        ));
+    }
+
+    Ok(file)
+}
+
 fn is_single_normal_component(name: &OsStr) -> bool {
     let mut components = Path::new(name).components();
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
@@ -230,6 +373,58 @@ mod tests {
         assert!(result.is_err(), "no-follow directory open must fail closed");
         drop(root);
         fs::remove_file(root_path.join("replace-me")).unwrap();
+        fs::remove_dir_all(root_path).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn handle_relative_file_open_reads_regular_file_and_rejects_symlinks() {
+        use std::io::Read;
+        use std::os::windows::fs::symlink_file;
+
+        let root_path = make_test_directory("handle-relative-file");
+        let outside = make_test_directory("handle-relative-file-outside");
+        fs::write(root_path.join("safe.txt"), b"safe content").unwrap();
+        fs::write(outside.join("secret.txt"), b"outside secret").unwrap();
+        symlink_file(outside.join("secret.txt"), root_path.join("linked.txt")).unwrap();
+
+        let root = open_test_root(&root_path);
+        let mut safe = open_file_nofollow(&root, OsStr::new("safe.txt")).unwrap();
+        let mut contents = Vec::new();
+        safe.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"safe content");
+
+        let linked = open_file_nofollow(&root, OsStr::new("linked.txt"));
+        assert!(linked.is_err(), "file symlink must never be followed or accepted");
+        assert!(open_file_nofollow(&root, OsStr::new("../secret.txt")).is_err());
+
+        drop(safe);
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn handle_relative_file_open_rejects_file_replaced_by_symlink_after_enumeration() {
+        use std::os::windows::fs::symlink_file;
+
+        let root_path = make_test_directory("windows-file-swap");
+        let outside = make_test_directory("windows-file-swap-outside");
+        fs::write(root_path.join("replace-me.txt"), b"original").unwrap();
+        fs::write(outside.join("secret.txt"), b"outside secret").unwrap();
+
+        let root = open_test_root(&root_path);
+        // Deterministically model the gap between observing a regular entry
+        // and opening it: replace the name with a link before the handle-relative
+        // open. The open must fail rather than reach the outside target.
+        fs::remove_file(root_path.join("replace-me.txt")).unwrap();
+        symlink_file(outside.join("secret.txt"), root_path.join("replace-me.txt")).unwrap();
+        assert!(open_file_nofollow(&root, OsStr::new("replace-me.txt")).is_err());
+
+        drop(root);
+        fs::remove_file(root_path.join("replace-me.txt")).unwrap();
         fs::remove_dir_all(root_path).unwrap();
         fs::remove_dir_all(outside).unwrap();
     }
