@@ -109,7 +109,10 @@ fn verified_owned_snapshot_path(workspace_root: &Path, snapshot_id: &str) -> Res
     }
     let canonical_candidate = fs::canonicalize(&candidate)
         .map_err(|_| "FRIDAY could not verify the snapshot folder.".to_string())?;
-    if canonical_candidate != candidate || canonical_candidate.parent() != Some(canonical_root.as_path())
+    // Windows canonicalization may add an extended-length prefix (\\?\) that is
+    // not present in the original candidate path. Verify the canonical parent and
+    // exact child name instead of comparing differently normalized path strings.
+    if canonical_candidate.parent() != Some(canonical_root.as_path())
         || canonical_candidate.file_name().and_then(OsStr::to_str) != Some(snapshot_id)
     {
         return Err("The snapshot folder failed its ownership-path check.".into());
