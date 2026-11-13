@@ -296,3 +296,17 @@ The current research has not identified a documented Windows Sandbox guest-to-ho
 
 
 Additional regression coverage now rejects a result directory that is itself a symlink and rejects non-text entry names on Unix. These tests strengthen the pure reader's boundary checks; they do not replace Windows reparse-point tests on supported physical Windows installations or a future ACL/ownership-bound result-directory lifecycle.
+
+
+## Windows Sandbox CLI process-I/O investigation — not a result channel
+
+The Windows Sandbox CLI was reviewed as a possible non-elevated way to collect guest test output without a writable host mapping. Microsoft's CLI documentation states that `wsb exec` runs a command in a Sandbox identified by its session ID and returns the command's exit code, but explicitly says process I/O is not supported and command output cannot be retrieved. The command also requires an active user session for `ExistingLogin` execution. Therefore `wsb exec` cannot deliver the structured guest result or bounded stdout/stderr required by the host result contract. It may be useful as a future control-plane primitive, but it is not a data-transfer mechanism.
+
+Reference:
+- [Microsoft: Windows Sandbox command-line interface](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli)
+
+Clipboard redirection is also not accepted as a substitute. Microsoft documents it as bidirectional copy/paste between host and guest, not as a dedicated authenticated or per-run result channel with a hard byte/storage quota. Enabling it would broaden the host/guest data path and would not prove a bound against a guest that floods or repeatedly changes clipboard content. The current preview configuration deliberately disables clipboard redirection; do not enable it to work around the missing result channel.
+
+Writable `wsb share` remains a mapped-folder write path and therefore inherits the already documented concerns: host-side persistence, no documented per-run hard capacity quota, and the need to prove ownership, ACL and path behavior. It is not an alternative to the rejected writable mapped-folder design.
+
+Conclusion: neither `wsb exec` output nor clipboard redirection satisfies the required result-transfer boundary. No documented non-elevated Windows Sandbox channel has yet been identified that avoids writable host mappings while enforcing a hard per-run storage cap. Keep the guest runner, result collection, and execution disabled. Continue with read-only snapshot/proposal workflows unless a separately reviewed and physically tested mechanism satisfies every storage, isolation, ownership, output, crash-recovery and cleanup gate.
