@@ -505,3 +505,24 @@ Important limitations:
 - The marker is an ownership signal for the FRIDAY recovery protocol, not a cryptographic proof against a malicious process running as the same Windows user. Same-user interference and filesystem-specific semantics require further review.
 - The implementation is not an atomic snapshot of the source project. Source consistency limitations described above still apply.
 - The production snapshot copier remains unchanged and path-based. Guest execution, guest launch, and guest file collection remain disabled.
+
+
+
+## Snapshot cleanup/recovery security gate (November 13, 2026)
+
+Runs #488–#495 completed successfully on Windows and Linux CI. The destination-side writer prototype and its exclusive-create/partial-marker tests are therefore CI-verified, but this does not verify cleanup or production integration.
+
+A review of the existing production recovery path in `src-tauri/src/coding_sandbox.rs` found that it validates the workspace/snapshot paths and ownership marker, then calls `fs::remove_dir_all`. The marker check and recursive deletion are separate path-based operations. A replacement/race between validation and deletion can invalidate the earlier checks; recursive deletion is not an acceptable security boundary for this workflow. The current schema-1 marker also records only schema version, snapshot ID and owner. It does not inventory the expected payload, so it cannot justify deleting arbitrary additional files that appear inside a marked snapshot.
+
+Required design before implementing deletion:
+
+1. **No deletion based on marker presence alone.** Keep schema-1 marker snapshots non-cleanable by the new prototype. Unknown marker versions, malformed markers, missing markers, mismatched IDs/owners, and partial/unmarked directories are preserved.
+2. **Add a versioned inventory for newly created snapshots.** The future manifest must describe every expected regular file and directory created by the writer, use an unambiguous platform-independent encoding for path components, enforce strict entry/count/size limits, reject duplicates and reserved names, and be written last. A schema migration must not reinterpret old markers as the new format.
+3. **Preflight the complete tree through held handles.** Compare the observed tree to the manifest without following links/reparse points. If any entry is unexpected, missing, duplicated, a special file, or cannot be inspected, preserve the entire snapshot and report it as unverified. Do not silently prune unknown entries.
+4. **Delete only after exact preflight.** Hold the workspace and descendant directory handles throughout the operation. Use platform-specific handle-relative deletion primitives; never fall back to ambient paths or `remove_dir_all`. Recheck object type/identity at the point of deletion. Unix should use descriptor-relative operations and unlink only verified ordinary files/directories. Windows must use a reviewed handle-based disposition operation on opened handles and prove that reparse points are not traversed.
+5. **Make interruption retry-safe.** A partially completed cleanup must be detectable and resumable without broadening authority. If the state is ambiguous, preserve the remainder. Do not remove the ownership evidence until all expected payload entries have been removed and the containing directory can be removed safely.
+6. **Threat-model same-user interference honestly.** The marker/manifest is not cryptographic proof against another process running as the same user. Do not claim protection against a fully malicious same-user process. Keep the workspace ACL/private app-data boundary and handle-sharing semantics as separate requirements.
+
+Planned test-only sequence: manifest parsing/version/limit tests; exact-tree preflight tests; unknown-file preservation; malformed/missing/legacy marker preservation; symlink and Windows reparse/junction replacement tests; parent-path replacement after handles are held; nested deletion; deterministic interruption after each deletion stage followed by retry; and proof that unrelated sibling snapshots are untouched. Windows-specific deletion semantics require source review and CI plus physical Windows acceptance before any production use.
+
+Current status: this is a design/review gate only. No cleanup code has been connected to production, no existing recovery behavior has been silently changed, the production snapshot copier remains path-based, and guest execution/launch/result collection remain disabled.
