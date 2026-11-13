@@ -609,7 +609,7 @@ The operation is retryable while the marker remains: a later attempt accepts onl
 
 There is an intentional fail-closed boundary after marker removal. If the process stops after the marker is deleted but before the root directory is removed, a later recovery pass cannot prove ownership of the unmarked directory and must preserve it. This may leave an empty orphan directory, which is preferable to deleting an unmarked entry.
 
-Platform caveat remains explicit: Windows file/directory deletion applies disposition to verified opened handles; Unix uses descriptor-relative unlink operations with a residual same-user rename race between identity check and unlink. The helper remains test-only pending private workspace ACL/permission enforcement, production integration review, and physical Windows acceptance. Schema-1 snapshots and all unverified entries remain preserved. Guest execution remains disabled.
+Platform caveat remains explicit: Windows file/directory deletion applies disposition to verified opened handles; Unix uses descriptor-relative unlink operations with a residual same-user rename race between identity check and unlink. The helper is now used by production snapshot creation and cleanup. Private workspace ACL/permission enforcement and physical Windows acceptance remain separate outstanding gates. Schema-1 snapshots and all unverified entries remain preserved. Guest execution remains disabled.
 
 
 ## Production snapshot integration — 2026-11-13
