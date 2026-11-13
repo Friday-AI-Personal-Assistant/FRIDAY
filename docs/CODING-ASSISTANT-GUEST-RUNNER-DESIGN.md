@@ -557,3 +557,16 @@ The test-only Windows file-removal primitive now opens the named entry relative 
 This is deliberately limited to one file at a time. The Windows delete disposition is applied to the opened object rather than re-resolving the filename for deletion; denying delete sharing is intended to prevent a concurrent rename while the handle is held. Unsupported filesystems/OS versions, sharing conflicts, and native API failures must return an error and preserve data. This remains a test-only primitive and is not production cleanup authorization.
 
 The Unix primitive still uses name-based unlinkat and retains its documented same-user rename-race limitation. Recursive tree deletion, safe empty-directory removal, marker removal, interruption/retry recovery, full threat-model review, and production integration remain outstanding. Guest execution remains disabled.
+
+
+## Verified empty snapshot-directory cleanup prototype (November 13, 2026)
+
+A test-only helper now removes one empty directory entry relative to a held parent directory handle. It accepts only one normal, non-marker name, opens the child without following links/reparse points, verifies that it is an ordinary directory, and refuses removal if enumeration finds any child entry.
+
+Platform behavior:
+- Windows opens the directory relative to the held parent using `NtCreateFile`, requests delete/list/read-attributes access, denies write and delete sharing, checks the opened handle for an ordinary directory, verifies it is empty through that handle, and applies `FileDispositionInfoEx` to the same handle. Native API, sharing, or filesystem errors fail closed.
+- Unix opens the child directory without following symlinks, checks that it is empty, reopens and compares handle identity, then uses descriptor-relative `unlinkat(AT_REMOVEDIR)`. This remains name-based at the final syscall and therefore retains a same-user rename race between the identity check and removal.
+
+Regression tests verify that an empty directory can be removed, a non-empty directory and its contents are preserved, and traversal names are rejected. Runs for this change must pass on both Windows and Linux before the prototype is considered CI-verified.
+
+This helper is not production cleanup authorization. It does not remove snapshot roots, ownership markers, or non-empty directories; it does not perform recursive deletion or retry/recovery. The Unix final-name race remains an explicit limitation. The complete snapshot tree must still be preflighted and every deletion stage independently authorized. Production recovery remains unchanged and guest execution remains disabled.
