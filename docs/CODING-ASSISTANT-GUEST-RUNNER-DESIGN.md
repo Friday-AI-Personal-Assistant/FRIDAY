@@ -541,3 +541,10 @@ A test-only preflight inspector now opens the completed snapshot marker and walk
 The inventory is an expected-tree description, not cryptographic proof of ownership. A successful preflight is not yet permission to delete the tree: the later cleanup implementation must repeat identity/type checks at the point of deletion using handle-relative operations and must preserve any entry that cannot be proven safe. Same-user malicious modification and fully atomic filesystem snapshots remain outside this prototype's guarantees.
 
 Tests cover an exact inventory, an unexpected file, and a symlink. Windows and Linux CI must both pass before further work. Production recovery remains unchanged; guest execution remains disabled.
+
+
+## First snapshot-file cleanup primitive prototype (November 13, 2026)
+
+A narrowly scoped, test-only Unix helper now attempts to remove one ordinary file relative to a held parent directory handle. It requires a single non-marker filename, opens without following symlinks, checks the expected size, reopens the entry and compares handle identity, then uses descriptor-relative `unlinkat`. A regression test verifies that a size mismatch preserves the file and that a separate unknown file remains untouched.
+
+Important limitation: Unix `unlinkat` is name-based, so a hostile same-user process could still race a rename between the final identity comparison and unlink. This helper is not a complete race-free delete-by-handle primitive and must not be used in production. The Windows implementation intentionally returns Unsupported and preserves the file until a reviewed delete-by-handle operation is implemented. Recursive cleanup, directory removal, marker removal, retry/recovery, and production integration are not implemented. Keep guest execution disabled.
