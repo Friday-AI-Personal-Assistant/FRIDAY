@@ -1007,6 +1007,7 @@ pub(crate) fn create_bounded_snapshot_destination(
         let depth = item.relative_path.components().count().saturating_sub(1);
         if item.relative_path.as_os_str().is_empty()
             || item.relative_path.components().any(|c| !matches!(c, Component::Normal(_)))
+            || item.relative_path == Path::new(".friday-snapshot-owner.json")
             || depth > limits.max_depth
             || item.contents.is_empty()
             || item.contents.len() as u64 > limits.max_file_bytes
