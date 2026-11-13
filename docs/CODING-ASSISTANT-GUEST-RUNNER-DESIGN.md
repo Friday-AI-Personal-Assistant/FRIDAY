@@ -168,3 +168,25 @@ The implementation must add tests for:
 ## Current implementation boundary
 
 Current FRIDAY code may prepare bounded snapshots, preview a read-only .wsb configuration, report host Sandbox prerequisites, and recover verified stale snapshots. It does not create a guest runner, write a .wsb file, launch or stop Windows Sandbox, run commands, collect guest results, or enforce execution resource limits. Keep these statements accurate in the UI and documentation.
+
+## Windows Sandbox mapped-folder policy and session constraints
+
+Windows 11 24H2 and later expose device policies for allowing mapped folders and allowing writes to mapped folders. The policy values are under `HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Sandbox`:
+
+- `AllowMappedFolders = 0` blocks mapped folders; `1` allows them.
+- `AllowWriteToMappedFolders = 0` blocks guest writes to mapped folders; `1` allows them.
+- An absent value is reported as **Not configured**, not silently rewritten by FRIDAY. An unexpected registry value is **Unknown** and must remain unverified.
+
+The read-only preflight now reports both policy states separately. This is diagnostic only: it does not change Group Policy, registry values, or permissions, and it does not mark result storage ready. A policy that blocks mapped folders means the snapshot cannot be shared through that mechanism; a policy that blocks writes means a future writable result share cannot be used. FRIDAY must fail closed rather than change policy or choose a normal host folder.
+
+References:
+- [Windows Sandbox Policy CSP — AllowMappedFolders and AllowWriteToMappedFolders](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-windowssandbox)
+- [Windows Sandbox configuration and mapped-folder behavior](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-configure-using-wsb-file)
+
+The Windows Sandbox CLI uses an explicit Sandbox ID for operations such as `share` and `stop`. The host must retain the exact ID returned when FRIDAY creates a session and must never infer ownership from a process name alone, adopt a pre-existing session, or stop a session whose ID cannot be matched to the current FRIDAY run. Current process detection is only a conservative blocker; it is not a session-ownership mechanism.
+
+Windows Sandbox is a shared environment rather than a per-process container. Do not run mutually untrusted tasks concurrently in one guest. Before any future launcher is implemented, verify the supported Windows build's single-instance/session behavior, how the CLI reports existing sessions, and how FRIDAY can prove it created the exact session it later shares with or stops.
+
+Reference:
+- [Windows Sandbox command-line interface](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli)
+
