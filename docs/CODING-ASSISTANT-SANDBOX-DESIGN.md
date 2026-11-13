@@ -45,6 +45,12 @@ The current branch now has a preview-only configuration builder tied to a snapsh
 
 The Coding Assistant UI can display this generated configuration after a snapshot is prepared. This command only returns configuration text: it does not write a .wsb file, invoke the Sandbox app or execute code. The configuration builder has regression tests for the required isolation settings, read-only mapping, XML escaping, and invalid/missing paths. These tests still require CI verification. A preview is not proof that Windows will accept the configuration or that the host can launch Sandbox.
 
+## Implemented read-only host capability diagnostics
+
+The Windows preflight now performs fixed, read-only host queries for the Windows edition/build, the `Containers-DisposableClientVM` optional-feature state, the `wsb --version` CLI availability/version, processor firmware virtualization reporting, and whether a `WindowsSandbox` process is already present. It also retains the guarded check for the Windows Sandbox executable. The UI displays these values and treats unknown values as unverified.
+
+These probes are diagnostics, not a launch test or a complete policy audit. Firmware virtualization reporting is not proof that every hypervisor prerequisite is healthy; a process-name match is a conservative reason to refuse rather than attach; and the feature/CLI may be unavailable or inaccessible under policy. The current probe does not change Windows features, enable virtualization, elevate privileges, launch or stop a Sandbox, or execute project code. Execution and network-isolation enforcement remain false in the preflight result on every platform.
+
 ## Gate before enabling execution
 
 Execution remains disabled until all of the following are implemented and verified:
