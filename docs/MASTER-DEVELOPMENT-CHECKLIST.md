@@ -278,3 +278,6 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 
 - [x] Coding Assistant Stage 4: Unix regression tests covering symlinked result directories and non-text filenames passed in Runs #421–#423 (both Windows and Linux CI jobs).
+
+
+- [ ] Coding Assistant Stage 4 security hardening: Unix `open_source_file` now uses `O_NOFOLLOW` to atomically reject final-component symlinks, with a regression test; CI verification is pending. Parent-directory race resistance and Windows reparse-point acceptance remain separate review items.
