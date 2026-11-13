@@ -988,6 +988,10 @@ pub(crate) fn create_bounded_snapshot_destination(
     limits: BoundedSnapshotLimits,
 ) -> io::Result<()> {
     use std::io::Write;
+    let workspace_metadata = workspace.metadata()?;
+    if !workspace_metadata.is_dir() || is_reparse_or_symlink(&workspace_metadata) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "workspace handle is not an ordinary directory"));
+    }
     if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid snapshot identifier"));
     }
@@ -1840,6 +1844,85 @@ mod tests {
         fs::remove_dir(root_path.join("replace-me")).unwrap();
         fs::remove_dir_all(root_path).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn destination_snapshot_creates_nested_files_exclusively_and_marks_only_complete_snapshot() {
+        let workspace_path = make_test_directory("destination-create");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![
+                BoundedSnapshotFile { relative_path: PathBuf::from("Cargo.toml"), contents: b"[package]".to_vec() },
+                BoundedSnapshotFile { relative_path: PathBuf::from("src/lib.rs"), contents: b"pub fn friday() {}".to_vec() },
+            ],
+            bytes: b"[package]".len() as u64 + b"pub fn friday() {}".len() as u64,
+            truncated: false,
+        };
+        let id = "a".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        assert_eq!(fs::read(workspace_path.join(&id).join("Cargo.toml")).unwrap(), b"[package]");
+        assert_eq!(fs::read(workspace_path.join(&id).join("src/lib.rs")).unwrap(), b"pub fn friday() {}");
+        let marker = fs::read_to_string(workspace_path.join(&id).join(".friday-snapshot-owner.json")).unwrap();
+        assert!(marker.contains(&id));
+        assert!(marker.contains("FRIDAY-CodingAssistant"));
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn destination_snapshot_never_overwrites_preexisting_directory() {
+        let workspace_path = make_test_directory("destination-no-overwrite");
+        let id = "b".repeat(32);
+        fs::create_dir(workspace_path.join(&id)).unwrap();
+        fs::write(workspace_path.join(&id).join("keep.txt"), b"unrelated").unwrap();
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![BoundedSnapshotFile { relative_path: PathBuf::from("file.txt"), contents: b"new".to_vec() }],
+            bytes: 3,
+            truncated: false,
+        };
+        assert!(create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).is_err());
+        assert_eq!(fs::read(workspace_path.join(&id).join("keep.txt")).unwrap(), b"unrelated");
+        assert!(!workspace_path.join(&id).join(".friday-snapshot-owner.json").exists());
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn destination_snapshot_rejects_traversal_before_creating_anything() {
+        let workspace_path = make_test_directory("destination-traversal");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![BoundedSnapshotFile { relative_path: PathBuf::from("../escape.txt"), contents: b"no".to_vec() }],
+            bytes: 2,
+            truncated: false,
+        };
+        let id = "c".repeat(32);
+        assert!(create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).is_err());
+        assert!(!workspace_path.join(&id).exists());
+        assert!(!workspace_path.join("escape.txt").exists());
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn destination_snapshot_does_not_mark_partial_creation_as_owned() {
+        let workspace_path = make_test_directory("destination-partial");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![
+                BoundedSnapshotFile { relative_path: PathBuf::from("same.txt"), contents: b"first".to_vec() },
+                BoundedSnapshotFile { relative_path: PathBuf::from("same.txt"), contents: b"second".to_vec() },
+            ],
+            bytes: 11,
+            truncated: false,
+        };
+        let id = "d".repeat(32);
+        assert!(create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).is_err());
+        assert_eq!(fs::read(workspace_path.join(&id).join("same.txt")).unwrap(), b"first");
+        assert!(!workspace_path.join(&id).join(".friday-snapshot-owner.json").exists());
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
     }
 
     #[test]
