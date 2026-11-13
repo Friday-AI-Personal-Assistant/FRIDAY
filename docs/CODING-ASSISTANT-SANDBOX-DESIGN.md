@@ -65,3 +65,11 @@ Execution remains disabled until all of the following are implemented and verifi
 - Windows acceptance testing on supported Windows editions.
 
 Until this gate is met, FRIDAY may prepare and discard snapshots but must not execute project code.
+
+## Crash/restart ownership recovery
+
+Coding Assistant snapshots now carry a small, versioned ownership marker created with exclusive file creation and flushed before project files are copied. The marker binds the snapshot ID to the FRIDAY Coding Assistant owner label. Recovery enumerates only the dedicated sandbox-workspace directory and considers only child names matching the generated 32-character hexadecimal snapshot ID format.
+
+Before removal, recovery verifies the workspace and snapshot are normal directories (not symlinks/reparse points), verifies the canonical snapshot is an immediate child of the canonical workspace, and checks that the marker is a bounded regular file with the expected schema, owner label and matching snapshot ID. Missing, malformed, mismatched, redirected or otherwise unverified entries are preserved. The marker is written before copying begins, so an interrupted/partial snapshot can be recognised and cleaned on the next FRIDAY startup. Failed in-session snapshot creation uses the same verified cleanup path. The original selected project is never included in the recovery scan.
+
+This marker is accidental-ownership evidence, not cryptographic authentication against a malicious process running as the same Windows user: user-level local malware could potentially forge or alter app-data files. Do not treat it as a security boundary. Future sandbox execution must also account for active FRIDAY-owned Sandbox sessions before deleting any mounted snapshot. Execution remains disabled.
