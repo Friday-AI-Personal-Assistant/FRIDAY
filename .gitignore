@@ -42,3 +42,13 @@ temp/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local worker packaging
+__pycache__/
+*.pyc
+*.spec
+src-tauri/worker/
+*.tsbuildinfo
+
+vite.config.js
+vite.config.d.ts

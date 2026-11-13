@@ -1,0 +1,10 @@
+pywinauto==0.6.9; sys_platform == 'win32'
+pyautogui==0.9.54
+Pillow>=11,<13
+faster-whisper>=1.1,<2
+sounddevice>=0.5,<1
+pyttsx3>=2.98,<3
+pypdf>=6,<7
+python-docx>=1.1,<2
+pyinstaller>=6.11,<7
+reportlab>=4.2,<5

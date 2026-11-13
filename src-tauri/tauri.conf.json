@@ -21,14 +21,22 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi"],
-    "icon": ["icons/icon.ico"],
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
     "shortDescription": "Your personal AI assistant",
-    "longDescription": "A local-first, user-owned personal AI desktop assistant."
+    "longDescription": "A local-first, user-owned personal AI desktop assistant.",
+    "resources": [
+      "worker/friday-worker.exe"
+    ]
   }
 }
