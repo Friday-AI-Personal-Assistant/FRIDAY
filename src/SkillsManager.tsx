@@ -150,6 +150,7 @@ export default function SkillsManager() {
     setCodingProposalFileId(""); setCodingProposedContent(""); setCodingChangePreview(null);
         setCodingAnswer(""); setCodingError("");
         setCodingProposalFileId(""); setCodingProposedContent(""); setCodingChangePreview(null);
+        setCodingApprovalToken(""); setCodingApplyResult(null); setCodingHistory([]);
       }
       await refresh();
     } catch (e) { setError(String(e)); }
@@ -161,6 +162,9 @@ export default function SkillsManager() {
     setCodingBusy(true); setCodingError(""); setCodingAnswer("");
     setCodingProject(null); setSelectedCodingFileIds([]); setCodingFiles([]);
     setCodingChangePreview(null); setCodingApprovalToken("");
+    // Picking a project revokes the previous backend grants, so its in-memory Undo
+    // entries must no longer be presented as actionable in this session.
+    setCodingApplyResult(null); setCodingHistory([]); setCodingUndoBusy(false);
     try {
       const project = await invoke<CodingProjectScan>("pick_project_folder_and_list_files");
       setCodingProject(project);
@@ -217,7 +221,7 @@ export default function SkillsManager() {
     if (!desktop || codingBusy || !codingProposalFileId || !codingProposedContent.trim()) return;
     setCodingBusy(true); setCodingError("");
     const previousPreviewId = codingChangePreview?.previewId;
-    setCodingChangePreview(null); setCodingApprovalToken("");
+    setCodingChangePreview(null); setCodingApprovalToken(""); setCodingApplyResult(null);
     try {
       if (previousPreviewId) await invoke("cancel_code_change_preview", { previewId: previousPreviewId });
       const preview = await invoke<CodingChangePreview>("preview_code_change", {
@@ -240,7 +244,7 @@ export default function SkillsManager() {
   }
 
   async function applyCodingChange() {
-    if (!desktop || codingBusy || !codingChangePreview || !codingApprovalToken || codingApplyResult) return;
+    if (!desktop || codingBusy || !codingChangePreview || !codingApprovalToken) return;
     if (!window.confirm("Apply this approved change to " + codingChangePreview.relativePath + "?\\n\\nFRIDAY will verify the original file, retain a verified backup, and verify the result.")) return;
     setCodingBusy(true); setCodingError("");
     try {
