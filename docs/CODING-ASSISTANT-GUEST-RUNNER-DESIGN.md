@@ -293,3 +293,6 @@ This is not currently an acceptable FRIDAY per-run storage design:
 Therefore NTFS quotas are rejected for the initial non-admin result-transfer design. They may be reconsidered only if a separately reviewed design proves a unique host-side identity and quota scope for each run, safe provisioning/cleanup, no impact on unrelated host activity, and hard enforcement before untrusted code can write. No quota settings or host identities have been changed by FRIDAY.
 
 The current research has not identified a documented Windows Sandbox guest-to-host result channel that both avoids writable host mappings and provides a hard per-run storage cap. Until a supported mechanism meets that requirement, guest execution remains unavailable; read-only snapshots and safe proposal workflows remain the supported path.
+
+
+Additional regression coverage now rejects a result directory that is itself a symlink and rejects non-text entry names on Unix. These tests strengthen the pure reader's boundary checks; they do not replace Windows reparse-point tests on supported physical Windows installations or a future ACL/ownership-bound result-directory lifecycle.
