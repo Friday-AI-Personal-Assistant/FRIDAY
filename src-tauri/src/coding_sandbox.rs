@@ -38,6 +38,8 @@ pub struct CodingSandboxPreflight {
     virtual_disk_api_available: bool,
     manage_volume_privilege_enabled: bool,
     hyperv_cmdlets_available: bool,
+    mapped_folders_policy: String,
+    mapped_folder_write_policy: String,
     result_storage_ready: bool,
     message: String,
 }
@@ -241,7 +243,7 @@ fn run_bounded_probe(mut command: Command) -> Result<(ExitStatus, Vec<u8>), Stri
 }
 
 #[cfg(windows)]
-fn detect_windows_sandbox_capabilities() -> (String, String, String, bool, String, Option<bool>, bool, bool, bool, bool) {
+fn detect_windows_sandbox_capabilities() -> (String, String, String, bool, String, Option<bool>, bool, bool, bool, bool, String, String) {
     // Fixed, read-only PowerShell probes. No user or model supplied command text is accepted.
     let script = r#"$ErrorActionPreference = 'SilentlyContinue'
 $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
@@ -256,6 +258,9 @@ if ($wsb -and $wsb.Source) {
 $privileges = (& whoami.exe /priv 2>$null | Out-String)
 $virtualDiskApi = Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32\virtdisk.dll')
 $hypervCmdlets = [bool](Get-Command New-VHD -ErrorAction SilentlyContinue) -and [bool](Get-Command Mount-VHD -ErrorAction SilentlyContinue)
+$sandboxPolicy = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox' -ErrorAction SilentlyContinue
+$mappedFoldersPolicy = if ($null -eq $sandboxPolicy -or $null -eq $sandboxPolicy.AllowMappedFolders) { $null } else { [int]$sandboxPolicy.AllowMappedFolders }
+$mappedFolderWritePolicy = if ($null -eq $sandboxPolicy -or $null -eq $sandboxPolicy.AllowWriteToMappedFolders) { $null } else { [int]$sandboxPolicy.AllowWriteToMappedFolders }
 [pscustomobject]@{
   edition = [string]$cv.EditionID
   build = [string]$cv.CurrentBuildNumber
@@ -267,11 +272,13 @@ $hypervCmdlets = [bool](Get-Command New-VHD -ErrorAction SilentlyContinue) -and 
   privileges = [string]$privileges
   virtualDiskApiAvailable = [bool]$virtualDiskApi
   hypervCmdletsAvailable = [bool]$hypervCmdlets
+  mappedFoldersPolicy = $mappedFoldersPolicy
+  mappedFolderWritePolicy = $mappedFolderWritePolicy
 } | ConvertTo-Json -Compress"#;
     let mut command = Command::new("powershell.exe");
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     let Ok((status, stdout)) = run_bounded_probe(command) else {
-        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false);
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false, "Unknown".into(), "Unknown".into());
     };
     if !status.success() {
         return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false);
@@ -292,7 +299,18 @@ $hypervCmdlets = [bool](Get-Command New-VHD -ErrorAction SilentlyContinue) -and 
         value.get("virtualDiskApiAvailable").and_then(serde_json::Value::as_bool).unwrap_or(false),
         privilege_output_has_enabled(&value.get("privileges").and_then(serde_json::Value::as_str).unwrap_or(""), "SeManageVolumePrivilege"),
         value.get("hypervCmdletsAvailable").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        sandbox_policy_state(value.get("mappedFoldersPolicy")),
+        sandbox_policy_state(value.get("mappedFolderWritePolicy")),
     )
+}
+
+fn sandbox_policy_state(value: Option<&serde_json::Value>) -> String {
+    match value {
+        None | Some(serde_json::Value::Null) => "Not configured".into(),
+        Some(value) if value.as_i64() == Some(0) => "Blocked".into(),
+        Some(value) if value.as_i64() == Some(1) => "Allowed".into(),
+        _ => "Unknown".into(),
+    }
 }
 
 fn privilege_output_has_enabled(output: &str, privilege: &str) -> bool {
@@ -309,8 +327,8 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
     {
         let detected = detect_windows_sandbox();
         let (edition, build, feature, wsb_available, wsb_version, virtualization, active,
-            virtual_disk_api, manage_volume_privilege, hyperv_cmdlets) =
-            detect_windows_sandbox_capabilities();
+            virtual_disk_api, manage_volume_privilege, hyperv_cmdlets,
+            mapped_folders_policy, mapped_folder_write_policy) = detect_windows_sandbox_capabilities();
         let edition_supported = ["Professional", "Enterprise", "Education"]
             .iter().any(|supported| edition.eq_ignore_ascii_case(supported));
         let runtime_ready = detected && edition_supported
@@ -332,6 +350,8 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
             virtual_disk_api_available: virtual_disk_api,
             manage_volume_privilege_enabled: manage_volume_privilege,
             hyperv_cmdlets_available: hyperv_cmdlets,
+            mapped_folders_policy,
+            mapped_folder_write_policy,
             result_storage_ready: false,
             message,
         })
@@ -346,7 +366,10 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
             wsb_cli_version: "Not applicable".into(), virtualization_firmware_enabled: None,
             sandbox_process_detected: false,
             virtual_disk_api_available: false, manage_volume_privilege_enabled: false,
-            hyperv_cmdlets_available: false, result_storage_ready: false,
+            hyperv_cmdlets_available: false,
+            mapped_folders_policy: "Not applicable".into(),
+            mapped_folder_write_policy: "Not applicable".into(),
+            result_storage_ready: false,
             message: "The Coding Assistant execution sandbox is designed for Windows Sandbox. No project code has been executed and no host-execution fallback is available.".to_string(),
         })
     }
@@ -843,11 +866,23 @@ mod tests {
             virtual_disk_api_available: true,
             manage_volume_privilege_enabled: true,
             hyperv_cmdlets_available: true,
+            mapped_folders_policy: "Not configured".into(),
+            mapped_folder_write_policy: "Not configured".into(),
             result_storage_ready: false,
             message: "Preflight only".into(),
         };
         assert!(!policy.execution_enabled);
         assert!(!policy.network_isolation_enforced);
+    }
+
+    #[test]
+    fn sandbox_policy_probe_distinguishes_blocked_allowed_and_unconfigured() {
+        assert_eq!(sandbox_policy_state(None), "Not configured");
+        assert_eq!(sandbox_policy_state(Some(&serde_json::Value::Null)), "Not configured");
+        assert_eq!(sandbox_policy_state(Some(&serde_json::json!(0))), "Blocked");
+        assert_eq!(sandbox_policy_state(Some(&serde_json::json!(1))), "Allowed");
+        assert_eq!(sandbox_policy_state(Some(&serde_json::json!(2))), "Unknown");
+        assert_eq!(sandbox_policy_state(Some(&serde_json::json!("1"))), "Unknown");
     }
 
     #[test]
@@ -869,7 +904,10 @@ mod tests {
             wsb_cli_available: true, wsb_cli_version: "1.0.0".into(),
             virtualization_firmware_enabled: Some(true), sandbox_process_detected: false,
             virtual_disk_api_available: true, manage_volume_privilege_enabled: true,
-            hyperv_cmdlets_available: true, result_storage_ready: false,
+            hyperv_cmdlets_available: true,
+            mapped_folders_policy: "Not configured".into(),
+            mapped_folder_write_policy: "Not configured".into(),
+            result_storage_ready: false,
             message: "Detection only.".into(),
         };
         assert!(!policy.result_storage_ready);
