@@ -852,6 +852,198 @@ where
     Ok(())
 }
 
+
+/// Create a new entry relative to an already-held destination directory handle.
+/// This is a test-only prototype: no ambient destination path is used after
+/// the workspace handle is acquired.
+#[cfg(unix)]
+fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io::Result<File> {
+    use std::{ffi::CString, os::unix::{ffi::OsStrExt, io::{AsRawFd, FromRawFd}}};
+    if !is_single_normal_component(name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "destination name must be one normal component"));
+    }
+    let name = CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination name contains NUL"))?;
+    if directory {
+        let result = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) };
+        if result != 0 { return Err(io::Error::last_os_error()); }
+        return open_dir_nofollow(parent, Path::new(name.to_str().unwrap_or("")));
+    }
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(), name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC
+                | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            0o600,
+        )
+    };
+    if fd < 0 { return Err(io::Error::last_os_error()); }
+    let file = unsafe { File::from_raw_fd(fd) };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "created destination is not a regular file"));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io::Result<File> {
+    use std::{
+        mem,
+        os::windows::{ffi::OsStrExt, fs::MetadataExt, io::{AsRawHandle, FromRawHandle}},
+        ptr,
+    };
+    if !is_single_normal_component(name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "destination name must be one normal component"));
+    }
+    let wide: Vec<u16> = name.encode_wide().collect();
+    if wide.is_empty() || wide.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid destination name"));
+    }
+    let byte_len = wide.len().checked_mul(2).and_then(|v| u16::try_from(v).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination name is too long"))?;
+    #[repr(C)] struct UnicodeString { length: u16, maximum_length: u16, buffer: *mut u16 }
+    #[repr(C)] struct ObjectAttributes {
+        length: u32, root_directory: *mut std::ffi::c_void,
+        object_name: *mut UnicodeString, attributes: u32,
+        security_descriptor: *mut std::ffi::c_void,
+        security_quality_of_service: *mut std::ffi::c_void,
+    }
+    #[repr(C)] union IoStatusValue { status: i32, pointer: *mut std::ffi::c_void }
+    #[repr(C)] struct IoStatusBlock { status: IoStatusValue, information: usize }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut *mut std::ffi::c_void, desired_access: u32,
+            object_attributes: *const ObjectAttributes, io_status_block: *mut IoStatusBlock,
+            allocation_size: *const i64, file_attributes: u32, share_access: u32,
+            create_disposition: u32, create_options: u32,
+            ea_buffer: *const std::ffi::c_void, ea_length: u32,
+        ) -> i32;
+    }
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    const OBJ_DONT_REPARSE: u32 = 0x1000;
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const FILE_WRITE_DATA: u32 = 0x2;
+    const FILE_LIST_DIRECTORY: u32 = 0x1;
+    const FILE_ADD_FILE: u32 = 0x2;
+    const FILE_ADD_SUBDIRECTORY: u32 = 0x4;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    const FILE_CREATE: u32 = 2;
+    const FILE_DIRECTORY_FILE: u32 = 0x1;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
+    let mut unicode_name = UnicodeString {
+        length: byte_len, maximum_length: byte_len, buffer: wide.as_ptr() as *mut u16,
+    };
+    let attributes = ObjectAttributes {
+        length: mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: parent.as_raw_handle(),
+        object_name: &mut unicode_name,
+        attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        security_descriptor: ptr::null_mut(),
+        security_quality_of_service: ptr::null_mut(),
+    };
+    let mut io_status = IoStatusBlock { status: IoStatusValue { status: 0 }, information: 0 };
+    let mut handle = ptr::null_mut();
+    let access = if directory {
+        FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+    } else {
+        FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+    };
+    let options = (if directory { FILE_DIRECTORY_FILE } else { FILE_NON_DIRECTORY_FILE })
+        | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT;
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle, access, &attributes, &mut io_status, ptr::null(),
+            if directory { 0x10 } else { 0x80 },
+            FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_CREATE, options, ptr::null(), 0,
+        )
+    };
+    if status < 0 || handle.is_null() {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+            format!("exclusive handle-relative destination creation failed (NTSTATUS 0x{:08X})", status as u32)));
+    }
+    let file = unsafe { File::from_raw_handle(handle) };
+    let metadata = file.metadata()?;
+    if (directory && (!metadata.is_dir() || (metadata.file_attributes() & 0x400 != 0)))
+        || (!directory && (!metadata.is_file() || (metadata.file_attributes() & 0x400 != 0)))
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "created destination has an unsafe type"));
+    }
+    Ok(file)
+}
+
+/// Materialize bounded in-memory source bytes below a held private workspace.
+/// The ownership marker is written last, so interrupted creation is never
+/// falsely advertised as a complete, cleanup-authorized snapshot.
+#[allow(dead_code)]
+pub(crate) fn create_bounded_snapshot_destination(
+    workspace: &File,
+    snapshot_id: &str,
+    contents: &BoundedSnapshotContents,
+    limits: BoundedSnapshotLimits,
+) -> io::Result<()> {
+    use std::io::Write;
+    if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid snapshot identifier"));
+    }
+    if limits.max_files == 0 || limits.max_file_bytes == 0 || limits.max_total_bytes == 0
+        || contents.truncated || contents.files.is_empty() || contents.files.len() > limits.max_files
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot contents are incomplete or outside policy limits"));
+    }
+    let mut total = 0u64;
+    for item in &contents.files {
+        let depth = item.relative_path.components().count().saturating_sub(1);
+        if item.relative_path.as_os_str().is_empty()
+            || item.relative_path.components().any(|c| !matches!(c, Component::Normal(_)))
+            || depth > limits.max_depth
+            || item.contents.is_empty()
+            || item.contents.len() as u64 > limits.max_file_bytes
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot contains an unsafe path or file size"));
+        }
+        total = total.checked_add(item.contents.len() as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "snapshot byte count overflow"))?;
+    }
+    if total != contents.bytes || total > limits.max_total_bytes {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot total byte count is inconsistent or oversized"));
+    }
+
+    let snapshot_root = create_destination_entry(workspace, OsStr::new(snapshot_id), true)?;
+    for item in &contents.files {
+        let components: Vec<&OsStr> = item.relative_path.components().filter_map(|c| {
+            if let Component::Normal(name) = c { Some(name) } else { None }
+        }).collect();
+        let mut parent = snapshot_root.try_clone()?;
+        for component in &components[..components.len() - 1] {
+            let next = match open_dir_nofollow(&parent, Path::new(component)) {
+                Ok(dir) => dir,
+                Err(_) => create_destination_entry(&parent, component, true)?,
+            };
+            parent = next;
+        }
+        let file_name = components[components.len() - 1];
+        let mut output = create_destination_entry(&parent, file_name, false)?;
+        output.write_all(&item.contents)?;
+        output.sync_all()?;
+    }
+
+    let marker = format!(
+        "{{\"schemaVersion\":1,\"snapshotId\":\"{}\",\"owner\":\"FRIDAY-CodingAssistant\"}}",
+        snapshot_id
+    );
+    let mut marker_file = create_destination_entry(
+        &snapshot_root, OsStr::new(".friday-snapshot-owner.json"), false,
+    )?;
+    marker_file.write_all(marker.as_bytes())?;
+    marker_file.sync_all()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
