@@ -862,12 +862,13 @@ fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io:
     if !is_single_normal_component(name) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "destination name must be one normal component"));
     }
+    let relative_name = PathBuf::from(name);
     let name = CString::new(name.as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination name contains NUL"))?;
     if directory {
         let result = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) };
         if result != 0 { return Err(io::Error::last_os_error()); }
-        return open_dir_nofollow(parent, Path::new(name.to_str().unwrap_or("")));
+        return open_dir_nofollow(parent, &relative_name);
     }
     let fd = unsafe {
         libc::openat(
