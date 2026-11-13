@@ -988,6 +988,22 @@ mod tests {
         assert!(validate_guest_result_directory_entries(&["RESULT.JSON".into()]).is_err());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn open_source_file_opens_windows_symlink_itself_not_its_target() {
+        use std::os::windows::fs::symlink_file;
+        let directory = make_test_directory("windows-no-follow-open");
+        let target = directory.join("target.txt");
+        let link = directory.join("link.txt");
+        fs::write(&target, b"trusted target").unwrap();
+        symlink_file(&target, &link)
+            .expect("Windows CI must permit creating a file symlink for the no-follow regression test");
+        let opened = open_source_file(&link).expect("opening the reparse point itself should succeed");
+        let metadata = opened.metadata().unwrap();
+        assert!(is_reparse_or_symlink(&metadata), "opened handle must identify the reparse point itself");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn open_source_file_rejects_symlinks_without_following_them() {
