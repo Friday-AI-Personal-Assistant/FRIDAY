@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     env,
@@ -18,6 +18,8 @@ const MAX_SNAPSHOT_DEPTH: usize = 12;
 const MAX_SNAPSHOT_FILES: usize = 2_000;
 const MAX_SNAPSHOT_FILE_BYTES: u64 = 1_048_576;
 const MAX_SNAPSHOT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+const SNAPSHOT_OWNER_MARKER: &str = ".friday-snapshot-owner.json";
+const SNAPSHOT_OWNER_SCHEMA: u32 = 1;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,7 +48,97 @@ pub struct CodingSandboxSnapshot {
     message: String,
 }
 
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SnapshotOwnershipMarker {
+    schema_version: u32,
+    snapshot_id: String,
+    owner: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingSandboxRecovery {
+    removed_snapshots: usize,
+    preserved_unverified_entries: usize,
+    message: String,
+}
+
 static OWNED_SNAPSHOTS: Mutex<BTreeMap<String, PathBuf>> = Mutex::new(BTreeMap::new());
+
+fn valid_snapshot_id(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn write_snapshot_ownership_marker(snapshot_path: &Path, snapshot_id: &str) -> Result<(), String> {
+    let marker_path = snapshot_path.join(SNAPSHOT_OWNER_MARKER);
+    let marker = SnapshotOwnershipMarker {
+        schema_version: SNAPSHOT_OWNER_SCHEMA,
+        snapshot_id: snapshot_id.to_string(),
+        owner: "FRIDAY-CodingAssistant".to_string(),
+    };
+    let bytes = serde_json::to_vec(&marker)
+        .map_err(|_| "FRIDAY could not prepare snapshot ownership metadata.".to_string())?;
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&marker_path)
+        .map_err(|_| "FRIDAY could not safely create snapshot ownership metadata.".to_string())?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|_| "FRIDAY could not write snapshot ownership metadata.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "FRIDAY could not persist snapshot ownership metadata.".to_string())?;
+    Ok(())
+}
+
+fn verified_owned_snapshot_path(workspace_root: &Path, snapshot_id: &str) -> Result<PathBuf, String> {
+    if !valid_snapshot_id(snapshot_id) {
+        return Err("The snapshot identifier is invalid.".into());
+    }
+    let root_meta = fs::symlink_metadata(workspace_root)
+        .map_err(|_| "The private snapshot workspace is unavailable.".to_string())?;
+    if !root_meta.is_dir() || is_reparse_or_symlink(&root_meta) {
+        return Err("The private snapshot workspace is not a normal directory.".into());
+    }
+    let canonical_root = fs::canonicalize(workspace_root)
+        .map_err(|_| "FRIDAY could not verify the private snapshot workspace.".to_string())?;
+    let candidate = workspace_root.join(snapshot_id);
+    let candidate_meta = fs::symlink_metadata(&candidate)
+        .map_err(|_| "The snapshot folder is unavailable.".to_string())?;
+    if !candidate_meta.is_dir() || is_reparse_or_symlink(&candidate_meta) {
+        return Err("The snapshot folder is not a normal directory.".into());
+    }
+    let canonical_candidate = fs::canonicalize(&candidate)
+        .map_err(|_| "FRIDAY could not verify the snapshot folder.".to_string())?;
+    if canonical_candidate != candidate || canonical_candidate.parent() != Some(canonical_root.as_path())
+        || canonical_candidate.file_name().and_then(OsStr::to_str) != Some(snapshot_id)
+    {
+        return Err("The snapshot folder failed its ownership-path check.".into());
+    }
+    let marker_path = canonical_candidate.join(SNAPSHOT_OWNER_MARKER);
+    let marker_meta = fs::symlink_metadata(&marker_path)
+        .map_err(|_| "Snapshot ownership evidence is missing; cleanup was refused.".to_string())?;
+    if !marker_meta.is_file() || is_reparse_or_symlink(&marker_meta) || marker_meta.len() > 1024 {
+        return Err("Snapshot ownership evidence is not a small regular file; cleanup was refused.".into());
+    }
+    let bytes = fs::read(&marker_path)
+        .map_err(|_| "Snapshot ownership evidence could not be read; cleanup was refused.".to_string())?;
+    let marker: SnapshotOwnershipMarker = serde_json::from_slice(&bytes)
+        .map_err(|_| "Snapshot ownership evidence is malformed; cleanup was refused.".to_string())?;
+    if marker.schema_version != SNAPSHOT_OWNER_SCHEMA
+        || marker.snapshot_id != snapshot_id
+        || marker.owner != "FRIDAY-CodingAssistant"
+    {
+        return Err("Snapshot ownership evidence does not match this FRIDAY workspace; cleanup was refused.".into());
+    }
+    Ok(canonical_candidate)
+}
+
+fn remove_verified_owned_snapshot(workspace_root: &Path, snapshot_id: &str) -> Result<(), String> {
+    let verified = verified_owned_snapshot_path(workspace_root, snapshot_id)?;
+    fs::remove_dir_all(&verified)
+        .map_err(|_| "FRIDAY could not completely remove the verified snapshot folder.".to_string())
+}
+
 
 fn detect_windows_sandbox_at(system_root: Option<&OsStr>) -> bool {
     let Some(system_root) = system_root else { return false; };
@@ -379,15 +471,19 @@ pub async fn coding_sandbox_prepare_snapshot(app: AppHandle) -> Result<CodingSan
     let snapshot_path = workspace_root.join(&snapshot_id);
     fs::create_dir(&snapshot_path)
         .map_err(|_| "FRIDAY could not create a unique isolated snapshot folder.".to_string())?;
+    if let Err(error) = write_snapshot_ownership_marker(&snapshot_path, &snapshot_id) {
+        let _ = fs::remove_dir(&snapshot_path);
+        return Err(error);
+    }
 
     let mut budget = SnapshotBudget { files: 0, bytes: 0, truncated: false };
     let result = copy_snapshot_tree(&source_root, &source_root, &snapshot_path, 0, &mut budget);
     if let Err(error) = result {
-        let _ = fs::remove_dir_all(&snapshot_path);
+        let _ = remove_verified_owned_snapshot(&workspace_root, &snapshot_id);
         return Err(error);
     }
     if budget.files == 0 {
-        let _ = fs::remove_dir_all(&snapshot_path);
+        let _ = remove_verified_owned_snapshot(&workspace_root, &snapshot_id);
         return Err("No eligible source or project-manifest files were found to snapshot.".into());
     }
 
@@ -452,8 +548,53 @@ fn build_sandbox_config(snapshot_path: &Path) -> Result<String, String> {
 }
 
 #[tauri::command]
+pub async fn coding_sandbox_recover_workspaces(app: AppHandle) -> Result<CodingSandboxRecovery, String> {
+    let app_data = app.path().app_local_data_dir()
+        .map_err(|_| "FRIDAY could not locate its private application data folder.".to_string())?;
+    let workspace_root = app_data.join("coding-sandbox-workspaces");
+    let root_meta = match fs::symlink_metadata(&workspace_root) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CodingSandboxRecovery {
+                removed_snapshots: 0,
+                preserved_unverified_entries: 0,
+                message: "No previous Coding Assistant sandbox workspaces were found.".into(),
+            });
+        }
+        Err(_) => return Err("FRIDAY could not inspect its private sandbox workspace.".into()),
+    };
+    if !root_meta.is_dir() || is_reparse_or_symlink(&root_meta) {
+        return Err("The private sandbox workspace is not a normal directory; recovery was refused.".into());
+    }
+    let entries = fs::read_dir(&workspace_root)
+        .map_err(|_| "FRIDAY could not list its private sandbox workspace.".to_string())?;
+    let mut removed = 0usize;
+    let mut preserved = 0usize;
+    for entry in entries {
+        let Ok(entry) = entry else { preserved += 1; continue; };
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else { preserved += 1; continue; };
+        if !valid_snapshot_id(&name) {
+            preserved += 1;
+            continue;
+        }
+        match remove_verified_owned_snapshot(&workspace_root, &name) {
+            Ok(()) => {
+                removed += 1;
+                if let Ok(mut owned) = OWNED_SNAPSHOTS.lock() { owned.remove(&name); }
+            }
+            Err(_) => preserved += 1,
+        }
+    }
+    Ok(CodingSandboxRecovery {
+        removed_snapshots: removed,
+        preserved_unverified_entries: preserved,
+        message: format!("Recovery removed {removed} verified FRIDAY-owned snapshot(s) and preserved {preserved} unverified or unknown entrie(s). Original project folders are never scanned or deleted."),
+    })
+}
+
+#[tauri::command]
 pub async fn coding_sandbox_config_preview(snapshot_id: String) -> Result<String, String> {
-    if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !valid_snapshot_id(&snapshot_id) {
         return Err("The snapshot identifier is invalid.".into());
     }
     let owned = OWNED_SNAPSHOTS.lock()
