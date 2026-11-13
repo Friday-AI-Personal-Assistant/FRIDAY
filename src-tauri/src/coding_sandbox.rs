@@ -775,26 +775,24 @@ fn secure_private_workspace_directory(path: &Path) -> Result<(), String> {
 $path = $args[0]
 $currentSid = $args[1]
 $allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
-$acl = Get-Acl -LiteralPath $path
-$acl.SetAccessRuleProtection($true, $false)
-$existing = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
-$identities = @($existing | ForEach-Object { $_.IdentityReference } | Select-Object -Unique)
-foreach ($identity in $identities) { [void]$acl.PurgeAccessRules($identity) }
-foreach ($sidText in $allowed) {
-  $identity = [System.Security.Principal.SecurityIdentifier]::new($sidText)
-  $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($identity, [System.Security.AccessControl.FileSystemRights]::FullControl, $inheritance, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow)
-  [void]$acl.AddAccessRule($rule)
-}
-Set-Acl -LiteralPath $path -AclObject $acl
-$check = Get-Acl -LiteralPath $path
-if (-not $check.AreAccessRulesProtected) { throw 'DACL inheritance is still enabled' }
-$rules = @($check.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-if ($rules.Count -ne 3) { throw 'Unexpected number of access rules' }
-foreach ($rule in $rules) {
-  if ($rule.IsInherited -or $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $rule.FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or $allowed -notcontains $rule.IdentityReference.Value) {
-    throw 'Workspace DACL contains an unexpected access rule'
+try {
+  # A protected SDDL descriptor avoids ambiguous rule-merging and purge behavior.
+  $sddl = "D:P(A;OICI;FA;;;$currentSid)(A;OICI;FA;;;S-1-5-18)(A;OICI;FA;;;S-1-5-32-544)"
+  $acl = Get-Acl -LiteralPath $path
+  $acl.SetSecurityDescriptorSddlForm($sddl)
+  Set-Acl -LiteralPath $path -AclObject $acl
+  $check = Get-Acl -LiteralPath $path
+  if (-not $check.AreAccessRulesProtected) { throw 'ACL_INHERITANCE' }
+  $rules = @($check.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+  if ($rules.Count -ne 3) { throw 'ACL_RULE_COUNT' }
+  foreach ($rule in $rules) {
+    if ($rule.IsInherited -or $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $rule.FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or $allowed -notcontains $rule.IdentityReference.Value) {
+      throw 'ACL_RULE_CONTENT'
+    }
   }
+} catch {
+  [Console]::Error.WriteLine('PRIVATE_WORKSPACE_ACL_FAILED:' + $_.FullyQualifiedErrorId)
+  exit 1
 }
 "#;
         let powershell = system32.join("WindowsPowerShell").join("v1.0").join("powershell.exe");
@@ -805,7 +803,10 @@ foreach ($rule in $rules) {
             .output()
             .map_err(|_| "FRIDAY could not apply restrictive Windows workspace permissions.".to_string())?;
         if !applied.status.success() {
-            return Err("Windows workspace ACL could not be rebuilt and verified; snapshot operation was stopped.".into());
+            let diagnostic = String::from_utf8_lossy(&applied.stderr);
+            let diagnostic = diagnostic.lines().find(|line| line.contains("PRIVATE_WORKSPACE_ACL_FAILED:"))
+                .unwrap_or("PRIVATE_WORKSPACE_ACL_FAILED:UNKNOWN");
+            return Err(format!("Windows workspace ACL could not be rebuilt and verified; snapshot operation was stopped ({diagnostic})."));
         }
     }
     Ok(())
