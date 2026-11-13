@@ -1,5 +1,20 @@
 use serde::Serialize;
-use std::{env, ffi::OsStr, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    env,
+    ffi::OsStr,
+    fs::{self, File, OpenOptions},
+    io::Read,
+    path::{Component, Path, PathBuf},
+    sync::Mutex,
+};
+use rand::RngCore;
+use tauri::{AppHandle, Manager};
+
+const MAX_SNAPSHOT_DEPTH: usize = 12;
+const MAX_SNAPSHOT_FILES: usize = 2_000;
+const MAX_SNAPSHOT_FILE_BYTES: u64 = 1_048_576;
+const MAX_SNAPSHOT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -11,15 +26,23 @@ pub struct CodingSandboxPreflight {
     message: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingSandboxSnapshot {
+    snapshot_id: String,
+    files_copied: usize,
+    bytes_copied: u64,
+    truncated: bool,
+    message: String,
+}
+
+static OWNED_SNAPSHOTS: Mutex<BTreeMap<String, PathBuf>> = Mutex::new(BTreeMap::new());
+
 fn detect_windows_sandbox_at(system_root: Option<&OsStr>) -> bool {
-    let Some(system_root) = system_root else {
-        return false;
-    };
-    let executable = PathBuf::from(system_root)
-        .join("System32")
-        .join("WindowsSandbox.exe");
+    let Some(system_root) = system_root else { return false; };
+    let executable = PathBuf::from(system_root).join("System32").join("WindowsSandbox.exe");
     fs::symlink_metadata(executable)
-        .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        .map(|metadata| metadata.is_file() && !is_reparse_or_symlink(&metadata))
         .unwrap_or(false)
 }
 
@@ -27,37 +50,253 @@ fn detect_windows_sandbox() -> bool {
     detect_windows_sandbox_at(env::var_os("SystemRoot").as_deref())
 }
 
+#[cfg(windows)]
+fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_type().is_symlink() || (metadata.file_attributes() & 0x400 != 0)
+}
+
+#[cfg(not(windows))]
+fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
 #[tauri::command]
 pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String> {
     let _project_root = crate::coding_assistant::selected_project_root_for_sandbox()?;
-
     #[cfg(windows)]
     {
         let detected = detect_windows_sandbox();
         let message = if detected {
-            "Windows Sandbox was detected. Code execution is still disabled while FRIDAY completes the isolated workspace launcher, strict command allowlist, resource enforcement, cancellation and result validation. No project code has been executed.".to_string()
+            "Windows Sandbox was detected. Code execution remains disabled while FRIDAY completes isolation, command restrictions, resource enforcement, cancellation and result validation. No project code has been executed.".to_string()
         } else {
-            "Windows Sandbox was not detected. FRIDAY will not fall back to running project code on your normal Windows account. Enable the Windows Sandbox feature before isolated execution can be offered.".to_string()
+            "Windows Sandbox was not detected. FRIDAY will not fall back to running project code on your normal Windows account.".to_string()
         };
         Ok(CodingSandboxPreflight {
-            platform_supported: true,
-            runtime_detected: detected,
-            execution_enabled: false,
-            network_isolation_enforced: false,
-            message,
+            platform_supported: true, runtime_detected: detected,
+            execution_enabled: false, network_isolation_enforced: false, message,
         })
     }
-
     #[cfg(not(windows))]
     {
         Ok(CodingSandboxPreflight {
-            platform_supported: false,
-            runtime_detected: false,
-            execution_enabled: false,
-            network_isolation_enforced: false,
+            platform_supported: false, runtime_detected: false,
+            execution_enabled: false, network_isolation_enforced: false,
             message: "The Coding Assistant execution sandbox is designed for Windows Sandbox. No project code has been executed and no host-execution fallback is available.".to_string(),
         })
     }
+}
+
+fn safe_project_file_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.is_empty()
+        || lower.starts_with('.')
+        || ["secret", "credential", "password", "token", "private", "id_rsa", ".env"]
+            .iter().any(|needle| lower.contains(needle))
+    {
+        return false;
+    }
+    matches!(
+        Path::new(name).extension().and_then(OsStr::to_str).map(str::to_ascii_lowercase).as_deref(),
+        Some("rs" | "toml" | "json" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
+            | "py" | "pyi" | "go" | "mod" | "sum" | "java" | "kt" | "kts" | "cs"
+            | "fs" | "fsx" | "vb" | "cpp" | "c" | "h" | "hpp" | "cc" | "html"
+            | "css" | "scss" | "sass" | "md" | "mdx" | "yaml" | "yml" | "xml"
+            | "sql" | "sh" | "bat" | "ps1" | "txt" | "lock" | "gradle" | "properties")
+    ) || matches!(lower.as_str(), "makefile" | "dockerfile" | "cmakelists.txt")
+}
+
+fn excluded_directory(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    name.starts_with('.') || matches!(
+        lower.as_str(),
+        "node_modules" | "target" | "dist" | "build" | "out" | "coverage"
+            | "vendor" | ".git" | ".svn" | ".hg" | ".idea" | ".vscode"
+            | ".friday-code-backups" | "venv" | ".venv" | "__pycache__"
+    )
+}
+
+struct SnapshotBudget {
+    files: usize,
+    bytes: u64,
+    truncated: bool,
+}
+
+fn safe_relative_path(path: &Path) -> bool {
+    path.components().all(|component| matches!(component, Component::Normal(_)))
+}
+
+#[cfg(windows)]
+fn open_source_file(path: &Path) -> Result<File, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_FLAG_OPEN_REPARSE_POINT: inspect the link itself instead of following it.
+    OpenOptions::new().read(true).custom_flags(0x0020_0000).open(path)
+        .map_err(|_| "A project file could not be opened safely.".to_string())
+}
+
+#[cfg(not(windows))]
+fn open_source_file(path: &Path) -> Result<File, String> {
+    File::open(path).map_err(|_| "A project file could not be opened safely.".to_string())
+}
+
+fn copy_snapshot_tree(
+    source_root: &Path,
+    current: &Path,
+    destination_root: &Path,
+    depth: usize,
+    budget: &mut SnapshotBudget,
+) -> Result<(), String> {
+    if depth > MAX_SNAPSHOT_DEPTH {
+        budget.truncated = true;
+        return Ok(());
+    }
+    let entries = fs::read_dir(current)
+        .map_err(|_| "FRIDAY could not safely read part of the selected project.".to_string())?;
+    for entry in entries {
+        if budget.files >= MAX_SNAPSHOT_FILES || budget.bytes >= MAX_SNAPSHOT_TOTAL_BYTES {
+            budget.truncated = true;
+            break;
+        }
+        let entry = match entry { Ok(value) => value, Err(_) => { budget.truncated = true; continue; } };
+        let name = entry.file_name();
+        let Some(name_text) = name.to_str() else { budget.truncated = true; continue; };
+        let source = entry.path();
+        let metadata = match fs::symlink_metadata(&source) {
+            Ok(value) => value,
+            Err(_) => { budget.truncated = true; continue; }
+        };
+        if is_reparse_or_symlink(&metadata) { continue; }
+        if metadata.is_dir() {
+            if excluded_directory(name_text) { continue; }
+            let relative = source.strip_prefix(source_root).map_err(|_| "Project path escaped its selected root.".to_string())?;
+            if !safe_relative_path(relative) { continue; }
+            let target_dir = destination_root.join(relative);
+            fs::create_dir_all(&target_dir).map_err(|_| "FRIDAY could not prepare the isolated project copy.".to_string())?;
+            copy_snapshot_tree(source_root, &source, destination_root, depth + 1, budget)?;
+            if budget.truncated { break; }
+            continue;
+        }
+        if !metadata.is_file() || !safe_project_file_name(name_text)
+            || metadata.len() == 0 || metadata.len() > MAX_SNAPSHOT_FILE_BYTES
+        {
+            continue;
+        }
+        let relative = source.strip_prefix(source_root).map_err(|_| "Project path escaped its selected root.".to_string())?;
+        if !safe_relative_path(relative) { continue; }
+        let canonical = match fs::canonicalize(&source) { Ok(value) => value, Err(_) => continue };
+        if !canonical.starts_with(source_root) { continue; }
+
+        let mut file = match open_source_file(&source) {
+            Ok(value) => value,
+            Err(_) => { budget.truncated = true; continue; }
+        };
+        let opened_metadata = file.metadata().map_err(|_| "FRIDAY could not verify a project file.".to_string())?;
+        if is_reparse_or_symlink(&opened_metadata) || !opened_metadata.is_file()
+            || opened_metadata.len() != metadata.len()
+        { continue; }
+        let remaining = MAX_SNAPSHOT_TOTAL_BYTES.saturating_sub(budget.bytes);
+        let limit = MAX_SNAPSHOT_FILE_BYTES.min(remaining);
+        let mut contents = Vec::with_capacity(opened_metadata.len() as usize);
+        file.take(limit.saturating_add(1)).read_to_end(&mut contents)
+            .map_err(|_| "FRIDAY could not read a project file safely.".to_string())?;
+        if contents.is_empty() || contents.len() as u64 > limit {
+            budget.truncated = true;
+            continue;
+        }
+        let after = fs::symlink_metadata(&source).map_err(|_| "A project file changed during snapshot preparation.".to_string())?;
+        if is_reparse_or_symlink(&after) || after.len() != opened_metadata.len() { continue; }
+
+        let target = destination_root.join(relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|_| "FRIDAY could not prepare the isolated project copy.".to_string())?;
+        }
+        let mut output = OpenOptions::new().write(true).create_new(true).open(&target)
+            .map_err(|_| "FRIDAY could not create a new isolated snapshot file.".to_string())?;
+        use std::io::Write;
+        output.write_all(&contents).map_err(|_| "FRIDAY could not finish writing the isolated project copy.".to_string())?;
+        output.sync_all().map_err(|_| "FRIDAY could not verify the isolated project copy was written.".to_string())?;
+        budget.files += 1;
+        budget.bytes = budget.bytes.saturating_add(contents.len() as u64);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn coding_sandbox_prepare_snapshot(app: AppHandle) -> Result<CodingSandboxSnapshot, String> {
+    let source_root = crate::coding_assistant::selected_project_root_for_sandbox()?;
+    let root_metadata = fs::symlink_metadata(&source_root)
+        .map_err(|_| "The selected project folder is no longer available.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The selected project folder is not a safe normal directory.".into());
+    }
+
+    let app_data = app.path().app_local_data_dir()
+        .map_err(|_| "FRIDAY could not locate its private application data folder.".to_string())?;
+    let workspace_root = app_data.join("coding-sandbox-workspaces");
+    fs::create_dir_all(&workspace_root)
+        .map_err(|_| "FRIDAY could not create private sandbox workspace storage.".to_string())?;
+    let workspace_meta = fs::symlink_metadata(&workspace_root)
+        .map_err(|_| "FRIDAY could not verify private sandbox workspace storage.".to_string())?;
+    if !workspace_meta.is_dir() || is_reparse_or_symlink(&workspace_meta) {
+        return Err("Private sandbox workspace storage is not a safe normal directory.".into());
+    }
+
+    let mut random = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut random);
+    let snapshot_id = random.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let snapshot_path = workspace_root.join(&snapshot_id);
+    fs::create_dir(&snapshot_path)
+        .map_err(|_| "FRIDAY could not create a unique isolated snapshot folder.".to_string())?;
+
+    let mut budget = SnapshotBudget { files: 0, bytes: 0, truncated: false };
+    let result = copy_snapshot_tree(&source_root, &source_root, &snapshot_path, 0, &mut budget);
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(&snapshot_path);
+        return Err(error);
+    }
+    if budget.files == 0 {
+        let _ = fs::remove_dir_all(&snapshot_path);
+        return Err("No eligible source or project-manifest files were found to snapshot.".into());
+    }
+
+    OWNED_SNAPSHOTS.lock()
+        .map_err(|_| "Snapshot ownership tracking is temporarily unavailable.".to_string())?
+        .insert(snapshot_id.clone(), snapshot_path);
+    Ok(CodingSandboxSnapshot {
+        snapshot_id,
+        files_copied: budget.files,
+        bytes_copied: budget.bytes,
+        truncated: budget.truncated,
+        message: if budget.truncated {
+            "A bounded partial copy was prepared. Some files or folders were skipped or exceeded safety limits; the original project was not changed. Execution remains disabled.".into()
+        } else {
+            "A bounded isolated project copy was prepared. The original project was not changed. Execution remains disabled.".into()
+        },
+    })
+}
+
+#[tauri::command]
+pub async fn coding_sandbox_discard_snapshot(snapshot_id: String) -> Result<String, String> {
+    if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("The snapshot identifier is invalid.".into());
+    }
+    let path = OWNED_SNAPSHOTS.lock()
+        .map_err(|_| "Snapshot ownership tracking is temporarily unavailable.".to_string())?
+        .remove(&snapshot_id)
+        .ok_or_else(|| "This snapshot is not owned by the current FRIDAY session.".to_string())?;
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|_| "The snapshot folder is already unavailable; FRIDAY will not guess what to delete.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("The snapshot path is no longer a normal directory; FRIDAY refused cleanup.".into());
+    }
+    let canonical = fs::canonicalize(&path)
+        .map_err(|_| "FRIDAY could not verify the snapshot folder before cleanup.".to_string())?;
+    if canonical != path || !canonical.parent().map(|parent| parent.ends_with("coding-sandbox-workspaces")).unwrap_or(false) {
+        return Err("The snapshot folder failed its ownership-path check; cleanup was refused.".into());
+    }
+    fs::remove_dir_all(&canonical)
+        .map_err(|_| "FRIDAY could not completely remove the isolated snapshot folder.".to_string())?;
+    Ok("The isolated snapshot copy was removed. The original project was not changed.".into())
 }
 
 #[cfg(test)]
@@ -67,10 +306,8 @@ mod tests {
     #[test]
     fn sandbox_preflight_never_advertises_execution_or_network_isolation_early() {
         let policy = CodingSandboxPreflight {
-            platform_supported: true,
-            runtime_detected: true,
-            execution_enabled: false,
-            network_isolation_enforced: false,
+            platform_supported: true, runtime_detected: true,
+            execution_enabled: false, network_isolation_enforced: false,
             message: "Preflight only".into(),
         };
         assert!(!policy.execution_enabled);
@@ -80,5 +317,31 @@ mod tests {
     #[test]
     fn windows_sandbox_detection_never_treats_a_missing_root_as_available() {
         assert!(!detect_windows_sandbox_at(None));
+    }
+
+    #[test]
+    fn snapshot_allowlist_excludes_secrets_and_binary_assets() {
+        assert!(safe_project_file_name("main.rs"));
+        assert!(safe_project_file_name("package.json"));
+        assert!(!safe_project_file_name(".env"));
+        assert!(!safe_project_file_name("client-secret.json"));
+        assert!(!safe_project_file_name("id_rsa"));
+        assert!(!safe_project_file_name("image.png"));
+        assert!(!safe_project_file_name("application.exe"));
+    }
+
+    #[test]
+    fn snapshot_skips_hidden_and_dependency_directories() {
+        for name in [".git", ".vscode", "node_modules", "target", "dist", "vendor"] {
+            assert!(excluded_directory(name));
+        }
+        assert!(!excluded_directory("src"));
+    }
+
+    #[test]
+    fn snapshot_paths_must_be_relative_normal_components() {
+        assert!(safe_relative_path(Path::new("src/main.rs")));
+        assert!(!safe_relative_path(Path::new("../outside.rs")));
+        assert!(!safe_relative_path(Path::new("/absolute/path")));
     }
 }
