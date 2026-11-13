@@ -1121,8 +1121,8 @@ pub(crate) fn remove_verified_snapshot_file(
 ) -> io::Result<()> {
     use std::os::unix::{ffi::OsStrExt, io::AsRawFd};
 
-    if !is_single_normal_component(name) || name == OsStr::new(".friday-snapshot-owner.json") {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot cleanup requires a non-marker filename component"));
+    if !is_single_normal_component(name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot cleanup requires one normal filename component"));
     }
     let opened = open_file_nofollow(parent, name)?;
     let metadata = opened.metadata()?;
@@ -1510,6 +1510,125 @@ pub(crate) fn remove_verified_empty_snapshot_directory(
     }
     drop(directory);
     Ok(())
+}
+
+
+
+/// Remove one complete schema-2 snapshot using only its validated inventory.
+///
+/// Cleanup is retryable while the marker remains: already-removed inventoried
+/// files/directories are accepted by the progress preflight. The marker is
+/// removed only after every inventoried payload entry is gone, and the root
+/// directory is attempted immediately afterwards. If a crash occurs after
+/// marker removal but before root removal, the now-unmarked empty directory is
+/// deliberately preserved on the next recovery pass.
+#[allow(dead_code)]
+pub(crate) fn cleanup_owned_snapshot(
+    workspace: &File,
+    snapshot_id: &str,
+    limits: BoundedSnapshotLimits,
+) -> io::Result<()> {
+    cleanup_owned_snapshot_with_hook(workspace, snapshot_id, limits, |_| Ok(()))
+}
+
+fn cleanup_owned_snapshot_with_hook<H>(
+    workspace: &File,
+    snapshot_id: &str,
+    limits: BoundedSnapshotLimits,
+    mut after_payload_entry: H,
+) -> io::Result<()>
+where
+    H: FnMut(&str) -> io::Result<()>,
+{
+    if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid snapshot identifier"));
+    }
+    let root = match open_dir_nofollow(workspace, Path::new(snapshot_id)) {
+        Ok(root) => root,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let manifest = preflight_snapshot_cleanup_progress(&root, snapshot_id, limits)?;
+
+    for item in &manifest.files {
+        let relative = Path::new(&item.path);
+        let Some(parent) = open_existing_snapshot_parent(&root, relative.parent().unwrap_or(Path::new("")))? else {
+            continue;
+        };
+        match remove_verified_snapshot_file(&parent, OsStr::new(relative.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "manifest file has no filename")
+        })?), item.size) {
+            Ok(()) => after_payload_entry(&item.path)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    let mut directories = manifest.directories.clone();
+    directories.sort_by(|left, right| {
+        right.matches('/').count().cmp(&left.matches('/').count())
+            .then_with(|| right.len().cmp(&left.len()))
+    });
+    for directory in &directories {
+        let relative = Path::new(directory);
+        let Some(parent) = open_existing_snapshot_parent(&root, relative.parent().unwrap_or(Path::new("")))? else {
+            continue;
+        };
+        let name = relative.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "manifest directory has no filename")
+        })?;
+        match remove_verified_empty_snapshot_directory(&parent, name) {
+            Ok(()) => after_payload_entry(directory)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    // The only remaining entry may be the validated ownership marker. Do not
+    // remove it if any unexpected entry or residual payload remains.
+    let mut remaining = read_dir(&root, Path::new("."))?;
+    let first = remaining.next().transpose()?.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "snapshot ownership marker disappeared before finalization")
+    })?;
+    if first.file_name() != OsStr::new(".friday-snapshot-owner.json")
+        || remaining.next().transpose()?.is_some()
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains residual or unexpected entries; ownership marker preserved"));
+    }
+    let marker = open_file_nofollow(&root, OsStr::new(".friday-snapshot-owner.json"))?;
+    let marker_metadata = marker.metadata()?;
+    if !marker_metadata.is_file() || is_reparse_or_symlink(&marker_metadata)
+        || marker_metadata.len() == 0 || marker_metadata.len() > 1024 * 1024
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot ownership marker is not a bounded regular file"));
+    }
+    remove_verified_snapshot_file(
+        &root,
+        OsStr::new(".friday-snapshot-owner.json"),
+        marker_metadata.len(),
+    )?;
+    drop(marker);
+    drop(root);
+
+    // If this final operation fails, the empty unmarked directory is not
+    // eligible for a later recovery pass. That is intentional fail-closed
+    // behavior rather than deleting a directory without ownership evidence.
+    remove_verified_empty_snapshot_directory(workspace, OsStr::new(snapshot_id))
+}
+
+fn open_existing_snapshot_parent(root: &File, relative: &Path) -> io::Result<Option<File>> {
+    let mut current = root.try_clone()?;
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "manifest parent path is not normalized"));
+        };
+        match open_dir_nofollow(&current, Path::new(name)) {
+            Ok(next) => current = next,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(Some(current))
 }
 
 /// Inspect a completed snapshot through held directory handles without mutating it.
@@ -2966,6 +3085,65 @@ mod tests {
         assert_eq!(fs::read(workspace_path.join(&id).join("unexpected.txt")).unwrap(), b"preserve");
 
         drop(root);
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+
+    #[test]
+    fn snapshot_cleanup_resumes_after_interruption_and_removes_marker_last() {
+        let workspace_path = make_test_directory("cleanup-retry");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![
+                BoundedSnapshotFile { relative_path: PathBuf::from("src/main.rs"), contents: b"fn main() {}".to_vec() },
+                BoundedSnapshotFile { relative_path: PathBuf::from("Cargo.toml"), contents: b"[package]".to_vec() },
+            ],
+            bytes: b"fn main() {}".len() as u64 + b"[package]".len() as u64,
+            truncated: false,
+        };
+        let id = "4".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+
+        let mut interrupted = false;
+        let first = cleanup_owned_snapshot_with_hook(&workspace, &id, bounded_limits(), |_| {
+            if !interrupted {
+                interrupted = true;
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "simulated interruption"));
+            }
+            Ok(())
+        });
+        assert_eq!(first.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        let root = open_dir_nofollow(&workspace, Path::new(&id)).unwrap();
+        assert!(preflight_snapshot_cleanup_progress(&root, &id, bounded_limits()).is_ok());
+        drop(root);
+
+        cleanup_owned_snapshot(&workspace, &id, bounded_limits()).unwrap();
+        assert!(open_dir_nofollow(&workspace, Path::new(&id)).is_err());
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_cleanup_preserves_unexpected_entries_and_legacy_markers() {
+        let workspace_path = make_test_directory("cleanup-preserve");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![BoundedSnapshotFile {
+                relative_path: PathBuf::from("main.rs"),
+                contents: b"fn main() {}".to_vec(),
+            }],
+            bytes: b"fn main() {}".len() as u64,
+            truncated: false,
+        };
+        let id = "5".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        let root_path = workspace_path.join(&id);
+        fs::write(root_path.join("unrecognized.txt"), b"keep").unwrap();
+        assert!(cleanup_owned_snapshot(&workspace, &id, bounded_limits()).is_err());
+        assert_eq!(fs::read(root_path.join("main.rs")).unwrap(), b"fn main() {}");
+        assert_eq!(fs::read(root_path.join("unrecognized.txt")).unwrap(), b"keep");
+
         drop(workspace);
         fs::remove_dir_all(workspace_path).unwrap();
     }
