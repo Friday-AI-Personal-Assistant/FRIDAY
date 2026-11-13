@@ -629,7 +629,16 @@ fn open_source_file(path: &Path) -> Result<File, String> {
         .map_err(|_| "A project file could not be opened safely.".to_string())
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn open_source_file(path: &Path) -> Result<File, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // O_NOFOLLOW closes the final-component symlink race between lstat-style
+    // validation and open. Parent-directory identity is still checked by callers.
+    OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)
+        .map_err(|_| "A project file could not be opened safely.".to_string())
+}
+
+#[cfg(not(any(windows, unix)))]
 fn open_source_file(path: &Path) -> Result<File, String> {
     File::open(path).map_err(|_| "A project file could not be opened safely.".to_string())
 }
@@ -977,6 +986,22 @@ mod tests {
         assert!(validate_guest_result_directory_entries(&["other.json".into()]).is_err());
         assert!(validate_guest_result_directory_entries(&["result.json".into(), "extra.txt".into()]).is_err());
         assert!(validate_guest_result_directory_entries(&["RESULT.JSON".into()]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_source_file_rejects_symlinks_without_following_them() {
+        let directory = make_test_directory("no-follow-open");
+        let target = directory.join("target.txt");
+        let link = directory.join("link.txt");
+        fs::write(&target, b"trusted target").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(open_source_file(&link).is_err());
+        let mut opened = open_source_file(&target).unwrap();
+        let mut contents = Vec::new();
+        opened.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"trusted target");
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
