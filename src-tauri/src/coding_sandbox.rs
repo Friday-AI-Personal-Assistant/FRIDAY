@@ -311,7 +311,7 @@ fn build_sandbox_config(snapshot_path: &Path) -> Result<String, String> {
   <MappedFolders>
     <MappedFolder>
       <HostFolder>{escaped}</HostFolder>
-      <SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder>
+      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
   </MappedFolders>
