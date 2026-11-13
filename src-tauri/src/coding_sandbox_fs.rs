@@ -1,8 +1,9 @@
 //! Experimental handle-relative traversal for Coding Assistant snapshots.
 //!
-//! This module is intentionally not wired into snapshot creation yet. It only
-//! enumerates candidate regular-file paths; it does not open or copy file data.
-//! The caller must supply an already-open root directory handle.
+//! This module contains test-only filesystem security prototypes. The source
+//! collector reads bounded bytes through held handles; the destination writer
+//! creates an exclusive snapshot below a held workspace handle. Neither is
+//! wired into production snapshot creation. Callers supply verified handles.
 
 use cap_primitives::fs::{open_dir_nofollow, read_dir};
 use std::{
@@ -928,6 +929,7 @@ fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io:
     const FILE_LIST_DIRECTORY: u32 = 0x1;
     const FILE_ADD_FILE: u32 = 0x2;
     const FILE_ADD_SUBDIRECTORY: u32 = 0x4;
+    const FILE_TRAVERSE: u32 = 0x20;
     const SYNCHRONIZE: u32 = 0x0010_0000;
     const FILE_SHARE_READ: u32 = 0x1;
     const FILE_SHARE_WRITE: u32 = 0x2;
@@ -950,7 +952,7 @@ fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io:
     let mut io_status = IoStatusBlock { status: IoStatusValue { status: 0 }, information: 0 };
     let mut handle = ptr::null_mut();
     let access = if directory {
-        FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+        FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE
     } else {
         FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE
     };
