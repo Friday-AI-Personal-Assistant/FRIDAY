@@ -1,6 +1,6 @@
 [package]
 name = "friday"
-version = "0.1.0"
+version = "0.2.0"
 description = "FRIDAY personal AI desktop assistant"
 authors = ["FRIDAY contributors"]
 edition = "2021"
@@ -17,3 +17,12 @@ tauri = { version = "2", features = [] }
 chacha20poly1305 = "0.10"
 rand = "0.8"
 keyring = { version = "3", features = ["windows-native"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+
+tokio = { version = "1", features = ["macros", "sync"] }
+lopdf = "0.47"
+tauri-plugin-dialog = "2"

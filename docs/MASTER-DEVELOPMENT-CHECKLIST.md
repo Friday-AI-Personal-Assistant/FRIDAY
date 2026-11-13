@@ -1,0 +1,234 @@
+# FRIDAY Master Development Checklist
+
+> Living project checklist for the `feature/v0.2-local-ollama-chat` development branch. Update this document as features are implemented and verified. Do not mark a feature complete merely because its screen or placeholder exists.
+
+## Project direction
+
+Build FRIDAY into a local-first, modular Windows personal AI assistant. Keep the existing React + TypeScript + Tauri 2 + Rust architecture. Use OpenJarvis as a capability and architecture reference, adapting ideas to FRIDAY rather than copying its Python implementation wholesale.
+
+## Status definitions
+
+- [ ] **Pending** — not implemented.
+- [~] **In progress / partial** — some code or UI exists, but the complete capability is not ready.
+- [x] **Implemented** — implementation exists; this alone does not mean it passed testing.
+- [x] **Verified** — the defined test has passed on the target Windows desktop.
+- **Blocked** — waiting on an external account, permission, service, hardware, or decision.
+
+Every feature must have both an implementation status and a test status. Keep those separate.
+
+## Baseline audit — current development branch
+
+Branch: `feature/v0.2-local-ollama-chat`
+
+Comparison with `main`: 15 commits ahead, 0 behind at the time of this audit. Continue development on this branch; do not commit feature work to `main` or merge without explicit approval.
+
+| Area | What exists in source | Current assessment |
+|---|---|---|
+| Desktop shell | Tauri 2 + React + TypeScript + Vite navigation and pages | Implemented; basic navigation was manually tested in an earlier installed build |
+| Private workspace | One encrypted test note using XChaCha20-Poly1305; key stored via Windows Credential Manager | Partial foundation; not a full database, backup, export/import or recovery system |
+| Ollama | Rust commands to list local models and send non-streaming chat requests to `127.0.0.1:11434`; model selector in chat UI | Early integration present; current branch build and end-to-end test still required |
+| Chat experience | User/assistant messages held in React component state; simple allowlisted desktop-action prompts with confirmation | Partial; chat is lost on refresh/restart, no tool-calling framework or conversation management |
+| Skills Store | Four hard-coded catalogue entries and local installed/enabled registry | Foundation only; install currently records state, does not download packages or provide working skill tools |
+| Email, Job Finder, CV Studio, Voice | Listed as planned items in Overview and Product Plan | Not implemented |
+| Persistent memory | No memory/retrieval subsystem found in audited source files | Not implemented |
+| Settings and hardware detection | Settings page is a placeholder; no hardware/model recommendation system found | Not implemented |
+| Automated verification | No successful current-branch build or CI result was confirmed during this audit | Must verify before release |
+
+**Important wording:** Earlier manual tests of navigation, workspace initialisation, saving a note and persistence after restart were reported as passing on an earlier Windows build. They do not verify the newer Ollama or Skills Store changes.
+
+## Phase 0 — Project control and requirements
+
+- [x] Confirm the development branch exists and is ahead of `main`.
+- [x] Audit the current core files and existing Product Plan / Privacy principles.
+- [x] Create this master checklist.
+- [ ] Update README so its status description matches the current development branch.
+- [ ] Record exact supported Windows versions and minimum hardware requirements.
+- [ ] Create a repeatable development/build/test procedure.
+- [ ] Add automated frontend and Rust checks to the development workflow.
+- [ ] Maintain a change log and update this checklist with every feature commit.
+
+## Phase 1 — Reliable core platform (build before many skills)
+
+### 1A. Local AI engine
+- [~] Detect whether Ollama is reachable.
+- [~] List locally installed Ollama models.
+- [~] Select a model in the chat UI.
+- [x] Improve connection errors and set separate connection/request timeouts; richer Ollama HTTP error messages are returned. (Implemented; Windows verification pending.)
+- [~] Improve model refresh feedback and sort/deduplicate installed model names. Model details (size, family, context) remain pending.
+- [x] Add local Ollama model download/pull flow with streamed progress and disk-space/network warnings (implementation committed; Windows verification pending).
+- [x] List installed models with local disk sizes (implementation committed; Windows verification pending).
+- [x] Remove installed models through Ollama after explicit user confirmation (implementation committed; Windows verification pending).
+- [ ] Support configurable local endpoint safely, defaulting to localhost.
+- [x] Implement incremental Ollama response streaming from Rust to the chat UI, including chunked NDJSON parsing and visible partial responses.
+- [x] Streaming busy/error states and request cancellation are implemented; Windows end-to-end verification remains pending.
+- [ ] Test small and larger models on representative hardware.
+- [ ] Document optional cloud providers separately; never silently send local data to them.
+
+### 1C. Chat and conversation storage
+- [x] Basic user/assistant chat interface.
+- [x] Conversation list, create, rename and delete (implemented; Windows verification pending; archive remains a later enhancement).
+- [x] Persist conversations locally across restart using authenticated XChaCha20-Poly1305 encryption and the existing Windows Credential Manager key (implementation committed; Windows verification pending).
+- [x] Search conversation history by conversation title (implementation committed; Windows verification pending).
+- [ ] Export and delete chat data.
+- [ ] Context-window management and conversation summarisation.
+- [ ] Clear indication of the active model and where processing occurs.
+
+### 1D. Workspace and personal memory
+- [~] Encrypted single-note proof of concept.
+- [ ] Design and implement a proper local database and migrations.
+- [x] Store user-entered, user-approved memory entries separately from chat transcripts in an encrypted local file using the existing Windows Credential Manager key (implementation committed; Windows verification pending).
+- [x] Add personal memory review, correction, enable/disable and delete controls (implementation committed; Windows verification pending).
+- [x] Include enabled user-approved memory as bounded context in local Ollama chat prompts; memory text is explicitly treated as context, not instructions.
+- [ ] Add natural-language memory suggestions and a clear approval step before saving; no automatic extraction or silent saving is enabled.
+- [ ] Add memory export and clear-all controls.
+- [ ] Add document indexing and retrieval with source references.
+- [ ] Add data export, backup/restore and deletion.
+- [ ] Document key loss and recovery limitations before promising recovery.
+
+### 1E. Skills platform
+- [x] Built-in catalogue with four declarative skill packages.
+- [x] Versioned manifests with ID, version, description, instruction entry point, dependencies and declared permissions.
+- [x] Install package instruction files to the local app-data skills folder; preserve compatibility with the legacy registry format.
+- [x] Verify built-in package identity, compatibility and SHA-256 instruction integrity before enabling/loading.
+- [x] Separate installed-on-disk, enabled and loaded-in-session states.
+- [x] Explicit load/unload controls; loaded instructions are fetched only when a chat request starts.
+- [x] No package scripts are executed and no skills load automatically in the background.
+- [x] Safe package path checks and uninstall cleanup for each skill package directory.
+- [~] Dependency metadata is supported; current built-in packages have no external dependencies.
+- [~] Catalogue remains a Rust built-in list; third-party catalogue/update/signing support is deferred.
+- [ ] Add skill-specific settings and data cleanup for future skills.
+- [ ] Connect each skill to real permissioned tools and end-to-end workflows.
+- [ ] Add signed remote package distribution and safe updates before accepting third-party packages.
+
+### 1F. Tool execution and permissions
+- [x] Central allowlisted tool registry with structured JSON arguments and per-tool permission declarations.
+- [x] Safe local calculator tool (basic arithmetic parser; no eval, shell or network).
+- [x] Desktop destination tool with fixed target allowlist and explicit per-action approval gate.
+- [x] Frontend uses the central executor rather than the legacy desktop-action command.
+- [x] Encrypted, persistent user-visible tool activity history (last 500 events), with a clear-history control; no telemetry upload.
+- [x] Reject unknown tool IDs, unknown desktop targets, unsupported calculator syntax and unapproved desktop actions.
+- [x] Permission tiers are represented per tool; only the calculator and fixed desktop-launch tools are currently enabled. File/network permissions remain deliberately unavailable until their dedicated skills are implemented.
+- [x] Send the registered calculator and fixed desktop tool schemas to Ollama during streamed chat requests.
+- [x] Parse model-proposed tool calls and show their structured arguments in an explicit approval panel; unknown tool IDs are blocked by the frontend catalogue check and backend allowlist.
+- [x] Approved tool results are returned to Ollama in a follow-up chat turn so FRIDAY can finish the original request.
+- [x] Follow-up tool proposals are supported with a maximum of three approved tool rounds per user request; tool proposal payloads are limited to 8 KB.
+- [x] Approved tool results are handed back to Ollama through a bounded app-generated context message; native Ollama tool-role transcript support remains a later compatibility improvement.
+- [x] Desktop actions require a short-lived, one-use backend-issued approval token bound to the exact tool ID and JSON arguments; mismatched, expired and replayed tokens are rejected. The UI confirmation remains the user-consent step; the token is not a security boundary against a compromised frontend.
+- [x] Tool activity is stored locally in an encrypted file using the existing workspace key, bounded to 500 events, and can be cleared from the UI.
+
+## Phase 2 — FRIDAY's original skills
+
+Implement each as a real end-to-end capability, including permissions, errors, settings, data handling and Windows tests.
+
+- [~] **PDF Reader** — native Windows file picker, local text extraction with page numbers, extracted-text preview, and local Ollama Q&A with page-citation instructions are implemented. Encrypted/damaged PDFs return a clear error; file size (25 MB), page count (500) and extracted text (120,000 characters) are bounded. Scanned-PDF OCR, stronger PDF parser hardening, Rust/TypeScript builds and Windows end-to-end verification remain pending.
+- [ ] **Web Research** — search and open sources, summarise with citations, distinguish source facts from model inference.
+- [ ] **File Assistant** — user-selected folders/files with path-scoped access grants; search and summarise; approved file writes with preview/diff; require confirmation before write, move or delete.
+- [ ] **Coding Assistant** — inspect selected project files, explain and propose edits; sandbox tests/commands with strict time/resource limits; show diffs and require approval before applying changes.
+- [ ] **Email Management** — official OAuth, least-privilege scopes, inbox summaries, search/labels, draft replies; explicit approval before sending; disconnect and revoke access.
+- [ ] **Job Finder** — permitted job sources, saved searches and alerts, location/preferences filters, duplicate detection and application tracking; no unauthorised scraping or mass applications.
+- [ ] **CV Studio** — import PDF/DOCX, edit and preview, ATS-friendly templates, export; never invent qualifications or work history.
+- [ ] **Voice Assistant** — optional push-to-talk speech input and spoken output, visible microphone state, local processing where practical, clear permission controls.
+- [ ] **Personality and Preferences** — tone, language, response length and user-defined preferences, saved locally.
+
+## Phase 3 — OpenJarvis-inspired capability expansion
+
+These are capability areas to adapt, not a promise to reproduce every OpenJarvis integration or backend. Select compatible, maintainable components for FRIDAY's Rust/Tauri architecture.
+
+### Everyday tools
+- [ ] Calculator and safe date/time/unit utilities.
+- [ ] Controlled web search and webpage reading.
+- [ ] Python execution in a restricted sandbox.
+- [ ] User-approved file and document tools.
+- [ ] Structured data extraction and report generation.
+
+### Knowledge and memory
+- [ ] Local document library and indexing.
+- [ ] Keyword and semantic retrieval; evaluate lightweight local options.
+- [ ] Hybrid retrieval/reranking when useful and affordable.
+- [ ] Source citations and traceability for retrieved information.
+- [ ] User-controlled long-term memory and profile.
+
+### Agents and workflows
+- [ ] Reliable task planner with visible steps and progress.
+- [ ] ReAct-style tool-use loop with approval gates.
+- [ ] Research workflow that gathers and cites sources.
+- [ ] Multi-step workflows with checkpoints, cancellation and recovery.
+- [ ] Multi-agent coordination only where it provides measurable value.
+- [ ] Scheduled tasks and reminders, opt-in and visible.
+- [ ] Proactive monitoring only when explicitly configured.
+
+### Integrations
+- [ ] Define a secure connector framework and per-connector permissions.
+- [ ] Calendar and contacts.
+- [ ] Cloud drives and document providers.
+- [ ] Messaging platforms (evaluate WhatsApp, Telegram, Discord, Slack, Teams, Signal individually).
+- [ ] Additional email providers and productivity services.
+- [ ] Make each connector optional, revocable and transparent about data leaving the device.
+
+### Evaluation and observability
+- [ ] User-visible activity history and diagnostics.
+- [ ] Local evaluation tests for tool correctness and model quality.
+- [ ] Performance measurements (latency, memory, CPU/GPU) with user consent.
+- [ ] No silent analytics or diagnostic uploads.
+
+## Phase 4 — Advanced assistant and optimisation
+
+- [ ] Hardware detection and model recommendations.
+- [ ] Model profiles for low-memory, balanced and high-performance devices.
+- [ ] Unload idle models/skills where supported; avoid unnecessary background services.
+- [ ] Resource limits and cancellation for long-running tasks.
+- [ ] Optional model routing based on task and user settings.
+- [ ] Reliable workflow resume/retry and clear failure recovery.
+- [ ] Optional cloud models only with explicit provider and data-flow disclosure.
+
+## Phase 5 — Security, privacy and release readiness
+
+- [ ] Threat model covering local malware, unlocked Windows account, malicious documents, prompt injection and compromised skill packages.
+- [ ] Review every tool's filesystem, process and network permissions.
+- [ ] Protect OAuth tokens and secrets with OS credential storage.
+- [ ] Verify package integrity and trusted update/signing process.
+- [ ] Test prompt-injection resistance for webpages, PDFs, email and other untrusted content.
+- [ ] Test permission bypass attempts and destructive-action confirmation.
+- [ ] Verify data export, deletion, backup and restore.
+- [ ] Review privacy notices and document all external data flows.
+- [ ] No claims of absolute security; obtain independent review before making strong security claims.
+
+## Phase 6 — Verification and Windows release
+
+- [ ] TypeScript build and lint/checks pass for the latest changes.
+- [ ] Rust formatting, new Ollama request-validation unit tests, and build pass for the latest changes.
+- [ ] Tauri Windows installer build passes on the development branch.
+- [ ] Install on a clean supported Windows environment.
+- [ ] Test Ollama missing, running, stopped and model-not-installed cases.
+- [ ] Test chat, history, memory and restart persistence.
+- [ ] Test each installed skill's success, failure, permissions and uninstall.
+- [ ] Test external integrations with test accounts and revoke access afterward.
+- [ ] Test offline operation for features advertised as local.
+- [ ] Test low-resource hardware and long-running task cancellation.
+- [ ] Verify upgrade and uninstall behaviour without losing user data unexpectedly.
+- [ ] Brother/friend completes the real-world acceptance checklist.
+- [ ] Fix all release-blocking issues and document known limitations.
+- [ ] Build and publish the final approved Windows installer.
+- [ ] Only merge to `main` after explicit approval.
+
+## OpenJarvis reference map
+
+Use the upstream project as a design reference and verify current upstream documentation before implementing a specific capability:
+
+- Repository: https://github.com/open-jarvis/OpenJarvis
+- Architecture overview: https://github.com/open-jarvis/OpenJarvis/blob/main/docs/architecture/overview.md
+- Skills architecture: https://github.com/open-jarvis/OpenJarvis/blob/main/docs/architecture/skills.md
+- Skills guide: https://github.com/open-jarvis/OpenJarvis/blob/main/docs/user-guide/skills.md
+- Security guide: https://github.com/open-jarvis/OpenJarvis/blob/main/docs/user-guide/security.md
+
+Do not copy code or dependencies without checking their licences and compatibility. Preserve required notices. Prefer adapting concepts to FRIDAY's native stack.
+
+## Immediate next work item
+
+**Phase 1C — Persistent chat history:** encrypted local conversation storage, conversation list/create/switch/rename/delete, title search and persistence of completed or stopped responses are implemented in the development branch. Rust/TypeScript checks and Windows end-to-end verification remain pending.
+
+**Phase 1F — Central Tool Execution and Permission System:** the allowlisted registry exposes safe local arithmetic and fixed desktop destinations. Streamed Ollama requests include those tool schemas; model-proposed calls are shown for explicit user approval, with a maximum of three approved tool rounds and an 8 KB proposal limit. Desktop execution requires a short-lived, one-use backend-issued token bound to the exact tool and arguments; mismatches, expiry and replay are rejected. The token supplements, but does not replace, the visible user confirmation and is not a security boundary against a compromised frontend. Tool activity is persisted locally in an encrypted, bounded audit file and can be cleared in the UI. The handoff still uses bounded app-generated assistant context rather than a native Ollama tool-role transcript. File read/write tools and sandboxed code execution are intentionally deferred to the File Assistant and Coding Assistant skills, where path grants, diffs, and resource limits can be designed with the actual workflows. Rust/TypeScript checks and Windows verification remain pending.
+
+**Phase 1E — Proper Skills Platform:** four versioned built-in declarative packages can be installed locally, enabled, explicitly loaded/unloaded and integrity-checked. Loaded instructions are added to the next local chat prompt; packages do not execute scripts and do not yet provide their advertised tools. Automated and Windows verification remain pending.
+
+**Phase 1D — Persistent personal memory:** user-entered memory entries are stored separately from transcripts in an encrypted local file. The chat UI supports add, edit, enable/disable and delete; enabled entries are included as bounded context in local Ollama prompts. No memory is silently extracted or saved. Rust/TypeScript checks and Windows end-to-end verification remain pending.
