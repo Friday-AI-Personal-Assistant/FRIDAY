@@ -548,3 +548,12 @@ Tests cover an exact inventory, an unexpected file, and a symlink. Windows and L
 A narrowly scoped, test-only Unix helper now attempts to remove one ordinary file relative to a held parent directory handle. It requires a single non-marker filename, opens without following symlinks, checks the expected size, reopens the entry and compares handle identity, then uses descriptor-relative `unlinkat`. A regression test verifies that a size mismatch preserves the file and that a separate unknown file remains untouched.
 
 Important limitation: Unix `unlinkat` is name-based, so a hostile same-user process could still race a rename between the final identity comparison and unlink. This helper is not a complete race-free delete-by-handle primitive and must not be used in production. The Windows implementation intentionally returns Unsupported and preserves the file until a reviewed delete-by-handle operation is implemented. Recursive cleanup, directory removal, marker removal, retry/recovery, and production integration are not implemented. Keep guest execution disabled.
+
+
+## Windows handle-based snapshot-file deletion prototype (November 13, 2026)
+
+The test-only Windows file-removal primitive now opens the named entry relative to the already-held parent directory handle with NtCreateFile, requests DELETE access, denies FILE_SHARE_DELETE, and uses no-reparse/open-reparse-point semantics. It verifies that the opened object is an ordinary regular file with the exact expected size, then applies FileDispositionInfoEx to that same handle. The handle is closed before the test checks that the name is gone. The regression test also verifies that a size mismatch preserves the target and an unrelated file remains untouched.
+
+This is deliberately limited to one file at a time. The Windows delete disposition is applied to the opened object rather than re-resolving the filename for deletion; denying delete sharing is intended to prevent a concurrent rename while the handle is held. Unsupported filesystems/OS versions, sharing conflicts, and native API failures must return an error and preserve data. This remains a test-only primitive and is not production cleanup authorization.
+
+The Unix primitive still uses name-based unlinkat and retains its documented same-user rename-race limitation. Recursive tree deletion, safe empty-directory removal, marker removal, interruption/retry recovery, full threat-model review, and production integration remain outstanding. Guest execution remains disabled.
