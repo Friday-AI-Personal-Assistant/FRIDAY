@@ -10,6 +10,8 @@ mod file_assistant;
 mod coding_assistant;
 mod coding_intelligence;
 mod coding_sandbox;
+#[allow(dead_code)]
+mod coding_sandbox_fs;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
