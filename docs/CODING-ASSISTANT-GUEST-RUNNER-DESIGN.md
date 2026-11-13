@@ -161,6 +161,15 @@ Unit tests cover valid success, malformed JSON, unknown and duplicate fields, ru
 
 This is deliberately only a pure host-side JSON validator. It is not yet connected to a result directory, safe file opening, a guest process, Windows Sandbox, VHDX storage, or any execution command. The parser does not authenticate guest output; even accepted diagnostics remain untrusted data. All storage, ownership, session, resource, and isolation gates remain outstanding, and execution remains disabled.
 
+
+## Host-side guest run request validator — implemented, not connected to execution
+
+The host now also validates a bounded version-1 request structure for a future guest runner. The only accepted operation values are the three fixed enum values already listed above. The request contains only a schema version, generated run ID, snapshot ID, fixed operation, maximum duration and maximum output bytes. Both IDs must be exactly 32 hexadecimal characters. Duration must be between 1 and 120,000 ms; output must be between 1 byte and 1 MiB; and the complete JSON request is capped at 4 KiB. Unknown fields and duplicate keys are rejected. In particular, there are no fields for a shell command, executable path, arbitrary arguments, environment, working directory, or network settings.
+
+Unit tests cover the valid contract, unknown/duplicate fields, unsupported versions, path-like identifiers, out-of-range limits and oversized request documents. These checks constrain the data shape only; they do not prove that a future guest runner safely launches a runtime or that the supplied snapshot is safe to execute.
+
+The request parser is currently a pure host-side validator and is not wired to any UI, file, guest process, or Sandbox session. Execution remains disabled.
+
 ## Required regression suite
 
 The implementation must add tests for:
