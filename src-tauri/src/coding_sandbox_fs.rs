@@ -1219,6 +1219,22 @@ pub(crate) fn remove_verified_snapshot_file(
             ea_length: u32,
         ) -> i32;
     }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtQueryDirectoryFile(
+            file_handle: *mut std::ffi::c_void,
+            event: *mut std::ffi::c_void,
+            apc_routine: *mut std::ffi::c_void,
+            apc_context: *mut std::ffi::c_void,
+            io_status_block: *mut IoStatusBlock,
+            file_information: *mut std::ffi::c_void,
+            length: u32,
+            information_class: i32,
+            return_single_entry: u8,
+            file_name: *mut UnicodeString,
+            restart_scan: u8,
+        ) -> i32;
+    }
     #[link(name = "kernel32")]
     extern "system" {
         fn SetFileInformationByHandle(
@@ -1426,8 +1442,48 @@ pub(crate) fn remove_verified_empty_snapshot_directory(
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot entry is not an ordinary directory"));
     }
-    if read_dir(&directory, Path::new("."))?.next().transpose()?.is_some() {
-        return Err(io::Error::new(io::ErrorKind::DirectoryNotEmpty, "snapshot directory is not empty"));
+    // Enumerate through this exact restrictive handle. cap_std::read_dir
+    // opens a second handle; with FILE_SHARE_READ only that second open gets
+    // ERROR_SHARING_VIOLATION and cannot provide an emptiness check.
+    let mut directory_buffer = [0u64; 8192];
+    let mut restart_scan = 1u8;
+    loop {
+        let mut query_status = IoStatusBlock {
+            status: IoStatusValue { status: 0 }, information: 0,
+        };
+        let query = unsafe {
+            NtQueryDirectoryFile(
+                directory.as_raw_handle(),
+                ptr::null_mut(), ptr::null_mut(), ptr::null_mut(),
+                &mut query_status,
+                directory_buffer.as_mut_ptr() as *mut std::ffi::c_void,
+                mem::size_of_val(&directory_buffer) as u32,
+                1, // FileDirectoryInformation
+                1, // ReturnSingleEntry
+                ptr::null_mut(),
+                restart_scan,
+            )
+        };
+        restart_scan = 0;
+        if query as u32 == 0x8000_0006 { break; } // STATUS_NO_MORE_FILES
+        if query < 0 {
+            return Err(io::Error::new(io::ErrorKind::Other,
+                format!("handle-relative directory enumeration failed (NTSTATUS 0x{:08X})", query as u32)));
+        }
+        let bytes = query_status.information;
+        if bytes < 64 || bytes > mem::size_of_val(&directory_buffer) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "directory enumeration returned an invalid record length"));
+        }
+        let record = directory_buffer.as_ptr() as *const u8;
+        let name_length = unsafe { ptr::read_unaligned(record.add(60) as *const u32) } as usize;
+        if name_length % 2 != 0 || 64usize.checked_add(name_length).map_or(true, |end| end > bytes) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "directory enumeration returned an invalid name"));
+        }
+        let name_ptr = unsafe { record.add(64) as *const u16 };
+        let name = unsafe { std::slice::from_raw_parts(name_ptr, name_length / 2) };
+        if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] {
+            return Err(io::Error::new(io::ErrorKind::DirectoryNotEmpty, "snapshot directory is not empty"));
+        }
     }
     let disposition = FileDispositionInfoEx { flags: FILE_DISPOSITION_FLAG_DELETE };
     if unsafe {
