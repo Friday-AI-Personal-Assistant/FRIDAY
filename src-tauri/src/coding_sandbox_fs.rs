@@ -241,8 +241,18 @@ where
 /// Acquire a directory by starting at a filesystem root and opening each
 /// normal component relative to the already-held parent handle. No ambient
 /// absolute child path is used after the root anchor is opened.
-#[cfg(unix)]
 fn open_directory_from_filesystem_root(path: &Path) -> io::Result<File> {
+    open_directory_from_filesystem_root_with_hook(path, |_| Ok(()))
+}
+
+#[cfg(unix)]
+fn open_directory_from_filesystem_root_with_hook<F>(
+    path: &Path,
+    mut after_component_open: F,
+) -> io::Result<File>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+{
     let mut components = path.components();
     match components.next() {
         Some(Component::RootDir) => {}
@@ -258,6 +268,7 @@ fn open_directory_from_filesystem_root(path: &Path) -> io::Result<File> {
         Path::new("/"),
         ambient_authority::ambient_authority(),
     )?;
+    let mut current_path = PathBuf::from("/");
     for component in components {
         match component {
             Component::Normal(name) if is_single_normal_component(name) => {
@@ -270,6 +281,8 @@ fn open_directory_from_filesystem_root(path: &Path) -> io::Result<File> {
                     ));
                 }
                 current = child;
+                current_path.push(name);
+                after_component_open(&current_path)?;
             }
             Component::CurDir => {}
             _ => {
@@ -287,7 +300,13 @@ fn open_directory_from_filesystem_root(path: &Path) -> io::Result<File> {
 /// UNC shares and device namespaces remain unsupported until their root-handle
 /// semantics have separate review and physical acceptance coverage.
 #[cfg(windows)]
-fn open_directory_from_filesystem_root(path: &Path) -> io::Result<File> {
+fn open_directory_from_filesystem_root_with_hook<F>(
+    path: &Path,
+    mut after_component_open: F,
+) -> io::Result<File>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+{
     use std::path::Prefix;
 
     let mut components = path.components();
@@ -320,6 +339,7 @@ fn open_directory_from_filesystem_root(path: &Path) -> io::Result<File> {
         &volume_root,
         ambient_authority::ambient_authority(),
     )?;
+    let mut current_path = volume_root.clone();
 
     for component in components {
         match component {
@@ -333,6 +353,8 @@ fn open_directory_from_filesystem_root(path: &Path) -> io::Result<File> {
                     ));
                 }
                 current = child;
+                current_path.push(name);
+                after_component_open(&current_path)?;
             }
             Component::CurDir => {}
             _ => {
@@ -687,6 +709,59 @@ mod tests {
 
         fs::remove_dir(&link_parent).unwrap();
         fs::remove_dir_all(real_parent).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_root_handle_rejects_ancestor_replaced_after_its_handle_is_opened() {
+        use std::os::unix::fs::symlink;
+
+        let base = make_test_directory("ancestor-held-handle-race");
+        let ancestor = base.join("ancestor");
+        let replacement = base.join("replacement");
+        let displaced = base.join("displaced");
+        fs::create_dir_all(ancestor.join("project")).unwrap();
+        fs::create_dir_all(replacement.join("project")).unwrap();
+        fs::write(ancestor.join("project").join("authorized.txt"), b"original").unwrap();
+        fs::write(replacement.join("project").join("outside.txt"), b"outside").unwrap();
+
+        let root_path = ancestor.join("project");
+        let mut replaced = false;
+        let result = open_verified_root_directory_with_hook(&root_path, || Ok(()))
+            .and_then(|_| unreachable!("the hook must be attached to component acquisition"));
+
+        // Exercise the exact component walk with a hook that swaps the already
+        // opened ancestor before the project child is opened relative to it.
+        let walk = open_directory_from_filesystem_root_with_hook(&root_path, |opened| {
+            if opened == ancestor && !replaced {
+                fs::rename(&ancestor, &displaced)?;
+                symlink(&replacement, &ancestor)?;
+                replaced = true;
+            }
+            Ok(())
+        });
+
+        assert!(replaced, "the ancestor handle must be opened before replacement");
+        assert!(
+            walk.is_ok(),
+            "handle-relative descent should remain attached to the held original ancestor"
+        );
+        let opened_root = walk.unwrap();
+        assert!(
+            opened_root.metadata()?.is_dir(),
+            "the held original project directory should be opened"
+        );
+        assert_ne!(
+            path_identity(&root_path).unwrap(),
+            handle_identity(&opened_root).unwrap(),
+            "the final path must now resolve to the replacement, not the held original"
+        );
+
+        drop(opened_root);
+        fs::remove_file(&ancestor).unwrap();
+        fs::remove_dir_all(displaced).unwrap();
+        fs::remove_dir_all(replacement).unwrap();
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[cfg(unix)]
