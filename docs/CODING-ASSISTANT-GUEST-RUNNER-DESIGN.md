@@ -429,3 +429,25 @@ The Windows junction test command was corrected to pass mklink arguments individ
 A new test-only root acquisition prototype was added to src-tauri/src/coding_sandbox_fs.rs. It requires an absolute path, rejects a final-component symlink/reparse point, opens the directory through the pinned capability primitive, checks the opened handle is a normal directory, compares filesystem identity before and after open, and rechecks that the path still names that same directory after acquisition. Unix identity uses device and inode; Windows identity uses volume serial number and file index, and missing identity fields fail closed.
 
 The prototype is not used by production snapshot creation. It does not yet prove ancestor-path handling under all Windows namespace/reparse configurations, nor does it replace the selected-project authorization/canonicalization flow. Deterministic root replacement tests, broader reparse-tag coverage, physical Windows acceptance, and independent review are still required. Existing production snapshot traversal remains path-based and guest execution remains disabled.
+
+
+## Windows reparse-point policy review (November 13, 2026)
+
+The Windows prototype's policy is to reject every filesystem reparse point, not to maintain an allowlist of known tags. This is intentional. Windows assigns distinct tags to symbolic links, mount points/junctions, cloud placeholders, AppExecLink, WCI, ProjFS, DFS, deduplication and other filter-managed objects; third-party filters can also define tags. A tag allowlist would be incomplete by construction and could become unsafe when Windows or an installed filter introduces another tag.
+
+The current Windows metadata predicate checks FILE_ATTRIBUTE_REPARSE_POINT (0x400) in addition to the file-type check. The root path checks, opened-root checks, ancestor checks, Windows no-follow file-open postcondition, and result-file reader use this blanket attribute policy. The handle-relative Windows file helper also requests OBJ_DONT_REPARSE and FILE_OPEN_REPARSE_POINT, then verifies the opened handle is not marked as a reparse point. The directory-walk prototype uses cap_primitives::fs::open_dir_nofollow; the Windows junction regression in Run #458 verifies a junction is not traversed. The pending Run #467 adds a deterministic ancestor replacement test; its CI result is not yet recorded here.
+
+Implications by category:
+
+- Symbolic links and directory junctions: explicitly covered by existing tests; must remain rejected.
+- Volume mount points: carry the mount-point reparse tag and the same FILE_ATTRIBUTE_REPARSE_POINT attribute; reject them exactly like junctions. No mount-point creation test is claimed because creating a real volume mount point requires a suitable mounted volume and privileges not assumed in CI.
+- Cloud Files/OneDrive placeholders, WCI/container links, AppExecLink, ProjFS, DFS, deduplication/HSM and unknown third-party tags: reject based on the generic reparse attribute. Do not hydrate, traverse, interpret, or copy them.
+- Unknown or newly introduced tags: reject by default; never fall back to ordinary path-based open or tag-specific interpretation.
+
+This review is based on Microsoft's reparse-tag and reparse-point documentation, which describes the tag as the identifier for the owning filesystem/filter behavior and documents FILE_ATTRIBUTE_REPARSE_POINT as the generic presence indicator. References:
+- [Microsoft: Reparse Point Tags](https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-point-tags)
+- [Microsoft: Reparse Point Operations](https://learn.microsoft.com/windows/win32/fileio/reparse-point-operations)
+- [Microsoft: Determining Whether a Directory Is a Mounted Folder](https://learn.microsoft.com/en-us/windows/win32/fileio/determining-whether-a-directory-is-a-volume-mount-point)
+- [Microsoft: File System Reparse Points](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/reparse-points)
+
+Important limitation: this is a policy/source review, not proof that every Windows filesystem, filter driver, network share, or race behaves identically. CI currently covers ordinary directories, symlinks, junction traversal, final-component no-follow behavior, and deterministic root/ancestor replacement scenarios as their respective runs complete. Physical Windows acceptance must still include a mount-point test where a safe test volume is available, plus reparse-point behavior on supported Windows editions. Any unexpected metadata/open error remains a hard failure. The prototype is test-only; production snapshot traversal remains path-based and guest execution remains disabled.
