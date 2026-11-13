@@ -151,6 +151,7 @@ export default function SkillsManager() {
         setCodingAnswer(""); setCodingError("");
         setCodingProposalFileId(""); setCodingProposedContent(""); setCodingChangePreview(null);
         setCodingApprovalToken(""); setCodingApplyResult(null); setCodingHistory([]);
+        setCodingUndoBusy(false);
       }
       await refresh();
     } catch (e) { setError(String(e)); }
@@ -178,7 +179,11 @@ export default function SkillsManager() {
   async function analyseCodingProject() {
     if (!desktop || !codingProject || selectedCodingFileIds.length === 0 || !pdfModel.trim() || !codingQuestion.trim() || codingBusy) return;
     setCodingBusy(true); setCodingError(""); setCodingAnswer(""); setCodingFiles([]); setCodingIntelligence(null);
+    const previousPreviewId = codingChangePreview?.previewId;
+    setCodingChangePreview(null); setCodingApprovalToken("");
     try {
+      // A fresh analysis invalidates any earlier proposal, including its backend approval.
+      if (previousPreviewId) await invoke("cancel_code_change_preview", { previewId: previousPreviewId });
       const files = await invoke<CodingProjectFile[]>("read_project_files", { fileIds: selectedCodingFileIds });
       setCodingFiles(files);
       setCodingProposalFileId(selectedCodingFileIds[0] || "");
