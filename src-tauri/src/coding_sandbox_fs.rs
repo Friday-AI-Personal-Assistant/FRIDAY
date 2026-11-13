@@ -190,6 +190,18 @@ fn open_verified_root_directory_with_hook<F>(path: &Path, before_open: F) -> io:
 where
     F: FnOnce() -> io::Result<()>,
 {
+    open_verified_root_directory_with_hooks(path, before_open, |_| Ok(()))
+}
+
+fn open_verified_root_directory_with_hooks<F, G>(
+    path: &Path,
+    before_open: F,
+    after_component_open: G,
+) -> io::Result<File>
+where
+    F: FnOnce() -> io::Result<()>,
+    G: FnMut(&Path) -> io::Result<()>,
+{
     if !path.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -211,7 +223,7 @@ where
     let before_identity = path_identity(path)?;
     before_open()?;
 
-    let handle = open_directory_from_filesystem_root(path)?;
+    let handle = open_directory_from_filesystem_root_with_hook(path, after_component_open)?;
     let opened = handle.metadata()?;
     if !opened.is_dir()
         || is_reparse_or_symlink(&opened)
@@ -713,7 +725,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn root_walk_stays_on_held_ancestor_after_path_replacement() {
+    fn verified_root_handle_rejects_ancestor_replaced_after_its_handle_is_opened() {
         use std::os::unix::fs::symlink;
 
         let base = make_test_directory("ancestor-held-handle-race");
@@ -726,42 +738,28 @@ mod tests {
         fs::write(replacement.join("project").join("outside.txt"), b"outside").unwrap();
 
         let root_path = ancestor.join("project");
-        let original_identity = path_identity(&root_path).unwrap();
         let mut replaced = false;
+        let result = open_verified_root_directory_with_hooks(
+            &root_path,
+            || Ok(()),
+            |opened| {
+                if opened == ancestor && !replaced {
+                    // The walker already holds the original ancestor handle.
+                    // Replacing its pathname must not redirect the next open.
+                    fs::rename(&ancestor, &displaced)?;
+                    symlink(&replacement, &ancestor)?;
+                    replaced = true;
+                }
+                Ok(())
+            },
+        );
 
-        // Exercise the exact component walk with a hook that swaps the already
-        // opened ancestor before the project child is opened relative to it.
-        let walk = open_directory_from_filesystem_root_with_hook(&root_path, |opened| {
-            if opened == ancestor && !replaced {
-                fs::rename(&ancestor, &displaced)?;
-                symlink(&replacement, &ancestor)?;
-                replaced = true;
-            }
-            Ok(())
-        });
-
-        assert!(replaced, "the ancestor handle must be opened before replacement");
+        assert!(replaced, "the ancestor must be replaced after its handle is opened");
         assert!(
-            walk.is_ok(),
-            "handle-relative descent should remain attached to the held original ancestor"
-        );
-        let opened_root = walk.unwrap();
-        assert!(
-            opened_root.metadata().unwrap().is_dir(),
-            "the held original project directory should be opened"
-        );
-        assert_eq!(
-            original_identity,
-            handle_identity(&opened_root).unwrap(),
-            "descent must remain attached to the original held ancestor"
-        );
-        assert_ne!(
-            path_identity(&root_path).unwrap(),
-            handle_identity(&opened_root).unwrap(),
-            "the final path must now resolve to the replacement, not the held original"
+            result.is_err(),
+            "root acquisition must reject a path that changed during handle-relative descent"
         );
 
-        drop(opened_root);
         fs::remove_file(&ancestor).unwrap();
         fs::remove_dir_all(displaced).unwrap();
         fs::remove_dir_all(replacement).unwrap();
