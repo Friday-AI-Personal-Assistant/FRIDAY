@@ -1159,8 +1159,11 @@ pub(crate) fn remove_verified_snapshot_file(
         ptr,
     };
 
-    if !is_single_normal_component(name) || name == OsStr::new(".friday-snapshot-owner.json") {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot cleanup requires a non-marker filename component"));
+    // The ownership marker is intentionally deleted only after every
+    // inventoried payload entry and directory has been removed and the root
+    // has been rechecked to contain exactly this marker.
+    if !is_single_normal_component(name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot cleanup requires one normal filename component"));
     }
 
     let wide: Vec<u16> = name.encode_wide().collect();
