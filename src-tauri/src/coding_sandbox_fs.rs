@@ -145,6 +145,7 @@ mod tests {
                 PathBuf::from("src/nested/mod.rs"),
             ]
         );
+        drop(root);
         fs::remove_dir_all(root_path).unwrap();
     }
 
@@ -166,6 +167,7 @@ mod tests {
         let files = collect_regular_file_paths(&root, 12).unwrap();
         assert_eq!(files, vec![PathBuf::from("safe.rs")]);
 
+        drop(root);
         fs::remove_dir_all(root_path).unwrap();
         fs::remove_dir_all(outside).unwrap();
     }
@@ -189,6 +191,7 @@ mod tests {
         let files = collect_regular_file_paths(&root, 12).unwrap();
         assert_eq!(files, vec![PathBuf::from("safe.rs")]);
 
+        drop(root);
         fs::remove_dir_all(root_path).unwrap();
         fs::remove_dir_all(outside).unwrap();
     }
@@ -225,6 +228,7 @@ mod tests {
 
         assert!(replaced, "test must replace the directory after enumeration");
         assert!(result.is_err(), "no-follow directory open must fail closed");
+        drop(root);
         fs::remove_file(root_path.join("replace-me")).unwrap();
         fs::remove_dir_all(root_path).unwrap();
         fs::remove_dir_all(outside).unwrap();
