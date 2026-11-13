@@ -368,3 +368,18 @@ The next implementation/review sequence is:
 7. **Adversarial validation and physical Windows acceptance:** test malicious repositories, prompt injection, path/reparse-point swaps, output floods, disk-full, process-tree escape attempts, Sandbox ownership, cancellation, crash/restart, cleanup and supported Windows editions.
 
 Stage 5 remains separate and must include malicious repository prompt-injection tests, path/reparse-point protections, interrupted-operation recovery, language fixtures, regression tests, final Windows CI and hands-on acceptance. Do not mark Stage 4 or Stage 5 complete based on CI alone.
+
+
+## Follow-up filesystem traversal research (November 13, 2026)
+
+Runs #433–#435 passed both Windows and Linux CI. The Windows symlink regression confirms that the final-component open path uses FILE_FLAG_OPEN_REPARSE_POINT in the test environment; it does not prove resistance to parent-directory replacement or physical Windows junction attacks.
+
+A capability-oriented Rust filesystem API is now being evaluated for the snapshot copier:
+
+- cap-std::fs::Dir represents an already-open directory and provides relative operations such as entries, open_dir, open, and symlink_metadata. This is a better foundation than repeatedly resolving absolute paths. Its documentation specifically warns that on Windows a directory handle must be opened without FILE_SHARE_DELETE to prevent rename/delete races while it is held.
+- The companion cap-std-ext currently documents open_dir_noxdev (mount-boundary control), but that is not itself a no-symlink guarantee. Do not confuse the similarly named option with no-follow semantics.
+- Before adopting either crate, inspect the exact pinned release's Unix and Windows implementations and prove: directory opens cannot escape the held root; symlink/junction/reparse entries are rejected rather than followed; file identity can be compared between no-follow metadata and the subsequently opened handle; Windows directory handles deny delete sharing; and child enumeration/opening stays relative to the held parent handle.
+- The implementation must retain the current file-count, byte, depth, extension and secret-file limits; never use an ambient absolute path after establishing the root capability; and must fail closed on unsupported or ambiguous platform behavior.
+- Required tests: replace a child directory with an outside-pointing symlink/junction between enumeration and open; replace a parent path while its handle is held; attempt .., absolute and drive-qualified child names; test file and directory reparse points; verify no outside file is copied; and verify normal nested source files still copy. Add Windows CI tests and retain physical Windows acceptance as a separate gate.
+
+No traversal code has been changed based only on API documentation. The dependency and exact Windows semantics must be reviewed before adoption. Until the handle-relative implementation and adversarial tests pass, parent-directory race resistance remains unresolved and guest execution remains disabled.
