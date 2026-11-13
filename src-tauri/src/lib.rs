@@ -59,6 +59,8 @@ pub fn run() {
             coding_assistant::list_code_change_history,
             coding_intelligence::analyze_project_intelligence,
             coding_sandbox::coding_sandbox_preflight,
+            coding_sandbox::coding_sandbox_prepare_snapshot,
+            coding_sandbox::coding_sandbox_discard_snapshot,
             file_assistant::pick_and_read_text_files,
             file_assistant::pick_folder_and_list_text_files,
             file_assistant::read_granted_text_files,
