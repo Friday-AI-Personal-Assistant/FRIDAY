@@ -483,3 +483,25 @@ Important limitations remain:
 - Destination directory/file creation and cleanup are deliberately not implemented here. A separate destination-side design must use safe, app-owned storage and defend against reparse/path replacement and partial-write cleanup.
 - The production snapshot copier remains path-based and unchanged.
 - No guest process is launched; guest execution remains disabled.
+
+
+
+## Handle-relative snapshot destination creation prototype (November 13, 2026)
+
+A separate test-only destination writer has been added to `src-tauri/src/coding_sandbox_fs.rs`. It accepts only a verified, already-open workspace directory handle, a 32-character hexadecimal snapshot ID, bounded in-memory source contents, and explicit non-zero limits. It creates the snapshot directory exclusively relative to that held handle and creates every nested directory/file relative to a held parent handle.
+
+Platform behavior:
+- Unix uses `mkdirat` for exclusive directory creation and `openat` with `O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC` for exclusive regular-file creation. Created directories/files use restrictive 0700/0600 modes (subject to the process umask).
+- Windows uses `NtCreateFile` with `RootDirectory`, `OBJ_DONT_REPARSE`, `FILE_CREATE`, explicit directory/non-directory options, synchronous I/O, and no delete sharing on newly created directory handles. The opened handle's type and generic reparse attribute are checked; there is no ambient-path fallback.
+- All relative path components must be normal components. The reserved ownership-marker filename cannot be supplied as source content. File count, depth, per-file size, total byte count, and the caller's truncation state are validated again before creation.
+- File contents are written and flushed through the exclusively created handle. The ownership marker is written last, only after all payload files have been created successfully. Therefore a failed/partial creation is not represented as a complete owned snapshot.
+
+New regression tests cover nested destination writes, refusing to overwrite a pre-existing snapshot directory, rejecting traversal before any directory is created, and ensuring a failed/partial write does not create an ownership marker. Run #487 independently passed both Windows and Linux jobs for the preceding bounded source-capture fix. The destination prototype and its new tests are in the subsequent commits and are awaiting their own CI verification.
+
+Important limitations:
+- This remains test-only and is not connected to the production snapshot command.
+- The workspace handle must already have been safely acquired and authorized; this helper does not establish that the app-data root is trustworthy.
+- Cleanup is deliberately not implemented by this writer. Partial unmarked directories are left untouched rather than risking deletion of unrelated content. A separate handle-relative cleanup/recovery design must prove ownership and delete entries without following links before this can be integrated.
+- The marker is an ownership signal for the FRIDAY recovery protocol, not a cryptographic proof against a malicious process running as the same Windows user. Same-user interference and filesystem-specific semantics require further review.
+- The implementation is not an atomic snapshot of the source project. Source consistency limitations described above still apply.
+- The production snapshot copier remains unchanged and path-based. Guest execution, guest launch, and guest file collection remain disabled.
