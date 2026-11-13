@@ -24,9 +24,10 @@ Important constraints:
 2. Mapped host folders are a security boundary. Never map the original selected project. Map only the FRIDAY-created snapshot as read-only. Any writable result folder must be a separate, empty, per-run directory with bounded collection and strict path/reparse-point validation.
 3. Disable vGPU, clipboard, audio input, video input, and printer redirection unless a future reviewed requirement proves one is necessary.
 4. The documented .wsb configuration supports a memory cap through `MemoryInMB`, with a minimum effective value of 2,048 MB. The documented configuration surface does not expose a CPU quota, process timeout, or host-output disk quota.
-5. Windows 11 version 24H2 adds the `wsb` CLI for starting, listing, executing in, connecting to, sharing with, and stopping Sandbox sessions. Microsoft documents that `wsb exec` currently does not provide process I/O, and that an active user session is needed for `ExistingLogin` execution. FRIDAY must not assume stdout/stderr can be captured directly through that command.
+5. The newer Windows Sandbox app introduced with Windows 11 version 24H2 provides the `wsb` CLI for starting, listing, executing in, connecting to, sharing with, and stopping Sandbox sessions. The newer app is a Store-delivered update and may not be present merely because the host is on 24H2; Microsoft's FAQ recommends `wsb --version` to distinguish the newer CLI from the older app. Microsoft documents that `wsb exec` currently does not provide process I/O, and that an active user session is needed for `ExistingLogin` execution. FRIDAY must not assume stdout/stderr can be captured directly through that command.
 6. Windows Sandbox is not available on Windows Home. Microsoft lists Pro, Enterprise, and Education editions as supported; hardware virtualization and minimum host resources are also prerequisites.
-7. Closing a Sandbox discards its guest state, but host folders explicitly mapped into it remain host data. Therefore a writable output mount must be treated as untrusted input after the guest stops.
+7. Windows Sandbox permits only one running instance at a time. FRIDAY must detect an existing session and refuse to attach to or stop a Sandbox it did not create.
+8. Closing a Sandbox discards its guest state, but host folders explicitly mapped into it remain host data. Therefore a writable output mount must be treated as untrusted input after the guest stops.
 
 ## Consequences for FRIDAY implementation
 
@@ -42,7 +43,7 @@ Important constraints:
 
 Execution remains disabled until all of the following are implemented and verified:
 
-- Strong preflight for Windows edition/build, Sandbox feature/CLI, virtualization and policy constraints.
+- Strong preflight for Windows edition/build, Sandbox feature/CLI version, virtualization and policy constraints, including detection of an already-running Sandbox session.
 - Generated configuration with networking, vGPU, clipboard and device redirection disabled.
 - Read-only snapshot mount only; separate, empty output mount with restrictive ACLs.
 - Fixed command allowlist and trusted guest runner; no arbitrary shell strings.
