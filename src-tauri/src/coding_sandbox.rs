@@ -537,8 +537,17 @@ mod tests {
     #[test]
     fn sandbox_preflight_never_advertises_execution_or_network_isolation_early() {
         let policy = CodingSandboxPreflight {
-            platform_supported: true, runtime_detected: true,
-            execution_enabled: false, network_isolation_enforced: false,
+            platform_supported: true,
+            runtime_detected: true,
+            execution_enabled: false,
+            network_isolation_enforced: false,
+            windows_edition: "Professional".into(),
+            windows_build: "26100".into(),
+            sandbox_feature_state: "Enabled".into(),
+            wsb_cli_available: true,
+            wsb_cli_version: "1.0.0".into(),
+            virtualization_firmware_enabled: Some(true),
+            sandbox_process_detected: false,
             message: "Preflight only".into(),
         };
         assert!(!policy.execution_enabled);
