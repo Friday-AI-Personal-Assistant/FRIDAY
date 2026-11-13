@@ -1158,14 +1158,8 @@ pub async fn pick_project_folder_and_list_files(app: AppHandle) -> Result<Coding
 }
 
 
-#[tauri::command]
-pub async fn list_code_change_history() -> Result<Vec<CodingChangeHistoryItem>, String> {
-    ensure_skill_loaded()?;
-    let root = SELECTED_PROJECT_ROOT.lock()
-        .map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())?
-        .clone()
-        .ok_or("Choose the project folder again before viewing its Coding Assistant history.")?;
-    let root = validate_granted_root(&root)?;
+fn list_code_change_history_for_root(root: &Path) -> Result<Vec<CodingChangeHistoryItem>, String> {
+    let root = validate_granted_root(root)?;
     recover_project_code_transactions(&root)?;
     let backup_dir = root.join(".friday-code-backups");
     let metadata = match fs::symlink_metadata(&backup_dir) {
@@ -1255,6 +1249,16 @@ pub async fn list_code_change_history() -> Result<Vec<CodingChangeHistoryItem>, 
     }
     history.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
     Ok(history)
+}
+
+#[tauri::command]
+pub async fn list_code_change_history() -> Result<Vec<CodingChangeHistoryItem>, String> {
+    ensure_skill_loaded()?;
+    let root = SELECTED_PROJECT_ROOT.lock()
+        .map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())?
+        .clone()
+        .ok_or("Choose the project folder again before viewing its Coding Assistant history.")?;
+    list_code_change_history_for_root(&root)
 }
 
 #[tauri::command]
@@ -2437,6 +2441,98 @@ mod tests {
         assert!(relative_path(root, Path::new("/workspace/other/main.rs")).is_none());
     }
  
+    fn write_history_fixture(root: &Path, record: &CodingUndoRecord, original: &[u8]) -> PathBuf {
+        let backup_dir = ensure_code_backup_dir(root).unwrap();
+        fs::write(backup_dir.join(format!("{}.bak", record.id)), original).unwrap();
+        backup_dir
+    }
+
+    #[test]
+    fn persistent_history_lists_valid_active_record_and_enables_undo() {
+        let (root, file, backup_dir, record, original, proposed) =
+            recovery_edge_fixture("history-active", b"edge proposed source");
+        write_history_fixture(&root, &record, &original);
+        fs::write(&file, &proposed).unwrap();
+        fs::write(backup_dir.join(format!("{}.undo.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+        let history = list_code_change_history_for_root(&root).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, "applied");
+        assert!(history[0].undo_available);
+        assert_eq!(history[0].undo_record_id, record.id);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persistent_history_blocks_undo_when_project_file_was_modified() {
+        let (root, file, backup_dir, record, original, _) =
+            recovery_edge_fixture("history-modified", b"edge proposed source");
+        write_history_fixture(&root, &record, &original);
+        fs::write(&file, b"user's newer content").unwrap();
+        fs::write(backup_dir.join(format!("{}.undo.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+        let history = list_code_change_history_for_root(&root).unwrap();
+        assert_eq!(history[0].status, "blocked");
+        assert!(!history[0].undo_available);
+        assert!(history[0].unavailable_reason.as_deref().unwrap().contains("changed"));
+        assert_eq!(fs::read(&file).unwrap(), b"user's newer content");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persistent_history_blocks_undo_when_original_backup_is_corrupted() {
+        let (root, file, backup_dir, record, _, proposed) =
+            recovery_edge_fixture("history-corrupt-backup", b"edge proposed source");
+        fs::write(&file, &proposed).unwrap();
+        fs::write(backup_dir.join(format!("{}.bak", record.id)), b"corrupted backup").unwrap();
+        fs::write(backup_dir.join(format!("{}.undo.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+        let history = list_code_change_history_for_root(&root).unwrap();
+        assert_eq!(history[0].status, "blocked");
+        assert!(!history[0].undo_available);
+        assert!(history[0].unavailable_reason.as_deref().unwrap().contains("integrity"));
+        assert_eq!(fs::read(&file).unwrap(), proposed);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persistent_history_lists_consumed_records_as_undone() {
+        let (root, file, backup_dir, record, original, _) =
+            recovery_edge_fixture("history-undone", b"edge original source");
+        write_history_fixture(&root, &record, &original);
+        fs::write(backup_dir.join(format!("{}.undone.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+        let history = list_code_change_history_for_root(&root).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, "undone");
+        assert!(!history[0].undo_available);
+        assert_eq!(fs::read(&file).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persistent_history_refuses_malformed_record_and_preserves_evidence() {
+        let (root, _, backup_dir, record, _, _) =
+            recovery_edge_fixture("history-malformed", b"edge proposed source");
+        let active = backup_dir.join(format!("{}.undo.json", record.id));
+        fs::write(&active, b"{ malformed history").unwrap();
+        assert!(list_code_change_history_for_root(&root).is_err());
+        assert!(active.is_file());
+        assert_eq!(fs::read(&active).unwrap(), b"{ malformed history");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persistent_history_rejects_symlinked_record_without_following_it() {
+        let (root, _, backup_dir, record, _, _) =
+            recovery_edge_fixture("history-symlink", b"edge proposed source");
+        let outside = root.parent().unwrap().join(format!("friday-history-outside-{}", make_token()));
+        fs::write(&outside, b"outside user data").unwrap();
+        let active = backup_dir.join(format!("{}.undo.json", record.id));
+        std::os::unix::fs::symlink(&outside, &active).unwrap();
+        assert!(list_code_change_history_for_root(&root).is_err());
+        assert_eq!(fs::read(&outside).unwrap(), b"outside user data");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_file(outside).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_backup_recovery_restores_the_original_custom_file_dacl() {
