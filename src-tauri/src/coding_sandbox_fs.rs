@@ -1630,6 +1630,113 @@ fn inspect_snapshot_directory(
     Ok(())
 }
 
+/// Validate a snapshot that may be partway through an authorized cleanup.
+///
+/// Unlike `preflight_snapshot_tree`, this accepts missing inventoried
+/// payload entries so a retry can resume after an interruption. It still rejects
+/// every unexpected entry, unsafe type, reparse point, and size mismatch. The
+/// ownership marker is mandatory and remains present until all payload cleanup
+/// stages have completed. This function performs no mutation.
+#[allow(dead_code)]
+pub(crate) fn preflight_snapshot_cleanup_progress(
+    snapshot_root: &File,
+    expected_snapshot_id: &str,
+    limits: BoundedSnapshotLimits,
+) -> io::Result<SnapshotCleanupManifest> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let root_metadata = snapshot_root.metadata()?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot root handle is not an ordinary directory"));
+    }
+
+    let marker_name = OsStr::new(".friday-snapshot-owner.json");
+    let mut marker = open_file_nofollow(snapshot_root, marker_name)?;
+    let marker_metadata = marker.metadata()?;
+    if !marker_metadata.is_file() || is_reparse_or_symlink(&marker_metadata)
+        || marker_metadata.len() == 0 || marker_metadata.len() > 1024 * 1024
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker has an unsafe type or size"));
+    }
+    let mut marker_bytes = Vec::with_capacity(marker_metadata.len() as usize);
+    (&mut marker).take(1024 * 1024 + 1).read_to_end(&mut marker_bytes)?;
+    if marker_bytes.len() as u64 != marker_metadata.len() || marker_bytes.len() > 1024 * 1024 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker changed while being read"));
+    }
+    let manifest = validate_snapshot_cleanup_manifest(&marker_bytes, expected_snapshot_id, limits)?;
+
+    let expected_files: BTreeMap<String, u64> = manifest.files.iter()
+        .map(|item| (item.path.clone(), item.size)).collect();
+    let expected_directories: BTreeSet<String> = manifest.directories.iter().cloned().collect();
+    inspect_snapshot_cleanup_progress_directory(
+        snapshot_root,
+        Path::new(""),
+        &expected_files,
+        &expected_directories,
+        &marker,
+    )?;
+    Ok(manifest)
+}
+
+fn inspect_snapshot_cleanup_progress_directory(
+    parent: &File,
+    relative_directory: &Path,
+    expected_files: &std::collections::BTreeMap<String, u64>,
+    expected_directories: &std::collections::BTreeSet<String>,
+    marker_handle: &File,
+) -> io::Result<()> {
+    for entry in read_dir(parent, Path::new("."))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !is_single_normal_component(&name) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains an ambiguous entry name"));
+        }
+        let name_text = name.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a non-UTF-8 entry name"))?;
+        let relative_path = relative_directory.join(&name);
+        let portable = portable_manifest_path(&relative_path)?;
+
+        if portable == ".friday-snapshot-owner.json" && relative_directory.as_os_str().is_empty() {
+            if !entry.file_type()?.is_file() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker is not a regular file"));
+            }
+            let current_marker = open_file_nofollow(parent, &name)?;
+            if !same_handle_identity(&current_marker, marker_handle)? {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker changed during cleanup preflight"));
+            }
+            continue;
+        }
+
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a symlink or reparse entry"));
+        }
+        if kind.is_dir() {
+            if !expected_directories.contains(&portable) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains an unknown directory"));
+            }
+            let child = open_dir_nofollow(parent, Path::new(&name))?;
+            let metadata = child.metadata()?;
+            if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory changed type during cleanup preflight"));
+            }
+            inspect_snapshot_cleanup_progress_directory(&child, &relative_path, expected_files, expected_directories, marker_handle)?;
+            continue;
+        }
+        if !kind.is_file() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a special or unsupported entry"));
+        }
+        let expected_size = expected_files.get(&portable).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("snapshot contains an unknown file: {}", name_text))
+        })?;
+        let file = open_file_nofollow(parent, &name)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || is_reparse_or_symlink(&metadata) || metadata.len() != *expected_size {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file type or size does not match its inventory"));
+        }
+    }
+    Ok(())
+}
+
 /// Materialize bounded in-memory source bytes below a held private workspace.
 /// The ownership marker is written last, so interrupted creation is never
 /// falsely advertised as a complete, cleanup-authorized snapshot.
@@ -2825,6 +2932,38 @@ mod tests {
         fs::write(&marker_path, b"{malformed").unwrap();
         assert!(preflight_snapshot_tree(&root, &id, bounded_limits()).is_err());
         assert_eq!(fs::read(workspace_path.join(&id).join("keep.txt")).unwrap(), b"preserve me");
+
+        drop(root);
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+
+    #[test]
+    fn snapshot_cleanup_progress_preflight_accepts_only_missing_inventoried_entries() {
+        let workspace_path = make_test_directory("cleanup-progress-preflight");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![
+                BoundedSnapshotFile { relative_path: PathBuf::from("src/main.rs"), contents: b"fn main() {}".to_vec() },
+                BoundedSnapshotFile { relative_path: PathBuf::from("Cargo.toml"), contents: b"[package]".to_vec() },
+            ],
+            bytes: b"fn main() {}".len() as u64 + b"[package]".len() as u64,
+            truncated: false,
+        };
+        let id = "3".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        let root = open_dir_nofollow(&workspace, Path::new(&id)).unwrap();
+
+        // A crash may leave a subset of expected files/directories already gone.
+        fs::remove_file(workspace_path.join(&id).join("src/main.rs")).unwrap();
+        fs::remove_dir(workspace_path.join(&id).join("src")).unwrap();
+        preflight_snapshot_cleanup_progress(&root, &id, bounded_limits()).unwrap();
+
+        // Missing entries are tolerated, but new or modified entries are not.
+        fs::write(workspace_path.join(&id).join("unexpected.txt"), b"preserve").unwrap();
+        assert!(preflight_snapshot_cleanup_progress(&root, &id, bounded_limits()).is_err());
+        assert_eq!(fs::read(workspace_path.join(&id).join("unexpected.txt")).unwrap(), b"preserve");
 
         drop(root);
         drop(workspace);
