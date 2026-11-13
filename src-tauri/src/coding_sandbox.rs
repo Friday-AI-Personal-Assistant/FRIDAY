@@ -583,8 +583,17 @@ pub async fn coding_sandbox_recover_workspaces(app: AppHandle) -> Result<CodingS
     let mut preserved = 0usize;
     for entry in entries {
         let Ok(entry) = entry else { preserved += 1; continue; };
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else { preserved += 1; continue; };
+        let entry_name = entry.file_name();
+        let Some(name) = entry_name.to_str().map(str::to_string) else { preserved += 1; continue; };
         if !valid_snapshot_id(&name) {
+            preserved += 1;
+            continue;
+        }
+        // A component remount must not delete a snapshot still owned by this process.
+        let current_session_owns_it = OWNED_SNAPSHOTS.lock()
+            .map(|owned| owned.contains_key(&name))
+            .unwrap_or(true);
+        if current_session_owns_it {
             preserved += 1;
             continue;
         }
