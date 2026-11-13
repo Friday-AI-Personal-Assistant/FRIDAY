@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::{env, fs, path::PathBuf};
+use std::{env, ffi::OsStr, fs, path::PathBuf};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -11,8 +11,8 @@ pub struct CodingSandboxPreflight {
     message: String,
 }
 
-fn detect_windows_sandbox() -> bool {
-    let Some(system_root) = env::var_os("SystemRoot") else {
+fn detect_windows_sandbox_at(system_root: Option<&OsStr>) -> bool {
+    let Some(system_root) = system_root else {
         return false;
     };
     let executable = PathBuf::from(system_root)
@@ -21,6 +21,10 @@ fn detect_windows_sandbox() -> bool {
     fs::symlink_metadata(executable)
         .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
         .unwrap_or(false)
+}
+
+fn detect_windows_sandbox() -> bool {
+    detect_windows_sandbox_at(env::var_os("SystemRoot").as_deref())
 }
 
 #[tauri::command]
@@ -75,11 +79,6 @@ mod tests {
 
     #[test]
     fn windows_sandbox_detection_never_treats_a_missing_root_as_available() {
-        let previous = env::var_os("SystemRoot");
-        env::remove_var("SystemRoot");
-        assert!(!detect_windows_sandbox());
-        if let Some(value) = previous {
-            env::set_var("SystemRoot", value);
-        }
+        assert!(!detect_windows_sandbox_at(None));
     }
 }
