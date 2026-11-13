@@ -174,6 +174,48 @@ fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
     Ok(file)
 }
 
+/// Open one regular file relative to an already-open directory handle on Unix.
+///
+/// O_NOFOLLOW rejects a final symlink and openat pins resolution to the held
+/// parent directory. O_NONBLOCK prevents a raced-in FIFO from blocking before
+/// the opened handle can be checked as a regular file.
+#[cfg(unix)]
+fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
+    use std::{
+        ffi::CString,
+        os::unix::{ffi::OsStrExt, io::{AsRawFd, FromRawFd}},
+    };
+
+    if !is_single_normal_component(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "file name must be exactly one normal path component",
+        ));
+    }
+    let name = CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "opened entry is not an ordinary regular file",
+        ));
+    }
+    Ok(file)
+}
+
 /// Acquire a root directory handle only when its identity agrees with the
 /// directory observed at the supplied path both before and after opening.
 ///
@@ -1075,6 +1117,80 @@ mod tests {
         fs::remove_file(root_path.join("replace-me.txt")).unwrap();
         fs::remove_dir_all(root_path).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_open_file_nofollow_reads_regular_file_relative_to_parent_handle() {
+        use std::ffi::OsStr;
+
+        let root_path = make_test_directory("unix-relative-file-open");
+        fs::write(root_path.join("safe.txt"), b"safe contents").unwrap();
+        let root = open_test_root(&root_path);
+
+        let mut file = open_file_nofollow(&root, OsStr::new("safe.txt")).unwrap();
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"safe contents");
+
+        drop(file);
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_open_file_nofollow_rejects_symlink_and_non_normal_names() {
+        use std::{ffi::OsStr, os::unix::fs::symlink};
+
+        let root_path = make_test_directory("unix-relative-file-reject");
+        let outside = make_test_directory("unix-relative-file-outside");
+        fs::write(outside.join("secret.txt"), b"secret").unwrap();
+        symlink(outside.join("secret.txt"), root_path.join("linked.txt")).unwrap();
+        let root = open_test_root(&root_path);
+
+        assert!(open_file_nofollow(&root, OsStr::new("linked.txt")).is_err());
+        assert!(open_file_nofollow(&root, OsStr::new("../secret.txt")).is_err());
+        assert!(open_file_nofollow(&root, OsStr::new("")).is_err());
+
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_open_file_nofollow_stays_with_held_parent_after_rename() {
+        use std::{ffi::OsStr, os::unix::fs::symlink};
+
+        let base = make_test_directory("unix-relative-file-parent-race");
+        let parent_path = base.join("parent");
+        let replacement = base.join("replacement");
+        let displaced = base.join("displaced");
+        fs::create_dir(&parent_path).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        fs::write(parent_path.join("data.txt"), b"authorized").unwrap();
+        fs::write(replacement.join("data.txt"), b"outside").unwrap();
+
+        let parent = open_test_root(&parent_path);
+        fs::rename(&parent_path, &displaced).unwrap();
+        symlink(&replacement, &parent_path).unwrap();
+
+        let mut file = open_file_nofollow(&parent, OsStr::new("data.txt")).unwrap();
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).unwrap();
+        assert_eq!(
+            contents,
+            b"authorized",
+            "a replaced parent path must not redirect an open relative to its held handle"
+        );
+
+        drop(file);
+        drop(parent);
+        fs::remove_file(&parent_path).unwrap();
+        fs::remove_dir_all(displaced).unwrap();
+        fs::remove_dir_all(replacement).unwrap();
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[cfg(windows)]
