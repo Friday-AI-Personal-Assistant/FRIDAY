@@ -265,3 +265,10 @@ This is an architecture decision and acceptance gate, not an implementation clai
 
 
 The host result validator now has a per-run output-budget entry point. It rejects zero or above-policy expected limits and rejects combined stdout/stderr whose UTF-8 byte count exceeds the exact budget supplied for that run. Regression tests cover the boundary, one-byte overflow, zero, and above-policy limits. The existing convenience validator still applies the fixed 1 MiB ceiling for parser-only tests; no guest execution or result-file collection is connected.
+
+
+## Guest result-file boundary validation
+
+The host now has a pure result-file reader for the future collection boundary. It accepts only a normal result directory containing exactly one entry named `result.json`; missing files, additional files/directories, alternate casing, non-text names, symlinks/reparse points, non-regular files, empty files, oversized files, and paths that do not resolve as a direct child of the verified result directory are rejected. The file is opened with the existing no-follow/reparse-point inspection behavior, its opened metadata is checked against the path metadata, and the read is bounded to the global result-document ceiling before the existing run ID, operation, schema, status/exit-code, duration, and per-run output checks are applied.
+
+Regression tests cover the exact filename allowlist, missing and extra entries, a valid result file, oversized content, and a symlinked result file on Unix. This remains a disconnected validator: FRIDAY does not create a result directory, mount writable storage, collect a guest-produced file, launch or stop Windows Sandbox, or enable execution. The Windows reparse-point and real guest mapped-folder lifecycle still require dedicated Windows acceptance testing before any collection workflow can be connected.
