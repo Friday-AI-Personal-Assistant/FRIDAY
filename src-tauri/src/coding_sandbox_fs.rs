@@ -954,8 +954,8 @@ mod tests {
         let result = collect_bounded_snapshot_contents_with_hook(
             &root.unwrap(),
             bounded_limits(),
-            |name| name == "replace.txt",
-            |_| false,
+            &|name| name == "replace.txt",
+            &|_| false,
             |relative| {
                 if relative == Path::new("replace.txt") && !swapped {
                     fs::remove_file(root_path.join("replace.txt"))?;
