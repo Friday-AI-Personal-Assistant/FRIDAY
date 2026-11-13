@@ -299,7 +299,8 @@ mod tests {
         assert!(replaced, "test must replace the directory after enumeration");
         assert!(result.is_err(), "no-follow directory open must reject the replacement");
         drop(root);
-        fs::remove_file(root_path.join("replace-me")).unwrap();
+        // Windows removes directory symlinks with remove_dir, not remove_file.
+        fs::remove_dir(root_path.join("replace-me")).unwrap();
         fs::remove_dir_all(root_path).unwrap();
         fs::remove_dir_all(outside).unwrap();
     }
