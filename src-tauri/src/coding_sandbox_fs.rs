@@ -1101,6 +1101,116 @@ fn validate_snapshot_cleanup_manifest(bytes: &[u8], expected_snapshot_id: &str, 
     Ok(manifest)
 }
 
+/// Inspect a completed snapshot through held directory handles without mutating it.
+///
+/// The manifest is treated as an expected inventory, not as cryptographic
+/// proof of ownership. Every encountered entry must match the inventory exactly;
+/// unknown files, links/reparse points, type changes, and size changes fail closed.
+#[allow(dead_code)]
+pub(crate) fn preflight_snapshot_tree(
+    snapshot_root: &File,
+    expected_snapshot_id: &str,
+    limits: BoundedSnapshotLimits,
+) -> io::Result<()> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let root_metadata = snapshot_root.metadata()?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot root handle is not an ordinary directory"));
+    }
+
+    let marker_name = OsStr::new(".friday-snapshot-owner.json");
+    let mut marker = open_file_nofollow(snapshot_root, marker_name)?;
+    let marker_metadata = marker.metadata()?;
+    if !marker_metadata.is_file() || is_reparse_or_symlink(&marker_metadata) || marker_metadata.len() == 0 || marker_metadata.len() > 1024 * 1024 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker has an unsafe type or size"));
+    }
+    let mut marker_bytes = Vec::with_capacity(marker_metadata.len() as usize);
+    marker.take((1024 * 1024) as u64 + 1).read_to_end(&mut marker_bytes)?;
+    if marker_bytes.len() as u64 != marker_metadata.len() || marker_bytes.len() > 1024 * 1024 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker changed while being read"));
+    }
+    let manifest = validate_snapshot_cleanup_manifest(&marker_bytes, expected_snapshot_id, limits)?;
+
+    let expected_files: BTreeMap<String, u64> = manifest.files.into_iter()
+        .map(|item| (item.path, item.size)).collect();
+    let expected_directories: BTreeSet<String> = manifest.directories.into_iter().collect();
+    let mut observed_files = BTreeSet::new();
+    let mut observed_directories = BTreeSet::new();
+    inspect_snapshot_directory(
+        snapshot_root,
+        Path::new(""),
+        &expected_files,
+        &expected_directories,
+        &mut observed_files,
+        &mut observed_directories,
+    )?;
+
+    if observed_files != expected_files.keys().cloned().collect()
+        || observed_directories != expected_directories
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot tree does not exactly match its inventory"));
+    }
+    Ok(())
+}
+
+fn inspect_snapshot_directory(
+    parent: &File,
+    relative_directory: &Path,
+    expected_files: &std::collections::BTreeMap<String, u64>,
+    expected_directories: &std::collections::BTreeSet<String>,
+    observed_files: &mut std::collections::BTreeSet<String>,
+    observed_directories: &mut std::collections::BTreeSet<String>,
+) -> io::Result<()> {
+    for entry in read_dir(parent, Path::new("."))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !is_single_normal_component(&name) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains an ambiguous entry name"));
+        }
+        let name_text = name.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a non-UTF-8 entry name"))?;
+        let relative_path = relative_directory.join(&name);
+        let portable = portable_manifest_path(&relative_path)?;
+        if portable == ".friday-snapshot-owner.json" && relative_directory.as_os_str().is_empty() {
+            let kind = entry.file_type()?;
+            if !kind.is_file() || !observed_files.insert(portable) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker is not a unique regular file"));
+            }
+            continue;
+        }
+
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a symlink or reparse entry"));
+        }
+        if kind.is_dir() {
+            if !expected_directories.contains(&portable) || !observed_directories.insert(portable) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains an unknown or duplicate directory"));
+            }
+            let child = open_dir_nofollow(parent, Path::new(&name))?;
+            let metadata = child.metadata()?;
+            if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory changed type during inspection"));
+            }
+            inspect_snapshot_directory(&child, &relative_path, expected_files, expected_directories, observed_files, observed_directories)?;
+            continue;
+        }
+        if !kind.is_file() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a special or unsupported entry"));
+        }
+        let expected_size = expected_files.get(&portable).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("snapshot contains an unknown file: {}", name_text)))?;
+        let file = open_file_nofollow(parent, &name)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || is_reparse_or_symlink(&metadata) || metadata.len() != *expected_size {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file type or size does not match its inventory"));
+        }
+        if !observed_files.insert(portable) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a duplicate file entry"));
+        }
+    }
+    Ok(())
+}
+
 /// Materialize bounded in-memory source bytes below a held private workspace.
 /// The ownership marker is written last, so interrupted creation is never
 /// falsely advertised as a complete, cleanup-authorized snapshot.
@@ -2036,6 +2146,52 @@ mod tests {
         let marker = fs::read_to_string(workspace_path.join(&id).join(".friday-snapshot-owner.json")).unwrap();
         assert!(marker.contains(&id));
         assert!(marker.contains("FRIDAY-CodingAssistant"));
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_preflight_accepts_exact_inventory_and_rejects_unknown_entries() {
+        let workspace_path = make_test_directory("preflight-exact");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![
+                BoundedSnapshotFile { relative_path: PathBuf::from("src/main.rs"), contents: b"fn main() {}".to_vec() },
+                BoundedSnapshotFile { relative_path: PathBuf::from("Cargo.toml"), contents: b"[package]".to_vec() },
+            ],
+            bytes: b"fn main() {}".len() as u64 + b"[package]".len() as u64,
+            truncated: false,
+        };
+        let id = "e".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        let root = open_dir_nofollow(&workspace, Path::new(&id)).unwrap();
+        preflight_snapshot_tree(&root, &id, bounded_limits()).unwrap();
+
+        fs::write(workspace_path.join(&id).join("unexpected.txt"), b"do not delete").unwrap();
+        assert!(preflight_snapshot_tree(&root, &id, bounded_limits()).is_err());
+        assert_eq!(fs::read(workspace_path.join(&id).join("unexpected.txt")).unwrap(), b"do not delete");
+        drop(root);
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_preflight_rejects_symlink_entries() {
+        use std::os::unix::fs::symlink;
+        let workspace_path = make_test_directory("preflight-symlink");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![BoundedSnapshotFile { relative_path: PathBuf::from("known.txt"), contents: b"known".to_vec() }],
+            bytes: 5,
+            truncated: false,
+        };
+        let id = "f".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        let root = open_dir_nofollow(&workspace, Path::new(&id)).unwrap();
+        symlink(workspace_path.join("outside.txt"), workspace_path.join(&id).join("unexpected-link")).unwrap();
+        assert!(preflight_snapshot_tree(&root, &id, bounded_limits()).is_err());
+        drop(root);
         drop(workspace);
         fs::remove_dir_all(workspace_path).unwrap();
     }
