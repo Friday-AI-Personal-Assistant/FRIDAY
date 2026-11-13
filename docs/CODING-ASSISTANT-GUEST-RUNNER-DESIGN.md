@@ -577,3 +577,8 @@ This helper is not production cleanup authorization. It does not remove snapshot
 The first Windows CI run exposed a test-prototype defect: the directory was opened with restrictive sharing to prevent concurrent write/delete opens, but the emptiness check used the generic `read_dir` helper, which attempts a second directory handle. Windows correctly rejected that second open with sharing violation (error 32). The failed test therefore did not demonstrate a deletion failure; it demonstrated that the test was not enumerating through the intended held handle.
 
 The Windows implementation now calls `NtQueryDirectoryFile` on the same opened directory handle and checks the returned entry name/record bounds. It treats unexpected entries as non-empty and native query errors or malformed records as fail-closed errors. This preserves the restrictive share mode and avoids opening a second handle for the emptiness check. The regression test still requires the non-empty directory and its contents to remain intact, and the empty directory to be removed. The updated implementation must pass the Windows and Linux CI suites before being accepted.
+
+
+### Windows directory-enumeration declaration scope correction (November 13, 2026)
+
+The first same-handle enumeration revision declared the `NtQueryDirectoryFile` FFI function in the neighboring Windows file-cleanup helper rather than in the Windows empty-directory cleanup helper. Linux CI passed, but Windows compilation correctly rejected the unresolved name. The declaration is now placed alongside the native declarations in the directory helper where it is called. This is a scope-only correction; the same-handle enumeration behavior remains subject to Windows CI validation. The guest runner remains disabled.
