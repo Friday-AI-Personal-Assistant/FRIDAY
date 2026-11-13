@@ -39,6 +39,12 @@ Important constraints:
 - Native Windows Sandbox does not document an enforceable CPU quota or writable mapped-folder disk quota. FRIDAY must not claim those limits are enforced by .wsb. Before execution can be enabled, either a separately verified OS-enforced control must be designed for those dimensions or the feature must clearly refuse the unsupported execution mode.
 - A guest needs test runtimes and dependencies. Host-installed tools are not automatically available inside a clean Sandbox, and networking must remain disabled. FRIDAY must not silently download packages or fall back to host execution.
 
+## Implemented configuration-preview step
+
+The current branch now has a preview-only configuration builder tied to a snapshot ID owned by the current FRIDAY session. It revalidates that the snapshot is a normal directory and uses its canonical absolute path. The generated XML explicitly disables networking, vGPU, audio input, video input, clipboard redirection and printer redirection; enables ProtectedClient; and maps only the FRIDAY snapshot to a fixed guest path with `ReadOnly=true`. Host paths are XML-escaped.
+
+The Coding Assistant UI can display this generated configuration after a snapshot is prepared. This command only returns configuration text: it does not write a .wsb file, invoke the Sandbox app or execute code. The configuration builder has regression tests for the required isolation settings, read-only mapping, XML escaping, and invalid/missing paths. These tests still require CI verification. A preview is not proof that Windows will accept the configuration or that the host can launch Sandbox.
+
 ## Gate before enabling execution
 
 Execution remains disabled until all of the following are implemented and verified:
