@@ -35,6 +35,10 @@ pub struct CodingSandboxPreflight {
     wsb_cli_version: String,
     virtualization_firmware_enabled: Option<bool>,
     sandbox_process_detected: bool,
+    virtual_disk_api_available: bool,
+    manage_volume_privilege_enabled: bool,
+    hyperv_cmdlets_available: bool,
+    result_storage_ready: bool,
     message: String,
 }
 
@@ -237,7 +241,7 @@ fn run_bounded_probe(mut command: Command) -> Result<(ExitStatus, Vec<u8>), Stri
 }
 
 #[cfg(windows)]
-fn detect_windows_sandbox_capabilities() -> (String, String, String, bool, String, Option<bool>, bool) {
+fn detect_windows_sandbox_capabilities() -> (String, String, String, bool, String, Option<bool>, bool, bool, bool, bool) {
     // Fixed, read-only PowerShell probes. No user or model supplied command text is accepted.
     let script = r#"$ErrorActionPreference = 'SilentlyContinue'
 $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
@@ -249,6 +253,9 @@ $version = ''
 if ($wsb -and $wsb.Source) {
   $version = [string](Get-Item -LiteralPath $wsb.Source -ErrorAction SilentlyContinue).VersionInfo.FileVersion
 }
+$privileges = (& whoami.exe /priv 2>$null | Out-String)
+$virtualDiskApi = Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32\virtdisk.dll')
+$hypervCmdlets = [bool](Get-Command New-VHD -ErrorAction SilentlyContinue) -and [bool](Get-Command Mount-VHD -ErrorAction SilentlyContinue)
 [pscustomobject]@{
   edition = [string]$cv.EditionID
   build = [string]$cv.CurrentBuildNumber
@@ -257,17 +264,20 @@ if ($wsb -and $wsb.Source) {
   wsbVersion = [string]$version
   virtualizationFirmwareEnabled = if ($null -eq $cpu) { $null } else { [bool]$cpu }
   sandboxProcessDetected = $active
+  privileges = [string]$privileges
+  virtualDiskApiAvailable = [bool]$virtualDiskApi
+  hypervCmdletsAvailable = [bool]$hypervCmdlets
 } | ConvertTo-Json -Compress"#;
     let mut command = Command::new("powershell.exe");
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     let Ok((status, stdout)) = run_bounded_probe(command) else {
-        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false);
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false);
     };
     if !status.success() {
-        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false);
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false);
     }
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&stdout) else {
-        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false);
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false);
     };
     let string_field = |key: &str| value.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("Unknown").to_string();
     let firmware = value.get("virtualizationFirmwareEnabled").and_then(serde_json::Value::as_bool);
@@ -279,7 +289,17 @@ if ($wsb -and $wsb.Source) {
         string_field("wsbVersion"),
         firmware,
         value.get("sandboxProcessDetected").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        value.get("virtualDiskApiAvailable").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        privilege_output_has_enabled(&value.get("privileges").and_then(serde_json::Value::as_str).unwrap_or(""), "SeManageVolumePrivilege"),
+        value.get("hypervCmdletsAvailable").and_then(serde_json::Value::as_bool).unwrap_or(false),
     )
+}
+
+fn privilege_output_has_enabled(output: &str, privilege: &str) -> bool {
+    output.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next() == Some(privilege) && fields.last() == Some("Enabled")
+    })
 }
 
 #[tauri::command]
@@ -288,7 +308,8 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
     #[cfg(windows)]
     {
         let detected = detect_windows_sandbox();
-        let (edition, build, feature, wsb_available, wsb_version, virtualization, active) =
+        let (edition, build, feature, wsb_available, wsb_version, virtualization, active,
+            virtual_disk_api, manage_volume_privilege, hyperv_cmdlets) =
             detect_windows_sandbox_capabilities();
         let edition_supported = ["Professional", "Enterprise", "Education"]
             .iter().any(|supported| edition.eq_ignore_ascii_case(supported));
@@ -298,9 +319,9 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
         let message = if active {
             "A Windows Sandbox process is already running. FRIDAY will not attach to or stop a session it did not create. Execution remains disabled.".to_string()
         } else if runtime_ready {
-            "Windows Sandbox prerequisites appear present. This is detection only, not a launch test. Execution remains disabled until command restrictions, resource enforcement, cancellation and result validation are complete.".to_string()
+            "Windows Sandbox prerequisites appear present. This is detection only, not a launch test. Result-storage readiness is not established; execution remains disabled until storage, command restrictions, resource enforcement, cancellation and result validation are verified.".to_string()
         } else {
-            "Windows Sandbox is not yet confirmed ready. Review the detected edition, feature, CLI and virtualization details. Unknown values are treated as unverified. FRIDAY will not fall back to host execution.".to_string()
+            "Windows Sandbox is not yet confirmed ready. Review the detected edition, feature, CLI, virtualization and result-storage capability details. Unknown values are treated as unverified. FRIDAY will not elevate or fall back to host execution.".to_string()
         };
         Ok(CodingSandboxPreflight {
             platform_supported: true, runtime_detected: detected,
@@ -308,6 +329,10 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
             windows_edition: edition, windows_build: build, sandbox_feature_state: feature,
             wsb_cli_available: wsb_available, wsb_cli_version: wsb_version,
             virtualization_firmware_enabled: virtualization, sandbox_process_detected: active,
+            virtual_disk_api_available: virtual_disk_api,
+            manage_volume_privilege_enabled: manage_volume_privilege,
+            hyperv_cmdlets_available: hyperv_cmdlets,
+            result_storage_ready: false,
             message,
         })
     }
@@ -320,6 +345,8 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
             sandbox_feature_state: "Not applicable".into(), wsb_cli_available: false,
             wsb_cli_version: "Not applicable".into(), virtualization_firmware_enabled: None,
             sandbox_process_detected: false,
+            virtual_disk_api_available: false, manage_volume_privilege_enabled: false,
+            hyperv_cmdlets_available: false, result_storage_ready: false,
             message: "The Coding Assistant execution sandbox is designed for Windows Sandbox. No project code has been executed and no host-execution fallback is available.".to_string(),
         })
     }
@@ -817,6 +844,32 @@ mod tests {
         };
         assert!(!policy.execution_enabled);
         assert!(!policy.network_isolation_enforced);
+    }
+
+    #[test]
+    fn volume_management_privilege_probe_requires_exact_enabled_privilege() {
+        let enabled = "Privilege Name Description State\nSeManageVolumePrivilege Perform volume maintenance tasks Enabled\n";
+        let disabled = "SeManageVolumePrivilege Perform volume maintenance tasks Disabled\n";
+        assert!(privilege_output_has_enabled(enabled, "SeManageVolumePrivilege"));
+        assert!(!privilege_output_has_enabled(disabled, "SeManageVolumePrivilege"));
+        assert!(!privilege_output_has_enabled(enabled, "SeBackupPrivilege"));
+        assert!(!privilege_output_has_enabled("", "SeManageVolumePrivilege"));
+    }
+
+    #[test]
+    fn storage_preflight_never_marks_unverified_storage_ready() {
+        let policy = CodingSandboxPreflight {
+            platform_supported: true, runtime_detected: true, execution_enabled: false,
+            network_isolation_enforced: false, windows_edition: "Professional".into(),
+            windows_build: "26100".into(), sandbox_feature_state: "Enabled".into(),
+            wsb_cli_available: true, wsb_cli_version: "1.0.0".into(),
+            virtualization_firmware_enabled: Some(true), sandbox_process_detected: false,
+            virtual_disk_api_available: true, manage_volume_privilege_enabled: true,
+            hyperv_cmdlets_available: true, result_storage_ready: false,
+            message: "Detection only.".into(),
+        };
+        assert!(!policy.result_storage_ready);
+        assert!(!policy.execution_enabled);
     }
 
     #[test]
