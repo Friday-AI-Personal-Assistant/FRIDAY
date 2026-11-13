@@ -606,35 +606,16 @@ pub async fn coding_sandbox_config_preview(snapshot_id: String) -> Result<String
 
 #[tauri::command]
 pub async fn coding_sandbox_discard_snapshot(snapshot_id: String) -> Result<String, String> {
-    if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !valid_snapshot_id(&snapshot_id) {
         return Err("The snapshot identifier is invalid.".into());
     }
     let mut owned = OWNED_SNAPSHOTS.lock()
         .map_err(|_| "Snapshot ownership tracking is temporarily unavailable.".to_string())?;
     let path = owned.get(&snapshot_id).cloned()
         .ok_or_else(|| "This snapshot is not owned by the current FRIDAY session.".to_string())?;
-    let metadata = fs::symlink_metadata(&path)
-        .map_err(|_| "The snapshot folder is already unavailable; FRIDAY will not guess what to delete.".to_string())?;
-    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
-        return Err("The snapshot path is no longer a normal directory; FRIDAY refused cleanup.".into());
-    }
-    let parent = path.parent().ok_or_else(|| "The snapshot folder has no verified parent.".to_string())?;
-    let parent_metadata = fs::symlink_metadata(parent)
-        .map_err(|_| "FRIDAY could not verify the private snapshot workspace.".to_string())?;
-    if !parent_metadata.is_dir() || is_reparse_or_symlink(&parent_metadata) {
-        return Err("The private snapshot workspace is no longer a normal directory; cleanup was refused.".into());
-    }
-    let canonical_parent = fs::canonicalize(parent)
-        .map_err(|_| "FRIDAY could not verify the private snapshot workspace path.".to_string())?;
-    let canonical = fs::canonicalize(&path)
-        .map_err(|_| "FRIDAY could not verify the snapshot folder before cleanup.".to_string())?;
-    if canonical != path || canonical.parent() != Some(canonical_parent.as_path())
-        || path.file_name().and_then(OsStr::to_str) != Some(snapshot_id.as_str())
-    {
-        return Err("The snapshot folder failed its ownership-path check; cleanup was refused.".into());
-    }
-    fs::remove_dir_all(&canonical)
-        .map_err(|_| "FRIDAY could not completely remove the isolated snapshot folder.".to_string())?;
+    let parent = path.parent()
+        .ok_or_else(|| "The snapshot folder has no verified parent.".to_string())?;
+    remove_verified_owned_snapshot(parent, &snapshot_id)?;
     owned.remove(&snapshot_id);
     Ok("The isolated snapshot copy was removed. The original project was not changed.".into())
 }
@@ -650,6 +631,52 @@ mod tests {
         let path = env::temp_dir().join(format!("friday-sandbox-{label}-{suffix}"));
         fs::create_dir_all(&path).expect("test directory should be created");
         path
+    }
+
+    #[test]
+    fn ownership_marker_allows_cleanup_only_for_matching_snapshot() {
+        let workspace = make_test_directory("owned-marker");
+        let id = "0123456789abcdef0123456789abcdef";
+        let snapshot = workspace.join(id);
+        fs::create_dir(&snapshot).unwrap();
+        write_snapshot_ownership_marker(&snapshot, id).unwrap();
+        assert_eq!(verified_owned_snapshot_path(&workspace, id).unwrap(), fs::canonicalize(&snapshot).unwrap());
+        remove_verified_owned_snapshot(&workspace, id).unwrap();
+        assert!(!snapshot.exists());
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn ownership_recovery_refuses_missing_malformed_or_mismatched_markers() {
+        let workspace = make_test_directory("bad-marker");
+        let id = "0123456789abcdef0123456789abcdef";
+        let snapshot = workspace.join(id);
+        fs::create_dir(&snapshot).unwrap();
+        assert!(verified_owned_snapshot_path(&workspace, id).is_err());
+        fs::write(snapshot.join(SNAPSHOT_OWNER_MARKER), b"{malformed").unwrap();
+        assert!(verified_owned_snapshot_path(&workspace, id).is_err());
+        fs::write(snapshot.join(SNAPSHOT_OWNER_MARKER), serde_json::to_vec(&SnapshotOwnershipMarker {
+            schema_version: SNAPSHOT_OWNER_SCHEMA,
+            snapshot_id: "ffffffffffffffffffffffffffffffff".into(),
+            owner: "FRIDAY-CodingAssistant".into(),
+        }).unwrap()).unwrap();
+        assert!(verified_owned_snapshot_path(&workspace, id).is_err());
+        assert!(snapshot.exists(), "unverified folders must be preserved");
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ownership_recovery_refuses_symlinked_snapshot_directories() {
+        let workspace = make_test_directory("linked-marker");
+        let id = "0123456789abcdef0123456789abcdef";
+        let real = workspace.join("real");
+        fs::create_dir(&real).unwrap();
+        write_snapshot_ownership_marker(&real, id).unwrap();
+        std::os::unix::fs::symlink(&real, workspace.join(id)).unwrap();
+        assert!(verified_owned_snapshot_path(&workspace, id).is_err());
+        assert!(real.exists(), "the target of a redirected path must never be removed");
+        fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]
