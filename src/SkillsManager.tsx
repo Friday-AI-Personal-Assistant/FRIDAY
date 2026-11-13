@@ -27,6 +27,7 @@ type CodingChangePreview = { previewId: string; fileName: string; relativePath: 
 type CodingApplyResult = { fileName: string; relativePath: string; backupRelativePath: string; bytesWritten: number; originalSha256: string; resultingSha256: string; undoRecordId: string };
 type CodingChangeHistoryItem = { id: string; relativePath: string; backupRelativePath: string; createdAt: number; status: "applied" | "undone" | "blocked"; undoRecordId: string; undoAvailable: boolean; unavailableReason: string | null };
 type CodingSandboxPreflight = { platformSupported: boolean; runtimeDetected: boolean; executionEnabled: boolean; networkIsolationEnforced: boolean; message: string };
+type CodingSandboxSnapshot = { snapshotId: string; filesCopied: number; bytesCopied: number; truncated: boolean; message: string };
 type ProjectIntelligence = {
   projectMap: string[]; entryPoints: string[]; dependencies: string[];
   imports: { filePath: string; importText: string; matchedProjectFile: string | null; line: number }[];
@@ -112,6 +113,7 @@ export default function SkillsManager() {
   const [codingHistory, setCodingHistory] = useState<CodingChangeHistoryItem[]>([]);
   const [codingUndoBusy, setCodingUndoBusy] = useState(false);
   const [codingSandboxPreflight, setCodingSandboxPreflight] = useState<CodingSandboxPreflight | null>(null);
+  const [codingSandboxSnapshot, setCodingSandboxSnapshot] = useState<CodingSandboxSnapshot | null>(null);
 
   const refresh = useCallback(async () => {
     if (!desktop) { setLoading(false); return; }
@@ -167,7 +169,7 @@ export default function SkillsManager() {
     setCodingChangePreview(null); setCodingApprovalToken("");
     // Picking a project revokes the previous backend grants, so its in-memory Undo
     // entries must no longer be presented as actionable in this session.
-    setCodingApplyResult(null); setCodingHistory([]); setCodingUndoBusy(false); setCodingSandboxPreflight(null);
+    setCodingApplyResult(null); setCodingHistory([]); setCodingUndoBusy(false); setCodingSandboxPreflight(null); setCodingSandboxSnapshot(null);
     try {
       const project = await invoke<CodingProjectScan>("pick_project_folder_and_list_files");
       setCodingProject(project);
@@ -181,6 +183,25 @@ export default function SkillsManager() {
     } finally { setCodingBusy(false); }
   }
 
+  async function prepareCodingSandboxSnapshot() {
+    if (!desktop || !codingProject || codingBusy || codingSandboxSnapshot) return;
+    setCodingBusy(true); setCodingError("");
+    try {
+      const snapshot = await invoke<CodingSandboxSnapshot>("coding_sandbox_prepare_snapshot");
+      setCodingSandboxSnapshot(snapshot);
+    } catch (e) { setCodingError(String(e)); }
+    finally { setCodingBusy(false); }
+  }
+
+  async function discardCodingSandboxSnapshot() {
+    if (!codingSandboxSnapshot || codingBusy) return;
+    setCodingBusy(true); setCodingError("");
+    try {
+      const message = await invoke<string>("coding_sandbox_discard_snapshot", { snapshotId: codingSandboxSnapshot.snapshotId });
+      setCodingSandboxSnapshot(null); setNotice(message);
+    } catch (e) { setCodingError(String(e)); }
+    finally { setCodingBusy(false); }
+  }
   async function analyseCodingProject() {
     if (!desktop || !codingProject || selectedCodingFileIds.length === 0 || !pdfModel.trim() || !codingQuestion.trim() || codingBusy) return;
     setCodingBusy(true); setCodingError(""); setCodingAnswer(""); setCodingFiles([]); setCodingIntelligence(null);
@@ -792,6 +813,16 @@ ${file.content}`
               <p>{codingSandboxPreflight.message}</p>
               <small>Runtime detected: {codingSandboxPreflight.runtimeDetected ? "Yes" : "No"} · Execution enabled: No · Network isolation enforced: No</small>
             </section>}
+            <section className="coding-change-preview" aria-live="polite">
+              <strong>Prepare isolated project copy</strong>
+              <p>FRIDAY can copy eligible source and project-manifest files into its private app-data workspace. It skips hidden folders, dependencies, build output, links, likely secrets and oversized files. The original project is not changed.</p>
+              {codingSandboxSnapshot ? <>
+                <small>{codingSandboxSnapshot.filesCopied.toLocaleString()} files · {codingSandboxSnapshot.bytesCopied.toLocaleString()} bytes · {codingSandboxSnapshot.truncated ? "Partial snapshot — some content was skipped" : "Snapshot prepared"}</small>
+                <p>{codingSandboxSnapshot.message}</p>
+                <button type="button" className="secondary" onClick={() => void discardCodingSandboxSnapshot()} disabled={codingBusy}>Discard isolated copy</button>
+              </> : <button type="button" onClick={() => void prepareCodingSandboxSnapshot()} disabled={codingBusy || !codingSandboxPreflight}>Prepare isolated copy</button>}
+              <small>Testing and command execution are still disabled. This step only prepares a bounded copy.</small>
+            </section>
             <div className="coding-project-list">
               <div className="coding-project-list-heading"><strong>Choose files to inspect</strong><small>{selectedCodingFileIds.length}/25 selected</small></div>
               {codingProject.files.map(file => <label className="coding-project-file" key={file.id}>
