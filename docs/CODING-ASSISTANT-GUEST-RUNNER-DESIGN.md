@@ -344,3 +344,10 @@ Relevant source references for review:
 - [Microsoft: Windows Sandbox configuration and default guest account](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-configure-using-wsb-file)
 
 Conclusion: the MXC bridge proves that stdout/stderr can be transported over a guest-agent channel, but its current design does not prove FRIDAY's required network, storage, or pre-execution resource boundaries. Do not copy its writable rendezvous share, guest-only firewall enforcement, arbitrary shell execution, or best-effort post-spawn Job Object assignment. A future TCP bridge would need host-enforced egress isolation, a read-only or otherwise bounded rendezvous mechanism, authenticated run-scoped channels, strict streaming caps, fixed operations, and Job Object assignment before untrusted code resumes. Until those requirements are proven on physical Windows, execution remains disabled.
+
+
+## Unix no-follow source-file opening hardening
+
+The shared `open_source_file` helper now uses the Unix `O_NOFOLLOW` flag when opening files. This makes the final path component fail atomically if it is a symbolic link, closing the race where a path could be swapped to a symlink between the caller's `symlink_metadata` check and `File::open`. A regression test verifies that a symlink is rejected while a normal file remains readable.
+
+This protects the final component only. It does not by itself pin every parent directory against concurrent replacement, and it is not a substitute for Windows reparse-point testing or handle-relative directory traversal. The guest result reader remains disconnected from any guest execution or writable result channel.
