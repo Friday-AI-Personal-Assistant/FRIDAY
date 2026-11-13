@@ -749,21 +749,20 @@ pub async fn coding_sandbox_prepare_snapshot(app: AppHandle) -> Result<CodingSan
     rand::thread_rng().fill_bytes(&mut random);
     let snapshot_id = random.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     let snapshot_path = workspace_root.join(&snapshot_id);
-    fs::create_dir(&snapshot_path)
-        .map_err(|_| "FRIDAY could not create a unique isolated snapshot folder.".to_string())?;
-    if let Err(error) = write_snapshot_ownership_marker(&snapshot_path, &snapshot_id) {
-        let _ = fs::remove_dir(&snapshot_path);
-        return Err(error);
-    }
 
-    let mut budget = SnapshotBudget { files: 0, bytes: 0, truncated: false };
-    let result = copy_snapshot_tree(&source_root, &source_root, &snapshot_path, 0, &mut budget);
-    if let Err(error) = result {
-        let _ = remove_verified_owned_snapshot(&workspace_root, &snapshot_id);
-        return Err(error);
-    }
-    if budget.files == 0 {
-        let _ = remove_verified_owned_snapshot(&workspace_root, &snapshot_id);
+    // Production snapshots are collected and written through held directory
+    // handles. The schema-2 inventory is created last, only after every bounded
+    // payload file has been written and flushed successfully.
+    let (files_copied, bytes_copied) =
+        crate::coding_sandbox_fs::prepare_snapshot_from_paths(
+            &source_root,
+            &workspace_root,
+            &snapshot_id,
+            (MAX_SNAPSHOT_DEPTH, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_FILE_BYTES, MAX_SNAPSHOT_TOTAL_BYTES),
+            safe_project_file_name,
+            excluded_directory,
+        ).map_err(|_| "FRIDAY could not safely create a complete isolated project snapshot. Any incomplete, unmarked data is preserved for manual review.".to_string())?;
+    if files_copied == 0 {
         return Err("No eligible source or project-manifest files were found to snapshot.".into());
     }
 
@@ -772,14 +771,10 @@ pub async fn coding_sandbox_prepare_snapshot(app: AppHandle) -> Result<CodingSan
         .insert(snapshot_id.clone(), snapshot_path);
     Ok(CodingSandboxSnapshot {
         snapshot_id,
-        files_copied: budget.files,
-        bytes_copied: budget.bytes,
-        truncated: budget.truncated,
-        message: if budget.truncated {
-            "A bounded partial copy was prepared. Some files or folders were skipped or exceeded safety limits; the original project was not changed. Execution remains disabled.".into()
-        } else {
-            "A bounded isolated project copy was prepared. The original project was not changed. Execution remains disabled.".into()
-        },
+        files_copied,
+        bytes_copied,
+        truncated: false,
+        message: "A complete bounded schema-2 snapshot was prepared through verified directory handles. The original project was not changed. Execution remains disabled.".into(),
     })
 }
 
@@ -866,7 +861,11 @@ pub async fn coding_sandbox_recover_workspaces(app: AppHandle) -> Result<CodingS
             preserved += 1;
             continue;
         }
-        match remove_verified_owned_snapshot(&workspace_root, &name) {
+        match crate::coding_sandbox_fs::cleanup_snapshot_from_workspace_path(
+            &workspace_root,
+            &name,
+            (MAX_SNAPSHOT_DEPTH, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_FILE_BYTES, MAX_SNAPSHOT_TOTAL_BYTES),
+        ) {
             Ok(()) => {
                 removed += 1;
                 if let Ok(mut owned) = OWNED_SNAPSHOTS.lock() { owned.remove(&name); }
@@ -904,7 +903,11 @@ pub async fn coding_sandbox_discard_snapshot(snapshot_id: String) -> Result<Stri
         .ok_or_else(|| "This snapshot is not owned by the current FRIDAY session.".to_string())?;
     let parent = path.parent()
         .ok_or_else(|| "The snapshot folder has no verified parent.".to_string())?;
-    remove_verified_owned_snapshot(parent, &snapshot_id)?;
+    crate::coding_sandbox_fs::cleanup_snapshot_from_workspace_path(
+        parent,
+        &snapshot_id,
+        (MAX_SNAPSHOT_DEPTH, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_FILE_BYTES, MAX_SNAPSHOT_TOTAL_BYTES),
+    ).map_err(|_| "The snapshot could not be safely verified and removed. Its data has been preserved.".to_string())?;
     owned.remove(&snapshot_id);
     Ok("The isolated snapshot copy was removed. The original project was not changed.".into())
 }

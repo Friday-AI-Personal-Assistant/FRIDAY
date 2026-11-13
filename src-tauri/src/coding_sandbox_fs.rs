@@ -1,9 +1,9 @@
-//! Experimental handle-relative traversal for Coding Assistant snapshots.
+//! Handle-relative filesystem operations for Coding Assistant snapshots.
 //!
-//! This module contains test-only filesystem security prototypes. The source
-//! collector reads bounded bytes through held handles; the destination writer
-//! creates an exclusive snapshot below a held workspace handle. Neither is
-//! wired into production snapshot creation. Callers supply verified handles.
+//! The production entry points at the end of the implementation use verified
+//! directory handles, bounded in-memory collection, exclusive destination
+//! creation, schema-2 inventories, exact-tree preflight, and retry-safe cleanup.
+//! Unit tests retain deterministic race hooks for regression coverage.
 
 use cap_primitives::fs::{open_dir_nofollow, read_dir};
 use std::{
@@ -1943,6 +1943,64 @@ pub(crate) fn create_bounded_snapshot_destination(
     marker_file.write_all(&marker)?;
     marker_file.sync_all()?;
     Ok(())
+}
+
+
+/// Production entry point: collect bounded source bytes through verified
+/// directory capabilities and create an exclusive schema-2 snapshot.
+/// A truncated collection is rejected; incomplete snapshots are never marked
+/// as complete or eligible for automatic cleanup.
+pub(crate) fn prepare_snapshot_from_paths<AF, AD>(
+    source_path: &Path,
+    workspace_path: &Path,
+    snapshot_id: &str,
+    limits: (usize, usize, u64, u64),
+    include_file: AF,
+    exclude_directory: AD,
+) -> io::Result<(usize, u64)>
+where
+    AF: Fn(&str) -> bool,
+    AD: Fn(&str) -> bool,
+{
+    let policy = BoundedSnapshotLimits {
+        max_depth: limits.0,
+        max_files: limits.1,
+        max_file_bytes: limits.2,
+        max_total_bytes: limits.3,
+    };
+    let source = open_verified_root_directory(source_path)?;
+    let workspace = open_verified_root_directory(workspace_path)?;
+    let contents = collect_bounded_snapshot_contents(
+        &source, policy, include_file, exclude_directory,
+    )?;
+    if contents.truncated {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "snapshot source exceeded a collection limit; incomplete snapshots are not published",
+        ));
+    }
+    let file_count = contents.files.len();
+    let byte_count = contents.bytes;
+    create_bounded_snapshot_destination(&workspace, snapshot_id, &contents, policy)?;
+    Ok((file_count, byte_count))
+}
+
+/// Production cleanup entry point. Only a complete schema-2 inventory can
+/// authorize deletion; schema-1, malformed, missing, partial, and unknown
+/// snapshots are intentionally preserved.
+pub(crate) fn cleanup_snapshot_from_workspace_path(
+    workspace_path: &Path,
+    snapshot_id: &str,
+    limits: (usize, usize, u64, u64),
+) -> io::Result<()> {
+    let policy = BoundedSnapshotLimits {
+        max_depth: limits.0,
+        max_files: limits.1,
+        max_file_bytes: limits.2,
+        max_total_bytes: limits.3,
+    };
+    let workspace = open_verified_root_directory(workspace_path)?;
+    cleanup_owned_snapshot(&workspace, snapshot_id, policy)
 }
 
 #[cfg(test)]

@@ -610,3 +610,30 @@ The operation is retryable while the marker remains: a later attempt accepts onl
 There is an intentional fail-closed boundary after marker removal. If the process stops after the marker is deleted but before the root directory is removed, a later recovery pass cannot prove ownership of the unmarked directory and must preserve it. This may leave an empty orphan directory, which is preferable to deleting an unmarked entry.
 
 Platform caveat remains explicit: Windows file/directory deletion applies disposition to verified opened handles; Unix uses descriptor-relative unlink operations with a residual same-user rename race between identity check and unlink. The helper remains test-only pending private workspace ACL/permission enforcement, production integration review, and physical Windows acceptance. Schema-1 snapshots and all unverified entries remain preserved. Guest execution remains disabled.
+
+
+## Production snapshot integration — 2026-11-13
+
+The bounded handle-relative snapshot pipeline is now wired into the production
+prepare, recovery, and discard commands. Production collection opens the
+selected project root and private workspace as verified directory capabilities,
+walks and opens descendants relative to held handles, enforces the fixed depth,
+file-count, per-file, and total-byte limits, and creates destination entries
+exclusively relative to the held workspace handle. The schema-2 exact inventory
+marker is written last, after all payload files have been flushed.
+
+A collection that exceeds a hard limit is rejected rather than published as a
+partial snapshot. If creation is interrupted before the marker is written, the
+unmarked directory is deliberately preserved; it is not eligible for automatic
+cleanup. Recovery and user-requested discard now use exact schema-2 inventory
+preflight and retry-safe handle-relative deletion, with the ownership marker
+removed last. Schema-1 markers, missing or malformed markers, incomplete
+snapshots, unknown entries, links/reparse points, and changed payload sizes are
+preserved.
+
+The old schema-1 path-based helper remains only for legacy regression tests and
+is no longer called by production prepare/recovery/discard flows. Guest execution
+remains disabled. This integration does not constitute physical Windows
+acceptance testing, nor does it eliminate the documented same-user rename race
+on Unix; production cleanup on Unix must continue to be treated as best-effort
+under the private workspace permission boundary.
