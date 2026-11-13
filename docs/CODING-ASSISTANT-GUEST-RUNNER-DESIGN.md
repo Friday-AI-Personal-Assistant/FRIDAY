@@ -637,3 +637,22 @@ remains disabled. This integration does not constitute physical Windows
 acceptance testing, nor does it eliminate the documented same-user rename race
 on Unix; production cleanup on Unix must continue to be treated as best-effort
 under the private workspace permission boundary.
+
+
+## Private workspace permission boundary and legacy recovery regression — 2026-11-13
+
+Production snapshot preparation now establishes a restrictive permission
+boundary on the private workspace before opening it for handle-relative
+snapshot creation. On Unix, the directory is opened with directory/no-follow
+flags and its permissions are set and verified as owner-only (0700) through
+the held descriptor. On Windows, the current account SID is obtained through
+the fixed System32 identity utility; inherited ACLs are removed and full-control
+inheritance is granted only to that SID, LocalSystem, and the built-in
+Administrators group. ACL application and Windows ACL consistency checking
+must succeed or snapshot preparation fails closed.
+
+This is a workspace-root ACL boundary, not a substitute for the separate
+user-facing File Protection feature or physical Windows security testing.
+The regression suite now writes a genuine schema-1 marker over a completed
+schema-2 snapshot and proves cleanup rejects it while preserving payload data.
+Guest execution remains disabled.

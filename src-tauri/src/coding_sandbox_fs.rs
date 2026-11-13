@@ -3208,6 +3208,15 @@ mod tests {
         let id = "5".repeat(32);
         create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
         let root_path = workspace_path.join(&id);
+        let marker_path = root_path.join(".friday-snapshot-owner.json");
+        let valid_marker = fs::read(&marker_path).unwrap();
+        fs::write(&marker_path, format!(
+            r#"{{"schemaVersion":1,"snapshotId":"{}","owner":"FRIDAY-CodingAssistant"}}"#,
+            id
+        )).unwrap();
+        assert!(cleanup_owned_snapshot(&workspace, &id, bounded_limits()).is_err());
+        assert_eq!(fs::read(root_path.join("main.rs")).unwrap(), b"fn main() {}");
+        fs::write(&marker_path, valid_marker).unwrap();
         fs::write(root_path.join("unrecognized.txt"), b"keep").unwrap();
         assert!(cleanup_owned_snapshot(&workspace, &id, bounded_limits()).is_err());
         assert_eq!(fs::read(root_path.join("main.rs")).unwrap(), b"fn main() {}");

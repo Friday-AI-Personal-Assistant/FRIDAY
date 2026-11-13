@@ -725,6 +725,72 @@ fn copy_snapshot_tree(
     Ok(())
 }
 
+
+/// Restrict the private snapshot workspace to the current user and the
+/// operating-system principals required for administration and recovery.
+fn secure_private_workspace_directory(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| "FRIDAY could not inspect its private workspace directory.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("The private workspace is not an ordinary directory.".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
+        let directory = OpenOptions::new().read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)
+            .map_err(|_| "FRIDAY could not securely open its private workspace directory.".to_string())?;
+        let opened = directory.metadata().map_err(|_| "FRIDAY could not verify its private workspace directory.".to_string())?;
+        if !opened.is_dir() || is_reparse_or_symlink(&opened) {
+            return Err("The private workspace changed type during permission setup.".into());
+        }
+        if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
+            return Err("FRIDAY could not restrict private workspace permissions.".into());
+        }
+        let verified = directory.metadata().map_err(|_| "FRIDAY could not verify private workspace permissions.".to_string())?;
+        use std::os::unix::fs::PermissionsExt;
+        if verified.permissions().mode() & 0o077 != 0 {
+            return Err("Private workspace permissions are broader than owner-only.".into());
+        }
+    }
+    #[cfg(windows)]
+    {
+        let system_root = env::var_os("SystemRoot")
+            .ok_or_else(|| "Windows system directory is unavailable; private workspace ACL setup was refused.".to_string())?;
+        let system32 = PathBuf::from(system_root).join("System32");
+        let identity = Command::new(system32.join("whoami.exe"))
+            .args(["/user", "/fo", "csv", "/nh"]).output()
+            .map_err(|_| "FRIDAY could not identify the current Windows account for workspace ACL setup.".to_string())?;
+        if !identity.status.success() {
+            return Err("Windows account identity lookup failed; private workspace ACL setup was refused.".into());
+        }
+        let identity_text = String::from_utf8(identity.stdout)
+            .map_err(|_| "Windows account identity output was not valid UTF-8.".to_string())?;
+        let sid = identity_text.lines().filter_map(|line| line.split(',').last())
+            .map(|value| value.trim().trim_matches('"'))
+            .find(|value| value.starts_with("S-1-") && value.len() <= 184)
+            .ok_or_else(|| "FRIDAY could not validate the current Windows account SID.".to_string())?;
+        let applied = Command::new(system32.join("icacls.exe"))
+            .arg(path).arg("/inheritance:r").arg("/grant:r")
+            .arg(format!("*{sid}:(OI)(CI)F"))
+            .arg("*S-1-5-18:(OI)(CI)F")
+            .arg("*S-1-5-32-544:(OI)(CI)F")
+            .output()
+            .map_err(|_| "FRIDAY could not apply restrictive Windows workspace permissions.".to_string())?;
+        if !applied.status.success() {
+            return Err("Windows refused the private workspace ACL; snapshot creation was stopped.".into());
+        }
+        let verified = Command::new(system32.join("icacls.exe"))
+            .arg(path).arg("/verify").output()
+            .map_err(|_| "FRIDAY could not verify the private workspace ACL.".to_string())?;
+        if !verified.status.success() {
+            return Err("The private workspace ACL did not pass Windows verification.".into());
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn coding_sandbox_prepare_snapshot(app: AppHandle) -> Result<CodingSandboxSnapshot, String> {
     let source_root = crate::coding_assistant::selected_project_root_for_sandbox()?;
@@ -739,6 +805,7 @@ pub async fn coding_sandbox_prepare_snapshot(app: AppHandle) -> Result<CodingSan
     let workspace_root = app_data.join("coding-sandbox-workspaces");
     fs::create_dir_all(&workspace_root)
         .map_err(|_| "FRIDAY could not create private sandbox workspace storage.".to_string())?;
+    secure_private_workspace_directory(&workspace_root)?;
     let workspace_meta = fs::symlink_metadata(&workspace_root)
         .map_err(|_| "FRIDAY could not verify private sandbox workspace storage.".to_string())?;
     if !workspace_meta.is_dir() || is_reparse_or_symlink(&workspace_meta) {
@@ -1173,6 +1240,21 @@ mod tests {
         let bytes = guest_result_json("passed", r#","exitCode":0"#);
         assert!(validate_guest_result_json(&vec![b'x'; MAX_GUEST_RESULT_BYTES + 1], "0123456789abcdef0123456789abcdef", GuestRunOperation::RustCargoTest).is_err());
         assert!(validate_guest_result_json(&bytes, "../bad", GuestRunOperation::RustCargoTest).is_err());
+    }
+
+
+    #[test]
+    fn private_workspace_permissions_are_restricted_before_use() {
+        let workspace = make_test_directory("private-workspace-permissions");
+        secure_private_workspace_directory(&workspace).unwrap();
+        let metadata = fs::symlink_metadata(&workspace).unwrap();
+        assert!(metadata.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(metadata.permissions().mode() & 0o077, 0);
+        }
+        fs::remove_dir(&workspace).unwrap();
     }
 
     #[test]
