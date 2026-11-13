@@ -28,6 +28,7 @@ type CodingApplyResult = { fileName: string; relativePath: string; backupRelativ
 type CodingChangeHistoryItem = { id: string; relativePath: string; backupRelativePath: string; createdAt: number; status: "applied" | "undone" | "blocked"; undoRecordId: string; undoAvailable: boolean; unavailableReason: string | null };
 type CodingSandboxPreflight = { platformSupported: boolean; runtimeDetected: boolean; executionEnabled: boolean; networkIsolationEnforced: boolean; windowsEdition: string; windowsBuild: string; sandboxFeatureState: string; wsbCliAvailable: boolean; wsbCliVersion: string; virtualizationFirmwareEnabled: boolean | null; sandboxProcessDetected: boolean; message: string };
 type CodingSandboxSnapshot = { snapshotId: string; filesCopied: number; bytesCopied: number; truncated: boolean; message: string };
+type CodingSandboxRecovery = { removedSnapshots: number; preservedUnverifiedEntries: number; message: string };
 type ProjectIntelligence = {
   projectMap: string[]; entryPoints: string[]; dependencies: string[];
   imports: { filePath: string; importText: string; matchedProjectFile: string | null; line: number }[];
@@ -123,6 +124,14 @@ export default function SkillsManager() {
     finally { setLoading(false); }
   }, [desktop]);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if (!desktop) return;
+    void invoke<CodingSandboxRecovery>("coding_sandbox_recover_workspaces")
+      .then(result => {
+        if (result.removedSnapshots > 0 || result.preservedUnverifiedEntries > 0) setNotice(result.message);
+      })
+      .catch(() => setNotice("Previous sandbox files could not be fully checked. FRIDAY left unverified items untouched."));
+  }, [desktop]);
   useEffect(() => {
     if (!desktop) return;
     void invoke<string[]>("ollama_models").then(items => setPdfModel(items[0] || "")).catch(() => setPdfModel(""));
