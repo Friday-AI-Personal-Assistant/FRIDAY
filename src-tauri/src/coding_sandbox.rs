@@ -120,8 +120,19 @@ fn verified_owned_snapshot_path(workspace_root: &Path, snapshot_id: &str) -> Res
     if !marker_meta.is_file() || is_reparse_or_symlink(&marker_meta) || marker_meta.len() > 1024 {
         return Err("Snapshot ownership evidence is not a small regular file; cleanup was refused.".into());
     }
-    let bytes = fs::read(&marker_path)
+    let mut marker_file = open_source_file(&marker_path)
+        .map_err(|_| "Snapshot ownership evidence could not be opened without following links.".to_string())?;
+    let opened_marker_meta = marker_file.metadata()
+        .map_err(|_| "Snapshot ownership evidence could not be verified.".to_string())?;
+    if !opened_marker_meta.is_file() || is_reparse_or_symlink(&opened_marker_meta) || opened_marker_meta.len() > 1024 {
+        return Err("Snapshot ownership evidence changed or exceeded its size limit; cleanup was refused.".into());
+    }
+    let mut bytes = Vec::new();
+    marker_file.take(1025).read_to_end(&mut bytes)
         .map_err(|_| "Snapshot ownership evidence could not be read; cleanup was refused.".to_string())?;
+    if bytes.len() > 1024 {
+        return Err("Snapshot ownership evidence exceeded its read limit; cleanup was refused.".into());
+    }
     let marker: SnapshotOwnershipMarker = serde_json::from_slice(&bytes)
         .map_err(|_| "Snapshot ownership evidence is malformed; cleanup was refused.".to_string())?;
     if marker.schema_version != SNAPSHOT_OWNER_SCHEMA
@@ -662,6 +673,18 @@ mod tests {
         }).unwrap()).unwrap();
         assert!(verified_owned_snapshot_path(&workspace, id).is_err());
         assert!(snapshot.exists(), "unverified folders must be preserved");
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn ownership_recovery_refuses_oversized_marker_files() {
+        let workspace = make_test_directory("oversized-marker");
+        let id = "0123456789abcdef0123456789abcdef";
+        let snapshot = workspace.join(id);
+        fs::create_dir(&snapshot).unwrap();
+        fs::write(snapshot.join(SNAPSHOT_OWNER_MARKER), vec![b'x'; 1025]).unwrap();
+        assert!(verified_owned_snapshot_path(&workspace, id).is_err());
+        assert!(snapshot.exists(), "oversized ownership evidence must not authorise deletion");
         fs::remove_dir_all(workspace).unwrap();
     }
 
