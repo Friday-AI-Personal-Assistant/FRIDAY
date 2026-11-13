@@ -26,7 +26,7 @@ type CodingProjectFile = { name: string; relativePath: string; language: string;
 type CodingChangePreview = { previewId: string; fileName: string; relativePath: string; originalSha256: string; proposedSha256: string; originalSizeBytes: number; proposedSizeBytes: number; unifiedDiff: string; expiresInSeconds: number };
 type CodingApplyResult = { fileName: string; relativePath: string; backupRelativePath: string; bytesWritten: number; originalSha256: string; resultingSha256: string; undoRecordId: string };
 type CodingChangeHistoryItem = { id: string; relativePath: string; backupRelativePath: string; createdAt: number; status: "applied" | "undone" | "blocked"; undoRecordId: string; undoAvailable: boolean; unavailableReason: string | null };
-type CodingSandboxPreflight = { platformSupported: boolean; runtimeDetected: boolean; executionEnabled: boolean; networkIsolationEnforced: boolean; message: string };
+type CodingSandboxPreflight = { platformSupported: boolean; runtimeDetected: boolean; executionEnabled: boolean; networkIsolationEnforced: boolean; windowsEdition: string; windowsBuild: string; sandboxFeatureState: string; wsbCliAvailable: boolean; wsbCliVersion: string; virtualizationFirmwareEnabled: boolean | null; sandboxProcessDetected: boolean; message: string };
 type CodingSandboxSnapshot = { snapshotId: string; filesCopied: number; bytesCopied: number; truncated: boolean; message: string };
 type ProjectIntelligence = {
   projectMap: string[]; entryPoints: string[]; dependencies: string[];
@@ -821,7 +821,7 @@ ${file.content}`
             {codingSandboxPreflight && <section className="coding-change-preview" aria-live="polite">
               <strong>Stage 4 — Sandboxed testing readiness</strong>
               <p>{codingSandboxPreflight.message}</p>
-              <small>Runtime detected: {codingSandboxPreflight.runtimeDetected ? "Yes" : "No"} · Execution enabled: No · Network isolation enforced: No</small>
+              <small>Runtime executable: {codingSandboxPreflight.runtimeDetected ? "Detected" : "Not detected"} · Windows edition/build: {codingSandboxPreflight.windowsEdition} / {codingSandboxPreflight.windowsBuild} · Sandbox feature: {codingSandboxPreflight.sandboxFeatureState} · wsb CLI: {codingSandboxPreflight.wsbCliAvailable ? codingSandboxPreflight.wsbCliVersion : "Not detected"} · Firmware virtualization: {codingSandboxPreflight.virtualizationFirmwareEnabled === null ? "Unknown" : codingSandboxPreflight.virtualizationFirmwareEnabled ? "Enabled" : "Disabled"} · Existing Sandbox process: {codingSandboxPreflight.sandboxProcessDetected ? "Detected — FRIDAY will not attach" : "Not detected"} · Execution enabled: No · Network isolation enforced: No</small>
             </section>}
             <section className="coding-change-preview" aria-live="polite">
               <strong>Prepare isolated project copy</strong>
