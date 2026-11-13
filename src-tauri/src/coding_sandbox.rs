@@ -24,6 +24,43 @@ const SNAPSHOT_OWNER_SCHEMA: u32 = 1;
 const MAX_GUEST_RESULT_BYTES: usize = 1024 * 1024;
 const MAX_GUEST_RESULT_DURATION_MS: u64 = 120_000;
 
+const MAX_GUEST_REQUEST_DURATION_MS: u64 = 120_000;
+const MAX_GUEST_REQUEST_OUTPUT_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestRunRequest {
+    schema_version: u32,
+    run_id: String,
+    snapshot_id: String,
+    operation: GuestRunOperation,
+    max_duration_ms: u64,
+    max_output_bytes: u64,
+}
+
+fn validate_guest_run_request(request: GuestRunRequest) -> Result<GuestRunRequest, String> {
+    if request.schema_version != 1
+        || !valid_snapshot_id(&request.run_id)
+        || !valid_snapshot_id(&request.snapshot_id)
+        || request.max_duration_ms == 0
+        || request.max_duration_ms > MAX_GUEST_REQUEST_DURATION_MS
+        || request.max_output_bytes == 0
+        || request.max_output_bytes > MAX_GUEST_REQUEST_OUTPUT_BYTES
+    {
+        return Err("The guest run request is invalid or exceeds FRIDAY's fixed policy limits.".into());
+    }
+    Ok(request)
+}
+
+fn parse_guest_run_request(bytes: &[u8]) -> Result<GuestRunRequest, String> {
+    if bytes.is_empty() || bytes.len() > 4096 {
+        return Err("The guest run request is empty or exceeds its size limit.".into());
+    }
+    let request: GuestRunRequest = serde_json::from_slice(bytes)
+        .map_err(|_| "The guest run request is malformed or contains unsupported fields.".to_string())?;
+    validate_guest_run_request(request)
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum GuestRunOperation {
@@ -789,6 +826,55 @@ mod tests {
         format!(
             r#"{{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","operation":"rust-cargo-test","status":"{status}"{exit_code},"stdout":"ok","stderr":"","truncated":false,"durationMs":25}}"#
         ).into_bytes()
+    }
+
+
+    fn valid_guest_request_json() -> Vec<u8> {
+        br#"{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","snapshotId":"abcdef0123456789abcdef0123456789","operation":"rust-cargo-test","maxDurationMs":120000,"maxOutputBytes":1048576}"#.to_vec()
+    }
+
+    #[test]
+    fn guest_request_accepts_only_fixed_allowlisted_bounded_contract() {
+        let request = parse_guest_run_request(&valid_guest_request_json()).unwrap();
+        assert_eq!(request.operation, GuestRunOperation::RustCargoTest);
+        assert_eq!(request.max_duration_ms, MAX_GUEST_REQUEST_DURATION_MS);
+        assert_eq!(request.max_output_bytes, MAX_GUEST_REQUEST_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn guest_request_rejects_unknown_fields_and_duplicate_keys() {
+        let unknown = br#"{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","snapshotId":"abcdef0123456789abcdef0123456789","operation":"rust-cargo-test","maxDurationMs":1000,"maxOutputBytes":1000,"command":"cmd.exe"}"#;
+        assert!(parse_guest_run_request(unknown).is_err());
+        let duplicate = br#"{"schemaVersion":1,"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","snapshotId":"abcdef0123456789abcdef0123456789","operation":"rust-cargo-test","maxDurationMs":1000,"maxOutputBytes":1000}"#;
+        assert!(parse_guest_run_request(duplicate).is_err());
+    }
+
+    #[test]
+    fn guest_request_rejects_invalid_ids_versions_and_resource_limits() {
+        let mut value: serde_json::Value = serde_json::from_slice(&valid_guest_request_json()).unwrap();
+        value["schemaVersion"] = serde_json::json!(2);
+        assert!(parse_guest_run_request(&serde_json::to_vec(&value).unwrap()).is_err());
+        value["schemaVersion"] = serde_json::json!(1);
+        value["runId"] = serde_json::json!("../outside");
+        assert!(parse_guest_run_request(&serde_json::to_vec(&value).unwrap()).is_err());
+        value["runId"] = serde_json::json!("0123456789abcdef0123456789abcdef");
+        value["snapshotId"] = serde_json::json!("../../project");
+        assert!(parse_guest_run_request(&serde_json::to_vec(&value).unwrap()).is_err());
+        value["snapshotId"] = serde_json::json!("abcdef0123456789abcdef0123456789");
+        value["maxDurationMs"] = serde_json::json!(MAX_GUEST_REQUEST_DURATION_MS + 1);
+        assert!(parse_guest_run_request(&serde_json::to_vec(&value).unwrap()).is_err());
+        value["maxDurationMs"] = serde_json::json!(0);
+        assert!(parse_guest_run_request(&serde_json::to_vec(&value).unwrap()).is_err());
+        value["maxDurationMs"] = serde_json::json!(1000);
+        value["maxOutputBytes"] = serde_json::json!(MAX_GUEST_REQUEST_OUTPUT_BYTES + 1);
+        assert!(parse_guest_run_request(&serde_json::to_vec(&value).unwrap()).is_err());
+        value["maxOutputBytes"] = serde_json::json!(0);
+        assert!(parse_guest_run_request(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn guest_request_rejects_oversized_documents() {
+        assert!(parse_guest_run_request(&vec![b' '; 4097]).is_err());
     }
 
     #[test]
