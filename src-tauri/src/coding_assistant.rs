@@ -55,6 +55,7 @@ struct ProjectGrant {
 }
 
 static PROJECT_GRANTS: Mutex<BTreeMap<String, ProjectGrant>> = Mutex::new(BTreeMap::new());
+static SELECTED_PROJECT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 const MAX_PROPOSED_FILE_BYTES: usize = 128 * 1024;
 const CODE_PREVIEW_TTL_SECONDS: u64 = 120;
@@ -98,6 +99,19 @@ pub struct CodingApplyResult {
     original_sha256: String,
     resulting_sha256: String,
     undo_record_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingChangeHistoryItem {
+    id: String,
+    relative_path: String,
+    backup_relative_path: String,
+    created_at: u64,
+    status: String,
+    undo_record_id: String,
+    undo_available: bool,
+    unavailable_reason: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1105,6 +1119,8 @@ fn validate_granted_root(root: &Path) -> Result<PathBuf, String> {
 }
 
 pub fn revoke_session_access() -> Result<(), String> {
+    *SELECTED_PROJECT_ROOT.lock()
+        .map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())? = None;
     PROJECT_GRANTS.lock()
         .map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())?
         .clear();
@@ -1135,11 +1151,111 @@ pub async fn pick_project_folder_and_list_files(app: AppHandle) -> Result<Coding
     candidates.sort_by(|a, b| a.relative_path.to_lowercase().cmp(&b.relative_path.to_lowercase()));
     let truncated = scanned >= MAX_SCANNED_ENTRIES || candidates.len() >= MAX_PROJECT_CANDIDATES;
     *PROJECT_GRANTS.lock().map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())? = grants;
+    *SELECTED_PROJECT_ROOT.lock().map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())? = Some(root.clone());
     let project_name = root.file_name().and_then(|value| value.to_str()).unwrap_or("Selected project").chars().take(160).collect();
     let _ = crate::tools::record(&app, "coding.list_project", &format!("Listed {} bounded source/configuration files from a folder explicitly selected by the user; recovered {} interrupted code transaction(s).", candidates.len(), recovered_transactions), true);
     Ok(CodingProjectScan { project_name, files: candidates, scanned_entries: scanned, truncated })
 }
 
+
+#[tauri::command]
+pub async fn list_code_change_history() -> Result<Vec<CodingChangeHistoryItem>, String> {
+    ensure_skill_loaded()?;
+    let root = SELECTED_PROJECT_ROOT.lock()
+        .map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())?
+        .clone()
+        .ok_or("Choose the project folder again before viewing its Coding Assistant history.")?;
+    let root = validate_granted_root(&root)?;
+    recover_project_code_transactions(&root)?;
+    let backup_dir = root.join(".friday-code-backups");
+    let metadata = match fs::symlink_metadata(&backup_dir) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("FRIDAY could not inspect the project's code history folder.".into()),
+    };
+    if is_redirected(&metadata) || !metadata.is_dir() {
+        return Err("The project's code history folder is redirected or unsafe. No history was changed.".into());
+    }
+    let canonical = fs::canonicalize(&backup_dir)
+        .map_err(|_| "FRIDAY could not validate the project's code history folder.".to_string())?;
+    if !canonical.starts_with(&root) {
+        return Err("The project's code history folder resolves outside the selected project.".into());
+    }
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&canonical).map_err(|_| "FRIDAY could not read the project's code history.".to_string())? {
+        let entry = entry.map_err(|_| "FRIDAY could not inspect a code history item.".to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".undo.json") || name.ends_with(".undone.json") {
+            let meta = fs::symlink_metadata(entry.path())
+                .map_err(|_| "FRIDAY could not inspect a saved code history record.".to_string())?;
+            if is_redirected(&meta) || !meta.is_file() || meta.len() == 0 || meta.len() > 16 * 1024 {
+                return Err("A code history record is unsafe or outside its size limit. All recovery evidence was preserved.".into());
+            }
+            entries.push((name, entry.path()));
+            if entries.len() > MAX_CODE_BACKUP_FILES {
+                return Err("This project contains more than 500 code history records. Manual review is required.".into());
+            }
+        }
+    }
+    let mut history = Vec::new();
+    for (name, path) in entries {
+        let bytes = read_recovery_file(&path, 16 * 1024)?
+            .ok_or("A code history record disappeared while it was being read.")?;
+        let record: CodingUndoRecord = serde_json::from_slice(&bytes)
+            .map_err(|_| "A saved code history record is malformed. FRIDAY preserved it and stopped loading history.".to_string())?;
+        validate_undo_record(&record)?;
+        let active_name = format!("{}.undo.json", record.id);
+        let consumed_name = format!("{}.undone.json", record.id);
+        if name != active_name && name != consumed_name {
+            return Err("A code history filename does not match its record identifier. No history was changed.".into());
+        }
+        let active_path = canonical.join(&active_name);
+        let consumed_path = canonical.join(&consumed_name);
+        if fs::symlink_metadata(&active_path).is_ok() && fs::symlink_metadata(&consumed_path).is_ok() {
+            return Err("Both active and consumed history records exist for one change. Manual review is required.".into());
+        }
+        let is_undone = name == consumed_name;
+        let mut undo_available = false;
+        let mut unavailable_reason = None;
+        if !is_undone {
+            let target = match safe_recovery_target(&root, &record) {
+                Ok(value) => Some(value),
+                Err(_) => {
+                    unavailable_reason = Some("The original project file is missing, redirected, or no longer safe.".to_string());
+                    None
+                }
+            };
+            if let Some(target) = target {
+                let target_hash = recovery_hash(&target, MAX_FILE_BYTES)?;
+                let backup = canonical.join(format!("{}.bak", record.id));
+                let backup_bytes = read_recovery_file(&backup, MAX_FILE_BYTES)?;
+                match (target_hash, backup_bytes) {
+                    (Some(current), Some(original)) if current == record.resulting_sha256 && sha256_hex(&original) == record.original_sha256 => {
+                        undo_available = true;
+                    }
+                    (Some(current), _) if current != record.resulting_sha256 =>
+                        unavailable_reason = Some("The project file has changed since FRIDAY edited it. Undo is disabled to protect newer changes.".into()),
+                    (_, None) =>
+                        unavailable_reason = Some("The original backup is missing. Undo is disabled.".into()),
+                    (_, Some(_)) =>
+                        unavailable_reason = Some("The original backup failed integrity verification. Undo is disabled.".into()),
+                }
+            }
+        }
+        history.push(CodingChangeHistoryItem {
+            id: record.id.clone(),
+            relative_path: record.relative_path,
+            backup_relative_path: record.backup_relative_path,
+            created_at: record.created_at,
+            status: if is_undone { "undone".into() } else if undo_available { "applied".into() } else { "blocked".into() },
+            undo_record_id: record.id,
+            undo_available,
+            unavailable_reason,
+        });
+    }
+    history.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
+    Ok(history)
+}
 
 #[tauri::command]
 pub async fn preview_code_change(file_id: String, proposed_content: String) -> Result<CodingChangePreview, String> {
