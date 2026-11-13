@@ -275,3 +275,6 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 
 - [x] Coding Assistant Stage 4: investigated NTFS per-user quotas as a non-admin result-storage option; rejected for the initial design because quotas are volume/user scoped rather than per-run/per-folder and mapped-folder host ownership cannot be assumed. No host quota settings changed. See `docs/CODING-ASSISTANT-GUEST-RUNNER-DESIGN.md`.
+
+
+- [ ] Coding Assistant Stage 4: CI verification for added Unix regression tests covering symlinked result directories and non-text filenames is pending.
