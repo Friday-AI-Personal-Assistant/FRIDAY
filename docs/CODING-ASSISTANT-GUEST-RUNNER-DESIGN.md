@@ -18,8 +18,8 @@ The host may send only a versioned, bounded JSON request with these fields:
 - `runId`: generated 32-character hexadecimal identifier.
 - `snapshotId`: generated 32-character hexadecimal identifier for a current-session-owned snapshot.
 - `operation`: one enum value from the fixed operation list below.
-- `timeoutSeconds`: selected by FRIDAY policy, never by the model; initial policy ceiling 120 seconds.
-- `outputLimitBytes`: selected by FRIDAY policy; hard ceiling 1 MiB for the combined structured result and captured diagnostics.
+- `maxDurationMs`: selected by FRIDAY policy, never by the model; integer from 1 through 120,000 milliseconds.
+- `maxOutputBytes`: selected by FRIDAY policy; integer from 1 byte through 1 MiB for the combined structured result and captured diagnostics.
 
 Reject unknown fields, duplicate/invalid identifiers, unsupported schema versions, oversized requests, invalid enum values, and any caller-supplied executable, shell, arguments, environment, path, or network setting. The guest runner derives every path from its fixed installation directory and the validated run identifier.
 
@@ -61,7 +61,7 @@ The guest may write only to a dedicated per-run output location. The result is a
 - `operation`: must exactly match the request.
 - `status`: one of `passed`, `failed`, `timed_out`, `cancelled`, `unsupported`, or `runner_error`.
 - `exitCode`: optional signed 32-bit integer; required only for a process that exited normally.
-- `stdout` and `stderr`: optional UTF-8 text, each bounded; combined result remains within the host policy limit.
+- `stdout` and `stderr`: optional UTF-8 text; their combined UTF-8 byte length must not exceed the host policy limit, and the complete JSON document is separately capped at 1 MiB.
 - `truncated`: boolean indicating any output truncation.
 - `durationMs`: non-negative integer bounded by the host watchdog policy.
 
@@ -164,7 +164,7 @@ This is deliberately only a pure host-side JSON validator. It is not yet connect
 
 ## Host-side guest run request validator — implemented, not connected to execution
 
-The host now also validates a bounded version-1 request structure for a future guest runner. The only accepted operation values are the three fixed enum values already listed above. The request contains only a schema version, generated run ID, snapshot ID, fixed operation, maximum duration and maximum output bytes. Both IDs must be exactly 32 hexadecimal characters. Duration must be between 1 and 120,000 ms; output must be between 1 byte and 1 MiB; and the complete JSON request is capped at 4 KiB. Unknown fields and duplicate keys are rejected. In particular, there are no fields for a shell command, executable path, arbitrary arguments, environment, working directory, or network settings.
+The host now also validates a bounded version-1 request structure for a future guest runner. The only accepted operation values are the three fixed enum values already listed above. The request contains only a schema version, generated run ID, snapshot ID, fixed operation, maximum duration and maximum output bytes. Both IDs must be exactly 32 hexadecimal characters. `maxDurationMs` must be between 1 and 120,000; `maxOutputBytes` must be between 1 byte and 1 MiB; and the complete JSON request is capped at 4 KiB. Unknown fields and duplicate keys are rejected. In particular, there are no fields for a shell command, executable path, arbitrary arguments, environment, working directory, or network settings.
 
 Unit tests cover the valid contract, unknown/duplicate fields, unsupported versions, path-like identifiers, out-of-range limits and oversized request documents. These checks constrain the data shape only; they do not prove that a future guest runner safely launches a runtime or that the supplied snapshot is safe to execute.
 
