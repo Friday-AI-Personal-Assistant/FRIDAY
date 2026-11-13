@@ -7,7 +7,9 @@ use std::{
     io::Read,
     path::{Component, Path, PathBuf},
     sync::Mutex,
-    process::Command,
+    process::{Command, ExitStatus, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 use rand::RngCore;
 use tauri::{AppHandle, Manager};
@@ -70,6 +72,65 @@ fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
 }
 
 #[cfg(windows)]
+const WINDOWS_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(windows)]
+const MAX_PREFLIGHT_OUTPUT_BYTES: u64 = 64 * 1024;
+
+#[cfg(windows)]
+fn run_bounded_probe(mut command: Command) -> Result<(ExitStatus, Vec<u8>), String> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| "The Windows Sandbox capability probe could not be started.".to_string())?;
+
+    let stdout = child.stdout.take()
+        .ok_or_else(|| "The Windows Sandbox capability probe output was unavailable.".to_string())?;
+    let stderr = child.stderr.take()
+        .ok_or_else(|| "The Windows Sandbox capability probe diagnostics were unavailable.".to_string())?;
+
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.take(MAX_PREFLIGHT_OUTPUT_BYTES).read_to_end(&mut bytes);
+        bytes
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.take(MAX_PREFLIGHT_OUTPUT_BYTES).read_to_end(&mut bytes);
+        bytes
+    });
+
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < WINDOWS_PREFLIGHT_TIMEOUT => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err("The Windows Sandbox capability probe timed out; readiness is unverified.".into());
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err("The Windows Sandbox capability probe could not be monitored; readiness is unverified.".into());
+            }
+        }
+    };
+
+    let stdout = stdout_reader.join()
+        .map_err(|_| "The Windows Sandbox capability probe output could not be collected.".to_string())?;
+    let _ = stderr_reader.join();
+    Ok((status, stdout))
+}
+
+#[cfg(windows)]
 fn detect_windows_sandbox_capabilities() -> (String, String, String, bool, String, Option<bool>, bool) {
     // Fixed, read-only PowerShell probes. No user or model supplied command text is accepted.
     let script = r#"$ErrorActionPreference = 'SilentlyContinue'
@@ -79,7 +140,9 @@ $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty 
 $active = [bool](Get-Process -Name WindowsSandbox -ErrorAction SilentlyContinue)
 $wsb = Get-Command wsb -ErrorAction SilentlyContinue
 $version = ''
-if ($wsb) { $version = (& $wsb.Source --version 2>&1 | Out-String).Trim() }
+if ($wsb -and $wsb.Source) {
+  $version = [string](Get-Item -LiteralPath $wsb.Source -ErrorAction SilentlyContinue).VersionInfo.FileVersion
+}
 [pscustomobject]@{
   edition = [string]$cv.EditionID
   build = [string]$cv.CurrentBuildNumber
@@ -89,16 +152,15 @@ if ($wsb) { $version = (& $wsb.Source --version 2>&1 | Out-String).Trim() }
   virtualizationFirmwareEnabled = if ($null -eq $cpu) { $null } else { [bool]$cpu }
   sandboxProcessDetected = $active
 } | ConvertTo-Json -Compress"#;
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .output();
-    let Ok(output) = output else {
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    let Ok((status, stdout)) = run_bounded_probe(command) else {
         return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false);
     };
-    if !output.status.success() {
+    if !status.success() {
         return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false);
     }
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&stdout) else {
         return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false);
     };
     let string_field = |key: &str| value.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("Unknown").to_string();
