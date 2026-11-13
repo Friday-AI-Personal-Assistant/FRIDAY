@@ -633,6 +633,32 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn verified_root_handle_accepts_canonical_drive_path() {
+        let root_path = make_test_directory("canonical-drive-root");
+        fs::write(root_path.join("safe.rs"), b"safe").unwrap();
+        let canonical = fs::canonicalize(&root_path).unwrap();
+
+        let root = open_verified_root_directory(&canonical).unwrap();
+        assert!(root.metadata().unwrap().is_dir());
+        assert!(same_path_handle_identity(&canonical, &root).unwrap());
+
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verified_root_handle_rejects_unc_paths_until_share_roots_are_reviewed() {
+        let unc_path = Path::new(r"\\server\share\project");
+        let result = open_directory_from_filesystem_root(unc_path);
+        assert!(
+            matches!(result, Err(ref error) if error.kind() == io::ErrorKind::Unsupported),
+            "UNC roots must fail closed until their root-handle semantics are reviewed"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn verified_root_handle_rejects_junction_ancestor() {
         use std::process::Command;
 
