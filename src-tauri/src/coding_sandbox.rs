@@ -840,6 +840,10 @@ mod tests {
             wsb_cli_version: "1.0.0".into(),
             virtualization_firmware_enabled: Some(true),
             sandbox_process_detected: false,
+            virtual_disk_api_available: true,
+            manage_volume_privilege_enabled: true,
+            hyperv_cmdlets_available: true,
+            result_storage_ready: false,
             message: "Preflight only".into(),
         };
         assert!(!policy.execution_enabled);
