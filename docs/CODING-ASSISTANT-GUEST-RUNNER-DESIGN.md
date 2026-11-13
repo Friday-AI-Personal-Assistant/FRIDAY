@@ -272,3 +272,24 @@ The host result validator now has a per-run output-budget entry point. It reject
 The host now has a pure result-file reader for the future collection boundary. It accepts only a normal result directory containing exactly one entry named `result.json`; missing files, additional files/directories, alternate casing, non-text names, symlinks/reparse points, non-regular files, empty files, oversized files, and paths that do not resolve as a direct child of the verified result directory are rejected. The file is opened with the existing no-follow/reparse-point inspection behavior, its opened metadata is checked against the path metadata, and the read is bounded to the global result-document ceiling before the existing run ID, operation, schema, status/exit-code, duration, and per-run output checks are applied.
 
 Regression tests cover the exact filename allowlist, missing and extra entries, a valid result file, oversized content, and a symlinked result file on Unix. This remains a disconnected validator: FRIDAY does not create a result directory, mount writable storage, collect a guest-produced file, launch or stop Windows Sandbox, or enable execution. The Windows reparse-point and real guest mapped-folder lifecycle still require dedicated Windows acceptance testing before any collection workflow can be connected.
+
+
+## NTFS per-user quota investigation — not accepted as a per-run boundary
+
+NTFS disk quotas were evaluated as a possible way to bound guest writes without creating and formatting a per-run VHDX. Microsoft's quota model charges storage to the Windows security identifier (SID) recorded as the file owner and applies warning/hard limits to a user on a volume; it is not a per-directory quota. A hard quota can deny further allocation after the user's limit is reached, but the quota state and per-user limits are managed at the volume/system level.
+
+References:
+- [Microsoft: Managing Disk Quotas](https://learn.microsoft.com/en-us/windows/win32/fileio/managing-disk-quotas)
+- [Microsoft: System-level Administration of Disk Quotas](https://learn.microsoft.com/en-us/windows/win32/fileio/system-level-administration-of-disk-quotas)
+- [Microsoft: Disk Quota Limits](https://learn.microsoft.com/en-us/windows/win32/fileio/disk-quota-limits)
+
+This is not currently an acceptable FRIDAY per-run storage design:
+
+- A quota is per host-side file-owner SID and volume, not scoped to the exact result directory or run ID.
+- FRIDAY cannot assume that files created through a Windows Sandbox mapped folder are charged to a distinct, stable host SID representing that one guest run. The guest's in-container account name is not proof of the host-side file owner used by NTFS quota accounting; this requires physical Windows measurement.
+- Reusing a host identity such as SYSTEM could affect unrelated writes charged to that SID on the same volume, so it cannot safely isolate one run.
+- Provisioning and enforcing a dedicated host identity/volume quota is an administrative, machine-level configuration, not a self-contained non-admin per-run operation. FRIDAY must not silently change machine-wide quota policy or quota settings.
+
+Therefore NTFS quotas are rejected for the initial non-admin result-transfer design. They may be reconsidered only if a separately reviewed design proves a unique host-side identity and quota scope for each run, safe provisioning/cleanup, no impact on unrelated host activity, and hard enforcement before untrusted code can write. No quota settings or host identities have been changed by FRIDAY.
+
+The current research has not identified a documented Windows Sandbox guest-to-host result channel that both avoids writable host mappings and provides a hard per-run storage cap. Until a supported mechanism meets that requirement, guest execution remains unavailable; read-only snapshots and safe proposal workflows remain the supported path.
