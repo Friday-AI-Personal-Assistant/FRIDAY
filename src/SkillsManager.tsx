@@ -114,6 +114,7 @@ export default function SkillsManager() {
   const [codingUndoBusy, setCodingUndoBusy] = useState(false);
   const [codingSandboxPreflight, setCodingSandboxPreflight] = useState<CodingSandboxPreflight | null>(null);
   const [codingSandboxSnapshot, setCodingSandboxSnapshot] = useState<CodingSandboxSnapshot | null>(null);
+  const [codingSandboxConfigPreview, setCodingSandboxConfigPreview] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!desktop) { setLoading(false); return; }
@@ -169,7 +170,7 @@ export default function SkillsManager() {
     setCodingChangePreview(null); setCodingApprovalToken("");
     // Picking a project revokes the previous backend grants, so its in-memory Undo
     // entries must no longer be presented as actionable in this session.
-    setCodingApplyResult(null); setCodingHistory([]); setCodingUndoBusy(false); setCodingSandboxPreflight(null); setCodingSandboxSnapshot(null);
+    setCodingApplyResult(null); setCodingHistory([]); setCodingUndoBusy(false); setCodingSandboxPreflight(null); setCodingSandboxSnapshot(null); setCodingSandboxConfigPreview(null);
     try {
       const project = await invoke<CodingProjectScan>("pick_project_folder_and_list_files");
       setCodingProject(project);
@@ -193,12 +194,21 @@ export default function SkillsManager() {
     finally { setCodingBusy(false); }
   }
 
+  async function previewCodingSandboxConfig() {
+    if (!codingSandboxSnapshot || codingBusy) return;
+    setCodingBusy(true); setCodingError("");
+    try {
+      const config = await invoke<string>("coding_sandbox_config_preview", { snapshotId: codingSandboxSnapshot.snapshotId });
+      setCodingSandboxConfigPreview(config);
+    } catch (e) { setCodingError(String(e)); }
+    finally { setCodingBusy(false); }
+  }
   async function discardCodingSandboxSnapshot() {
     if (!codingSandboxSnapshot || codingBusy) return;
     setCodingBusy(true); setCodingError("");
     try {
       const message = await invoke<string>("coding_sandbox_discard_snapshot", { snapshotId: codingSandboxSnapshot.snapshotId });
-      setCodingSandboxSnapshot(null); setNotice(message);
+      setCodingSandboxSnapshot(null); setCodingSandboxConfigPreview(null); setNotice(message);
     } catch (e) { setCodingError(String(e)); }
     finally { setCodingBusy(false); }
   }
@@ -819,9 +829,13 @@ ${file.content}`
               {codingSandboxSnapshot ? <>
                 <small>{codingSandboxSnapshot.filesCopied.toLocaleString()} files · {codingSandboxSnapshot.bytesCopied.toLocaleString()} bytes · {codingSandboxSnapshot.truncated ? "Partial snapshot — some content was skipped" : "Snapshot prepared"}</small>
                 <p>{codingSandboxSnapshot.message}</p>
-                <button type="button" className="secondary" onClick={() => void discardCodingSandboxSnapshot()} disabled={codingBusy}>Discard isolated copy</button>
+                <div className="coding-action-row">
+                  <button type="button" onClick={() => void previewCodingSandboxConfig()} disabled={codingBusy}>Preview isolated Sandbox configuration</button>
+                  <button type="button" className="secondary" onClick={() => void discardCodingSandboxSnapshot()} disabled={codingBusy}>Discard isolated copy</button>
+                </div>
+                {codingSandboxConfigPreview && <pre className="coding-sandbox-config" aria-label="Generated Windows Sandbox configuration preview">{codingSandboxConfigPreview}</pre>}
               </> : <button type="button" onClick={() => void prepareCodingSandboxSnapshot()} disabled={codingBusy || !codingSandboxPreflight}>Prepare isolated copy</button>}
-              <small>Testing and command execution are still disabled. This step only prepares a bounded copy.</small>
+              <small>Configuration preview only: FRIDAY does not launch Windows Sandbox or execute project code. Networking and shared devices are disabled in this proposed configuration.</small>
             </section>
             <div className="coding-project-list">
               <div className="coding-project-list-heading"><strong>Choose files to inspect</strong><small>{selectedCodingFileIds.length}/25 selected</small></div>
