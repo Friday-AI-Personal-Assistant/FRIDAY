@@ -1130,7 +1130,7 @@ pub(crate) fn preflight_snapshot_tree(
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker has an unsafe type or size"));
     }
     let mut marker_bytes = Vec::with_capacity(marker_metadata.len() as usize);
-    marker.take((1024 * 1024) as u64 + 1).read_to_end(&mut marker_bytes)?;
+    (&mut marker).take((1024 * 1024) as u64 + 1).read_to_end(&mut marker_bytes)?;
     if marker_bytes.len() as u64 != marker_metadata.len() || marker_bytes.len() > 1024 * 1024 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker changed while being read"));
     }
@@ -1154,7 +1154,7 @@ pub(crate) fn preflight_snapshot_tree(
     if observed_files != expected_files.keys().cloned().collect()
         || observed_directories != expected_directories
     {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot tree does not exactly match its inventory"));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("snapshot tree does not exactly match its inventory (observed files: {:?}, expected files: {:?}, observed directories: {:?}, expected directories: {:?})", observed_files, expected_files.keys().collect::<Vec<_>>(), observed_directories, expected_directories)));
     }
     Ok(())
 }
