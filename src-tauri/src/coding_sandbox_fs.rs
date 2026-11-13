@@ -197,12 +197,6 @@ where
         ));
     }
 
-    // Reject already-present symlink/reparse components above the selected
-    // root. This is an additional static-path check; it does not yet pin every
-    // ancestor by handle, so production integration remains blocked pending
-    // handle-relative ancestor acquisition and race tests.
-    reject_reparse_ancestors(path)?;
-
     let before = std::fs::symlink_metadata(path)?;
     if !before.is_dir() || is_reparse_or_symlink(&before) {
         return Err(io::Error::new(
@@ -211,16 +205,13 @@ where
         ));
     }
 
-    // Capture stable filesystem identity before opening. Comparing only the
-    // opened handle with the path after opening would miss replacement by a
-    // different ordinary directory in the check/open window.
+    // Capture the selected directory identity before walking from the volume
+    // root. Every subsequent component is opened relative to a held parent
+    // handle, so an ancestor cannot be silently re-resolved by an ambient path.
     let before_identity = path_identity(path)?;
     before_open()?;
 
-    let handle = cap_primitives::fs::open_ambient_dir(
-        path,
-        ambient_authority::ambient_authority(),
-    )?;
+    let handle = open_directory_from_filesystem_root(path)?;
     let opened = handle.metadata()?;
     if !opened.is_dir()
         || is_reparse_or_symlink(&opened)
@@ -247,24 +238,112 @@ where
 }
 
 
-fn reject_reparse_ancestors(path: &Path) -> io::Result<()> {
-    let mut ancestor = path.parent();
-    while let Some(candidate) = ancestor {
-        // The filesystem root (and Windows volume/share roots) has no final
-        // component to redirect and is the boundary of this lexical walk.
-        if candidate.file_name().is_none() {
-            break;
-        }
-        let metadata = std::fs::symlink_metadata(candidate)?;
-        if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+/// Acquire a directory by starting at a filesystem root and opening each
+/// normal component relative to the already-held parent handle. No ambient
+/// absolute child path is used after the root anchor is opened.
+#[cfg(unix)]
+fn open_directory_from_filesystem_root(path: &Path) -> io::Result<File> {
+    let mut components = path.components();
+    match components.next() {
+        Some(Component::RootDir) => {}
+        _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "project root has a non-directory or reparse-point ancestor",
+                "project root must begin at the filesystem root",
             ));
         }
-        ancestor = candidate.parent();
     }
-    Ok(())
+
+    let mut current = cap_primitives::fs::open_ambient_dir(
+        Path::new("/"),
+        ambient_authority::ambient_authority(),
+    )?;
+    for component in components {
+        match component {
+            Component::Normal(name) if is_single_normal_component(name) => {
+                let child = open_dir_nofollow(&current, Path::new(name))?;
+                let metadata = child.metadata()?;
+                if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "opened ancestor is not an ordinary directory",
+                    ));
+                }
+                current = child;
+            }
+            Component::CurDir => {}
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "project root contains an unsupported path component",
+                ));
+            }
+        }
+    }
+    Ok(current)
+}
+
+/// Windows drive paths are supported, including canonical \\?\C:\ paths.
+/// UNC shares and device namespaces remain unsupported until their root-handle
+/// semantics have separate review and physical acceptance coverage.
+#[cfg(windows)]
+fn open_directory_from_filesystem_root(path: &Path) -> io::Result<File> {
+    use std::path::Prefix;
+
+    let mut components = path.components();
+    let prefix = match components.next() {
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) =>
+        {
+            prefix.as_os_str()
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "only local drive-letter project roots are supported",
+            ));
+        }
+    };
+    match components.next() {
+        Some(Component::RootDir) => {}
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "project root must include a drive root",
+            ));
+        }
+    }
+
+    let mut volume_root = PathBuf::from(prefix);
+    volume_root.push("\\\\");
+    let mut current = cap_primitives::fs::open_ambient_dir(
+        &volume_root,
+        ambient_authority::ambient_authority(),
+    )?;
+
+    for component in components {
+        match component {
+            Component::Normal(name) if is_single_normal_component(name) => {
+                let child = open_dir_nofollow(&current, Path::new(name))?;
+                let metadata = child.metadata()?;
+                if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "opened ancestor is not an ordinary directory",
+                    ));
+                }
+                current = child;
+            }
+            Component::CurDir => {}
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "project root contains an unsupported path component",
+                ));
+            }
+        }
+    }
+    Ok(current)
 }
 
 #[cfg(windows)]
