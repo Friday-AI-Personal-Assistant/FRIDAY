@@ -1143,6 +1143,15 @@ pub(crate) fn create_bounded_snapshot_destination(
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot total byte count is inconsistent or oversized"));
     }
 
+    // Validate and serialize the complete inventory before creating anything.
+    // This also guarantees the marker stays within the parser's hard size bound.
+    let manifest = build_snapshot_cleanup_manifest(snapshot_id, contents, limits)?;
+    let marker = serde_json::to_vec(&manifest)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "could not serialize snapshot inventory"))?;
+    if marker.len() > 1024 * 1024 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot inventory exceeds its size limit"));
+    }
+
     let snapshot_root = create_destination_entry(workspace, OsStr::new(snapshot_id), true)?;
     for item in &contents.files {
         let components: Vec<&OsStr> = item.relative_path.components().filter_map(|c| {
@@ -1162,9 +1171,6 @@ pub(crate) fn create_bounded_snapshot_destination(
         output.sync_all()?;
     }
 
-    let manifest = build_snapshot_cleanup_manifest(snapshot_id, contents, limits)?;
-    let marker = serde_json::to_vec(&manifest)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "could not serialize snapshot inventory"))?;
     let mut marker_file = create_destination_entry(
         &snapshot_root, OsStr::new(".friday-snapshot-owner.json"), false,
     )?;
