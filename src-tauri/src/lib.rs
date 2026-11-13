@@ -59,6 +59,7 @@ pub fn run() {
             coding_assistant::list_code_change_history,
             coding_intelligence::analyze_project_intelligence,
             coding_sandbox::coding_sandbox_preflight,
+            coding_sandbox::coding_sandbox_recover_workspaces,
             coding_sandbox::coding_sandbox_prepare_snapshot,
             coding_sandbox::coding_sandbox_config_preview,
             coding_sandbox::coding_sandbox_discard_snapshot,
