@@ -584,6 +584,100 @@ mod tests {
         fs::remove_dir_all(real_parent).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn verified_root_handle_rejects_ancestor_replaced_after_validation() {
+        use std::os::unix::fs::symlink;
+
+        let ancestor = make_test_directory("ancestor-race-root");
+        let replacement_parent = ancestor.with_file_name(format!(
+            "friday-capability-walk-ancestor-race-replacement-{}",
+            std::process::id()
+        ));
+        let displaced_parent = ancestor.with_file_name(format!(
+            "friday-capability-walk-ancestor-race-displaced-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&replacement_parent);
+        let _ = fs::remove_dir_all(&displaced_parent);
+        fs::create_dir_all(ancestor.join("project")).unwrap();
+        fs::create_dir_all(replacement_parent.join("project")).unwrap();
+        fs::write(ancestor.join("project").join("authorized.txt"), b"original").unwrap();
+        fs::write(replacement_parent.join("project").join("replacement.txt"), b"replacement").unwrap();
+
+        let root_path = ancestor.join("project");
+        let mut replaced = false;
+        let result = open_verified_root_directory_with_hook(&root_path, || {
+            fs::rename(&ancestor, &displaced_parent)?;
+            symlink(&replacement_parent, &ancestor)?;
+            replaced = true;
+            Ok(())
+        });
+
+        assert!(replaced, "test must replace the ancestor after validation");
+        assert!(
+            result.is_err(),
+            "root acquisition must reject a different directory reached through a replaced ancestor"
+        );
+
+        drop(result);
+        fs::remove_file(&ancestor).unwrap();
+        fs::remove_dir_all(displaced_parent).unwrap();
+        fs::remove_dir_all(replacement_parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verified_root_handle_rejects_ancestor_replaced_after_validation() {
+        use std::process::Command;
+
+        let ancestor = make_test_directory("ancestor-race-root");
+        let replacement_parent = ancestor.with_file_name(format!(
+            "friday-capability-walk-ancestor-race-replacement-{}",
+            std::process::id()
+        ));
+        let displaced_parent = ancestor.with_file_name(format!(
+            "friday-capability-walk-ancestor-race-displaced-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&replacement_parent);
+        let _ = fs::remove_dir_all(&displaced_parent);
+        fs::create_dir_all(ancestor.join("project")).unwrap();
+        fs::create_dir_all(replacement_parent.join("project")).unwrap();
+        fs::write(ancestor.join("project").join("authorized.txt"), b"original").unwrap();
+        fs::write(replacement_parent.join("project").join("replacement.txt"), b"replacement").unwrap();
+
+        let root_path = ancestor.join("project");
+        let mut replaced = false;
+        let result = open_verified_root_directory_with_hook(&root_path, || {
+            fs::rename(&ancestor, &displaced_parent)?;
+            let output = Command::new("cmd.exe")
+                .args(["/D", "/C", "mklink", "/J"])
+                .arg(&ancestor)
+                .arg(&replacement_parent)
+                .output()?;
+            if !output.status.success() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("junction creation failed: {}", String::from_utf8_lossy(&output.stderr)),
+                ));
+            }
+            replaced = true;
+            Ok(())
+        });
+
+        assert!(replaced, "test must replace the ancestor after validation");
+        assert!(
+            result.is_err(),
+            "root acquisition must reject a different directory reached through a replaced ancestor"
+        );
+
+        drop(result);
+        fs::remove_dir(&ancestor).unwrap();
+        fs::remove_dir_all(displaced_parent).unwrap();
+        fs::remove_dir_all(replacement_parent).unwrap();
+    }
+
     #[test]
     fn verified_root_handle_rejects_non_absolute_paths() {
         assert!(open_verified_root_directory(Path::new(".")).is_err());
