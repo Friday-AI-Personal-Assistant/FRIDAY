@@ -310,3 +310,37 @@ Clipboard redirection is also not accepted as a substitute. Microsoft documents 
 Writable `wsb share` remains a mapped-folder write path and therefore inherits the already documented concerns: host-side persistence, no documented per-run hard capacity quota, and the need to prove ownership, ACL and path behavior. It is not an alternative to the rejected writable mapped-folder design.
 
 Conclusion: neither `wsb exec` output nor clipboard redirection satisfies the required result-transfer boundary. No documented non-elevated Windows Sandbox channel has yet been identified that avoids writable host mappings while enforcing a hard per-run storage cap. Keep the guest runner, result collection, and execution disabled. Continue with read-only snapshot/proposal workflows unless a separately reviewed and physically tested mechanism satisfies every storage, isolation, ownership, output, crash-recovery and cleanup gate.
+
+
+## Hyper-V sockets and Microsoft MXC TCP bridge investigation — candidate rejected as-is
+
+Two additional host/guest communication approaches were reviewed.
+
+### Hyper-V sockets
+
+Microsoft documents Hyper-V sockets as a host/guest data-stream API that does not use the ordinary networking stack. However, registering a custom guest communication service requires creating a service entry under the host's HKLM virtualization registry key, and Microsoft's setup instructions explicitly require an administrator PowerShell session. This is not a self-contained non-elevated feature FRIDAY can provision for an ordinary user. No host registry change or privilege request is approved.
+
+Reference:
+- [Microsoft: Make your own integration services (Hyper-V sockets)](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/make-integration-service)
+
+Hyper-V sockets may be reconsidered only if a suitable already-registered built-in service can be used without broadening privileges or weakening isolation, and its availability/authorization can be verified on supported Windows Sandbox editions. The general Hyper-V socket API documentation alone does not prove that a usable endpoint is exposed to Windows Sandbox.
+
+### Microsoft MXC Windows Sandbox TCP bridge
+
+The Microsoft-owned [microsoft/mxc repository](https://github.com/microsoft/mxc) contains an experimental Windows Sandbox backend with an authenticated guest agent and separate control/stdin/stdout/stderr TCP channels. Its implementation is useful research for framing, nonce authentication, role-based channel pairing, and bounded host-side output draining.
+
+It is not accepted as a drop-in FRIDAY design. Review of its current source identifies these mismatches with FRIDAY's security contract:
+
+- Its generated Sandbox configuration enables networking. The guest agent then applies a guest-side Windows Firewall lockdown after the host connects. Windows Sandbox's default container account is documented as an administrator account, and the project workload is launched under that guest session. Guest-side firewall rules therefore cannot be treated as an immutable host-enforced network boundary against hostile code running with guest administrator rights.
+- Its rendezvous directory is mapped writable from the host. The guest writes its rendezvous data there, so this retains a writable host-mapped storage path without a demonstrated per-run hard capacity boundary.
+- Its executor starts the child process and only afterward attempts Job Object assignment; assignment failure is logged as best-effort and execution continues. Its shown Job Object configuration is kill-on-close, not the complete pre-execution CPU/memory/process-limit policy required by FRIDAY.
+- Its executor accepts a script string and invokes `cmd.exe /C`, which is broader than FRIDAY's fixed operation/argument-vector contract.
+
+Relevant source references for review:
+- [MXC Windows Sandbox backend design](https://github.com/microsoft/mxc/blob/main/docs/backends/windows-sandbox/windows-sandbox.md)
+- [MXC Sandbox configuration and writable rendezvous mapping](https://github.com/microsoft/mxc/blob/main/src/mxc-sdk/src/backends/windows_sandbox/lifecycle/vm.rs)
+- [MXC guest firewall policy](https://github.com/microsoft/mxc/blob/main/src/mxc-sdk/src/bin/windows_sandbox_guest/firewall.rs)
+- [MXC guest process launch and Job Object assignment](https://github.com/microsoft/mxc/blob/main/src/mxc-sdk/src/bin/windows_sandbox_guest/executor.rs)
+- [Microsoft: Windows Sandbox configuration and default guest account](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-configure-using-wsb-file)
+
+Conclusion: the MXC bridge proves that stdout/stderr can be transported over a guest-agent channel, but its current design does not prove FRIDAY's required network, storage, or pre-execution resource boundaries. Do not copy its writable rendezvous share, guest-only firewall enforcement, arbitrary shell execution, or best-effort post-spawn Job Object assignment. A future TCP bridge would need host-enforced egress isolation, a read-only or otherwise bounded rendezvous mechanism, authenticated run-scoped channels, strict streaming caps, fixed operations, and Job Object assignment before untrusted code resumes. Until those requirements are proven on physical Windows, execution remains disabled.
