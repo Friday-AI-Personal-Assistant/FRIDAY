@@ -25,7 +25,7 @@ type CodingProjectScan = { projectName: string; files: CodingFileCandidate[]; sc
 type CodingProjectFile = { name: string; relativePath: string; language: string; content: string; sizeBytes: number };
 type CodingChangePreview = { previewId: string; fileName: string; relativePath: string; originalSha256: string; proposedSha256: string; originalSizeBytes: number; proposedSizeBytes: number; unifiedDiff: string; expiresInSeconds: number };
 type CodingApplyResult = { fileName: string; relativePath: string; backupRelativePath: string; bytesWritten: number; originalSha256: string; resultingSha256: string; undoRecordId: string };
-type CodingChangeHistoryItem = { id: string; relativePath: string; backupRelativePath: string; createdAt: number; status: "applied" | "undone"; undoRecordId: string };
+type CodingChangeHistoryItem = { id: string; relativePath: string; backupRelativePath: string; createdAt: number; status: "applied" | "undone" | "blocked"; undoRecordId: string; undoAvailable: boolean; unavailableReason: string | null };
 type ProjectIntelligence = {
   projectMap: string[]; entryPoints: string[]; dependencies: string[];
   imports: { filePath: string; importText: string; matchedProjectFile: string | null; line: number }[];
@@ -169,6 +169,8 @@ export default function SkillsManager() {
     try {
       const project = await invoke<CodingProjectScan>("pick_project_folder_and_list_files");
       setCodingProject(project);
+      const history = await invoke<CodingChangeHistoryItem[]>("list_code_change_history");
+      setCodingHistory(history);
       if (project.files.length === 0) setCodingError("No supported source or configuration files were found. Try selecting the project folder itself, rather than a build or dependency folder.");
     } catch (e) {
       const message = String(e);
@@ -255,7 +257,7 @@ export default function SkillsManager() {
     try {
       const result = await invoke<CodingApplyResult>("apply_code_change", { previewId: codingChangePreview.previewId, approvalToken: codingApprovalToken });
       setCodingApplyResult(result);
-      setCodingHistory(items => [{ id: result.undoRecordId, undoRecordId: result.undoRecordId, relativePath: result.relativePath, backupRelativePath: result.backupRelativePath, createdAt: Date.now(), status: "applied" }, ...items]);
+      setCodingHistory(await invoke<CodingChangeHistoryItem[]>("list_code_change_history"));
       setCodingChangePreview(null); setCodingApprovalToken("");
       setNotice("Approved change applied and verified. Original backup retained.");
     } catch (e) { setCodingError(String(e)); setCodingApprovalToken(""); }
@@ -268,7 +270,7 @@ export default function SkillsManager() {
     setCodingUndoBusy(true); setCodingError("");
     try {
       await invoke<string>("undo_code_change", { undoRecordId: item.undoRecordId });
-      setCodingHistory(items => items.map(entry => entry.id === item.id ? { ...entry, status: "undone" } : entry));
+      setCodingHistory(await invoke<CodingChangeHistoryItem[]>("list_code_change_history"));
       setNotice("Undo completed. The original file was restored and verified.");
       setCodingApplyResult(null);
     } catch (e) { setCodingError(String(e)); }
@@ -835,13 +837,14 @@ ${file.content}`
               <p>The resulting file was verified and the original backup retained.</p>
             </section>}
             {codingHistory.length > 0 && <section className="coding-change-preview">
-              <strong>Change history (this session)</strong>
+              <strong>Persistent change history</strong>
               {codingHistory.map(item => <div className="coding-change-diff" key={item.id}>
                 <strong>{item.relativePath}</strong><small>Backup: {item.backupRelativePath}</small>
-                <small>{new Date(item.createdAt).toLocaleString()} · {item.status === "undone" ? "Undone" : "Applied"}</small>
-                {item.status === "applied" && <button className="secondary-button" disabled={codingUndoBusy || codingBusy} onClick={() => void undoCodingChange(item)}>{codingUndoBusy ? "Restoring…" : "Undo this change"}</button>}
+                <small>{new Date(item.createdAt * 1000).toLocaleString()} · {item.status === "undone" ? "Undone" : item.status === "blocked" ? "Undo unavailable" : "Applied"}</small>
+                {item.status === "blocked" && item.unavailableReason && <small role="status">{item.unavailableReason}</small>}
+                {item.undoAvailable && item.status === "applied" && <button className="secondary-button" disabled={codingUndoBusy || codingBusy} onClick={() => void undoCodingChange(item)}>{codingUndoBusy ? "Restoring…" : "Undo this change"}</button>}
               </div>)}
-              <small>History is held for this app session. Backup and undo records remain in the selected project.</small>
+              <small>History is saved inside the selected project and is restored when you select that project again. FRIDAY checks the current file and original backup before enabling Undo.</small>
             </section>}
             {codingFiles.length > 0 && <details className="coding-source-preview">
               <summary>Files read for this analysis ({codingFiles.length})</summary>
