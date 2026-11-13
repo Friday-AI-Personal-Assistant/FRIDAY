@@ -211,3 +211,15 @@ The native API creates and attaches the virtual disk; it does not by itself crea
 
 No VHDX creation, attachment, partitioning, formatting, mounting, or guest sharing has been implemented by these findings. They refine the native API design only; the execution gate remains closed.
 
+## Host disk initialization privilege gate
+
+The next blocker is not VHDX creation alone: the newly attached disk must be initialized, partitioned, formatted and mounted. Microsoft's Windows disk-management guidance states that initializing a new disk requires membership in the local **Administrators** or **Backup Operators** group, and the Disk Management UI instructs users to run with Administrator permissions. The Storage module exposes safer identity-oriented parameter sets such as `Initialize-Disk -UniqueId` / `-VirtualDisk` and `New-Partition -DiskId` / `-DiskPath`; these are preferable to selecting a disk by a transient disk number, but they do not remove the privilege requirement.
+
+References:
+- [Initialize new disks — Microsoft Learn](https://learn.microsoft.com/en-us/windows-server/storage/disk-management/initialize-new-disks)
+- [Initialize-Disk — Microsoft Learn](https://learn.microsoft.com/en-us/powershell/module/storage/initialize-disk)
+- [New-Partition — Microsoft Learn](https://learn.microsoft.com/en-us/powershell/module/storage/new-partition)
+- [Format-Volume — Microsoft Learn](https://learn.microsoft.com/en-us/powershell/module/storage/format-volume)
+
+Therefore, a standard FRIDAY process cannot assume it can complete the VHDX lifecycle merely because `virtdisk.dll` exists or `SeManageVolumePrivilege` is enabled. The design must explicitly decide whether a narrowly scoped, separately reviewed elevated helper with a visible Windows UAC approval is acceptable, or whether a non-elevated result-transfer architecture is needed. No elevated helper is implemented or approved by this design note. FRIDAY must not silently relaunch itself as administrator, collect credentials, run arbitrary elevated PowerShell, or proceed with partial storage and expose it to a guest. If the user declines or the required token rights are absent, the run must stop before disk initialization and leave execution disabled.
+
