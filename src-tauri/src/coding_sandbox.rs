@@ -21,6 +21,76 @@ const MAX_SNAPSHOT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const SNAPSHOT_OWNER_MARKER: &str = ".friday-snapshot-owner.json";
 const SNAPSHOT_OWNER_SCHEMA: u32 = 1;
 
+const MAX_GUEST_RESULT_BYTES: usize = 1024 * 1024;
+const MAX_GUEST_RESULT_DURATION_MS: u64 = 120_000;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum GuestRunOperation {
+    RustCargoTest,
+    NodeNpmTest,
+    PythonUnittest,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum GuestRunStatus {
+    Passed,
+    Failed,
+    TimedOut,
+    Cancelled,
+    Unsupported,
+    RunnerError,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestRunResult {
+    schema_version: u32,
+    run_id: String,
+    operation: GuestRunOperation,
+    status: GuestRunStatus,
+    exit_code: Option<i32>,
+    stdout: Option<String>,
+    stderr: Option<String>,
+    truncated: bool,
+    duration_ms: u64,
+}
+
+fn validate_guest_result_json(
+    bytes: &[u8],
+    expected_run_id: &str,
+    expected_operation: GuestRunOperation,
+) -> Result<GuestRunResult, String> {
+    if bytes.is_empty() || bytes.len() > MAX_GUEST_RESULT_BYTES {
+        return Err("The guest result is empty or exceeds FRIDAY's size limit.".into());
+    }
+    if !valid_snapshot_id(expected_run_id) {
+        return Err("The expected guest run identifier is invalid.".into());
+    }
+    let result: GuestRunResult = serde_json::from_slice(bytes)
+        .map_err(|_| "The guest result is malformed, contains duplicate or unknown fields, or is not valid UTF-8 JSON.".to_string())?;
+    if result.schema_version != 1
+        || result.run_id != expected_run_id
+        || result.operation != expected_operation
+        || result.duration_ms > MAX_GUEST_RESULT_DURATION_MS
+    {
+        return Err("The guest result does not match FRIDAY's run contract.".into());
+    }
+    let output_bytes = result.stdout.as_ref().map_or(0, |value| value.len())
+        .saturating_add(result.stderr.as_ref().map_or(0, |value| value.len()));
+    if output_bytes > MAX_GUEST_RESULT_BYTES {
+        return Err("The guest result diagnostics exceed FRIDAY's output limit.".into());
+    }
+    match (result.status, result.exit_code) {
+        (GuestRunStatus::Passed, Some(0)) => {}
+        (GuestRunStatus::Failed, Some(code)) if code != 0 => {}
+        (GuestRunStatus::TimedOut | GuestRunStatus::Cancelled | GuestRunStatus::Unsupported | GuestRunStatus::RunnerError, None) => {}
+        _ => return Err("The guest result has an inconsistent status and exit code.".into()),
+    }
+    Ok(result)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodingSandboxPreflight {
@@ -712,6 +782,64 @@ mod tests {
         let path = env::temp_dir().join(format!("friday-sandbox-{label}-{suffix}"));
         fs::create_dir_all(&path).expect("test directory should be created");
         path
+    }
+
+
+    fn guest_result_json(status: &str, exit_code: &str) -> Vec<u8> {
+        format!(
+            r#"{{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","operation":"rust-cargo-test","status":"{status}"{exit_code},"stdout":"ok","stderr":"","truncated":false,"durationMs":25}}"#
+        ).into_bytes()
+    }
+
+    #[test]
+    fn guest_result_accepts_only_matching_bounded_success_contract() {
+        let bytes = guest_result_json("passed", r#","exitCode":0"#);
+        let result = validate_guest_result_json(
+            &bytes,
+            "0123456789abcdef0123456789abcdef",
+            GuestRunOperation::RustCargoTest,
+        ).unwrap();
+        assert_eq!(result.status, GuestRunStatus::Passed);
+        assert_eq!(result.exit_code, Some(0));
+    }
+
+    #[test]
+    fn guest_result_rejects_malformed_unknown_duplicate_and_mismatched_data() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let operation = GuestRunOperation::RustCargoTest;
+        assert!(validate_guest_result_json(b"{", run_id, operation).is_err());
+        let unknown = br#"{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","operation":"rust-cargo-test","status":"passed","exitCode":0,"truncated":false,"durationMs":1,"extra":true}"#;
+        assert!(validate_guest_result_json(unknown, run_id, operation).is_err());
+        let duplicate = br#"{"schemaVersion":1,"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","operation":"rust-cargo-test","status":"passed","exitCode":0,"truncated":false,"durationMs":1}"#;
+        assert!(validate_guest_result_json(duplicate, run_id, operation).is_err());
+        let bytes = guest_result_json("passed", r#","exitCode":0"#);
+        assert!(validate_guest_result_json(&bytes, "ffffffffffffffffffffffffffffffff", operation).is_err());
+        assert!(validate_guest_result_json(&bytes, run_id, GuestRunOperation::PythonUnittest).is_err());
+    }
+
+    #[test]
+    fn guest_result_rejects_inconsistent_status_exit_and_excessive_limits() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let operation = GuestRunOperation::RustCargoTest;
+        assert!(validate_guest_result_json(&guest_result_json("passed", r#","exitCode":1"#), run_id, operation).is_err());
+        assert!(validate_guest_result_json(&guest_result_json("failed", r#","exitCode":0"#), run_id, operation).is_err());
+        assert!(validate_guest_result_json(&guest_result_json("timed_out", r#","exitCode":124"#), run_id, operation).is_err());
+        let long_output = "x".repeat(MAX_GUEST_RESULT_BYTES + 1);
+        let oversized = serde_json::json!({
+            "schemaVersion": 1, "runId": run_id, "operation": "rust-cargo-test",
+            "status": "passed", "exitCode": 0, "stdout": long_output,
+            "stderr": "", "truncated": true, "durationMs": 1
+        });
+        assert!(validate_guest_result_json(&serde_json::to_vec(&oversized).unwrap(), run_id, operation).is_err());
+        let long_duration = br#"{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","operation":"rust-cargo-test","status":"passed","exitCode":0,"truncated":false,"durationMs":120001}"#;
+        assert!(validate_guest_result_json(long_duration, run_id, operation).is_err());
+    }
+
+    #[test]
+    fn guest_result_rejects_oversized_or_invalid_expected_identifiers() {
+        let bytes = guest_result_json("passed", r#","exitCode":0"#);
+        assert!(validate_guest_result_json(&vec![b'x'; MAX_GUEST_RESULT_BYTES + 1], "0123456789abcdef0123456789abcdef", GuestRunOperation::RustCargoTest).is_err());
+        assert!(validate_guest_result_json(&bytes, "../bad", GuestRunOperation::RustCargoTest).is_err());
     }
 
     #[test]
