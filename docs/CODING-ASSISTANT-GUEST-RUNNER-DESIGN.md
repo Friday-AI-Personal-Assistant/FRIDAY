@@ -420,3 +420,12 @@ The test-only Windows file-open helper now uses NtCreateFile relative to the hel
 The helper remains Windows-only and test-only. Tests cover reading a regular file, rejecting a file symlink, rejecting a traversal name, and rejecting a file replaced by a symlink before the handle-relative open. This does not yet prove all reparse tags or filesystem configurations. A separate Windows junction test now creates a directory junction with mklink /J and asserts traversal either omits its contents or fails closed. That junction test is pending CI verification in the next run. Physical Windows acceptance and testing of additional reparse tags remain required.
 
 The existing root handle is still acquired through a test-only ambient-authority helper; safe production acquisition and identity verification of the selected project root are not implemented. The walker still only enumerates candidate names, and the file-open helper is not integrated into snapshot copying. Existing production snapshot traversal remains path-based; guest execution remains disabled.
+
+
+## Verified root-handle acquisition prototype (November 13, 2026)
+
+The Windows junction test command was corrected to pass mklink arguments individually to cmd.exe rather than embedding quoted paths in a /C command string. The previous Runs #455–#457 all failed at junction creation with the same Windows path-syntax error; the traversal assertion itself was not reached. Run #458 passed both Windows and Linux jobs, including the junction test.
+
+A new test-only root acquisition prototype was added to src-tauri/src/coding_sandbox_fs.rs. It requires an absolute path, rejects a final-component symlink/reparse point, opens the directory through the pinned capability primitive, checks the opened handle is a normal directory, compares filesystem identity before and after open, and rechecks that the path still names that same directory after acquisition. Unix identity uses device and inode; Windows identity uses volume serial number and file index, and missing identity fields fail closed.
+
+The prototype is not used by production snapshot creation. It does not yet prove ancestor-path handling under all Windows namespace/reparse configurations, nor does it replace the selected-project authorization/canonicalization flow. Deterministic root replacement tests, broader reparse-tag coverage, physical Windows acceptance, and independent review are still required. Existing production snapshot traversal remains path-based and guest execution remains disabled.
