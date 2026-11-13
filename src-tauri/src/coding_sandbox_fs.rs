@@ -869,7 +869,29 @@ fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io:
     if directory {
         let result = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) };
         if result != 0 { return Err(io::Error::last_os_error()); }
-        return open_dir_nofollow(parent, &relative_name);
+        let directory = open_dir_nofollow(parent, &relative_name)?;
+        // mkdirat and openat are separate syscalls. Confirm the name still
+        // resolves (without following links) to the exact directory handle.
+        use std::os::unix::fs::MetadataExt;
+        let opened = directory.metadata()?;
+        let mut current: libc::stat = unsafe { std::mem::zeroed() };
+        let stat_result = unsafe {
+            libc::fstatat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                &mut current,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if stat_result != 0 { return Err(io::Error::last_os_error()); }
+        if !opened.is_dir()
+            || opened.dev() != current.st_dev as u64
+            || opened.ino() != current.st_ino as u64
+            || (current.st_mode & libc::S_IFMT) != libc::S_IFDIR
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "new destination directory changed during handle acquisition"));
+        }
+        return Ok(directory);
     }
     let fd = unsafe {
         libc::openat(
