@@ -1229,6 +1229,8 @@ fn list_code_change_history_for_root(root: &Path) -> Result<Vec<CodingChangeHist
                     }
                     (Some(current), _) if current != record.resulting_sha256 =>
                         unavailable_reason = Some("The project file has changed since FRIDAY edited it. Undo is disabled to protect newer changes.".into()),
+                    (None, _) =>
+                        unavailable_reason = Some("The original project file is missing. Undo is disabled.".into()),
                     (_, None) =>
                         unavailable_reason = Some("The original backup is missing. Undo is disabled.".into()),
                     (_, Some(_)) =>
@@ -2489,6 +2491,34 @@ mod tests {
         assert!(!history[0].undo_available);
         assert!(history[0].unavailable_reason.as_deref().unwrap().contains("integrity"));
         assert_eq!(fs::read(&file).unwrap(), proposed);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persistent_history_blocks_undo_when_original_backup_is_missing() {
+        let (root, file, backup_dir, record, _, proposed) =
+            recovery_edge_fixture("history-missing-backup", b"edge proposed source");
+        fs::remove_file(backup_dir.join(format!("{}.bak", record.id))).unwrap();
+        fs::write(&file, &proposed).unwrap();
+        fs::write(backup_dir.join(format!("{}.undo.json", record.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+        let history = list_code_change_history_for_root(&root).unwrap();
+        assert_eq!(history[0].status, "blocked");
+        assert!(!history[0].undo_available);
+        assert!(history[0].unavailable_reason.as_deref().unwrap().contains("backup is missing"));
+        assert_eq!(fs::read(&file).unwrap(), proposed);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persistent_history_rejects_conflicting_active_and_consumed_records() {
+        let (root, _, backup_dir, record, _, _) =
+            recovery_edge_fixture("history-conflicting-states", b"edge original source");
+        let bytes = serde_json::to_vec(&record).unwrap();
+        fs::write(backup_dir.join(format!("{}.undo.json", record.id)), &bytes).unwrap();
+        fs::write(backup_dir.join(format!("{}.undone.json", record.id)), &bytes).unwrap();
+        assert!(list_code_change_history_for_root(&root).is_err());
+        assert!(backup_dir.join(format!("{}.undo.json", record.id)).is_file());
+        assert!(backup_dir.join(format!("{}.undone.json", record.id)).is_file());
         fs::remove_dir_all(root).unwrap();
     }
 
