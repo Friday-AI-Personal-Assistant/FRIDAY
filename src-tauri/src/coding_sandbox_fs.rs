@@ -1173,9 +1173,11 @@ fn inspect_snapshot_directory(
         let portable = portable_manifest_path(&relative_path)?;
         if portable == ".friday-snapshot-owner.json" && relative_directory.as_os_str().is_empty() {
             let kind = entry.file_type()?;
-            if !kind.is_file() || !observed_files.insert(portable) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker is not a unique regular file"));
+            if !kind.is_file() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker is not a regular file"));
             }
+            // The marker is validated separately before walking; it is not a
+            // payload entry and therefore is intentionally excluded here.
             continue;
         }
 
