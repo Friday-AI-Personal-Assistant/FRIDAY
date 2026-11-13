@@ -1276,8 +1276,16 @@ pub(crate) fn remove_verified_snapshot_file(
         )
     };
     if status < 0 || raw_handle.is_null() {
+        // STATUS_OBJECT_NAME_NOT_FOUND is the expected result when a prior
+        // cleanup attempt already removed this inventoried entry. Preserve
+        // that distinction so the retry-safe orchestrator can continue.
+        let kind = if status as u32 == 0xC000_0034 {
+            io::ErrorKind::NotFound
+        } else {
+            io::ErrorKind::PermissionDenied
+        };
         return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
+            kind,
             format!("handle-relative delete open failed (NTSTATUS 0x{:08X})", status as u32),
         ));
     }
