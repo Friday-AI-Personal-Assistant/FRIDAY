@@ -241,3 +241,22 @@ References:
 
 Therefore, a standard FRIDAY process cannot assume it can complete the VHDX lifecycle merely because `virtdisk.dll` exists or `SeManageVolumePrivilege` is enabled. The design must explicitly decide whether a narrowly scoped, separately reviewed elevated helper with a visible Windows UAC approval is acceptable, or whether a non-elevated result-transfer architecture is needed. No elevated helper is implemented or approved by this design note. FRIDAY must not silently relaunch itself as administrator, collect credentials, run arbitrary elevated PowerShell, or proceed with partial storage and expose it to a guest. If the user declines or the required token rights are absent, the run must stop before disk initialization and leave execution disabled.
 
+
+
+## Default privilege and result-transfer decision — fail closed
+
+For the initial FRIDAY release, the guest-runner design will **not** introduce a separately elevated helper or silently relaunch FRIDAY with administrator rights. No credentials may be requested or stored, and no arbitrary elevated PowerShell or command script may be used. A future narrowly scoped helper would require a separate threat-model and code review, a clear user-visible Windows UAC prompt for the exact operation, strict input validation, and an explicit product decision before implementation; it is not part of the current plan.
+
+The next design investigation prioritizes a non-elevated result-transfer mechanism. It is acceptable only if it can demonstrate, on supported physical Windows versions, all of the following:
+
+- A hard, enforceable upper bound on guest-writable storage before untrusted code runs (not merely a host-side file-size check after the fact).
+- Isolation of the writable result area from the original project, user profile, FRIDAY data, and all unrelated host paths.
+- A fixed, narrowly scoped guest-visible destination, with no ability to redirect writes through symlinks, junctions, reparse points, alternate streams, or path tricks.
+- Reliable ownership binding to the exact FRIDAY-created Sandbox session and run ID.
+- Safe handling of disk-full conditions, output floods, guest/app crashes, cancellation, restart, and incomplete cleanup.
+- Bounded host-side parsing and validation of returned files; guest output remains untrusted.
+- No network access, no host-execution fallback, and no weakening of the read-only project snapshot.
+
+A normal writable mapped folder plus post-write size checks does **not** satisfy the hard storage-bound requirement: the guest could consume host disk space before FRIDAY notices. A VHDX or other bounded volume is not considered viable until its creation, initialization, mount, ACL, mapped-folder behavior, and cleanup can all be proven under the selected non-elevated model. If no mechanism satisfies these conditions, the runner remains unavailable and the existing safe preview/proposal workflow remains the supported behavior.
+
+This is an architecture decision and acceptance gate, not an implementation claim. No storage mechanism, guest runner, launcher, or execution permission is added by this decision.
