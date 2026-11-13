@@ -351,3 +351,20 @@ Conclusion: the MXC bridge proves that stdout/stderr can be transported over a g
 The shared `open_source_file` helper now uses the Unix `O_NOFOLLOW` flag when opening files. This makes the final path component fail atomically if it is a symbolic link, closing the race where a path could be swapped to a symlink between the caller's `symlink_metadata` check and `File::open`. A regression test verifies that a symlink is rejected while a normal file remains readable.
 
 This protects the final component only. It does not by itself pin every parent directory against concurrent replacement, and it is not a substitute for Windows reparse-point testing or handle-relative directory traversal. The guest result reader remains disconnected from any guest execution or writable result channel.
+
+
+## Current verification and remaining Stage 4/5 gates
+
+CI verification update (November 13, 2026): Runs #425–#431 all completed successfully; each run's `test-linux` and `build-windows` jobs passed. These runs cover the Unix `O_NOFOLLOW` source-file open change, the dependency update, and the preceding architecture/checklist documentation commits. CI success does not replace adversarial physical Windows testing.
+
+The next implementation/review sequence is:
+
+1. **Filesystem boundary review:** replace path-only recursive source traversal with directory-handle-relative traversal where supported, or otherwise fail closed when directory identity cannot be held stable. The current Unix `O_NOFOLLOW` protects only the final file component; `read_dir(current)` and path-based canonicalization do not pin parent directories against concurrent replacement. Review equivalent Windows directory-handle and reparse-point behavior. Add adversarial race tests and Windows junction/reparse-point tests.
+2. **Snapshot/recovery ownership:** verify selected-root identity, private workspace ACLs, ownership marker handling, active-session ownership, concurrent app shutdown/restart, and conservative cleanup. Never delete an unverified or potentially mounted/active snapshot.
+3. **Guest result-transfer boundary:** continue only with a supported, non-elevated mechanism that does not expose an unbounded writable host path, does not weaken host-enforced network isolation, and provides bounded/authenticated per-run output. Existing `wsb exec`, clipboard, NTFS quotas, ordinary writable mapped folders, current MXC bridge, and unprovisioned custom Hyper-V socket service do not meet this contract.
+4. **Sandbox lifecycle and ownership:** launch/stop only an exact FRIDAY-owned session; handle existing/foreign sessions, process races, app restart, crash, timeout and cancellation without stopping unrelated Sandbox sessions.
+5. **Fixed guest runtime and resource enforcement:** use only reviewed operation profiles and fixed executable/argument vectors; create suspended and assign to a verified Job Object before resuming untrusted code; enforce supported CPU/memory/process/time limits and an actual hard storage/output boundary. Never fall back to host execution.
+6. **Result collection:** connect the already-tested request/result validators only after the transfer boundary exists; enforce run ID, operation, file identity, output caps, status/exit consistency and safe cleanup.
+7. **Adversarial validation and physical Windows acceptance:** test malicious repositories, prompt injection, path/reparse-point swaps, output floods, disk-full, process-tree escape attempts, Sandbox ownership, cancellation, crash/restart, cleanup and supported Windows editions.
+
+Stage 5 remains separate and must include malicious repository prompt-injection tests, path/reparse-point protections, interrupted-operation recovery, language fixtures, regression tests, final Windows CI and hands-on acceptance. Do not mark Stage 4 or Stage 5 complete based on CI alone.
