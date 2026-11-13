@@ -391,13 +391,13 @@ mod tests {
         fs::write(root_path.join("safe.rs"), b"safe").unwrap();
 
         let junction_path = root_path.join("junction");
-        let command = format!(
-            "mklink /J \"{}\" \"{}\"" ,
-            junction_path.display(),
-            outside.display()
-        );
-        let output = Command::new("cmd")
-            .args(["/C", &command])
+        // Pass each mklink argument separately. A pre-quoted command string
+        // is vulnerable to cmd.exe /C quote-stripping, especially on paths
+        // containing spaces in hosted Windows runner temp directories.
+        let output = Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction_path)
+            .arg(&outside)
             .output()
             .expect("cmd.exe should be available on Windows");
         assert!(
