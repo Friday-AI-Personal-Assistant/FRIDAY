@@ -1142,16 +1142,154 @@ pub(crate) fn remove_verified_snapshot_file(
     Ok(())
 }
 
-/// Windows deletion is intentionally unavailable in this first prototype.
-/// It will be enabled only after a delete-by-handle implementation is reviewed.
+/// Remove one inventoried regular file through the file handle opened relative
+/// to the held parent. The handle does not grant FILE_SHARE_DELETE, preventing
+/// a concurrent rename/replacement while the delete disposition is applied.
+/// If the native open or disposition API is unavailable, fail closed.
 #[cfg(windows)]
 #[allow(dead_code)]
 pub(crate) fn remove_verified_snapshot_file(
-    _parent: &File,
-    _name: &OsStr,
-    _expected_size: u64,
+    parent: &File,
+    name: &OsStr,
+    expected_size: u64,
 ) -> io::Result<()> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "handle-based snapshot deletion is not implemented on Windows"))
+    use std::{
+        mem,
+        os::windows::{ffi::OsStrExt, io::{AsRawHandle, FromRawHandle}},
+        ptr,
+    };
+
+    if !is_single_normal_component(name) || name == OsStr::new(".friday-snapshot-owner.json") {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot cleanup requires a non-marker filename component"));
+    }
+
+    let wide: Vec<u16> = name.encode_wide().collect();
+    if wide.is_empty() || wide.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid snapshot filename"));
+    }
+    let byte_len = wide.len().checked_mul(mem::size_of::<u16>())
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "snapshot filename is too long"))?;
+
+    #[repr(C)]
+    struct UnicodeString { length: u16, maximum_length: u16, buffer: *mut u16 }
+    #[repr(C)]
+    struct ObjectAttributes {
+        length: u32,
+        root_directory: *mut std::ffi::c_void,
+        object_name: *mut UnicodeString,
+        attributes: u32,
+        security_descriptor: *mut std::ffi::c_void,
+        security_quality_of_service: *mut std::ffi::c_void,
+    }
+    #[repr(C)]
+    union IoStatusValue { status: i32, pointer: *mut std::ffi::c_void }
+    #[repr(C)]
+    struct IoStatusBlock { status: IoStatusValue, information: usize }
+    #[repr(C)]
+    struct FileDispositionInfoEx { flags: u32 }
+
+    const OBJ_CASE_INSENSITIVE: u32 = 0x0000_0040;
+    const OBJ_DONT_REPARSE: u32 = 0x0000_1000;
+    const DELETE: u32 = 0x0001_0000;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+    const FILE_DISPOSITION_INFO_EX_CLASS: i32 = 21;
+    const FILE_DISPOSITION_FLAG_DELETE: u32 = 0x0000_0001;
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut *mut std::ffi::c_void,
+            desired_access: u32,
+            object_attributes: *const ObjectAttributes,
+            io_status_block: *mut IoStatusBlock,
+            allocation_size: *const i64,
+            file_attributes: u32,
+            share_access: u32,
+            create_disposition: u32,
+            create_options: u32,
+            ea_buffer: *const std::ffi::c_void,
+            ea_length: u32,
+        ) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetFileInformationByHandle(
+            file: *mut std::ffi::c_void,
+            information_class: i32,
+            information: *const std::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+
+    let mut unicode_name = UnicodeString {
+        length: byte_len,
+        maximum_length: byte_len,
+        buffer: wide.as_ptr() as *mut u16,
+    };
+    let attributes = ObjectAttributes {
+        length: mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: parent.as_raw_handle(),
+        object_name: &mut unicode_name,
+        attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        security_descriptor: ptr::null_mut(),
+        security_quality_of_service: ptr::null_mut(),
+    };
+    let mut io_status = IoStatusBlock { status: IoStatusValue { status: 0 }, information: 0 };
+    let mut raw_handle = ptr::null_mut();
+    let status = unsafe {
+        NtCreateFile(
+            &mut raw_handle,
+            DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            &attributes,
+            &mut io_status,
+            ptr::null(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            ptr::null(),
+            0,
+        )
+    };
+    if status < 0 || raw_handle.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("handle-relative delete open failed (NTSTATUS 0x{:08X})", status as u32),
+        ));
+    }
+
+    let file = unsafe { File::from_raw_handle(raw_handle) };
+    let metadata = file.metadata()?;
+    use std::os::windows::fs::MetadataExt;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || (metadata.file_attributes() & 0x0000_0400 != 0)
+        || metadata.len() != expected_size
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file does not match its expected type or size"));
+    }
+
+    let disposition = FileDispositionInfoEx { flags: FILE_DISPOSITION_FLAG_DELETE };
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FILE_DISPOSITION_INFO_EX_CLASS,
+            &disposition as *const _ as *const std::ffi::c_void,
+            mem::size_of::<FileDispositionInfoEx>() as u32,
+        )
+    } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    drop(file);
+    Ok(())
 }
 
 /// Inspect a completed snapshot through held directory handles without mutating it.
@@ -2258,13 +2396,20 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_snapshot_file_cleanup_fails_closed_until_delete_by_handle_exists() {
+    fn windows_snapshot_file_cleanup_deletes_only_matching_regular_files_by_handle() {
         use std::ffi::OsStr;
         let workspace_path = make_test_directory("windows-cleanup-file-prototype");
         fs::write(workspace_path.join("known.txt"), b"known payload").unwrap();
+        fs::write(workspace_path.join("unknown.txt"), b"keep me").unwrap();
         let parent = open_test_root(&workspace_path);
-        assert!(remove_verified_snapshot_file(&parent, OsStr::new("known.txt"), 13).is_err());
+
+        assert!(remove_verified_snapshot_file(&parent, OsStr::new("known.txt"), 999).is_err());
         assert_eq!(fs::read(workspace_path.join("known.txt")).unwrap(), b"known payload");
+        remove_verified_snapshot_file(&parent, OsStr::new("known.txt"), b"known payload".len() as u64).unwrap();
+        assert!(!workspace_path.join("known.txt").exists());
+        assert_eq!(fs::read(workspace_path.join("unknown.txt")).unwrap(), b"keep me");
+        assert!(remove_verified_snapshot_file(&parent, OsStr::new("unknown.txt"), 1).is_err());
+
         drop(parent);
         fs::remove_dir_all(workspace_path).unwrap();
     }
