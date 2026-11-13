@@ -9,6 +9,7 @@ mod web_research;
 mod file_assistant;
 mod coding_assistant;
 mod coding_intelligence;
+mod coding_sandbox;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -57,6 +58,7 @@ pub fn run() {
             coding_assistant::undo_code_change,
             coding_assistant::list_code_change_history,
             coding_intelligence::analyze_project_intelligence,
+            coding_sandbox::coding_sandbox_preflight,
             file_assistant::pick_and_read_text_files,
             file_assistant::pick_folder_and_list_text_files,
             file_assistant::read_granted_text_files,
