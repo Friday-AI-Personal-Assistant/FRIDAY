@@ -532,3 +532,12 @@ Current status: this is a design/review gate only. No cleanup code has been conn
 A test-only schema-2 snapshot inventory has been added alongside the handle-relative destination writer. It records the snapshot ID, owner, exact relative file paths and sizes, and the complete set of parent directories. Paths are serialized as portable slash-separated UTF-8; non-UTF-8 or ambiguous components fail closed rather than becoming lossy cleanup evidence. Parsing denies unknown JSON fields, rejects schema-1/unknown versions, malformed or mismatched identity, traversal/reserved paths, duplicate files/directories, inconsistent directory inventories, and entries exceeding the existing snapshot depth/count/per-file/total-byte limits. The serialized marker is bounded to 1 MiB and is validated before destination creation begins. The marker is still written last.
 
 This inventory is only a prerequisite for exact-tree preflight. It does not authorize deletion, does not make the marker cryptographic proof, and does not replace a filesystem scan through held handles. No cleanup function has been implemented; legacy schema-1 snapshots and unmarked partial directories must remain preserved. CI for this inventory implementation is pending in Runs #498 and #499. Continue to keep production recovery unchanged until handle-relative preflight and deletion are independently reviewed and tested.
+
+
+## Handle-relative snapshot cleanup preflight prototype (November 13, 2026)
+
+A test-only preflight inspector now opens the completed snapshot marker and walks the snapshot tree through held directory handles. It validates the version-2 inventory, checks each expected regular file's type and recorded size, verifies the expected directory set, and rejects unknown entries, special files, symlinks/reparse points, and type/size mismatches. The inspector performs no filesystem mutation.
+
+The inventory is an expected-tree description, not cryptographic proof of ownership. A successful preflight is not yet permission to delete the tree: the later cleanup implementation must repeat identity/type checks at the point of deletion using handle-relative operations and must preserve any entry that cannot be proven safe. Same-user malicious modification and fully atomic filesystem snapshots remain outside this prototype's guarantees.
+
+Tests cover an exact inventory, an unexpected file, and a symlink. Windows and Linux CI must both pass before further work. Production recovery remains unchanged; guest execution remains disabled.
