@@ -73,7 +73,7 @@ fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
 fn detect_windows_sandbox_capabilities() -> (String, String, String, bool, String, Option<bool>, bool) {
     // Fixed, read-only PowerShell probes. No user or model supplied command text is accepted.
     let script = r#"$ErrorActionPreference = 'SilentlyContinue'
-$cv = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'
+$cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
 $feature = Get-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM
 $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty VirtualizationFirmwareEnabled
 $active = [bool](Get-Process -Name WindowsSandbox -ErrorAction SilentlyContinue)
@@ -90,7 +90,7 @@ if ($wsb) { $version = (& $wsb.Source --version 2>&1 | Out-String).Trim() }
   sandboxProcessDetected = $active
 } | ConvertTo-Json -Compress"#;
     let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output();
     let Ok(output) = output else {
         return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false);
