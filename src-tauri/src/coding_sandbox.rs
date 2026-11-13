@@ -131,15 +131,17 @@ fn read_verified_guest_result_file(
     let canonical_directory = fs::canonicalize(result_directory)
         .map_err(|_| "FRIDAY could not verify the guest result directory.".to_string())?;
 
-    let mut entries = fs::read_dir(&canonical_directory)
+    let entries = fs::read_dir(&canonical_directory)
         .map_err(|_| "FRIDAY could not inspect the guest result directory.".to_string())?;
-    let entry = entries.next()
-        .ok_or_else(|| "The guest result file is missing.".to_string())?
-        .map_err(|_| "FRIDAY could not inspect the guest result entry.".to_string())?;
-    let entry_name = entry.file_name();
-    if entry_name != OsStr::new(GUEST_RESULT_FILE_NAME) || entries.next().is_some() {
-        return Err("The guest result directory contains an unexpected or additional entry.".into());
+    let mut entry_names = Vec::new();
+    for entry in entries {
+        let entry = entry
+            .map_err(|_| "FRIDAY could not inspect a guest result entry.".to_string())?;
+        let name = entry.file_name().into_string()
+            .map_err(|_| "The guest result directory contains a non-text filename.".to_string())?;
+        entry_names.push(name);
     }
+    validate_guest_result_directory_entries(&entry_names)?;
 
     let result_path = canonical_directory.join(GUEST_RESULT_FILE_NAME);
     let path_metadata = fs::symlink_metadata(&result_path)
