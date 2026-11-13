@@ -570,3 +570,10 @@ Platform behavior:
 Regression tests verify that an empty directory can be removed, a non-empty directory and its contents are preserved, and traversal names are rejected. Runs for this change must pass on both Windows and Linux before the prototype is considered CI-verified.
 
 This helper is not production cleanup authorization. It does not remove snapshot roots, ownership markers, or non-empty directories; it does not perform recursive deletion or retry/recovery. The Unix final-name race remains an explicit limitation. The complete snapshot tree must still be preflighted and every deletion stage independently authorized. Production recovery remains unchanged and guest execution remains disabled.
+
+
+### Windows empty-directory test correction (November 13, 2026)
+
+The first Windows CI run exposed a test-prototype defect: the directory was opened with restrictive sharing to prevent concurrent write/delete opens, but the emptiness check used the generic `read_dir` helper, which attempts a second directory handle. Windows correctly rejected that second open with sharing violation (error 32). The failed test therefore did not demonstrate a deletion failure; it demonstrated that the test was not enumerating through the intended held handle.
+
+The Windows implementation now calls `NtQueryDirectoryFile` on the same opened directory handle and checks the returned entry name/record bounds. It treats unexpected entries as non-empty and native query errors or malformed records as fail-closed errors. This preserves the restrictive share mode and avoids opening a second handle for the emptiness check. The regression test still requires the non-empty directory and its contents to remain intact, and the empty directory to be removed. The updated implementation must pass the Windows and Linux CI suites before being accepted.
