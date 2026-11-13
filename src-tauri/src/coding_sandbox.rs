@@ -372,7 +372,7 @@ fn detect_windows_sandbox() -> bool {
 }
 
 #[cfg(windows)]
-fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
+pub(crate) fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     metadata.file_type().is_symlink() || (metadata.file_attributes() & 0x400 != 0)
 }
