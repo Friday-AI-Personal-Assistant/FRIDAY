@@ -543,6 +543,10 @@ fn same_path_handle_identity(path: &Path, handle: &File) -> io::Result<bool> {
     Ok(path_identity(path)? == handle_identity(handle)?)
 }
 
+fn same_handle_identity(left: &File, right: &File) -> io::Result<bool> {
+    Ok(handle_identity(left)? == handle_identity(right)?)
+}
+
 fn is_single_normal_component(name: &OsStr) -> bool {
     let mut components = Path::new(name).components();
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
@@ -1142,6 +1146,7 @@ pub(crate) fn preflight_snapshot_tree(
         Path::new(""),
         &expected_files,
         &expected_directories,
+        &marker,
         &mut observed_files,
         &mut observed_directories,
     )?;
@@ -1159,6 +1164,7 @@ fn inspect_snapshot_directory(
     relative_directory: &Path,
     expected_files: &std::collections::BTreeMap<String, u64>,
     expected_directories: &std::collections::BTreeSet<String>,
+    marker_handle: &File,
     observed_files: &mut std::collections::BTreeSet<String>,
     observed_directories: &mut std::collections::BTreeSet<String>,
 ) -> io::Result<()> {
@@ -1176,8 +1182,12 @@ fn inspect_snapshot_directory(
             if !kind.is_file() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker is not a regular file"));
             }
-            // The marker is validated separately before walking; it is not a
-            // payload entry and therefore is intentionally excluded here.
+            // Re-open relative to the held root and ensure the directory entry
+            // still names the exact marker handle whose bytes were validated.
+            let current_marker = open_file_nofollow(parent, &name)?;
+            if !same_handle_identity(&current_marker, marker_handle)? {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker changed during preflight"));
+            }
             continue;
         }
 
@@ -1194,7 +1204,7 @@ fn inspect_snapshot_directory(
             if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory changed type during inspection"));
             }
-            inspect_snapshot_directory(&child, &relative_path, expected_files, expected_directories, observed_files, observed_directories)?;
+            inspect_snapshot_directory(&child, &relative_path, expected_files, expected_directories, marker_handle, observed_files, observed_directories)?;
             continue;
         }
         if !kind.is_file() {
