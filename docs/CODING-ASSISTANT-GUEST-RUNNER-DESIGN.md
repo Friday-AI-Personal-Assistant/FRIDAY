@@ -582,3 +582,10 @@ The Windows implementation now calls `NtQueryDirectoryFile` on the same opened d
 ### Windows directory-enumeration declaration scope correction (November 13, 2026)
 
 The first same-handle enumeration revision declared the `NtQueryDirectoryFile` FFI function in the neighboring Windows file-cleanup helper rather than in the Windows empty-directory cleanup helper. Linux CI passed, but Windows compilation correctly rejected the unresolved name. The declaration is now placed alongside the native declarations in the directory helper where it is called. This is a scope-only correction; the same-handle enumeration behavior remains subject to Windows CI validation. The guest runner remains disabled.
+
+
+## Expanded snapshot preflight recovery regressions (November 13, 2026)
+
+The test-only snapshot preflight suite now also verifies that an inventoried payload file cannot be missing or changed in size, and that preflight succeeds again only after the exact expected bytes are restored. A separate regression rewrites a completed snapshot's marker to the legacy schema-1 format and then to malformed JSON; both cases must be rejected while the payload remains intact.
+
+These tests strengthen the non-mutating exact-tree verification gate. They do not implement cleanup, do not authorize deletion, and do not change the production schema-1 recovery path. The source commit is awaiting both Windows and Linux CI. Guest execution remains disabled.
