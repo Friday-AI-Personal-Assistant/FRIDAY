@@ -258,9 +258,17 @@ if ($wsb -and $wsb.Source) {
 $privileges = (& whoami.exe /priv 2>$null | Out-String)
 $virtualDiskApi = Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32\virtdisk.dll')
 $hypervCmdlets = [bool](Get-Command New-VHD -ErrorAction SilentlyContinue) -and [bool](Get-Command Mount-VHD -ErrorAction SilentlyContinue)
-$sandboxPolicy = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox' -ErrorAction SilentlyContinue
-$mappedFoldersPolicy = if ($null -eq $sandboxPolicy -or $null -eq $sandboxPolicy.AllowMappedFolders) { $null } else { [int]$sandboxPolicy.AllowMappedFolders }
-$mappedFolderWritePolicy = if ($null -eq $sandboxPolicy -or $null -eq $sandboxPolicy.AllowWriteToMappedFolders) { $null } else { [int]$sandboxPolicy.AllowWriteToMappedFolders }
+$sandboxPolicy = $null
+$policyReadFailed = $false
+try {
+  $sandboxPolicy = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox' -ErrorAction Stop
+} catch [System.Management.Automation.ItemNotFoundException] {
+  $sandboxPolicy = $null
+} catch {
+  $policyReadFailed = $true
+}
+$mappedFoldersPolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sandboxPolicy -or $null -eq $sandboxPolicy.AllowMappedFolders) { $null } else { try { [int]$sandboxPolicy.AllowMappedFolders } catch { -1 } }
+$mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sandboxPolicy -or $null -eq $sandboxPolicy.AllowWriteToMappedFolders) { $null } else { try { [int]$sandboxPolicy.AllowWriteToMappedFolders } catch { -1 } }
 [pscustomobject]@{
   edition = [string]$cv.EditionID
   build = [string]$cv.CurrentBuildNumber
