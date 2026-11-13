@@ -776,6 +776,8 @@ $path = $args[0]
 $currentSid = $args[1]
 $allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
 try {
+  # Windows PowerShell is launched without a profile, so load the ACL cmdlets explicitly.
+  Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
   # A protected SDDL descriptor avoids ambiguous rule-merging and purge behavior.
   $sddl = "D:P(A;OICI;FA;;;$currentSid)(A;OICI;FA;;;S-1-5-18)(A;OICI;FA;;;S-1-5-32-544)"
   $acl = Get-Acl -LiteralPath $path
