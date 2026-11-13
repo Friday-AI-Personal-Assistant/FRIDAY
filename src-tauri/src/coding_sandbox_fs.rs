@@ -1105,6 +1105,55 @@ fn validate_snapshot_cleanup_manifest(bytes: &[u8], expected_snapshot_id: &str, 
     Ok(manifest)
 }
 
+/// Test-only prototype for removing one inventoried regular file relative to a held parent.
+///
+/// Unix unlinkat is name-based rather than handle-based. This helper therefore
+/// reopens and compares the entry immediately before unlinking, but it cannot
+/// eliminate a hostile same-user rename race between that check and unlinkat.
+/// It must remain disconnected from production cleanup until the private
+/// workspace threat model and directory ownership/permissions are enforced.
+#[cfg(unix)]
+#[allow(dead_code)]
+pub(crate) fn remove_verified_snapshot_file(
+    parent: &File,
+    name: &OsStr,
+    expected_size: u64,
+) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    if !is_single_normal_component(name) || name == OsStr::new(".friday-snapshot-owner.json") {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot cleanup requires a non-marker filename component"));
+    }
+    let opened = open_file_nofollow(parent, name)?;
+    let metadata = opened.metadata()?;
+    if !metadata.is_file() || metadata.len() != expected_size {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file does not match its expected type or size"));
+    }
+    let current = open_file_nofollow(parent, name)?;
+    if !same_handle_identity(&opened, &current)? {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file changed before cleanup"));
+    }
+    let name_c = std::ffi::CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "snapshot filename contains NUL"))?;
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name_c.as_ptr(), 0) };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Windows deletion is intentionally unavailable in this first prototype.
+/// It will be enabled only after a delete-by-handle implementation is reviewed.
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn remove_verified_snapshot_file(
+    _parent: &File,
+    _name: &OsStr,
+    _expected_size: u64,
+) -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "handle-based snapshot deletion is not implemented on Windows"))
+}
+
 /// Inspect a completed snapshot through held directory handles without mutating it.
 ///
 /// The manifest is treated as an expected inventory, not as cryptographic
@@ -2184,6 +2233,39 @@ mod tests {
         assert_eq!(fs::read(workspace_path.join(&id).join("unexpected.txt")).unwrap(), b"do not delete");
         drop(root);
         drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_file_cleanup_removes_only_matching_regular_files() {
+        use std::ffi::OsStr;
+        let workspace_path = make_test_directory("cleanup-file-prototype");
+        fs::write(workspace_path.join("known.txt"), b"known payload").unwrap();
+        fs::write(workspace_path.join("unknown.txt"), b"keep me").unwrap();
+        let parent = open_test_root(&workspace_path);
+
+        assert!(remove_verified_snapshot_file(&parent, OsStr::new("known.txt"), 999).is_err());
+        assert!(workspace_path.join("known.txt").exists(), "size mismatch must preserve the file");
+        remove_verified_snapshot_file(&parent, OsStr::new("known.txt"), b"known payload".len() as u64).unwrap();
+        assert!(!workspace_path.join("known.txt").exists());
+        assert_eq!(fs::read(workspace_path.join("unknown.txt")).unwrap(), b"keep me");
+        assert!(remove_verified_snapshot_file(&parent, OsStr::new("unknown.txt"), 1).is_err());
+
+        drop(parent);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_snapshot_file_cleanup_fails_closed_until_delete_by_handle_exists() {
+        use std::ffi::OsStr;
+        let workspace_path = make_test_directory("windows-cleanup-file-prototype");
+        fs::write(workspace_path.join("known.txt"), b"known payload").unwrap();
+        let parent = open_test_root(&workspace_path);
+        assert!(remove_verified_snapshot_file(&parent, OsStr::new("known.txt"), 13).is_err());
+        assert_eq!(fs::read(workspace_path.join("known.txt")).unwrap(), b"known payload");
+        drop(parent);
         fs::remove_dir_all(workspace_path).unwrap();
     }
 
