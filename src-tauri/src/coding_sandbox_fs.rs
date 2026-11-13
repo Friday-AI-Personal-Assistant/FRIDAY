@@ -2077,8 +2077,8 @@ mod tests {
     }
 
     #[test]
-    fn destination_snapshot_does_not_mark_partial_creation_as_owned() {
-        let workspace_path = make_test_directory("destination-partial");
+    fn destination_snapshot_rejects_duplicate_paths_before_creating_anything() {
+        let workspace_path = make_test_directory("destination-duplicate");
         let workspace = open_verified_root_directory(&workspace_path).unwrap();
         let contents = BoundedSnapshotContents {
             files: vec![
@@ -2090,8 +2090,9 @@ mod tests {
         };
         let id = "d".repeat(32);
         assert!(create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).is_err());
-        assert_eq!(fs::read(workspace_path.join(&id).join("same.txt")).unwrap(), b"first");
-        assert!(!workspace_path.join(&id).join(".friday-snapshot-owner.json").exists());
+        // Duplicate paths are rejected during inventory validation, before the
+        // snapshot directory or either payload file can be created.
+        assert!(!workspace_path.join(&id).exists());
         drop(workspace);
         fs::remove_dir_all(workspace_path).unwrap();
     }
