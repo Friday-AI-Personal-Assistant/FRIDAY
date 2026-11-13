@@ -197,6 +197,12 @@ where
         ));
     }
 
+    // Reject already-present symlink/reparse components above the selected
+    // root. This is an additional static-path check; it does not yet pin every
+    // ancestor by handle, so production integration remains blocked pending
+    // handle-relative ancestor acquisition and race tests.
+    reject_reparse_ancestors(path)?;
+
     let before = std::fs::symlink_metadata(path)?;
     if !before.is_dir() || is_reparse_or_symlink(&before) {
         return Err(io::Error::new(
@@ -240,6 +246,26 @@ where
     Ok(handle)
 }
 
+
+fn reject_reparse_ancestors(path: &Path) -> io::Result<()> {
+    let mut ancestor = path.parent();
+    while let Some(candidate) = ancestor {
+        // The filesystem root (and Windows volume/share roots) has no final
+        // component to redirect and is the boundary of this lexical walk.
+        if candidate.file_name().is_none() {
+            break;
+        }
+        let metadata = std::fs::symlink_metadata(candidate)?;
+        if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "project root has a non-directory or reparse-point ancestor",
+            ));
+        }
+        ancestor = candidate.parent();
+    }
+    Ok(())
+}
 
 #[cfg(windows)]
 fn is_reparse_or_symlink(metadata: &std::fs::Metadata) -> bool {
@@ -503,6 +529,59 @@ mod tests {
         drop(result);
         fs::remove_dir_all(root_path).unwrap();
         fs::remove_dir_all(displaced_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_root_handle_rejects_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let real_parent = make_test_directory("ancestor-real");
+        let link_parent = real_parent.with_file_name(format!(
+            "friday-capability-walk-ancestor-link-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&link_parent);
+        fs::create_dir(real_parent.join("project")).unwrap();
+        symlink(&real_parent, &link_parent).unwrap();
+
+        let result = open_verified_root_directory(&link_parent.join("project"));
+        assert!(result.is_err(), "a symlinked ancestor must be rejected");
+
+        fs::remove_file(link_parent).unwrap();
+        fs::remove_dir_all(real_parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verified_root_handle_rejects_junction_ancestor() {
+        use std::process::Command;
+
+        let real_parent = make_test_directory("ancestor-real");
+        let link_parent = real_parent.with_file_name(format!(
+            "friday-capability-walk-ancestor-junction-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&link_parent);
+        fs::create_dir(real_parent.join("project")).unwrap();
+
+        let output = Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&link_parent)
+            .arg(&real_parent)
+            .output()
+            .expect("cmd.exe should be available on Windows");
+        assert!(
+            output.status.success(),
+            "junction creation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let result = open_verified_root_directory(&link_parent.join("project"));
+        assert!(result.is_err(), "a junction ancestor must be rejected");
+
+        fs::remove_dir(&link_parent).unwrap();
+        fs::remove_dir_all(real_parent).unwrap();
     }
 
     #[test]
