@@ -288,3 +288,6 @@ Do not copy code or dependencies without checking their licences and compatibili
 - [ ] Stage 4 next: prove a non-elevated, hard-bounded, host-isolated guest result-transfer channel. No accepted mechanism has been identified yet; keep guest execution disabled.
 - [ ] Stage 4 next: implement exact FRIDAY-owned Sandbox lifecycle, fixed runtime profiles, pre-resume Job Object enforcement, hard storage/output limits, watchdog/cancellation, and validated result collection only after the transfer boundary is proven.
 - [ ] Stage 5: malicious repository/prompt-injection tests, filesystem and recovery adversarial tests, language fixtures, full regression suite, and physical Windows acceptance.
+
+
+- [~] Windows reparse-point policy review documented in `docs/CODING-ASSISTANT-GUEST-RUNNER-DESIGN.md`: reject all entries carrying FILE_ATTRIBUTE_REPARSE_POINT rather than allowlisting tags, covering symlinks, junctions/mount points, cloud placeholders, WCI, AppExecLink, ProjFS, DFS and unknown third-party tags. Existing junction regression is verified by #458; deterministic ancestor replacement regression is awaiting #467. A real volume-mount-point test and physical Windows acceptance remain open. This review does not change production snapshot traversal or enable guest execution.
