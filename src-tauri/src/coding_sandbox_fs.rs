@@ -189,7 +189,7 @@ pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
     }
 
     let before = std::fs::symlink_metadata(path)?;
-    if !before.is_dir() || is_reparse_or_symlink(&before) {
+    if !before.is_dir() || crate::coding_sandbox::is_reparse_or_symlink(&before) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "project root is not an ordinary directory",
@@ -202,8 +202,8 @@ pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
     )?;
     let opened = handle.metadata()?;
     if !opened.is_dir()
-        || is_reparse_or_symlink(&opened)
-        || !same_directory_identity(&before, &opened)
+        || crate::coding_sandbox::is_reparse_or_symlink(&opened)
+        || !same_path_handle_identity(path, &handle)?
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -213,8 +213,8 @@ pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
 
     let after = std::fs::symlink_metadata(path)?;
     if !after.is_dir()
-        || is_reparse_or_symlink(&after)
-        || !same_directory_identity(&opened, &after)
+        || crate::coding_sandbox::is_reparse_or_symlink(&after)
+        || !same_path_handle_identity(path, &handle)?
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -225,19 +225,87 @@ pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
     Ok(handle)
 }
 
+
 #[cfg(unix)]
-fn same_directory_identity(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+fn same_path_handle_identity(path: &Path, handle: &File) -> io::Result<bool> {
     use std::os::unix::fs::MetadataExt;
-    left.dev() == right.dev() && left.ino() == right.ino()
+    let path_metadata = std::fs::symlink_metadata(path)?;
+    let handle_metadata = handle.metadata()?;
+    Ok(path_metadata.dev() == handle_metadata.dev()
+        && path_metadata.ino() == handle_metadata.ino())
 }
 
 #[cfg(windows)]
-fn same_directory_identity(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    left.volume_serial_number().is_some()
-        && left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index().is_some()
-        && left.file_index() == right.file_index()
+fn same_path_handle_identity(path: &Path, handle: &File) -> io::Result<bool> {
+    use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
+    use std::ptr;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct FileTime { low: u32, high: u32 }
+    #[repr(C)]
+    #[derive(Default)]
+    struct ByHandleFileInformation {
+        attributes: u32,
+        creation_time: FileTime,
+        last_access_time: FileTime,
+        last_write_time: FileTime,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileW(
+            name: *const u16, access: u32, share: u32, security: *mut std::ffi::c_void,
+            creation: u32, flags: u32, template: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+        fn GetFileInformationByHandle(
+            file: *mut std::ffi::c_void,
+            information: *mut ByHandleFileInformation,
+        ) -> i32;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    }
+
+    const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
+    const OPEN_EXISTING: u32 = 3;
+    const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+    fn identity(info: &ByHandleFileInformation) -> (u32, u64) {
+        (info.volume_serial_number, ((info.file_index_high as u64) << 32) | info.file_index_low as u64)
+    }
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let path_handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(), FILE_READ_ATTRIBUTES, SHARE_ALL, ptr::null_mut(),
+            OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT, ptr::null_mut(),
+        )
+    };
+    if path_handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut path_info = ByHandleFileInformation::default();
+    let mut opened_info = ByHandleFileInformation::default();
+    let path_ok = unsafe { GetFileInformationByHandle(path_handle, &mut path_info) } != 0;
+    let opened_ok = unsafe {
+        GetFileInformationByHandle(handle.as_raw_handle(), &mut opened_info)
+    } != 0;
+    unsafe { CloseHandle(path_handle); }
+
+    if !path_ok || !opened_ok {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(identity(&path_info) == identity(&opened_info))
 }
 
 fn is_single_normal_component(name: &OsStr) -> bool {
@@ -340,10 +408,9 @@ mod tests {
 
         let root = open_verified_root_directory(&root_path).unwrap();
         let opened = root.metadata().unwrap();
-        let current = fs::symlink_metadata(&root_path).unwrap();
         assert!(opened.is_dir());
-        assert!(!is_reparse_or_symlink(&opened));
-        assert!(same_directory_identity(&opened, &current));
+        assert!(!crate::coding_sandbox::is_reparse_or_symlink(&opened));
+        assert!(same_path_handle_identity(&root_path, &root).unwrap());
 
         drop(root);
         fs::remove_dir_all(root_path).unwrap();
