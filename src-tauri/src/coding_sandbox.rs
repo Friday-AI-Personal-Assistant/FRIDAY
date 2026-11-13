@@ -1021,6 +1021,41 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_result_file_reader_rejects_non_text_entry_names() {
+        use std::os::unix::ffi::OsStringExt;
+        let directory = make_test_directory("guest-result-non-text-name");
+        let invalid_name = std::ffi::OsString::from_vec(vec![b'n', b'o', b'n', 0xff]);
+        fs::write(directory.join(invalid_name), b"unexpected").unwrap();
+        assert!(read_verified_guest_result_file(
+            &directory,
+            "0123456789abcdef0123456789abcdef",
+            GuestRunOperation::RustCargoTest,
+            MAX_GUEST_RESULT_BYTES as u64,
+        ).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_result_file_reader_rejects_symlinked_result_directory() {
+        let parent = make_test_directory("guest-result-directory-link");
+        let real_directory = parent.join("real");
+        fs::create_dir(&real_directory).unwrap();
+        let linked_directory = parent.join("linked");
+        std::os::unix::fs::symlink(&real_directory, &linked_directory).unwrap();
+        assert!(read_verified_guest_result_file(
+            &linked_directory,
+            "0123456789abcdef0123456789abcdef",
+            GuestRunOperation::RustCargoTest,
+            MAX_GUEST_RESULT_BYTES as u64,
+        ).is_err());
+        fs::remove_file(linked_directory).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+
     #[test]
     fn guest_result_accepts_only_matching_bounded_success_contract() {
         let bytes = guest_result_json("passed", r#","exitCode":0"#);
