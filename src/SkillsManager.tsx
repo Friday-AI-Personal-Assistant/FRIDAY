@@ -26,6 +26,7 @@ type CodingProjectFile = { name: string; relativePath: string; language: string;
 type CodingChangePreview = { previewId: string; fileName: string; relativePath: string; originalSha256: string; proposedSha256: string; originalSizeBytes: number; proposedSizeBytes: number; unifiedDiff: string; expiresInSeconds: number };
 type CodingApplyResult = { fileName: string; relativePath: string; backupRelativePath: string; bytesWritten: number; originalSha256: string; resultingSha256: string; undoRecordId: string };
 type CodingChangeHistoryItem = { id: string; relativePath: string; backupRelativePath: string; createdAt: number; status: "applied" | "undone" | "blocked"; undoRecordId: string; undoAvailable: boolean; unavailableReason: string | null };
+type CodingSandboxPreflight = { platformSupported: boolean; runtimeDetected: boolean; executionEnabled: boolean; networkIsolationEnforced: boolean; message: string };
 type ProjectIntelligence = {
   projectMap: string[]; entryPoints: string[]; dependencies: string[];
   imports: { filePath: string; importText: string; matchedProjectFile: string | null; line: number }[];
@@ -110,6 +111,7 @@ export default function SkillsManager() {
   const [codingApplyResult, setCodingApplyResult] = useState<CodingApplyResult | null>(null);
   const [codingHistory, setCodingHistory] = useState<CodingChangeHistoryItem[]>([]);
   const [codingUndoBusy, setCodingUndoBusy] = useState(false);
+  const [codingSandboxPreflight, setCodingSandboxPreflight] = useState<CodingSandboxPreflight | null>(null);
 
   const refresh = useCallback(async () => {
     if (!desktop) { setLoading(false); return; }
@@ -165,12 +167,13 @@ export default function SkillsManager() {
     setCodingChangePreview(null); setCodingApprovalToken("");
     // Picking a project revokes the previous backend grants, so its in-memory Undo
     // entries must no longer be presented as actionable in this session.
-    setCodingApplyResult(null); setCodingHistory([]); setCodingUndoBusy(false);
+    setCodingApplyResult(null); setCodingHistory([]); setCodingUndoBusy(false); setCodingSandboxPreflight(null);
     try {
       const project = await invoke<CodingProjectScan>("pick_project_folder_and_list_files");
       setCodingProject(project);
       const history = await invoke<CodingChangeHistoryItem[]>("list_code_change_history");
       setCodingHistory(history);
+      setCodingSandboxPreflight(await invoke<CodingSandboxPreflight>("coding_sandbox_preflight"));
       if (project.files.length === 0) setCodingError("No supported source or configuration files were found. Try selecting the project folder itself, rather than a build or dependency folder.");
     } catch (e) {
       const message = String(e);
@@ -784,6 +787,11 @@ ${file.content}`
               <span>{codingProject.files.length} candidate files · {codingProject.scannedEntries.toLocaleString()} entries scanned</span>
               {codingProject.truncated && <small>Scan limit reached. Only the first bounded set of project files is shown.</small>}
             </div>
+            {codingSandboxPreflight && <section className="coding-change-preview" aria-live="polite">
+              <strong>Stage 4 — Sandboxed testing readiness</strong>
+              <p>{codingSandboxPreflight.message}</p>
+              <small>Runtime detected: {codingSandboxPreflight.runtimeDetected ? "Yes" : "No"} · Execution enabled: No · Network isolation enforced: No</small>
+            </section>}
             <div className="coding-project-list">
               <div className="coding-project-list-heading"><strong>Choose files to inspect</strong><small>{selectedCodingFileIds.length}/25 selected</small></div>
               {codingProject.files.map(file => <label className="coding-project-file" key={file.id}>
@@ -865,7 +873,7 @@ ${file.content}`
             </div>}
             {codingAnswer && <div className="coding-answer"><strong>FRIDAY's code analysis</strong><p>{codingAnswer}</p></div>}
           </>}
-          <small className="coding-safety-note">Project inspection is read-only. Stage 3 writes are limited to one explicitly selected, allowlisted file per approved preview. Hidden folders, dependency/build folders, credentials, private keys and binaries are excluded. Source text is sent only to the configured local Ollama model when you press Analyse.</small>
+          <small className="coding-safety-note">Project inspection is read-only. Stage 3 writes are limited to one explicitly selected, allowlisted file per approved preview. Stage 4 execution is not enabled yet; FRIDAY will not fall back to running project code on your normal Windows account. Hidden folders, dependency/build folders, credentials, private keys and binaries are excluded. Source text is sent only to the configured local Ollama model when you press Analyse.</small>
         </div>}
         {skill.id === "pdf-reader" && skill.loaded && <div className="pdf-reader-panel">
           <strong>Read a PDF on this device</strong>
