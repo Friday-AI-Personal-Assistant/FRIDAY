@@ -1387,6 +1387,19 @@ pub(crate) fn remove_verified_empty_snapshot_directory(
             create_disposition: u32, create_options: u32,
             ea_buffer: *const std::ffi::c_void, ea_length: u32,
         ) -> i32;
+        fn NtQueryDirectoryFile(
+            file_handle: *mut std::ffi::c_void,
+            event: *mut std::ffi::c_void,
+            apc_routine: *mut std::ffi::c_void,
+            apc_context: *mut std::ffi::c_void,
+            io_status_block: *mut IoStatusBlock,
+            file_information: *mut std::ffi::c_void,
+            length: u32,
+            information_class: i32,
+            return_single_entry: u8,
+            file_name: *mut UnicodeString,
+            restart_scan: u8,
+        ) -> i32;
     }
     #[link(name = "kernel32")]
     extern "system" {
