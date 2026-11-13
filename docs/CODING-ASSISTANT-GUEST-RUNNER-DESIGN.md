@@ -190,3 +190,24 @@ Windows Sandbox is a shared environment rather than a per-process container. Do 
 Reference:
 - [Windows Sandbox command-line interface](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli)
 
+## Native Virtual Disk API feasibility findings
+
+The native API is a more portable candidate than depending on the optional Hyper-V PowerShell module, but it does not remove the host privilege or storage-initialization constraints.
+
+- `CreateVirtualDisk` in `virtdisk.dll` can create a VHDX. For a fixed-capacity disk, the API's `CREATE_VIRTUAL_DISK_FLAG_FULL_PHYSICAL_ALLOCATION` flag requests pre-allocation of the physical backing space. The disk must have no parent path; FRIDAY must never create a differencing disk for guest results.
+- With `CREATE_VIRTUAL_DISK_VERSION_2`, the creation call requires `VIRTUAL_DISK_ACCESS_NONE`. The VHDX block size must be a multiple of 1 MiB in the documented 1–256 MiB range; the sector size is 512 or 4096 bytes. The maximum size must be sector-aligned and at least 3 MiB. These are API validity constraints, not proof that a disk is safe to mount or share.
+- Before creation, FRIDAY must reserve the exact run-specific destination with exclusive creation, ensure the parent workspace is a normal private directory, and reject compressed or EFS-encrypted backing volumes. It must not overwrite an existing path, even if a file appears to have the expected name.
+- `AttachVirtualDisk` requires `SE_MANAGE_VOLUME_PRIVILEGE`. It also inherits the virtual disk file's security descriptor if no explicit descriptor is supplied. Therefore the disk file and containing workspace ACL must be restrictive before attach. The current preflight only reports whether the privilege is enabled; it does not attempt to enable it or elevate.
+- Detach requires a handle opened with detach access, and other open handles must be closed before `DetachVirtualDisk` succeeds. Do not use permanent-lifetime attachment. FRIDAY must retain enough verified run metadata to detach only the disk it created, and must report recovery-required rather than deleting a file if detach cannot be confirmed.
+
+References:
+- [CreateVirtualDisk](https://learn.microsoft.com/windows/win32/api/virtdisk/nf-virtdisk-createvirtualdisk)
+- [CREATE_VIRTUAL_DISK_PARAMETERS](https://learn.microsoft.com/windows/win32/api/virtdisk/ns-virtdisk-create_virtual_disk_parameters)
+- [CREATE_VIRTUAL_DISK_FLAG](https://learn.microsoft.com/windows/win32/api/virtdisk/ne-virtdisk-create_virtual_disk_flag)
+- [AttachVirtualDisk](https://learn.microsoft.com/windows/win32/api/virtdisk/nf-virtdisk-attachvirtualdisk)
+- [DetachVirtualDisk](https://learn.microsoft.com/windows/win32/api/virtdisk/nf-virtdisk-detachvirtualdisk)
+
+The native API creates and attaches the virtual disk; it does not by itself create a partition, format a filesystem, assign a mount point, or prove that Windows Sandbox mapped-folder writes are constrained to that volume. The next implementation must not use an unreviewed `diskpart` script or select a disk by a transient disk number alone. It must correlate the attached device to the exact VHDX/run identity, verify the disk's unique identity and capacity before any initialization, and verify the resulting volume and mount path after formatting. If FRIDAY cannot do those steps safely under the current token without elevation, it must stop before initialization and keep `resultStorageReady = false`.
+
+No VHDX creation, attachment, partitioning, formatting, mounting, or guest sharing has been implemented by these findings. They refine the native API design only; the execution gate remains closed.
+
