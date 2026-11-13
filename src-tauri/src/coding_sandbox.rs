@@ -7,6 +7,7 @@ use std::{
     io::Read,
     path::{Component, Path, PathBuf},
     sync::Mutex,
+    process::Command,
 };
 use rand::RngCore;
 use tauri::{AppHandle, Manager};
@@ -23,6 +24,13 @@ pub struct CodingSandboxPreflight {
     runtime_detected: bool,
     execution_enabled: bool,
     network_isolation_enforced: bool,
+    windows_edition: String,
+    windows_build: String,
+    sandbox_feature_state: String,
+    wsb_cli_available: bool,
+    wsb_cli_version: String,
+    virtualization_firmware_enabled: Option<bool>,
+    sandbox_process_detected: bool,
     message: String,
 }
 
@@ -61,20 +69,78 @@ fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
+#[cfg(windows)]
+fn detect_windows_sandbox_capabilities() -> (String, String, String, bool, String, Option<bool>, bool) {
+    // Fixed, read-only PowerShell probes. No user or model supplied command text is accepted.
+    let script = r#"$ErrorActionPreference = 'SilentlyContinue'
+$cv = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'
+$feature = Get-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM
+$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty VirtualizationFirmwareEnabled
+$active = [bool](Get-Process -Name WindowsSandbox -ErrorAction SilentlyContinue)
+$wsb = Get-Command wsb -ErrorAction SilentlyContinue
+$version = ''
+if ($wsb) { $version = (& $wsb.Source --version 2>&1 | Out-String).Trim() }
+[pscustomobject]@{
+  edition = [string]$cv.EditionID
+  build = [string]$cv.CurrentBuildNumber
+  feature = [string]$feature.State
+  wsbAvailable = [bool]$wsb
+  wsbVersion = [string]$version
+  virtualizationFirmwareEnabled = if ($null -eq $cpu) { $null } else { [bool]$cpu }
+  sandboxProcessDetected = $active
+} | ConvertTo-Json -Compress"#;
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .output();
+    let Ok(output) = output else {
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false);
+    };
+    if !output.status.success() {
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false);
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false);
+    };
+    let string_field = |key: &str| value.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("Unknown").to_string();
+    let firmware = value.get("virtualizationFirmwareEnabled").and_then(serde_json::Value::as_bool);
+    (
+        string_field("edition"),
+        string_field("build"),
+        string_field("feature"),
+        value.get("wsbAvailable").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        string_field("wsbVersion"),
+        firmware,
+        value.get("sandboxProcessDetected").and_then(serde_json::Value::as_bool).unwrap_or(false),
+    )
+}
+
 #[tauri::command]
 pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String> {
     let _project_root = crate::coding_assistant::selected_project_root_for_sandbox()?;
     #[cfg(windows)]
     {
         let detected = detect_windows_sandbox();
-        let message = if detected {
-            "Windows Sandbox was detected. Code execution remains disabled while FRIDAY completes isolation, command restrictions, resource enforcement, cancellation and result validation. No project code has been executed.".to_string()
+        let (edition, build, feature, wsb_available, wsb_version, virtualization, active) =
+            detect_windows_sandbox_capabilities();
+        let edition_supported = ["Professional", "Enterprise", "Education"]
+            .iter().any(|supported| edition.eq_ignore_ascii_case(supported));
+        let runtime_ready = detected && edition_supported
+            && feature.eq_ignore_ascii_case("Enabled") && wsb_available
+            && virtualization == Some(true) && !active;
+        let message = if active {
+            "A Windows Sandbox process is already running. FRIDAY will not attach to or stop a session it did not create. Execution remains disabled.".to_string()
+        } else if runtime_ready {
+            "Windows Sandbox prerequisites appear present. This is detection only, not a launch test. Execution remains disabled until command restrictions, resource enforcement, cancellation and result validation are complete.".to_string()
         } else {
-            "Windows Sandbox was not detected. FRIDAY will not fall back to running project code on your normal Windows account.".to_string()
+            "Windows Sandbox is not yet confirmed ready. Review the detected edition, feature, CLI and virtualization details. Unknown values are treated as unverified. FRIDAY will not fall back to host execution.".to_string()
         };
         Ok(CodingSandboxPreflight {
             platform_supported: true, runtime_detected: detected,
-            execution_enabled: false, network_isolation_enforced: false, message,
+            execution_enabled: false, network_isolation_enforced: false,
+            windows_edition: edition, windows_build: build, sandbox_feature_state: feature,
+            wsb_cli_available: wsb_available, wsb_cli_version: wsb_version,
+            virtualization_firmware_enabled: virtualization, sandbox_process_detected: active,
+            message,
         })
     }
     #[cfg(not(windows))]
@@ -82,6 +148,10 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
         Ok(CodingSandboxPreflight {
             platform_supported: false, runtime_detected: false,
             execution_enabled: false, network_isolation_enforced: false,
+            windows_edition: "Not applicable".into(), windows_build: "Not applicable".into(),
+            sandbox_feature_state: "Not applicable".into(), wsb_cli_available: false,
+            wsb_cli_version: "Not applicable".into(), virtualization_firmware_enabled: None,
+            sandbox_process_detected: false,
             message: "The Coding Assistant execution sandbox is designed for Windows Sandbox. No project code has been executed and no host-execution fallback is available.".to_string(),
         })
     }
