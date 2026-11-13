@@ -781,8 +781,9 @@ $existing = $acl.GetAccessRules($true, $true, [System.Security.Principal.Securit
 $identities = @($existing | ForEach-Object { $_.IdentityReference } | Select-Object -Unique)
 foreach ($identity in $identities) { [void]$acl.PurgeAccessRules($identity) }
 foreach ($sidText in $allowed) {
-  $identity = New-Object System.Security.Principal.SecurityIdentifier($sidText)
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+  $identity = [System.Security.Principal.SecurityIdentifier]::new($sidText)
+  $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($identity, [System.Security.AccessControl.FileSystemRights]::FullControl, $inheritance, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow)
   [void]$acl.AddAccessRule($rule)
 }
 Set-Acl -LiteralPath $path -AclObject $acl
@@ -798,7 +799,7 @@ foreach ($rule in $rules) {
 "#;
         let powershell = system32.join("WindowsPowerShell").join("v1.0").join("powershell.exe");
         let applied = Command::new(powershell)
-            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script, "--"])
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
             .arg(path)
             .arg(sid)
             .output()
