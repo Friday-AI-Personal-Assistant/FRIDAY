@@ -467,3 +467,19 @@ Runs #467–#472 passed both Windows and Linux CI jobs. These runs verify the pr
 A Unix counterpart to the Windows handle-relative file-open prototype has been added in `coding_sandbox_fs.rs`. It validates a single normal filename component, calls `openat` relative to the already-held parent directory handle, and requests `O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK`. The opened handle must report a regular file. O_NONBLOCK prevents a raced-in FIFO from blocking before the type check. There is no path-based fallback. Regression tests cover regular-file reads, symlink and traversal-name rejection, and replacement of the parent pathname after its directory handle is held; the last case verifies that the open still reads the original authorized file rather than the replacement directory's file.
 
 The Windows counterpart continues to use `NtCreateFile` with `RootDirectory`, `OBJ_DONT_REPARSE`, `FILE_OPEN_REPARSE_POINT`, synchronous I/O, and an opened-handle regular-file/reparse check. Both helpers remain part of the experimental prototype. They are not yet wired into production snapshot copying. The new Unix tests and the preceding held-ancestor root-acquisition regression are awaiting CI in Runs #473–#480; do not mark them verified until the relevant Linux and Windows jobs pass.
+
+
+## Bounded handle-relative snapshot content prototype (November 13, 2026)
+
+The test-only filesystem prototype now combines the verified root handle, handle-relative directory enumeration/descent, and handle-relative regular-file opening into a bounded in-memory source capture. It returns relative names plus byte buffers; it does not create destination files and is not wired into the production snapshot command.
+
+The prototype enforces caller-supplied non-zero limits for directory depth, file count, per-file bytes, and total bytes. It accepts explicit file/directory filter callbacks so the production allowlist and exclusions can be connected only after review. It skips links and non-regular entries, opens child directories relative to held parent handles, opens files relative to the held parent with the platform-specific no-follow helper, and checks opened-handle type and size. It performs a post-read size/modified-time consistency check on the same handle. A raced file open is treated as a truncated/partial capture; a directory descent that cannot be safely opened fails closed.
+
+Regression coverage added for nested content capture, file-count and total-byte limits, zero-limit rejection, a file replaced by a symlink between enumeration and open, and a parent pathname replaced after its handle is held. Runs #475–#478 and #480–#482 passed both Windows and Linux CI; #473–#474 and #479 were earlier failed runs whose test-only compile errors were corrected in the subsequent successful commits.
+
+Important limitations remain:
+- This is an in-memory test prototype, not production snapshot copying.
+- The post-read metadata check is not an atomic filesystem snapshot and cannot prove a file's contents were immutable during the read in every filesystem.
+- Destination directory/file creation and cleanup are deliberately not implemented here. A separate destination-side design must use safe, app-owned storage and defend against reparse/path replacement and partial-write cleanup.
+- The production snapshot copier remains path-based and unchanged.
+- No guest process is launched; guest execution remains disabled.
