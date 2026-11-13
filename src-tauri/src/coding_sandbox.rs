@@ -280,28 +280,101 @@ pub async fn coding_sandbox_discard_snapshot(snapshot_id: String) -> Result<Stri
     if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("The snapshot identifier is invalid.".into());
     }
-    let path = OWNED_SNAPSHOTS.lock()
-        .map_err(|_| "Snapshot ownership tracking is temporarily unavailable.".to_string())?
-        .remove(&snapshot_id)
+    let mut owned = OWNED_SNAPSHOTS.lock()
+        .map_err(|_| "Snapshot ownership tracking is temporarily unavailable.".to_string())?;
+    let path = owned.get(&snapshot_id).cloned()
         .ok_or_else(|| "This snapshot is not owned by the current FRIDAY session.".to_string())?;
     let metadata = fs::symlink_metadata(&path)
         .map_err(|_| "The snapshot folder is already unavailable; FRIDAY will not guess what to delete.".to_string())?;
     if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
         return Err("The snapshot path is no longer a normal directory; FRIDAY refused cleanup.".into());
     }
+    let parent = path.parent().ok_or_else(|| "The snapshot folder has no verified parent.".to_string())?;
+    let parent_metadata = fs::symlink_metadata(parent)
+        .map_err(|_| "FRIDAY could not verify the private snapshot workspace.".to_string())?;
+    if !parent_metadata.is_dir() || is_reparse_or_symlink(&parent_metadata) {
+        return Err("The private snapshot workspace is no longer a normal directory; cleanup was refused.".into());
+    }
+    let canonical_parent = fs::canonicalize(parent)
+        .map_err(|_| "FRIDAY could not verify the private snapshot workspace path.".to_string())?;
     let canonical = fs::canonicalize(&path)
         .map_err(|_| "FRIDAY could not verify the snapshot folder before cleanup.".to_string())?;
-    if canonical != path || !canonical.parent().map(|parent| parent.ends_with("coding-sandbox-workspaces")).unwrap_or(false) {
+    if canonical != path || canonical.parent() != Some(canonical_parent.as_path())
+        || path.file_name().and_then(OsStr::to_str) != Some(snapshot_id.as_str())
+    {
         return Err("The snapshot folder failed its ownership-path check; cleanup was refused.".into());
     }
     fs::remove_dir_all(&canonical)
         .map_err(|_| "FRIDAY could not completely remove the isolated snapshot folder.".to_string())?;
+    owned.remove(&snapshot_id);
     Ok("The isolated snapshot copy was removed. The original project was not changed.".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_test_directory(label: &str) -> PathBuf {
+        let mut random = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut random);
+        let suffix = random.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let path = env::temp_dir().join(format!("friday-sandbox-{label}-{suffix}"));
+        fs::create_dir_all(&path).expect("test directory should be created");
+        path
+    }
+
+    #[test]
+    fn snapshot_copy_only_copies_eligible_regular_source_files() {
+        let base = make_test_directory("allowlist");
+        let source = base.join("project");
+        let destination = base.join("snapshot");
+        fs::create_dir_all(source.join("src")).unwrap();
+        fs::create_dir_all(source.join("node_modules")).unwrap();
+        fs::create_dir_all(source.join(".git")).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(source.join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(source.join(".env"), "API_KEY=not-for-copy").unwrap();
+        fs::write(source.join("node_modules/ignored.rs"), "ignored").unwrap();
+        fs::write(source.join(".git/config"), "ignored").unwrap();
+        fs::write(source.join("picture.png"), [0u8, 1, 2, 3]).unwrap();
+        fs::write(source.join("oversized.rs"), vec![b'x'; (MAX_SNAPSHOT_FILE_BYTES + 1) as usize]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(source.join("src/main.rs"), source.join("src/linked.rs")).unwrap();
+
+        let canonical_source = fs::canonicalize(&source).unwrap();
+        let mut budget = SnapshotBudget { files: 0, bytes: 0, truncated: false };
+        copy_snapshot_tree(&canonical_source, &canonical_source, &destination, 0, &mut budget).unwrap();
+
+        assert_eq!(budget.files, 1);
+        assert_eq!(fs::read_to_string(destination.join("src/main.rs")).unwrap(), "fn main() {}");
+        assert!(!destination.join(".env").exists());
+        assert!(!destination.join("node_modules").exists());
+        assert!(!destination.join(".git").exists());
+        assert!(!destination.join("picture.png").exists());
+        assert!(!destination.join("oversized.rs").exists());
+        #[cfg(unix)]
+        assert!(!destination.join("src/linked.rs").exists());
+        assert_eq!(fs::read_to_string(source.join("src/main.rs")).unwrap(), "fn main() {}");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn snapshot_copy_enforces_the_file_count_cap() {
+        let base = make_test_directory("file-cap");
+        let source = base.join("project");
+        let destination = base.join("snapshot");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        for index in 0..=MAX_SNAPSHOT_FILES {
+            fs::write(source.join(format!("file-{index:04}.rs")), "x").unwrap();
+        }
+        let canonical_source = fs::canonicalize(&source).unwrap();
+        let mut budget = SnapshotBudget { files: 0, bytes: 0, truncated: false };
+        copy_snapshot_tree(&canonical_source, &canonical_source, &destination, 0, &mut budget).unwrap();
+        assert_eq!(budget.files, MAX_SNAPSHOT_FILES);
+        assert!(budget.truncated);
+        fs::remove_dir_all(base).unwrap();
+    }
 
     #[test]
     fn sandbox_preflight_never_advertises_execution_or_network_isolation_early() {
