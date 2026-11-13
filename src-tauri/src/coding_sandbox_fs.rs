@@ -181,6 +181,15 @@ fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
 /// selected root path has been canonicalized and authorized by the UI/backend.
 #[allow(dead_code)]
 pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
+    open_verified_root_directory_with_hook(path, || Ok(()))
+}
+
+// The hook is private to this test-only module and lets the regression test
+// replace the root after its identity has been captured but before it is opened.
+fn open_verified_root_directory_with_hook<F>(path: &Path, before_open: F) -> io::Result<File>
+where
+    F: FnOnce() -> io::Result<()>,
+{
     if !path.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -196,6 +205,12 @@ pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
         ));
     }
 
+    // Capture stable filesystem identity before opening. Comparing only the
+    // opened handle with the path after opening would miss replacement by a
+    // different ordinary directory in the check/open window.
+    let before_identity = path_identity(path)?;
+    before_open()?;
+
     let handle = cap_primitives::fs::open_ambient_dir(
         path,
         ambient_authority::ambient_authority(),
@@ -203,18 +218,18 @@ pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
     let opened = handle.metadata()?;
     if !opened.is_dir()
         || is_reparse_or_symlink(&opened)
-        || !same_path_handle_identity(path, &handle)?
+        || handle_identity(&handle)? != before_identity
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "opened project root does not match the observed directory",
+            "opened project root does not match the directory observed before open",
         ));
     }
 
     let after = std::fs::symlink_metadata(path)?;
     if !after.is_dir()
         || is_reparse_or_symlink(&after)
-        || !same_path_handle_identity(path, &handle)?
+        || path_identity(path)? != before_identity
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -238,18 +253,24 @@ fn is_reparse_or_symlink(metadata: &std::fs::Metadata) -> bool {
 }
 
 #[cfg(unix)]
-fn same_path_handle_identity(path: &Path, handle: &File) -> io::Result<bool> {
+fn path_identity(path: &Path) -> io::Result<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
-    let path_metadata = std::fs::symlink_metadata(path)?;
-    let handle_metadata = handle.metadata()?;
-    Ok(path_metadata.dev() == handle_metadata.dev()
-        && path_metadata.ino() == handle_metadata.ino())
+    let metadata = std::fs::symlink_metadata(path)?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(unix)]
+fn handle_identity(handle: &File) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = handle.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
-fn same_path_handle_identity(path: &Path, handle: &File) -> io::Result<bool> {
+mod windows_identity {
+    use std::{io, path::Path, ptr};
     use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
-    use std::ptr;
+    use std::fs::File;
 
     #[repr(C)]
     #[derive(Default)]
@@ -290,33 +311,54 @@ fn same_path_handle_identity(path: &Path, handle: &File) -> io::Result<bool> {
     const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
     fn identity(info: &ByHandleFileInformation) -> (u32, u64) {
-        (info.volume_serial_number, ((info.file_index_high as u64) << 32) | info.file_index_low as u64)
-    }
-
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let path_handle = unsafe {
-        CreateFileW(
-            wide.as_ptr(), FILE_READ_ATTRIBUTES, SHARE_ALL, ptr::null_mut(),
-            OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT, ptr::null_mut(),
+        (
+            info.volume_serial_number,
+            ((info.file_index_high as u64) << 32) | info.file_index_low as u64,
         )
-    };
-    if path_handle == INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
     }
 
-    let mut path_info = ByHandleFileInformation::default();
-    let mut opened_info = ByHandleFileInformation::default();
-    let path_ok = unsafe { GetFileInformationByHandle(path_handle, &mut path_info) } != 0;
-    let opened_ok = unsafe {
-        GetFileInformationByHandle(handle.as_raw_handle(), &mut opened_info)
-    } != 0;
-    unsafe { CloseHandle(path_handle); }
-
-    if !path_ok || !opened_ok {
-        return Err(io::Error::last_os_error());
+    fn query(handle: *mut std::ffi::c_void) -> io::Result<(u32, u64)> {
+        let mut info = ByHandleFileInformation::default();
+        if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(identity(&info))
     }
 
-    Ok(identity(&path_info) == identity(&opened_info))
+    pub(super) fn path_identity(path: &Path) -> io::Result<(u32, u64)> {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(), FILE_READ_ATTRIBUTES, SHARE_ALL, ptr::null_mut(),
+                OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT, ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        let result = query(handle);
+        unsafe { CloseHandle(handle); }
+        result
+    }
+
+    pub(super) fn handle_identity(handle: &File) -> io::Result<(u32, u64)> {
+        query(handle.as_raw_handle())
+    }
+}
+
+#[cfg(windows)]
+fn path_identity(path: &Path) -> io::Result<(u32, u64)> {
+    windows_identity::path_identity(path)
+}
+
+#[cfg(windows)]
+fn handle_identity(handle: &File) -> io::Result<(u32, u64)> {
+    windows_identity::handle_identity(handle)
+}
+
+#[cfg(any(unix, windows))]
+fn same_path_handle_identity(path: &Path, handle: &File) -> io::Result<bool> {
+    Ok(path_identity(path)? == handle_identity(handle)?)
 }
 
 fn is_single_normal_component(name: &OsStr) -> bool {
@@ -425,6 +467,42 @@ mod tests {
 
         drop(root);
         fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn verified_root_handle_rejects_root_replaced_after_identity_capture() {
+        let root_path = make_test_directory("verified-root-swap");
+        let replacement_path = root_path.with_file_name(format!(
+            "friday-capability-walk-replacement-{}",
+            std::process::id()
+        ));
+        let displaced_path = root_path.with_file_name(format!(
+            "friday-capability-walk-displaced-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&replacement_path);
+        let _ = fs::remove_dir_all(&displaced_path);
+        fs::create_dir_all(&replacement_path).unwrap();
+        fs::write(root_path.join("original.txt"), b"authorized original").unwrap();
+        fs::write(replacement_path.join("replacement.txt"), b"untrusted replacement").unwrap();
+
+        let mut replaced = false;
+        let result = open_verified_root_directory_with_hook(&root_path, || {
+            fs::rename(&root_path, &displaced_path)?;
+            fs::rename(&replacement_path, &root_path)?;
+            replaced = true;
+            Ok(())
+        });
+
+        assert!(replaced, "test must replace the root after identity capture");
+        assert!(
+            result.is_err(),
+            "root acquisition must reject a different ordinary directory at the same path"
+        );
+
+        drop(result);
+        fs::remove_dir_all(root_path).unwrap();
+        fs::remove_dir_all(displaced_path).unwrap();
     }
 
     #[test]
