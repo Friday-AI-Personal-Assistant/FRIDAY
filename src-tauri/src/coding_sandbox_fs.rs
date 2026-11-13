@@ -234,6 +234,76 @@ mod tests {
         fs::remove_dir_all(outside).unwrap();
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_open_directory_handle_prevents_rename_until_closed() {
+        let root_path = make_test_directory("windows-handle-sharing");
+        let child_path = root_path.join("child");
+        let renamed_path = root_path.join("renamed");
+        fs::create_dir(&child_path).unwrap();
+
+        let root = open_test_root(&root_path);
+        let child = open_dir_nofollow(&root, Path::new("child")).unwrap();
+
+        // Windows directory handles used for safe traversal must not grant
+        // FILE_SHARE_DELETE; otherwise an attacker may rename/replace the
+        // directory while FRIDAY is traversing through the held handle.
+        let rename_while_open = fs::rename(&child_path, &renamed_path);
+        drop(child);
+
+        if rename_while_open.is_ok() {
+            fs::rename(&renamed_path, &child_path).unwrap();
+            drop(root);
+            fs::remove_dir_all(root_path).unwrap();
+            panic!("open directory handle allowed rename; FILE_SHARE_DELETE must be denied");
+        }
+
+        // Once the handle is closed, the same rename should work normally.
+        fs::rename(&child_path, &renamed_path).unwrap();
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn capability_walk_rejects_directory_replaced_by_windows_symlink_after_enumeration() {
+        use std::os::windows::fs::symlink_dir;
+
+        let root_path = make_test_directory("windows-directory-swap");
+        let outside = make_test_directory("windows-directory-swap-outside");
+        fs::create_dir(root_path.join("replace-me")).unwrap();
+        fs::write(outside.join("secret.rs"), b"must not be reached").unwrap();
+
+        let root = open_test_root(&root_path);
+        let mut replaced = false;
+        let result = {
+            let mut hook = |relative: &Path| {
+                if relative == Path::new("replace-me") && !replaced {
+                    fs::remove_dir(root_path.join("replace-me"))?;
+                    symlink_dir(&outside, root_path.join("replace-me"))?;
+                    replaced = true;
+                }
+                Ok(())
+            };
+            let mut files = Vec::new();
+            walk_directory(
+                &root,
+                Path::new(""),
+                0,
+                12,
+                &mut files,
+                &mut hook,
+            )
+        };
+
+        assert!(replaced, "test must replace the directory after enumeration");
+        assert!(result.is_err(), "no-follow directory open must reject the replacement");
+        drop(root);
+        fs::remove_file(root_path.join("replace-me")).unwrap();
+        fs::remove_dir_all(root_path).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
     #[test]
     fn capability_walk_rejects_non_single_component_names() {
         assert!(is_single_normal_component(OsStr::new("source.rs")));
