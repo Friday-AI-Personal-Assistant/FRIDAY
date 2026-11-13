@@ -1292,6 +1292,157 @@ pub(crate) fn remove_verified_snapshot_file(
     Ok(())
 }
 
+/// Remove one verified empty directory relative to a held parent directory handle.
+///
+/// Unix rmdir via unlinkat is name-based and retains a same-user rename race
+/// after the final identity check. Windows applies delete disposition to the
+/// opened directory handle while denying write/delete sharing. This is a
+/// test-only primitive and must not be used as production cleanup authority.
+#[cfg(unix)]
+#[allow(dead_code)]
+pub(crate) fn remove_verified_empty_snapshot_directory(
+    parent: &File,
+    name: &OsStr,
+) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::{ffi::OsStrExt, io::AsRawFd}};
+    if !is_single_normal_component(name)
+        || name == OsStr::new(".friday-snapshot-owner.json")
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot cleanup requires a non-marker directory component"));
+    }
+    let relative = PathBuf::from(name);
+    let opened = open_dir_nofollow(parent, &relative)?;
+    if !opened.metadata()?.is_dir() || is_reparse_or_symlink(&opened.metadata()?) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot entry is not an ordinary directory"));
+    }
+    if read_dir(&opened, Path::new("."))?.next().transpose()?.is_some() {
+        return Err(io::Error::new(io::ErrorKind::DirectoryNotEmpty, "snapshot directory is not empty"));
+    }
+    let current = open_dir_nofollow(parent, &relative)?;
+    if !same_handle_identity(&opened, &current)? {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory changed before cleanup"));
+    }
+    let name_c = CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "snapshot directory name contains NUL"))?;
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name_c.as_ptr(), libc::AT_REMOVEDIR) };
+    if result != 0 { return Err(io::Error::last_os_error()); }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn remove_verified_empty_snapshot_directory(
+    parent: &File,
+    name: &OsStr,
+) -> io::Result<()> {
+    use std::{
+        mem,
+        os::windows::{ffi::OsStrExt, fs::MetadataExt, io::{AsRawHandle, FromRawHandle}},
+        ptr,
+    };
+    if !is_single_normal_component(name)
+        || name == OsStr::new(".friday-snapshot-owner.json")
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot cleanup requires a non-marker directory component"));
+    }
+    let wide: Vec<u16> = name.encode_wide().collect();
+    if wide.is_empty() || wide.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid snapshot directory name"));
+    }
+    let byte_len = wide.len().checked_mul(2)
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "snapshot directory name is too long"))?;
+    #[repr(C)] struct UnicodeString { length: u16, maximum_length: u16, buffer: *mut u16 }
+    #[repr(C)] struct ObjectAttributes {
+        length: u32, root_directory: *mut std::ffi::c_void,
+        object_name: *mut UnicodeString, attributes: u32,
+        security_descriptor: *mut std::ffi::c_void,
+        security_quality_of_service: *mut std::ffi::c_void,
+    }
+    #[repr(C)] union IoStatusValue { status: i32, pointer: *mut std::ffi::c_void }
+    #[repr(C)] struct IoStatusBlock { status: IoStatusValue, information: usize }
+    #[repr(C)] struct FileDispositionInfoEx { flags: u32 }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut *mut std::ffi::c_void, desired_access: u32,
+            object_attributes: *const ObjectAttributes, io_status_block: *mut IoStatusBlock,
+            allocation_size: *const i64, file_attributes: u32, share_access: u32,
+            create_disposition: u32, create_options: u32,
+            ea_buffer: *const std::ffi::c_void, ea_length: u32,
+        ) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetFileInformationByHandle(
+            file: *mut std::ffi::c_void, information_class: i32,
+            information: *const std::ffi::c_void, size: u32,
+        ) -> i32;
+    }
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    const OBJ_DONT_REPARSE: u32 = 0x1000;
+    const DELETE: u32 = 0x0001_0000;
+    const FILE_LIST_DIRECTORY: u32 = 0x1;
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_OPEN: u32 = 1;
+    const FILE_DIRECTORY_FILE: u32 = 1;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
+    const FILE_DISPOSITION_INFO_EX_CLASS: i32 = 21;
+    const FILE_DISPOSITION_FLAG_DELETE: u32 = 1;
+
+    let mut unicode_name = UnicodeString {
+        length: byte_len, maximum_length: byte_len, buffer: wide.as_ptr() as *mut u16,
+    };
+    let attributes = ObjectAttributes {
+        length: mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: parent.as_raw_handle(),
+        object_name: &mut unicode_name,
+        attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        security_descriptor: ptr::null_mut(),
+        security_quality_of_service: ptr::null_mut(),
+    };
+    let mut io_status = IoStatusBlock { status: IoStatusValue { status: 0 }, information: 0 };
+    let mut raw_handle = ptr::null_mut();
+    let status = unsafe {
+        NtCreateFile(
+            &mut raw_handle, DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            &attributes, &mut io_status, ptr::null(), 0,
+            FILE_SHARE_READ, FILE_OPEN,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            ptr::null(), 0,
+        )
+    };
+    if status < 0 || raw_handle.is_null() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+            format!("handle-relative directory delete open failed (NTSTATUS 0x{:08X})", status as u32)));
+    }
+    let directory = unsafe { File::from_raw_handle(raw_handle) };
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink()
+        || (metadata.file_attributes() & 0x400 != 0)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot entry is not an ordinary directory"));
+    }
+    if read_dir(&directory, Path::new("."))?.next().transpose()?.is_some() {
+        return Err(io::Error::new(io::ErrorKind::DirectoryNotEmpty, "snapshot directory is not empty"));
+    }
+    let disposition = FileDispositionInfoEx { flags: FILE_DISPOSITION_FLAG_DELETE };
+    if unsafe {
+        SetFileInformationByHandle(
+            directory.as_raw_handle(), FILE_DISPOSITION_INFO_EX_CLASS,
+            &disposition as *const _ as *const std::ffi::c_void,
+            mem::size_of::<FileDispositionInfoEx>() as u32,
+        )
+    } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    drop(directory);
+    Ok(())
+}
+
 /// Inspect a completed snapshot through held directory handles without mutating it.
 ///
 /// The manifest is treated as an expected inventory, not as cryptographic
@@ -2409,6 +2560,48 @@ mod tests {
         assert!(!workspace_path.join("known.txt").exists());
         assert_eq!(fs::read(workspace_path.join("unknown.txt")).unwrap(), b"keep me");
         assert!(remove_verified_snapshot_file(&parent, OsStr::new("unknown.txt"), 1).is_err());
+
+        drop(parent);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_directory_cleanup_removes_only_verified_empty_directory() {
+        use std::ffi::OsStr;
+        let workspace_path = make_test_directory("cleanup-empty-directory");
+        fs::create_dir(workspace_path.join("empty")).unwrap();
+        fs::create_dir(workspace_path.join("nonempty")).unwrap();
+        fs::write(workspace_path.join("nonempty").join("keep.txt"), b"keep").unwrap();
+        let parent = open_test_root(&workspace_path);
+
+        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new("nonempty")).is_err());
+        assert!(workspace_path.join("nonempty").join("keep.txt").exists());
+        remove_verified_empty_snapshot_directory(&parent, OsStr::new("empty")).unwrap();
+        assert!(!workspace_path.join("empty").exists());
+        assert!(workspace_path.join("nonempty").exists());
+        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new("..")).is_err());
+
+        drop(parent);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_snapshot_directory_cleanup_removes_only_verified_empty_directory_by_handle() {
+        use std::ffi::OsStr;
+        let workspace_path = make_test_directory("windows-cleanup-empty-directory");
+        fs::create_dir(workspace_path.join("empty")).unwrap();
+        fs::create_dir(workspace_path.join("nonempty")).unwrap();
+        fs::write(workspace_path.join("nonempty").join("keep.txt"), b"keep").unwrap();
+        let parent = open_test_root(&workspace_path);
+
+        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new("nonempty")).is_err());
+        assert!(workspace_path.join("nonempty").join("keep.txt").exists());
+        remove_verified_empty_snapshot_directory(&parent, OsStr::new("empty")).unwrap();
+        assert!(!workspace_path.join("empty").exists());
+        assert!(workspace_path.join("nonempty").exists());
+        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new("..")).is_err());
 
         drop(parent);
         fs::remove_dir_all(workspace_path).unwrap();
