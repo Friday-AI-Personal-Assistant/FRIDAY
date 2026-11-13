@@ -1119,7 +1119,7 @@ pub(crate) fn remove_verified_snapshot_file(
     name: &OsStr,
     expected_size: u64,
 ) -> io::Result<()> {
-    use std::os::unix::io::AsRawFd;
+    use std::os::unix::{ffi::OsStrExt, io::AsRawFd};
 
     if !is_single_normal_component(name) || name == OsStr::new(".friday-snapshot-owner.json") {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot cleanup requires a non-marker filename component"));
