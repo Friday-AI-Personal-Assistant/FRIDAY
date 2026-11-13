@@ -614,7 +614,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{env, fs};
+    use std::{env, fs, io::Read};
 
     fn make_test_directory(label: &str) -> PathBuf {
         let path = env::temp_dir().join(format!(
