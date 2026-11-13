@@ -174,6 +174,72 @@ fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
     Ok(file)
 }
 
+/// Acquire a root directory handle only when its identity agrees with the
+/// directory observed at the supplied path both before and after opening.
+///
+/// This remains a test-only prototype. The caller must still ensure the
+/// selected root path has been canonicalized and authorized by the UI/backend.
+#[allow(dead_code)]
+pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "project root must be an absolute path",
+        ));
+    }
+
+    let before = std::fs::symlink_metadata(path)?;
+    if !before.is_dir() || is_reparse_or_symlink(&before) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "project root is not an ordinary directory",
+        ));
+    }
+
+    let handle = cap_primitives::fs::open_ambient_dir(
+        path,
+        ambient_authority::ambient_authority(),
+    )?;
+    let opened = handle.metadata()?;
+    if !opened.is_dir()
+        || is_reparse_or_symlink(&opened)
+        || !same_directory_identity(&before, &opened)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "opened project root does not match the observed directory",
+        ));
+    }
+
+    let after = std::fs::symlink_metadata(path)?;
+    if !after.is_dir()
+        || is_reparse_or_symlink(&after)
+        || !same_directory_identity(&opened, &after)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "project root changed while its directory handle was acquired",
+        ));
+    }
+
+    Ok(handle)
+}
+
+#[cfg(unix)]
+fn same_directory_identity(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(windows)]
+fn same_directory_identity(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    left.volume_serial_number().is_some()
+        && left.volume_serial_number() == right.volume_serial_number()
+        && left.file_index().is_some()
+        && left.file_index() == right.file_index()
+}
+
 fn is_single_normal_component(name: &OsStr) -> bool {
     let mut components = Path::new(name).components();
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
@@ -265,6 +331,27 @@ mod tests {
             ambient_authority::ambient_authority(),
         )
         .expect("test root should open")
+    }
+
+    #[test]
+    fn verified_root_handle_matches_the_authorized_directory_identity() {
+        let root_path = make_test_directory("verified-root");
+        fs::write(root_path.join("safe.rs"), b"safe").unwrap();
+
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let opened = root.metadata().unwrap();
+        let current = fs::symlink_metadata(&root_path).unwrap();
+        assert!(opened.is_dir());
+        assert!(!is_reparse_or_symlink(&opened));
+        assert!(same_directory_identity(&opened, &current));
+
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn verified_root_handle_rejects_non_absolute_paths() {
+        assert!(open_verified_root_directory(Path::new(".")).is_err());
     }
 
     #[test]
