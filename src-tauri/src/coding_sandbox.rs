@@ -291,7 +291,7 @@ fn build_sandbox_config(snapshot_path: &Path) -> Result<String, String> {
     }
     let canonical = fs::canonicalize(snapshot_path)
         .map_err(|_| "FRIDAY could not verify the snapshot path.".to_string())?;
-    if canonical != snapshot_path {
+    if canonical.as_path() != snapshot_path {
         return Err("The snapshot path changed during validation.".into());
     }
     let host_folder = canonical.to_str()
