@@ -355,7 +355,7 @@ This protects the final component only. It does not by itself pin every parent d
 
 ## Current verification and remaining Stage 4/5 gates
 
-CI verification update (November 13, 2026): Runs #425–#431 all completed successfully; each run's `test-linux` and `build-windows` jobs passed. These runs cover the Unix `O_NOFOLLOW` source-file open change, the dependency update, and the preceding architecture/checklist documentation commits. CI success does not replace adversarial physical Windows testing.
+CI verification update (November 13, 2026): Runs #425–#435 completed successfully; each run's `test-linux` and `build-windows` jobs passed. In particular, #433–#435 verify the Windows `FILE_FLAG_OPEN_REPARSE_POINT` symlink regression test as well as the preceding Unix `O_NOFOLLOW` final-component protection. CI success does not replace adversarial physical Windows testing or close the parent-directory replacement race.
 
 The next implementation/review sequence is:
 
