@@ -1001,6 +1001,106 @@ fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io:
     Ok(file)
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SnapshotCleanupManifest {
+    schema_version: u32,
+    snapshot_id: String,
+    owner: String,
+    directories: Vec<String>,
+    files: Vec<SnapshotCleanupFile>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SnapshotCleanupFile {
+    path: String,
+    size: u64,
+}
+
+fn portable_manifest_path(path: &Path) -> io::Result<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let Component::Normal(value) = component else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "manifest path contains a non-normal component"));
+        };
+        let value = value.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "manifest path is not UTF-8"))?;
+        if value.is_empty() || value == "." || value == ".." || value.contains('/') || value.contains('\\') || value.contains(':') {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "manifest path contains an ambiguous component"));
+        }
+        parts.push(value);
+    }
+    if parts.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "manifest path is empty"));
+    }
+    Ok(parts.join("/"))
+}
+
+/// Build a version-2 inventory from the exact payload accepted by the writer.
+/// This inventory is not, by itself, authorization to delete filesystem entries.
+fn build_snapshot_cleanup_manifest(snapshot_id: &str, contents: &BoundedSnapshotContents, limits: BoundedSnapshotLimits) -> io::Result<SnapshotCleanupManifest> {
+    use std::collections::BTreeSet;
+    if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|b| b.is_ascii_hexdigit()) || contents.truncated || contents.files.is_empty() || contents.files.len() > limits.max_files {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot inventory an invalid or incomplete snapshot"));
+    }
+    let mut directories = BTreeSet::new();
+    let mut files = BTreeSet::new();
+    let mut manifest_files = Vec::with_capacity(contents.files.len());
+    let mut total = 0u64;
+    for item in &contents.files {
+        let path = portable_manifest_path(&item.relative_path)?;
+        if path == ".friday-snapshot-owner.json" || item.contents.is_empty() || item.contents.len() as u64 > limits.max_file_bytes || !files.insert(path.clone()) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "manifest contains a reserved/duplicate path or invalid file size"));
+        }
+        let components: Vec<&str> = path.split('/').collect();
+        if components.len().saturating_sub(1) > limits.max_depth {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "manifest path exceeds the depth limit"));
+        }
+        for index in 1..components.len() { directories.insert(components[..index].join("/")); }
+        total = total.checked_add(item.contents.len() as u64).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "manifest byte count overflow"))?;
+        manifest_files.push(SnapshotCleanupFile { path, size: item.contents.len() as u64 });
+    }
+    if total != contents.bytes || total > limits.max_total_bytes || directories.iter().any(|directory| files.contains(directory)) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "manifest inventory conflicts with snapshot contents or limits"));
+    }
+    Ok(SnapshotCleanupManifest { schema_version: 2, snapshot_id: snapshot_id.to_string(), owner: "FRIDAY-CodingAssistant".to_string(), directories: directories.into_iter().collect(), files: manifest_files })
+}
+
+/// Validate versioned inventory before a future cleanup preflight. No I/O mutation occurs here.
+fn validate_snapshot_cleanup_manifest(bytes: &[u8], expected_snapshot_id: &str, limits: BoundedSnapshotLimits) -> io::Result<SnapshotCleanupManifest> {
+    use std::collections::BTreeSet;
+    if bytes.is_empty() || bytes.len() > 1024 * 1024 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "cleanup manifest is empty or oversized"));
+    }
+    let manifest: SnapshotCleanupManifest = serde_json::from_slice(bytes).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "cleanup manifest is malformed or contains unsupported fields"))?;
+    if manifest.schema_version != 2 || manifest.snapshot_id != expected_snapshot_id || manifest.snapshot_id.len() != 32 || !manifest.snapshot_id.bytes().all(|b| b.is_ascii_hexdigit()) || manifest.owner != "FRIDAY-CodingAssistant" || manifest.files.is_empty() || manifest.files.len() > limits.max_files || manifest.directories.len() > limits.max_files.saturating_mul(limits.max_depth.max(1)) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "cleanup manifest identity, version, or limits are invalid"));
+    }
+    let mut expected_directories = BTreeSet::new();
+    let mut seen_files = BTreeSet::new();
+    let mut total = 0u64;
+    for file in &manifest.files {
+        if file.size == 0 || file.size > limits.max_file_bytes || !seen_files.insert(file.path.clone()) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "cleanup manifest has a duplicate path or invalid file size"));
+        }
+        let path = Path::new(&file.path);
+        if portable_manifest_path(path)? != file.path || file.path == ".friday-snapshot-owner.json" {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "cleanup manifest contains an unsafe or reserved path"));
+        }
+        let components: Vec<&str> = file.path.split('/').collect();
+        if components.len().saturating_sub(1) > limits.max_depth {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "cleanup manifest exceeds the depth limit"));
+        }
+        for index in 1..components.len() { expected_directories.insert(components[..index].join("/")); }
+        total = total.checked_add(file.size).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "cleanup manifest byte count overflow"))?;
+    }
+    let listed_directories: BTreeSet<String> = manifest.directories.iter().cloned().collect();
+    if listed_directories.len() != manifest.directories.len() || listed_directories != expected_directories || listed_directories.iter().any(|directory| seen_files.contains(directory)) || total > limits.max_total_bytes {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "cleanup manifest directory inventory or total size is inconsistent"));
+    }
+    Ok(manifest)
+}
+
 /// Materialize bounded in-memory source bytes below a held private workspace.
 /// The ownership marker is written last, so interrupted creation is never
 /// falsely advertised as a complete, cleanup-authorized snapshot.
@@ -1062,14 +1162,13 @@ pub(crate) fn create_bounded_snapshot_destination(
         output.sync_all()?;
     }
 
-    let marker = format!(
-        "{{\"schemaVersion\":1,\"snapshotId\":\"{}\",\"owner\":\"FRIDAY-CodingAssistant\"}}",
-        snapshot_id
-    );
+    let manifest = build_snapshot_cleanup_manifest(snapshot_id, contents, limits)?;
+    let marker = serde_json::to_vec(&manifest)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "could not serialize snapshot inventory"))?;
     let mut marker_file = create_destination_entry(
         &snapshot_root, OsStr::new(".friday-snapshot-owner.json"), false,
     )?;
-    marker_file.write_all(marker.as_bytes())?;
+    marker_file.write_all(&marker)?;
     marker_file.sync_all()?;
     Ok(())
 }
@@ -1869,6 +1968,47 @@ mod tests {
         fs::remove_dir(root_path.join("replace-me")).unwrap();
         fs::remove_dir_all(root_path).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn cleanup_manifest_round_trips_exact_payload_inventory() {
+        let contents = BoundedSnapshotContents { files: vec![
+            BoundedSnapshotFile { relative_path: PathBuf::from("Cargo.toml"), contents: b"abc".to_vec() },
+            BoundedSnapshotFile { relative_path: PathBuf::from("src/nested/lib.rs"), contents: b"12345".to_vec() },
+        ], bytes: 8, truncated: false };
+        let id = "a".repeat(32);
+        let manifest = build_snapshot_cleanup_manifest(&id, &contents, bounded_limits()).unwrap();
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let parsed = validate_snapshot_cleanup_manifest(&bytes, &id, bounded_limits()).unwrap();
+        assert_eq!(parsed.directories, vec!["src", "src/nested"]);
+        assert_eq!(parsed.files.len(), 2);
+        assert_eq!(parsed.files[1].path, "src/nested/lib.rs");
+        assert_eq!(parsed.files[1].size, 5);
+    }
+
+    #[test]
+    fn cleanup_manifest_rejects_legacy_unknown_malformed_and_mismatched_markers() {
+        let id = "b".repeat(32);
+        let legacy = br#"{"schemaVersion":1,"snapshotId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","owner":"FRIDAY-CodingAssistant"}"#;
+        assert!(validate_snapshot_cleanup_manifest(legacy, &id, bounded_limits()).is_err());
+        let unknown = br#"{"schemaVersion":99,"snapshotId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","owner":"FRIDAY-CodingAssistant","directories":[],"files":[]}"#;
+        assert!(validate_snapshot_cleanup_manifest(unknown, &id, bounded_limits()).is_err());
+        assert!(validate_snapshot_cleanup_manifest(b"{malformed", &id, bounded_limits()).is_err());
+        let contents = BoundedSnapshotContents { files: vec![BoundedSnapshotFile { relative_path: PathBuf::from("file.txt"), contents: b"x".to_vec() }], bytes: 1, truncated: false };
+        let manifest = build_snapshot_cleanup_manifest(&id, &contents, bounded_limits()).unwrap();
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        assert!(validate_snapshot_cleanup_manifest(&bytes, &"c".repeat(32), bounded_limits()).is_err());
+    }
+
+    #[test]
+    fn cleanup_manifest_rejects_duplicate_paths_unknown_fields_and_traversal() {
+        let id = "d".repeat(32);
+        let duplicate = format!(r#"{{"schemaVersion":2,"snapshotId":"{id}","owner":"FRIDAY-CodingAssistant","directories":[],"files":[{{"path":"same.txt","size":1}},{{"path":"same.txt","size":1}}]}}"#);
+        assert!(validate_snapshot_cleanup_manifest(duplicate.as_bytes(), &id, bounded_limits()).is_err());
+        let unknown_field = format!(r#"{{"schemaVersion":2,"snapshotId":"{id}","owner":"FRIDAY-CodingAssistant","directories":[],"files":[],"deleteEverything":true}}"#);
+        assert!(validate_snapshot_cleanup_manifest(unknown_field.as_bytes(), &id, bounded_limits()).is_err());
+        let traversal = format!(r#"{{"schemaVersion":2,"snapshotId":"{id}","owner":"FRIDAY-CodingAssistant","directories":[],"files":[{{"path":"../outside.txt","size":1}}]}}"#);
+        assert!(validate_snapshot_cleanup_manifest(traversal.as_bytes(), &id, bounded_limits()).is_err());
     }
 
     #[test]
