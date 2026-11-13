@@ -1096,6 +1096,15 @@ fn scan_folder(
     Ok(())
 }
 
+pub(crate) fn selected_project_root_for_sandbox() -> Result<PathBuf, String> {
+    ensure_skill_loaded()?;
+    let root = SELECTED_PROJECT_ROOT.lock()
+        .map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())?
+        .clone()
+        .ok_or_else(|| "Select a project folder before checking sandbox readiness.".to_string())?;
+    validate_granted_root(&root)
+}
+
 fn ensure_skill_loaded() -> Result<(), String> {
     if crate::skills::is_skill_loaded("coding-assistant") {
         Ok(())
