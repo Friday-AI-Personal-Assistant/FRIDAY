@@ -2765,4 +2765,70 @@ mod tests {
         #[cfg(windows)]
         assert!(!is_single_normal_component(OsStr::new("C:\\outside")));
     }
+
+    #[test]
+    fn snapshot_preflight_rejects_missing_and_modified_payload_files() {
+        let workspace_path = make_test_directory("preflight-missing-modified");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![
+                BoundedSnapshotFile { relative_path: PathBuf::from("src/main.rs"), contents: b"fn main() {}".to_vec() },
+                BoundedSnapshotFile { relative_path: PathBuf::from("Cargo.toml"), contents: b"[package]".to_vec() },
+            ],
+            bytes: b"fn main() {}".len() as u64 + b"[package]".len() as u64,
+            truncated: false,
+        };
+        let id = "1".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        let root = open_dir_nofollow(&workspace, Path::new(&id)).unwrap();
+
+        // Missing inventoried files must fail closed.
+        fs::remove_file(workspace_path.join(&id).join("Cargo.toml")).unwrap();
+        assert!(preflight_snapshot_tree(&root, &id, bounded_limits()).is_err());
+
+        // Restore the expected name with the wrong size: it must still fail.
+        fs::write(workspace_path.join(&id).join("Cargo.toml"), b"tampered-size").unwrap();
+        assert!(preflight_snapshot_tree(&root, &id, bounded_limits()).is_err());
+
+        // Restore the exact expected bytes; the same held root can be retried.
+        fs::write(workspace_path.join(&id).join("Cargo.toml"), b"[package]").unwrap();
+        preflight_snapshot_tree(&root, &id, bounded_limits()).unwrap();
+
+        drop(root);
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_preflight_preserves_legacy_and_malformed_inventory_markers() {
+        let workspace_path = make_test_directory("preflight-invalid-marker");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![BoundedSnapshotFile { relative_path: PathBuf::from("keep.txt"), contents: b"preserve me".to_vec() }],
+            bytes: b"preserve me".len() as u64,
+            truncated: false,
+        };
+        let id = "2".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        let root = open_dir_nofollow(&workspace, Path::new(&id)).unwrap();
+        let marker_path = workspace_path.join(&id).join(".friday-snapshot-owner.json");
+
+        // A schema-1 marker is legacy evidence, not authorization under schema 2.
+        fs::write(&marker_path, format!(
+            r#"{{"schemaVersion":1,"snapshotId":"{}","owner":"FRIDAY-CodingAssistant"}}"#,
+            id
+        )).unwrap();
+        assert!(preflight_snapshot_tree(&root, &id, bounded_limits()).is_err());
+        assert_eq!(fs::read(workspace_path.join(&id).join("keep.txt")).unwrap(), b"preserve me");
+
+        // Malformed marker bytes must also fail closed without touching payloads.
+        fs::write(&marker_path, b"{malformed").unwrap();
+        assert!(preflight_snapshot_tree(&root, &id, bounded_limits()).is_err());
+        assert_eq!(fs::read(workspace_path.join(&id).join("keep.txt")).unwrap(), b"preserve me");
+
+        drop(root);
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
 }
