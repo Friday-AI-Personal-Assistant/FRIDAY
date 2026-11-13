@@ -10,7 +10,7 @@ mod file_assistant;
 mod coding_assistant;
 mod coding_intelligence;
 mod coding_sandbox;
-#[allow(dead_code)]
+#[cfg(test)]
 mod coding_sandbox_fs;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
