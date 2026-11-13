@@ -656,3 +656,21 @@ user-facing File Protection feature or physical Windows security testing.
 The regression suite now writes a genuine schema-1 marker over a completed
 schema-2 snapshot and proves cleanup rejects it while preserving payload data.
 Guest execution remains disabled.
+
+
+## Windows workspace DACL replacement and recovery enforcement — 2026-11-13
+
+A follow-up review found that adding three Windows grants with `icacls /grant:r`
+does not remove unrelated explicit access-control entries already present on
+the workspace. The Windows permission setup now rebuilds the directory DACL:
+it protects the DACL from inheritance, removes existing explicit rules, adds
+only full-control inheritable rules for the current account, LocalSystem, and
+Administrators, then verifies that exactly those three non-inherited allow
+rules remain. The fixed PowerShell script is invoked from the System32 Windows
+PowerShell path; the workspace path and validated SID are passed as separate
+arguments rather than interpolated into script text.
+
+Workspace permission enforcement is also re-applied before recovery enumerates
+old snapshot entries, not only before creating a new snapshot. Any ACL setup or
+verification error stops the operation. This remains subject to Windows CI and
+physical Windows validation; it does not enable guest execution.

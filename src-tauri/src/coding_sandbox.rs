@@ -771,21 +771,40 @@ fn secure_private_workspace_directory(path: &Path) -> Result<(), String> {
             .map(|value| value.trim().trim_matches('"'))
             .find(|value| value.starts_with("S-1-") && value.len() <= 184)
             .ok_or_else(|| "FRIDAY could not validate the current Windows account SID.".to_string())?;
-        let applied = Command::new(system32.join("icacls.exe"))
-            .arg(path).arg("/inheritance:r").arg("/grant:r")
-            .arg(format!("*{sid}:(OI)(CI)F"))
-            .arg("*S-1-5-18:(OI)(CI)F")
-            .arg("*S-1-5-32-544:(OI)(CI)F")
+        let script = r#"$ErrorActionPreference = 'Stop'
+$path = $args[0]
+$currentSid = $args[1]
+$allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
+$acl = Get-Acl -LiteralPath $path
+$acl.SetAccessRuleProtection($true, $false)
+$existing = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+$identities = @($existing | ForEach-Object { $_.IdentityReference } | Select-Object -Unique)
+foreach ($identity in $identities) { [void]$acl.PurgeAccessRules($identity) }
+foreach ($sidText in $allowed) {
+  $identity = New-Object System.Security.Principal.SecurityIdentifier($sidText)
+  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+  [void]$acl.AddAccessRule($rule)
+}
+Set-Acl -LiteralPath $path -AclObject $acl
+$check = Get-Acl -LiteralPath $path
+if (-not $check.AreAccessRulesProtected) { throw 'DACL inheritance is still enabled' }
+$rules = @($check.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+if ($rules.Count -ne 3) { throw 'Unexpected number of access rules' }
+foreach ($rule in $rules) {
+  if ($rule.IsInherited -or $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $rule.FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or $allowed -notcontains $rule.IdentityReference.Value) {
+    throw 'Workspace DACL contains an unexpected access rule'
+  }
+}
+"#;
+        let powershell = system32.join("WindowsPowerShell").join("v1.0").join("powershell.exe");
+        let applied = Command::new(powershell)
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script, "--"])
+            .arg(path)
+            .arg(sid)
             .output()
             .map_err(|_| "FRIDAY could not apply restrictive Windows workspace permissions.".to_string())?;
         if !applied.status.success() {
-            return Err("Windows refused the private workspace ACL; snapshot creation was stopped.".into());
-        }
-        let verified = Command::new(system32.join("icacls.exe"))
-            .arg(path).arg("/verify").output()
-            .map_err(|_| "FRIDAY could not verify the private workspace ACL.".to_string())?;
-        if !verified.status.success() {
-            return Err("The private workspace ACL did not pass Windows verification.".into());
+            return Err("Windows workspace ACL could not be rebuilt and verified; snapshot operation was stopped.".into());
         }
     }
     Ok(())
@@ -908,6 +927,8 @@ pub async fn coding_sandbox_recover_workspaces(app: AppHandle) -> Result<CodingS
     if !root_meta.is_dir() || is_reparse_or_symlink(&root_meta) {
         return Err("The private sandbox workspace is not a normal directory; recovery was refused.".into());
     }
+    // Re-assert the private ACL before enumerating old workspace entries.
+    secure_private_workspace_directory(&workspace_root)?;
     let entries = fs::read_dir(&workspace_root)
         .map_err(|_| "FRIDAY could not list its private sandbox workspace.".to_string())?;
     let mut removed = 0usize;
