@@ -245,6 +245,10 @@ Use the upstream project as a design reference and verify current upstream docum
 
 Do not copy code or dependencies without checking their licences and compatibility. Preserve required notices. Prefer adapting concepts to FRIDAY's native stack.
 
+
+
+**Privilege policy:** initial guest-runner work will not silently elevate or add an administrator helper. Prioritize a non-elevated result-transfer design with a hard pre-enforced storage cap. A normal writable mapped folder with post-write checks is insufficient. If no non-elevated design can meet the storage, isolation, ownership, recovery and cleanup requirements, keep guest execution disabled. See `docs/CODING-ASSISTANT-GUEST-RUNNER-DESIGN.md`.
+
 ## Current next work item
 
 **Phase 2 — Coding Assistant Stage 4:** continue completing the Windows Sandbox execution boundary while keeping execution disabled. Bounded read-only host diagnostics and conservative snapshot recovery are implemented and verified by Run #377. The trusted guest-runner request/result contract and fail-closed operation policy are documented in `docs/CODING-ASSISTANT-GUEST-RUNNER-DESIGN.md`; no runner or launcher exists yet. Next implement and test the guest-side runner only after its runtime profiles and enforceable resource controls are independently reviewed. Do not enable execution until every safety gate and supported-Windows acceptance test passes. Excel Intelligence remains explicitly on the roadmap.
