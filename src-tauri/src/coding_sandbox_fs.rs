@@ -189,7 +189,7 @@ pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
     }
 
     let before = std::fs::symlink_metadata(path)?;
-    if !before.is_dir() || crate::coding_sandbox::is_reparse_or_symlink(&before) {
+    if !before.is_dir() || is_reparse_or_symlink(&before) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "project root is not an ordinary directory",
@@ -202,7 +202,7 @@ pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
     )?;
     let opened = handle.metadata()?;
     if !opened.is_dir()
-        || crate::coding_sandbox::is_reparse_or_symlink(&opened)
+        || is_reparse_or_symlink(&opened)
         || !same_path_handle_identity(path, &handle)?
     {
         return Err(io::Error::new(
@@ -213,7 +213,7 @@ pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
 
     let after = std::fs::symlink_metadata(path)?;
     if !after.is_dir()
-        || crate::coding_sandbox::is_reparse_or_symlink(&after)
+        || is_reparse_or_symlink(&after)
         || !same_path_handle_identity(path, &handle)?
     {
         return Err(io::Error::new(
@@ -225,6 +225,17 @@ pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
     Ok(handle)
 }
 
+
+#[cfg(windows)]
+fn is_reparse_or_symlink(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_type().is_symlink() || (metadata.file_attributes() & 0x400 != 0)
+}
+
+#[cfg(not(windows))]
+fn is_reparse_or_symlink(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
 
 #[cfg(unix)]
 fn same_path_handle_identity(path: &Path, handle: &File) -> io::Result<bool> {
@@ -409,7 +420,7 @@ mod tests {
         let root = open_verified_root_directory(&root_path).unwrap();
         let opened = root.metadata().unwrap();
         assert!(opened.is_dir());
-        assert!(!crate::coding_sandbox::is_reparse_or_symlink(&opened));
+        assert!(!is_reparse_or_symlink(&opened));
         assert!(same_path_handle_identity(&root_path, &root).unwrap());
 
         drop(root);
