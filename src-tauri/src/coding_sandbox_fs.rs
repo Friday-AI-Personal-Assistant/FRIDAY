@@ -315,7 +315,7 @@ fn open_directory_from_filesystem_root(path: &Path) -> io::Result<File> {
     }
 
     let mut volume_root = PathBuf::from(prefix);
-    volume_root.push("\\\\");
+    volume_root.push("\\");
     let mut current = cap_primitives::fs::open_ambient_dir(
         &volume_root,
         ambient_authority::ambient_authority(),
