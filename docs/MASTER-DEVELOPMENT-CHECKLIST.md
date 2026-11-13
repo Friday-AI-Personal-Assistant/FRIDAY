@@ -247,7 +247,7 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 ## Current next work item
 
-**Phase 2 — Coding Assistant Stage 3:** implement safe, approval-gated code editing on top of the CI-verified read-only analysis foundation. Begin with a single-file proposal/preview and stale-file protection; add verified backups, atomic replacement, audit and undo before enabling writes. Excel Intelligence remains explicitly on the roadmap.
+**Phase 2 — Coding Assistant Stage 4:** complete the Windows Sandbox execution boundary while keeping execution disabled. The read-only host capability probe now has a 15-second deadline, bounded output collection, and no nested wsb --version process launch. Next implement crash/restart recovery and ownership metadata, then design the trusted guest runner, strict result validation, fixed command allowlist, enforceable resource controls, cancellation and regression coverage. Do not enable execution until every safety gate and supported-Windows acceptance test passes. Excel Intelligence remains explicitly on the roadmap.
 
 ## Core platform implementation notes
 
@@ -261,3 +261,6 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 
 - [ ] Coding Assistant Stage 3: startup/session recovery for interrupted Apply and Undo transactions (implemented on `feature/phase-2-skills`; CI verification pending).
+
+
+- [x] Coding Assistant Stage 4: read-only Windows Sandbox capability diagnostics include a bounded 15-second probe, bounded output draining, and conservative unknown-on-failure handling (implementation committed; CI verification pending).
