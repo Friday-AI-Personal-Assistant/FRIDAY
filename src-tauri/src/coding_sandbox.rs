@@ -99,6 +99,23 @@ fn validate_guest_result_json(
     expected_run_id: &str,
     expected_operation: GuestRunOperation,
 ) -> Result<GuestRunResult, String> {
+    validate_guest_result_json_with_limit(
+        bytes,
+        expected_run_id,
+        expected_operation,
+        MAX_GUEST_RESULT_BYTES as u64,
+    )
+}
+
+fn validate_guest_result_json_with_limit(
+    bytes: &[u8],
+    expected_run_id: &str,
+    expected_operation: GuestRunOperation,
+    max_output_bytes: u64,
+) -> Result<GuestRunResult, String> {
+    if max_output_bytes == 0 || max_output_bytes > MAX_GUEST_REQUEST_OUTPUT_BYTES {
+        return Err("The expected guest output limit is outside FRIDAY's policy.".into());
+    }
     if bytes.is_empty() || bytes.len() > MAX_GUEST_RESULT_BYTES {
         return Err("The guest result is empty or exceeds FRIDAY's size limit.".into());
     }
@@ -116,8 +133,8 @@ fn validate_guest_result_json(
     }
     let output_bytes = result.stdout.as_ref().map_or(0, |value| value.len())
         .saturating_add(result.stderr.as_ref().map_or(0, |value| value.len()));
-    if output_bytes > MAX_GUEST_RESULT_BYTES {
-        return Err("The guest result diagnostics exceed FRIDAY's output limit.".into());
+    if output_bytes as u64 > max_output_bytes {
+        return Err("The guest result diagnostics exceed the limit assigned to this run.".into());
     }
     match (result.status, result.exit_code) {
         (GuestRunStatus::Passed, Some(0)) => {}
@@ -919,6 +936,30 @@ mod tests {
         assert!(validate_guest_result_json(&serde_json::to_vec(&oversized).unwrap(), run_id, operation).is_err());
         let long_duration = br#"{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","operation":"rust-cargo-test","status":"passed","exitCode":0,"truncated":false,"durationMs":120001}"#;
         assert!(validate_guest_result_json(long_duration, run_id, operation).is_err());
+    }
+
+    #[test]
+    fn guest_result_enforces_the_exact_per_run_output_budget() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let operation = GuestRunOperation::RustCargoTest;
+        let value = serde_json::json!({
+            "schemaVersion": 1,
+            "runId": run_id,
+            "operation": "rust-cargo-test",
+            "status": "passed",
+            "exitCode": 0,
+            "stdout": "123456",
+            "stderr": "7890",
+            "truncated": false,
+            "durationMs": 1
+        });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(validate_guest_result_json_with_limit(&bytes, run_id, operation, 10).is_ok());
+        assert!(validate_guest_result_json_with_limit(&bytes, run_id, operation, 9).is_err());
+        assert!(validate_guest_result_json_with_limit(&bytes, run_id, operation, 0).is_err());
+        assert!(validate_guest_result_json_with_limit(
+            &bytes, run_id, operation, MAX_GUEST_REQUEST_OUTPUT_BYTES + 1
+        ).is_err());
     }
 
     #[test]
