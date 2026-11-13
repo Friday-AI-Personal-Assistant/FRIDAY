@@ -275,6 +275,62 @@ pub async fn coding_sandbox_prepare_snapshot(app: AppHandle) -> Result<CodingSan
     })
 }
 
+fn xml_escape(value: &str) -> String {
+    value.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn build_sandbox_config(snapshot_path: &Path) -> Result<String, String> {
+    let metadata = fs::symlink_metadata(snapshot_path)
+        .map_err(|_| "The isolated snapshot is unavailable.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("The snapshot is not a safe normal directory.".into());
+    }
+    let canonical = fs::canonicalize(snapshot_path)
+        .map_err(|_| "FRIDAY could not verify the snapshot path.".to_string())?;
+    if canonical != snapshot_path {
+        return Err("The snapshot path changed during validation.".into());
+    }
+    let host_folder = canonical.to_str()
+        .ok_or_else(|| "The snapshot path cannot be represented safely in Windows Sandbox configuration.".to_string())?;
+    if !canonical.is_absolute() || canonical.components().any(|part| matches!(part, Component::ParentDir)) {
+        return Err("The snapshot path is not a safe absolute path.".into());
+    }
+    let escaped = xml_escape(host_folder);
+    Ok(format!(r#"<Configuration>
+  <VGpu>Disable</VGpu>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>{escaped}</HostFolder>
+      <SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#))
+}
+
+#[tauri::command]
+pub async fn coding_sandbox_config_preview(snapshot_id: String) -> Result<String, String> {
+    if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("The snapshot identifier is invalid.".into());
+    }
+    let owned = OWNED_SNAPSHOTS.lock()
+        .map_err(|_| "Snapshot ownership tracking is temporarily unavailable.".to_string())?;
+    let path = owned.get(&snapshot_id)
+        .ok_or_else(|| "This snapshot is not owned by the current FRIDAY session.".to_string())?;
+    build_sandbox_config(path)
+}
+
 #[tauri::command]
 pub async fn coding_sandbox_discard_snapshot(snapshot_id: String) -> Result<String, String> {
     if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -373,6 +429,38 @@ mod tests {
         copy_snapshot_tree(&canonical_source, &canonical_source, &destination, 0, &mut budget).unwrap();
         assert_eq!(budget.files, MAX_SNAPSHOT_FILES);
         assert!(budget.truncated);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn sandbox_config_disables_networking_and_shares_snapshot_read_only() {
+        let base = make_test_directory("wsb-config");
+        let snapshot = base.join("snapshot");
+        fs::create_dir(&snapshot).unwrap();
+        let canonical = fs::canonicalize(&snapshot).unwrap();
+        let config = build_sandbox_config(&canonical).unwrap();
+        assert!(config.contains("<Networking>Disable</Networking>"));
+        assert!(config.contains("<VGpu>Disable</VGpu>"));
+        assert!(config.contains("<ClipboardRedirection>Disable</ClipboardRedirection>"));
+        assert!(config.contains("<ReadOnly>true</ReadOnly>"));
+        assert!(config.contains("<SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder>"));
+        assert!(config.contains(canonical.to_str().unwrap()));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn sandbox_config_escapes_xml_path_characters() {
+        assert_eq!(xml_escape(r#"C:\\Work & <Test> "Folder""#),
+            "C:\\\\Work &amp; &lt;Test&gt; &quot;Folder&quot;");
+    }
+
+    #[test]
+    fn sandbox_config_refuses_missing_or_non_directory_paths() {
+        let base = make_test_directory("wsb-invalid");
+        let file = base.join("not-a-folder.rs");
+        fs::write(&file, "x").unwrap();
+        assert!(build_sandbox_config(&file).is_err());
+        assert!(build_sandbox_config(&base.join("missing")).is_err());
         fs::remove_dir_all(base).unwrap();
     }
 
