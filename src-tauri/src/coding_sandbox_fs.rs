@@ -726,9 +726,8 @@ mod tests {
         fs::write(replacement.join("project").join("outside.txt"), b"outside").unwrap();
 
         let root_path = ancestor.join("project");
+        let original_identity = path_identity(&root_path).unwrap();
         let mut replaced = false;
-        let result = open_verified_root_directory_with_hook(&root_path, || Ok(()))
-            .and_then(|_| unreachable!("the hook must be attached to component acquisition"));
 
         // Exercise the exact component walk with a hook that swaps the already
         // opened ancestor before the project child is opened relative to it.
@@ -750,6 +749,11 @@ mod tests {
         assert!(
             opened_root.metadata()?.is_dir(),
             "the held original project directory should be opened"
+        );
+        assert_eq!(
+            original_identity,
+            handle_identity(&opened_root).unwrap(),
+            "descent must remain attached to the original held ancestor"
         );
         assert_ne!(
             path_identity(&root_path).unwrap(),
