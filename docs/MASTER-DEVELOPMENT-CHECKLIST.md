@@ -251,7 +251,7 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 ## Current next work item
 
-**Phase 2 — Coding Assistant Stage 4:** continue completing the Windows Sandbox execution boundary while keeping execution disabled. Bounded read-only host diagnostics and conservative snapshot recovery are implemented and verified by Run #377. Runs #408–#410 passed both Windows and Linux CI jobs. A documentation consistency review then aligned the request contract with the implemented Rust fields (`maxDurationMs`, `maxOutputBytes`) and clarified combined UTF-8 diagnostic bounds; the parser remains disconnected from execution. The trusted guest-runner request/result contract and fail-closed operation policy are documented in `docs/CODING-ASSISTANT-GUEST-RUNNER-DESIGN.md`; no runner or launcher exists yet. Next implement and test the guest-side runner only after its runtime profiles and enforceable resource controls are independently reviewed. Do not enable execution until every safety gate and supported-Windows acceptance test passes. Excel Intelligence remains explicitly on the roadmap.
+**Phase 2 — Coding Assistant Stage 4:** continue completing the Windows Sandbox execution boundary while keeping execution disabled. Bounded read-only host diagnostics and conservative snapshot recovery are implemented and verified by Run #377. Runs #408–#410 and #411–#414 passed both Windows and Linux CI jobs. The request contract is aligned with the Rust fields (`maxDurationMs`, `maxOutputBytes`), combined UTF-8 diagnostics are capped per run, and a disconnected result-file reader now enforces one exact `result.json` entry, regular-file/path checks, and bounded reads. The parser and file reader remain disconnected from execution. The trusted guest-runner request/result contract and fail-closed operation policy are documented in `docs/CODING-ASSISTANT-GUEST-RUNNER-DESIGN.md`; no runner or launcher exists yet. Next implement and test the guest-side runner only after its runtime profiles and enforceable resource controls are independently reviewed. Do not enable execution until every safety gate and supported-Windows acceptance test passes. Excel Intelligence remains explicitly on the roadmap.
 
 ## Core platform implementation notes
 
@@ -268,3 +268,7 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 
 - [x] Coding Assistant Stage 4: read-only Windows Sandbox capability diagnostics include a bounded 15-second probe, bounded output draining, and conservative unknown-on-failure handling (implementation committed; CI verification pending).
+
+
+- [x] Coding Assistant Stage 4: per-run guest stdout/stderr UTF-8 output budget is enforced by the host result validator; Runs #413 and #414 passed both Windows and Linux CI jobs.
+- [x] Coding Assistant Stage 4: disconnected guest result-file boundary validator accepts only one exact `result.json` regular file, rejects unexpected entries and link/reparse-point paths, and bounds the read; regression tests added. CI verification pending.
