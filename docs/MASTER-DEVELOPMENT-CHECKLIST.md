@@ -272,3 +272,6 @@ Do not copy code or dependencies without checking their licences and compatibili
 
 - [x] Coding Assistant Stage 4: per-run guest stdout/stderr UTF-8 output budget is enforced by the host result validator; Runs #413 and #414 passed both Windows and Linux CI jobs.
 - [x] Coding Assistant Stage 4: disconnected guest result-file boundary validator accepts only one exact `result.json` regular file, rejects unexpected entries and link/reparse-point paths, and bounds the read; regression tests added. CI verification pending.
+
+
+- [x] Coding Assistant Stage 4: investigated NTFS per-user quotas as a non-admin result-storage option; rejected for the initial design because quotas are volume/user scoped rather than per-run/per-folder and mapped-folder host ownership cannot be assumed. No host quota settings changed. See `docs/CODING-ASSISTANT-GUEST-RUNNER-DESIGN.md`.
