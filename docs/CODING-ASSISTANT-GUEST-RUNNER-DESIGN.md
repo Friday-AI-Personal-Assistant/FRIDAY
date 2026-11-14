@@ -917,3 +917,30 @@ must wait for the entire job process tree to finish before joining output
 readers; waiting only for the root process can leave descendant pipe handles
 open. Windows CI and physical Windows acceptance remain required. Guest
 execution remains disabled.
+
+
+## Job-tree completion and bounded output collection — 2026-11-14
+
+The Job Object now exposes its kernel-reported active-process count through
+`JobObjectBasicAccountingInformation`. Output collection has an explicit
+completion gate: after the root process supervisor reports exit, the caller
+must wait until the FRIDAY-owned Job Object reports zero active processes
+before joining either stdout/stderr reader. This prevents a child process that
+inherited a pipe writer from keeping a reader blocked after the root runner has
+already exited.
+
+The process owner now provides a bounded-deadline output-finalization method.
+It polls only the exact Job Object owned by this run, fails closed if the
+process tree does not become empty before the deadline, and consumes the
+capture coordinator exactly once after the tree is empty. The two stream
+readers then drain through EOF and return their independently capped output
+with explicit truncation metadata.
+
+Windows regressions exercise the kernel accounting query on an empty private
+Job Object and ensure output finalization reports a missing/already-consumed
+capture rather than fabricating a result. This batch does not yet add a
+real-process descendant/pipe integration test, connect supervision and output
+finalization into a user-facing run coordinator, or enable a runner executable.
+The fixed minimal environment is still only bootstrap hardening, not network
+or filesystem isolation. No guest execution is connected or enabled; Windows
+CI and physical Windows acceptance remain mandatory.

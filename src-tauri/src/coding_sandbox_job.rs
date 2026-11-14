@@ -103,6 +103,22 @@ impl OwnedGuestJob {
         Ok(())
     }
 
+    /// Read the kernel's current count of processes still owned by this job.
+    /// A zero count is the condition required before joining stdout/stderr readers:
+    /// descendants may inherit the pipe writers after the root process exits.
+    pub(crate) fn active_process_count(&self) -> Result<u32, String> {
+        let mut accounting: windows_sys::Win32::System::JobObjects::JOBOBJECT_BASIC_ACCOUNTING_INFORMATION =
+            unsafe { zeroed() };
+        query_info(
+            self.handle,
+            windows_sys::Win32::System::JobObjects::JobObjectBasicAccountingInformation,
+            &mut accounting as *mut _ as *mut c_void,
+            size_of::<windows_sys::Win32::System::JobObjects::JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>(),
+            "query the FRIDAY-owned guest process-tree count",
+        )?;
+        Ok(accounting.ActiveProcesses)
+    }
+
     /// Assign a FRIDAY-created process and verify its membership. Never resumes it.
     ///
     /// # Safety
@@ -385,6 +401,32 @@ pub(crate) struct OwnedGuestProcess {
 
 #[cfg(windows)]
 impl OwnedGuestProcess {
+    /// Finish the captured streams only after Windows confirms every process in
+    /// this FRIDAY-owned job has exited. Root-process exit alone is insufficient:
+    /// descendants may still hold inherited stdout/stderr writer handles.
+    pub(crate) fn finish_output_after_job_exit(
+        &mut self,
+        job: &OwnedGuestJob,
+        timeout: std::time::Duration,
+    ) -> Result<GuestCapturedOutput, String> {
+        use std::time::{Instant, Duration};
+        let deadline = Instant::now().checked_add(timeout)
+            .ok_or_else(|| "The guest output-drain deadline is outside the supported range.".to_string())?;
+        loop {
+            if job.active_process_count()? == 0 {
+                break;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err("The FRIDAY-owned guest process tree did not become empty before the output-drain deadline; captured output is incomplete.".into());
+            }
+            std::thread::sleep(Duration::from_millis(25).min(deadline.saturating_duration_since(now)));
+        }
+        let capture = self.output.take()
+            .ok_or_else(|| "Guest stdout/stderr output was already collected or was not attached.".to_string())?;
+        capture.finish()
+    }
+
     fn terminate_if_suspended(&mut self) {
         if !self.resumed && !self.process.is_null() && self.process != INVALID_HANDLE_VALUE {
             unsafe { windows_sys::Win32::System::Threading::TerminateProcess(self.process, 1); }
@@ -1089,6 +1131,34 @@ pub(crate) fn supervise_contained_guest_runner(
 ) -> Result<GuestProcessOutcome, String> {
     let mut backend = WindowsProcessSupervisor { job, process: process.process };
     supervise_process(&mut backend, timeout, cancellation, std::time::Duration::from_secs(2))
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod job_tree_output_tests {
+    use super::*;
+
+    #[test]
+    fn job_accounting_reports_zero_only_after_all_descendants_exit() {
+        // Exercise the kernel-backed accounting query against a real empty job.
+        let job = OwnedGuestJob::create().expect("create test job");
+        assert_eq!(job.active_process_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn output_finish_is_single_use_and_requires_an_attached_capture() {
+        // This regression guards the ownership contract without launching a
+        // process: absence of an attached capture must be reported, not hidden.
+        let mut process = OwnedGuestProcess {
+            process: ptr::null_mut(),
+            thread: ptr::null_mut(),
+            resumed: true,
+            output: None,
+        };
+        let job = OwnedGuestJob::create().expect("create test job");
+        let result = process.finish_output_after_job_exit(&job, std::time::Duration::from_millis(100));
+        assert!(result.unwrap_err().contains("already collected"));
+    }
 }
 
 #[cfg(windows)]
