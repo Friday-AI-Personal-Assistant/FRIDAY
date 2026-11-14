@@ -1258,3 +1258,118 @@ mod process_supervision_tests {
         assert!(fake.terminated);
     }
 }
+
+
+#[cfg(windows)]
+#[cfg(test)]
+mod native_windows_process_integration_tests {
+    use super::*;
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt, process::{Command, Stdio}, time::{Duration, Instant}};
+
+    // Test-only launcher: starts a benign Windows command interpreter suspended,
+    // assigns it to a fresh FRIDAY-owned Job Object, and resumes only afterwards.
+    // Production launch remains pinned to its dedicated runner image and has no
+    // command/argument input.
+    fn launch_test_command_in_job(job: &OwnedGuestJob, command: &str) -> OwnedGuestProcess {
+        use windows_sys::Win32::System::Threading::{
+            CreateProcessW, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+            CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
+        };
+        let root = std::env::var_os("SystemRoot").expect("Windows SystemRoot");
+        let executable = std::path::PathBuf::from(root).join("System32").join("cmd.exe");
+        assert!(executable.is_file(), "test command interpreter must exist");
+        let mut application: Vec<u16> = executable.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut command_line = quote_windows_argument_wide(&application[..application.len() - 1]);
+        command_line.extend(OsStr::new(" /D /C ").encode_wide());
+        command_line.extend(OsStr::new(command).encode_wide());
+        command_line.push(0);
+        let environment = minimal_runner_environment().expect("minimal test environment");
+        let mut startup: STARTUPINFOW = unsafe { zeroed() };
+        startup.cb = size_of::<STARTUPINFOW>() as u32;
+        let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
+        let created = unsafe {
+            CreateProcessW(
+                application.as_mut_ptr(),
+                command_line.as_mut_ptr(),
+                ptr::null(),
+                ptr::null(),
+                0,
+                CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                environment.as_ptr() as *const c_void,
+                ptr::null(),
+                &startup,
+                &mut info,
+            )
+        };
+        assert_ne!(created, 0, "create test child suspended: {}", last_error("create test child"));
+        let mut process = OwnedGuestProcess {
+            process: info.hProcess,
+            thread: info.hThread,
+            resumed: false,
+            output: None,
+        };
+        unsafe { job.assign_suspended_process(process.process).expect("assign test process to job"); }
+        let prior = unsafe { ResumeThread(process.thread) };
+        assert_eq!(prior, 1, "test process must have exactly one initial suspension");
+        process.resumed = true;
+        unsafe { CloseHandle(process.thread); }
+        process.thread = ptr::null_mut();
+        process
+    }
+
+    fn wait_until_job_empty(job: &OwnedGuestJob, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if job.active_process_count().expect("query test job") == 0 {
+                return;
+            }
+            assert!(Instant::now() < deadline, "test job did not become empty before deadline");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn real_windows_job_owns_descendant_after_root_process_exits() {
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        let job = OwnedGuestJob::create().expect("create real Windows job");
+        // The root starts a second cmd.exe which runs a bounded loopback ping.
+        // The root exits quickly; the descendant must remain in the same job.
+        let command = r#"start "" /B cmd.exe /D /C "ping -n 9 127.0.0.1 >NUL""#;
+        let process = launch_test_command_in_job(&job, command);
+        let waited = unsafe { WaitForSingleObject(process.process, 5_000) };
+        assert_eq!(waited, WAIT_OBJECT_0, "root command should exit after starting its descendant");
+        assert!(job.active_process_count().expect("query descendant count") >= 1,
+            "the spawned descendant must remain owned after the root exits");
+        assert_ne!(unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(job.handle, 77) }, 0,
+            "terminate only this test's private job");
+        wait_until_job_empty(&job, Duration::from_secs(5));
+        drop(process);
+    }
+
+    #[test]
+    fn real_windows_stdout_and_stderr_floods_are_drained_with_fixed_retention() {
+        let root = std::env::var_os("SystemRoot").expect("Windows SystemRoot");
+        let cmd = std::path::PathBuf::from(root).join("System32").join("cmd.exe");
+        let command = concat!(
+            "for /L %i in (1,1,40000) do @echo OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
+            " & for /L %i in (1,1,40000) do @echo EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE 1>&2"
+        );
+        let mut child = Command::new(cmd)
+            .args(["/D", "/C", command])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn native pipe flood test process");
+        let stdout = child.stdout.take().expect("stdout pipe");
+        let stderr = child.stderr.take().expect("stderr pipe");
+        let capture = GuestOutputCapture::start(stdout, stderr);
+        let status = child.wait().expect("wait for pipe flood process");
+        assert!(status.success(), "pipe flood command should exit successfully");
+        let result = capture.finish().expect("both native pipe readers should reach EOF");
+        assert_eq!(result.stdout.retained_len(), GUEST_STDOUT_RETAIN_LIMIT);
+        assert_eq!(result.stderr.retained_len(), GUEST_STDERR_RETAIN_LIMIT);
+        assert!(result.stdout.is_truncated(), "stdout retention must report truncation");
+        assert!(result.stderr.is_truncated(), "stderr retention must report truncation");
+        assert!(result.is_truncated());
+    }
+}

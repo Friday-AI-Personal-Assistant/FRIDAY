@@ -971,3 +971,23 @@ The launch primitive remains disconnected from user commands; guest execution
 is disabled pending restricted-token/AppContainer, network and filesystem
 isolation, protocol/result controls, CI integration tests, and physical Windows
 acceptance.
+
+
+## Native Windows process-tree and pipe-flood integration regressions — 2026-11-14
+
+Windows-only integration regressions now exercise real operating-system
+processes and anonymous pipes rather than relying exclusively on fake backends
+or in-memory readers. A test-only launcher starts the Windows command
+interpreter suspended, assigns it to a newly created private Job Object, and
+resumes it only after membership verification. The process-tree test has the
+root start a bounded descendant, waits for the root to exit, verifies that the
+descendant remains counted in the same Job Object, terminates only that test
+job, and waits for the kernel-reported active count to reach zero.
+
+A separate Windows pipe-flood test writes substantial output concurrently to
+stdout and stderr through real child-process pipes. The existing concurrent
+reader workers must drain both streams to EOF while retaining no more than
+256 KiB per stream and explicitly reporting truncation. These tests are
+Windows-CI regressions; they do not enable the production runner, provide
+restricted-token/AppContainer or network/filesystem isolation, or replace
+physical Windows acceptance. Guest execution remains disabled.
