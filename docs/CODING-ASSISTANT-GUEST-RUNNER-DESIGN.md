@@ -786,3 +786,30 @@ The Windows Job Object module now includes a trusted-code launch primitive for a
 The transaction is factored behind a private launch-backend seam. Windows unit tests assert the exact create → assign/verify → resume order, and inject assignment and resume failures to prove that termination occurs and that assignment failure never reaches resume. A Windows argument-quoting regression covers spaces and trailing backslashes.
 
 This is a launch primitive only, not an enabled guest runner. No runner executable is currently provisioned, no launch call is connected to a user command, and the primitive intentionally has no caller-controlled arguments or protocol channel. It currently inherits the parent environment; that is explicitly not accepted as the final runner environment. Before connecting it, FRIDAY must add a fixed minimal environment, reviewed protocol/stdio handling, a real pinned runner image, bounded output draining, timeout/cancellation, guest session ownership, and enforceable result storage. Physical Windows validation remains mandatory. Guest execution remains disabled.
+
+
+## Fixed minimal runner environment and Unicode-safe process image quoting — 2026-11-14
+
+The suspended launch primitive no longer inherits FRIDAY's complete parent
+environment. It obtains the Windows root through the Windows system API and
+constructs an explicit, sorted Unicode environment block containing only
+PATH (restricted to the Windows System32 directory), SystemRoot, and WINDIR.
+CreateProcessW receives this block with CREATE_UNICODE_ENVIRONMENT. No user,
+project, model, or inherited environment entries are copied into the child.
+If the OS root cannot be resolved as an absolute path, launch fails closed.
+
+The executable's argv[0] is now quoted directly as UTF-16 code units rather
+than passing through lossy Unicode conversion. This preserves valid Windows
+Unicode paths, including non-BMP characters, while retaining Windows
+backslash/quote escaping rules. Job Object readback also explicitly rejects
+either breakaway flag, in addition to verifying all required process, memory,
+CPU, and kill-on-close limits.
+
+Regression coverage verifies Unicode code-unit preservation and the existing
+spaces/trailing-backslash quoting cases. The child environment is a minimal
+bootstrap environment only; it is not a Windows Sandbox, restricted token,
+AppContainer, or complete guest isolation boundary. The launch primitive
+remains disconnected from user commands, and guest execution remains disabled.
+Physical Windows acceptance, bounded output, timeout/cancellation, a pinned
+runner image, guest-session ownership, and protocol/storage controls remain
+outstanding.

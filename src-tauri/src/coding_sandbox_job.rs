@@ -11,6 +11,7 @@ use windows_sys::Win32::{
             JOB_OBJECT_CPU_RATE_CONTROL_ENABLE, JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
             JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+            JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
         },
     },
 };
@@ -80,7 +81,9 @@ impl OwnedGuestJob {
             | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
             | JOB_OBJECT_LIMIT_PROCESS_MEMORY
             | JOB_OBJECT_LIMIT_JOB_MEMORY;
+        let forbidden = JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
         if actual.BasicLimitInformation.LimitFlags & required != required
+            || actual.BasicLimitInformation.LimitFlags & forbidden != 0
             || actual.BasicLimitInformation.ActiveProcessLimit != GUEST_JOB_POLICY.active_process_limit
             || actual.ProcessMemoryLimit != GUEST_JOB_POLICY.per_process_memory_bytes
             || actual.JobMemoryLimit != GUEST_JOB_POLICY.job_memory_bytes {
@@ -296,11 +299,7 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
 
         // No caller-controlled arguments are accepted. The quoted executable is
         // argv[0]; lpApplicationName independently pins the image being started.
-        let mut command_line = quote_windows_argument(&self.spec.executable);
-        if command_line.contains('\0') {
-            return Err("The guest runner command line contains an invalid NUL character.".into());
-        }
-        let mut command_line_wide: Vec<u16> = command_line.encode_utf16().collect();
+        let mut command_line_wide = quote_windows_argument_wide(&application[..application.len() - 1]);
         command_line_wide.push(0);
 
         let mut working_directory: Vec<u16> = self.spec.working_directory.as_os_str().encode_wide().collect();
@@ -312,7 +311,9 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
         let mut startup: STARTUPINFOW = unsafe { zeroed() };
         startup.cb = size_of::<STARTUPINFOW>() as u32;
         let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
-        let flags = CREATE_SUSPENDED | CREATE_NO_WINDOW;
+        let environment = minimal_runner_environment()?;
+        let flags = CREATE_SUSPENDED | CREATE_NO_WINDOW
+            | windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
 
         let created = unsafe {
             CreateProcessW(
@@ -322,7 +323,7 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
                 ptr::null(),
                 0, // No inherited handles.
                 flags,
-                ptr::null(), // Environment inheritance is not a security boundary; runner remains disabled until a fixed environment is added.
+                environment.as_ptr(),
                 working_directory.as_ptr(),
                 &startup,
                 &mut info,
@@ -371,28 +372,61 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
 }
 
 #[cfg(windows)]
-fn quote_windows_argument(path: &std::path::Path) -> String {
-    let value = path.to_string_lossy();
-    let mut quoted = String::from("\"");
+fn quote_windows_argument_wide(value: &[u16]) -> Vec<u16> {
+    const BACKSLASH: u16 = b'\\' as u16;
+    const QUOTE: u16 = b'"' as u16;
+    let mut quoted = vec![QUOTE];
     let mut backslashes = 0usize;
-    for character in value.chars() {
-        match character {
-            '\\' => backslashes += 1,
-            '"' => {
-                quoted.push_str(&"\\".repeat(backslashes * 2 + 1));
-                quoted.push('"');
-                backslashes = 0;
-            }
-            _ => {
-                quoted.push_str(&"\\".repeat(backslashes));
-                backslashes = 0;
-                quoted.push(character);
-            }
+    for &unit in value {
+        if unit == BACKSLASH {
+            backslashes += 1;
+        } else if unit == QUOTE {
+            quoted.extend(std::iter::repeat(BACKSLASH).take(backslashes * 2 + 1));
+            quoted.push(QUOTE);
+            backslashes = 0;
+        } else {
+            quoted.extend(std::iter::repeat(BACKSLASH).take(backslashes));
+            backslashes = 0;
+            quoted.push(unit);
         }
     }
-    quoted.push_str(&"\\".repeat(backslashes * 2));
-    quoted.push('"');
+    quoted.extend(std::iter::repeat(BACKSLASH).take(backslashes * 2));
+    quoted.push(QUOTE);
     quoted
+}
+
+#[cfg(windows)]
+fn minimal_runner_environment() -> Result<Vec<u16>, String> {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
+    use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
+
+    let mut root_buffer = vec![0u16; 32_768];
+    let root_len = unsafe { GetWindowsDirectoryW(root_buffer.as_mut_ptr(), root_buffer.len() as u32) };
+    if root_len == 0 || root_len as usize >= root_buffer.len() {
+        return Err(last_error("resolve the Windows system directory for the minimal runner environment"));
+    }
+    root_buffer.truncate(root_len as usize);
+    let windows_root = PathBuf::from(OsString::from_wide(&root_buffer));
+    if !windows_root.is_absolute() {
+        return Err("Windows returned a non-absolute system root; guest execution is refused.".into());
+    }
+    let system32 = windows_root.join("System32");
+    let mut entries = vec![
+        ("PATH", system32.as_os_str()),
+        ("SystemRoot", windows_root.as_os_str()),
+        ("WINDIR", windows_root.as_os_str()),
+    ];
+    entries.sort_by(|a, b| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()));
+
+    let mut block = Vec::new();
+    for (key, value) in entries {
+        block.extend(key.encode_utf16());
+        block.push(b'=' as u16);
+        block.extend(value.encode_wide());
+        block.push(0);
+    }
+    block.push(0);
+    Ok(block)
 }
 
 /// Create, contain, verify, then resume the pinned runner. This remains unused
@@ -462,7 +496,19 @@ mod launch_transaction_tests {
 
     #[test]
     fn windows_argument_quoting_preserves_spaces_and_trailing_backslashes() {
-        assert_eq!(quote_windows_argument(std::path::Path::new(r"C:\Program Files\Friday\runner.exe")), r#""C:\Program Files\Friday\runner.exe""#);
-        assert_eq!(quote_windows_argument(std::path::Path::new(r"C:\Friday Folder\")), r#""C:\Friday Folder\\""#);
+        let input: Vec<u16> = r"C:\Program Files\Friday\runner.exe".encode_utf16().collect();
+        let output = String::from_utf16(&quote_windows_argument_wide(&input)).unwrap();
+        assert_eq!(output, r#""C:\Program Files\Friday\runner.exe""#);
+
+        let trailing: Vec<u16> = r"C:\Friday Folder\".encode_utf16().collect();
+        let output = String::from_utf16(&quote_windows_argument_wide(&trailing)).unwrap();
+        assert_eq!(output, r#""C:\Friday Folder\\""#);
+    }
+
+    #[test]
+    fn windows_argument_quoting_preserves_non_bmp_unicode_code_units() {
+        let input = vec![b'C' as u16, b':' as u16, b'\\' as u16, 0xD83D, 0xDE80];
+        let output = quote_windows_argument_wide(&input);
+        assert_eq!(&output[1..output.len() - 1], input.as_slice());
     }
 }
