@@ -674,3 +674,19 @@ Workspace permission enforcement is also re-applied before recovery enumerates
 old snapshot entries, not only before creating a new snapshot. Any ACL setup or
 verification error stops the operation. This remains subject to Windows CI and
 physical Windows validation; it does not enable guest execution.
+
+
+## Production lifecycle resilience regression coverage — 2026-11-14
+
+The production filesystem entry points now have direct integration regressions,
+not only tests of their lower-level helpers. The suite exercises a complete
+schema-2 prepare/read/cleanup cycle through the production path, verifies that
+a collection exceeding its file-count policy is rejected before any destination
+is created, and confirms that a partial directory without a completed ownership
+inventory is preserved by production recovery cleanup. Invalid snapshot IDs
+are also rejected without touching workspace contents.
+
+These tests strengthen the crash-recovery contract but do not simulate power
+loss on physical hardware, prove directory metadata durability on every
+filesystem, or replace the remaining Windows path/reparse/volume review and
+physical Windows acceptance tests. Guest execution remains disabled.

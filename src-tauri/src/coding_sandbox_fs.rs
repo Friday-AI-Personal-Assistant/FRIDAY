@@ -3226,4 +3226,98 @@ mod tests {
         fs::remove_dir_all(workspace_path).unwrap();
     }
 
+    #[test]
+    fn production_snapshot_entrypoints_prepare_and_remove_complete_inventory() {
+        let source_path = make_test_directory("production-lifecycle-source");
+        let workspace_path = make_test_directory("production-lifecycle-workspace");
+        fs::create_dir_all(source_path.join("src")).unwrap();
+        fs::write(source_path.join("Cargo.toml"), b"[package]").unwrap();
+        fs::write(source_path.join("src").join("main.rs"), b"fn main() {}").unwrap();
+
+        let id = "6".repeat(32);
+        let limits = (12, 2_000, 1024 * 1024, 32 * 1024 * 1024);
+        let (files, bytes) = prepare_snapshot_from_paths(
+            &source_path,
+            &workspace_path,
+            &id,
+            limits,
+            |name| name.ends_with(".rs") || name == "Cargo.toml",
+            |_| false,
+        ).unwrap();
+
+        assert_eq!(files, 2);
+        assert_eq!(bytes, b"[package]".len() as u64 + b"fn main() {}".len() as u64);
+        let snapshot = workspace_path.join(&id);
+        assert_eq!(fs::read(snapshot.join("Cargo.toml")).unwrap(), b"[package]");
+        assert_eq!(fs::read(snapshot.join("src").join("main.rs")).unwrap(), b"fn main() {}");
+        let marker: serde_json::Value = serde_json::from_slice(
+            &fs::read(snapshot.join(".friday-snapshot-owner.json")).unwrap()
+        ).unwrap();
+        assert_eq!(marker["schemaVersion"], 2);
+        assert_eq!(marker["snapshotId"], id);
+
+        cleanup_snapshot_from_workspace_path(&workspace_path, &id, limits).unwrap();
+        assert!(!snapshot.exists());
+        fs::remove_dir_all(source_path).unwrap();
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn production_snapshot_entrypoint_never_publishes_truncated_collection() {
+        let source_path = make_test_directory("production-truncated-source");
+        let workspace_path = make_test_directory("production-truncated-workspace");
+        fs::write(source_path.join("a.rs"), b"fn a() {}").unwrap();
+        fs::write(source_path.join("b.rs"), b"fn b() {}").unwrap();
+
+        let id = "7".repeat(32);
+        let result = prepare_snapshot_from_paths(
+            &source_path,
+            &workspace_path,
+            &id,
+            (12, 1, 1024, 1024),
+            |name| name.ends_with(".rs"),
+            |_| false,
+        );
+        assert!(result.is_err());
+        assert!(!workspace_path.join(&id).exists(),
+            "a truncated collection must fail before creating a destination");
+        fs::remove_dir_all(source_path).unwrap();
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn production_cleanup_preserves_unmarked_interrupted_snapshot_data() {
+        let workspace_path = make_test_directory("production-unmarked-preserve");
+        let id = "8".repeat(32);
+        let partial = workspace_path.join(&id);
+        fs::create_dir(&partial).unwrap();
+        fs::write(partial.join("partial.rs"), b"preserve after interrupted creation").unwrap();
+
+        let result = cleanup_snapshot_from_workspace_path(
+            &workspace_path,
+            &id,
+            (12, 2_000, 1024 * 1024, 32 * 1024 * 1024),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(partial.join("partial.rs")).unwrap(),
+            b"preserve after interrupted creation",
+            "unmarked data must never be treated as FRIDAY-owned cleanup authority"
+        );
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn production_cleanup_rejects_invalid_snapshot_identifiers() {
+        let workspace_path = make_test_directory("production-invalid-id");
+        let result = cleanup_snapshot_from_workspace_path(
+            &workspace_path,
+            "../outside",
+            (12, 2_000, 1024 * 1024, 32 * 1024 * 1024),
+        );
+        assert!(result.is_err());
+        assert!(fs::read_dir(&workspace_path).unwrap().next().is_none());
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
 }
