@@ -672,8 +672,68 @@ struct FridayCreateVirtualDiskParameters {
 }
 
 #[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FridayVirtualDiskSizeInfo {
+    virtual_size: u64,
+    physical_size: u64,
+    block_size: u32,
+    sector_size: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+union FridayGetVirtualDiskInfoData {
+    size: FridayVirtualDiskSizeInfo,
+    provider_subtype: u32,
+    alignment: [u64; 3],
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct FridayGetVirtualDiskInfo {
+    version: u32,
+    data: FridayGetVirtualDiskInfoData,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FridayOpenVirtualDiskVersion1 {
+    read_write_depth: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+union FridayOpenVirtualDiskParametersData {
+    version1: FridayOpenVirtualDiskVersion1,
+    alignment: [u64; 3],
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct FridayOpenVirtualDiskParameters {
+    version: u32,
+    parameters: FridayOpenVirtualDiskParametersData,
+}
+
+#[cfg(windows)]
 #[link(name = "virtdisk")]
 extern "system" {
+    fn OpenVirtualDisk(
+        virtual_storage_type: *const FridayVirtualStorageType,
+        path: *const u16,
+        virtual_disk_access_mask: u32,
+        flags: u32,
+        parameters: *const FridayOpenVirtualDiskParameters,
+        handle: *mut *mut std::ffi::c_void,
+    ) -> u32;
+    fn GetVirtualDiskInformation(
+        virtual_disk_handle: *mut std::ffi::c_void,
+        virtual_disk_info_size: *mut u32,
+        virtual_disk_info: *mut FridayGetVirtualDiskInfo,
+        size_used: *mut u32,
+    ) -> u32;
     fn CreateVirtualDisk(
         virtual_storage_type: *const FridayVirtualStorageType,
         path: *const u16,
@@ -715,6 +775,91 @@ impl Drop for OwnedVirtualDiskHandle {
             self.0 = std::ptr::null_mut();
         }
     }
+}
+
+#[cfg(windows)]
+fn query_guest_result_vhdx_info(path: &Path) -> Result<(FridayVirtualDiskSizeInfo, u32), String> {
+    use std::os::windows::ffi::OsStrExt;
+    let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    if path_wide.len() <= 1 {
+        return Err("The result VHDX path is invalid for metadata verification.".into());
+    }
+    let storage_type = FridayVirtualStorageType {
+        device_id: 3,
+        vendor_id: FridayWindowsGuid {
+            data1: 0xec984aec,
+            data2: 0xa0f9,
+            data3: 0x47e9,
+            data4: [0x90, 0x1f, 0x71, 0x41, 0x5a, 0x66, 0x34, 0x5b],
+        },
+    };
+    let open_parameters = FridayOpenVirtualDiskParameters {
+        version: 1,
+        parameters: FridayOpenVirtualDiskParametersData {
+            version1: FridayOpenVirtualDiskVersion1 { read_write_depth: 0 },
+        },
+    };
+    let mut raw_handle: *mut std::ffi::c_void = std::ptr::null_mut();
+    // GET_INFO only: this handle cannot attach, modify, or write the disk.
+    let open_status = unsafe {
+        OpenVirtualDisk(&storage_type, path_wide.as_ptr(), 0x0008_0000, 0, &open_parameters, &mut raw_handle)
+    };
+    if open_status != 0 || raw_handle.is_null() {
+        return Err(format!("Windows could not open the result VHDX for read-only metadata verification (error {open_status})."));
+    }
+    let handle = OwnedVirtualDiskHandle(raw_handle);
+
+    let mut size_info = FridayGetVirtualDiskInfo {
+        version: 1, // GET_VIRTUAL_DISK_INFO_SIZE
+        data: FridayGetVirtualDiskInfoData { alignment: [0; 3] },
+    };
+    let mut size_bytes = std::mem::size_of::<FridayGetVirtualDiskInfo>() as u32;
+    let size_status = unsafe {
+        GetVirtualDiskInformation(handle.0, &mut size_bytes, &mut size_info, std::ptr::null_mut())
+    };
+    if size_status != 0 {
+        return Err(format!("Windows could not read the result VHDX capacity (error {size_status})."));
+    }
+    let size = unsafe { size_info.data.size };
+
+    let mut subtype_info = FridayGetVirtualDiskInfo {
+        version: 7, // GET_VIRTUAL_DISK_INFO_PROVIDER_SUBTYPE
+        data: FridayGetVirtualDiskInfoData { alignment: [0; 3] },
+    };
+    let mut subtype_bytes = std::mem::size_of::<FridayGetVirtualDiskInfo>() as u32;
+    let subtype_status = unsafe {
+        GetVirtualDiskInformation(handle.0, &mut subtype_bytes, &mut subtype_info, std::ptr::null_mut())
+    };
+    if subtype_status != 0 {
+        return Err(format!("Windows could not verify the result VHDX allocation type (error {subtype_status})."));
+    }
+    let subtype = unsafe { subtype_info.data.provider_subtype };
+    handle.close()?;
+    Ok((size, subtype))
+}
+
+#[cfg(windows)]
+fn validate_guest_result_vhdx_readback(
+    size: FridayVirtualDiskSizeInfo,
+    provider_subtype: u32,
+    expected_capacity: u64,
+) -> Result<(), String> {
+    if expected_capacity != GUEST_RESULT_VOLUME_CAPACITY_BYTES
+        || size.virtual_size != expected_capacity
+        || size.physical_size < expected_capacity
+        || size.block_size != 1024 * 1024
+        || size.sector_size != 512
+        || provider_subtype != 2 // VIRTUAL_DISK_TYPE_FIXED
+    {
+        return Err("The result VHDX metadata does not match FRIDAY's fixed-capacity disk policy.".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn verify_guest_result_vhdx_capacity(path: &Path, expected_capacity: u64) -> Result<(), String> {
+    let (size, provider_subtype) = query_guest_result_vhdx_info(path)?;
+    validate_guest_result_vhdx_readback(size, provider_subtype, expected_capacity)
 }
 
 #[cfg(windows)]
@@ -828,6 +973,8 @@ fn create_guest_result_vhdx(
     if &signature != b"vhdxfile" {
         return Err("Windows returned a file without the expected VHDX signature; it was preserved for recovery.".into());
     }
+    verify_guest_result_vhdx_capacity(&plan.vhdx_path, plan.capacity_bytes)
+        .map_err(|_| "The created VHDX failed Windows metadata verification; it was preserved for recovery.".to_string())?;
     Ok(plan.vhdx_path.clone())
 }
 
@@ -2443,6 +2590,7 @@ mod tests {
         let mut signature = [0u8; 8];
         file.read_exact(&mut signature).unwrap();
         assert_eq!(&signature, b"vhdxfile");
+        verify_guest_result_vhdx_capacity(&created, GUEST_RESULT_VOLUME_CAPACITY_BYTES).unwrap();
         assert!(create_guest_result_vhdx(&plan, &root).is_err(),
             "a pre-existing result VHDX must never be replaced");
         drop(file);
