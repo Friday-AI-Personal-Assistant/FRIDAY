@@ -1097,3 +1097,30 @@ CI. It does not yet prove aggregate job-memory exhaustion behavior or CPU
 throttling under load, and it does not replace physical Windows acceptance.
 The production runner remains disconnected and guest execution remains
 disabled.
+
+
+## Native Windows aggregate-memory and CPU hard-cap enforcement regressions — 2026-11-14
+
+Windows CI now includes a separate aggregate Job Object memory-limit regression.
+It configures a 128 MiB per-process ceiling and a stricter 64 MiB aggregate
+job ceiling, then launches the existing 96 MiB allocation helper inside the
+private job. Because the per-process limit is deliberately higher than the
+requested allocation, Windows refusing the commit or terminating the helper
+for quota exhaustion exercises the aggregate job ceiling rather than the
+per-process ceiling. The test has a bounded wait and verifies the private job
+becomes empty after the process handle is closed.
+
+A second native regression launches a test-only helper inside a Job Object
+with the production 20% CPU hard cap. The helper saturates the available
+logical processors for a bounded four-second interval. The parent reads the
+child's kernel and user CPU times with GetProcessTimes and compares total CPU
+consumption with the documented percentage of total logical-processor
+capacity, allowing a small fixed scheduler/accounting tolerance. The helper
+is inert unless explicitly launched with its test-only environment marker.
+
+These tests exercise Windows CI kernel enforcement for aggregate memory and
+CPU rate control. They do not prove resistance to every memory-pressure
+pattern, do not replace physical Windows acceptance on supported target
+machines, and do not create the restricted-token/AppContainer, Windows
+Sandbox, filesystem, or network isolation boundary. The production runner
+remains disconnected and guest execution remains disabled.

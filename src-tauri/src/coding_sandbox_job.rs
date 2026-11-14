@@ -1583,6 +1583,39 @@ mod native_windows_process_integration_tests {
     }
 
     #[test]
+    fn real_windows_job_enforces_aggregate_memory_ceiling() {
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+        const QUOTA_EXCEEDED: u32 = 0xC000_0044;
+        // Keep the per-process ceiling above the attempted allocation so only
+        // the aggregate Job Object ceiling can explain a refusal/termination.
+        let policy = GuestJobPolicy {
+            per_process_memory_bytes: 128 * 1024 * 1024,
+            job_memory_bytes: 64 * 1024 * 1024,
+            ..GUEST_JOB_POLICY
+        };
+        let job = OwnedGuestJob::create_with_policy(policy).expect("create aggregate-memory test job");
+        let process = launch_test_binary_in_job(
+            &job,
+            "coding_sandbox_job::native_windows_process_integration_tests::native_process_memory_limit_child_helper",
+            "FRIDAY_NATIVE_MEMORY_CHILD=1",
+        );
+        let waited = unsafe { WaitForSingleObject(process.process, 15_000) };
+        if waited != WAIT_OBJECT_0 {
+            unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(job.handle, 96); }
+            panic!("aggregate memory-limit helper did not finish before its deadline");
+        }
+        let mut exit_code = 0u32;
+        assert_ne!(unsafe { GetExitCodeProcess(process.process, &mut exit_code) }, 0,
+            "query aggregate-memory helper exit code");
+        assert!(
+            exit_code == 0 || exit_code == QUOTA_EXCEEDED,
+            "expected Windows to refuse the allocation or terminate the process for aggregate job quota exhaustion; exit code was {exit_code:#010x}",
+        );
+        drop(process);
+        wait_until_job_empty(&job, Duration::from_secs(5));
+    }
+
+    #[test]
     fn real_windows_job_enforces_per_process_memory_ceiling() {
         use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
         const QUOTA_EXCEEDED: u32 = 0xC000_0044;
@@ -1608,6 +1641,89 @@ mod native_windows_process_integration_tests {
         assert!(
             exit_code == 0 || exit_code == QUOTA_EXCEEDED,
             "expected Windows to refuse the over-limit allocation or terminate the process for quota exhaustion; exit code was {exit_code:#010x}",
+        );
+        drop(process);
+        wait_until_job_empty(&job, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn native_cpu_hard_cap_child_helper() {
+        if std::env::var_os("FRIDAY_NATIVE_CPU_CHILD").as_deref()
+            != Some(OsStr::new("1"))
+        {
+            return;
+        }
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use std::time::{Duration, Instant};
+        // Saturate the available logical processors so a job-wide hard cap is
+        // observable even on multi-core Windows CI hosts.
+        let workers = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .min(256)
+            .max(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let stop = Arc::clone(&stop);
+                scope.spawn(move || {
+                    let mut value = 0x9E37_79B9u64;
+                    while !stop.load(Ordering::Relaxed) {
+                        value = value.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        std::hint::black_box(value);
+                    }
+                });
+            }
+            std::thread::sleep(Duration::from_secs(4));
+            stop.store(true, Ordering::Release);
+        });
+    }
+
+    #[test]
+    fn real_windows_job_enforces_cpu_hard_cap_under_parallel_load() {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::{GetProcessTimes, WaitForSingleObject};
+        let policy = GuestJobPolicy { cpu_rate: 2_000, ..GUEST_JOB_POLICY };
+        let job = OwnedGuestJob::create_with_policy(policy).expect("create CPU-capped test job");
+        let process = launch_test_binary_in_job(
+            &job,
+            "coding_sandbox_job::native_windows_process_integration_tests::native_cpu_hard_cap_child_helper",
+            "FRIDAY_NATIVE_CPU_CHILD=1",
+        );
+        let started = Instant::now();
+        let waited = unsafe { WaitForSingleObject(process.process, 12_000) };
+        if waited != WAIT_OBJECT_0 {
+            unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(job.handle, 95); }
+            panic!("CPU hard-cap helper did not finish before its deadline");
+        }
+        let wall = started.elapsed().as_secs_f64();
+        let (mut creation, mut exit, mut kernel, mut user) = (
+            unsafe { std::mem::zeroed::<FILETIME>() },
+            unsafe { std::mem::zeroed::<FILETIME>() },
+            unsafe { std::mem::zeroed::<FILETIME>() },
+            unsafe { std::mem::zeroed::<FILETIME>() },
+        );
+        assert_ne!(
+            unsafe { GetProcessTimes(process.process, &mut creation, &mut exit, &mut kernel, &mut user) },
+            0,
+            "read CPU time for the contained helper",
+        );
+        let ticks = |time: FILETIME| ((time.dwHighDateTime as u64) << 32) | time.dwLowDateTime as u64;
+        let cpu_seconds = (ticks(kernel) + ticks(user)) as f64 / 10_000_000.0;
+        let processors = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .min(256)
+            .max(1) as f64;
+        // A 20% Job Object hard cap allows at most 0.2 * logical processors
+        // worth of CPU time. Add 0.5 CPU-seconds for scheduler/accounting slack.
+        let allowed_cpu_seconds = wall * processors * 0.20 + 0.5;
+        assert!(
+            cpu_seconds <= allowed_cpu_seconds,
+            "Job Object CPU hard cap was exceeded: helper used {cpu_seconds:.2}s CPU over {wall:.2}s wall time on {processors:.0} logical processors (allowance {allowed_cpu_seconds:.2}s)",
         );
         drop(process);
         wait_until_job_empty(&job, Duration::from_secs(5));
