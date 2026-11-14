@@ -2835,6 +2835,20 @@ fn verify_zero_region(disk: &OwnedRawGuestDisk, first_lba: u64, sector_count: u6
     Ok(())
 }
 
+
+fn verify_gpt_header_crc(header: &[u8]) -> bool {
+    if header.len() < GUEST_RESULT_GPT_HEADER_BYTES {
+        return false;
+    }
+    let stored = u32::from_le_bytes(match header[16..20].try_into() {
+        Ok(value) => value,
+        Err(_) => return false,
+    });
+    let mut crc_input = header[..GUEST_RESULT_GPT_HEADER_BYTES].to_vec();
+    crc_input[16..20].fill(0);
+    gpt_crc32(&crc_input) == stored
+}
+
 #[cfg(windows)]
 fn verify_guest_result_gpt_readback(
     disk: &OwnedRawGuestDisk,
@@ -2860,6 +2874,8 @@ fn verify_guest_result_gpt_readback(
         || backup_header != expected.backup_header
         || gpt_crc32(&primary_entries) != u32::from_le_bytes(primary_header[88..92].try_into().unwrap())
         || gpt_crc32(&backup_entries) != u32::from_le_bytes(backup_header[88..92].try_into().unwrap())
+        || !verify_gpt_header_crc(&primary_header)
+        || !verify_gpt_header_crc(&backup_header)
     {
         return Err("The GPT metadata read-back differs from FRIDAY's exact layout or CRC policy.".into());
     }
@@ -2975,11 +2991,19 @@ mod tests {
         );
         assert_eq!(
             u32::from_le_bytes(metadata.primary_header[16..20].try_into().unwrap()),
-            gpt_crc32(&metadata.primary_header[..GUEST_RESULT_GPT_HEADER_BYTES]),
+            gpt_crc32(&{
+                let mut header = metadata.primary_header[..GUEST_RESULT_GPT_HEADER_BYTES].to_vec();
+                header[16..20].fill(0);
+                header
+            }),
         );
         assert_eq!(
             u32::from_le_bytes(metadata.backup_header[16..20].try_into().unwrap()),
-            gpt_crc32(&metadata.backup_header[..GUEST_RESULT_GPT_HEADER_BYTES]),
+            gpt_crc32(&{
+                let mut header = metadata.backup_header[..GUEST_RESULT_GPT_HEADER_BYTES].to_vec();
+                header[16..20].fill(0);
+                header
+            }),
         );
         assert_ne!(metadata.disk_guid, plan.partition_unique_guid);
         assert_eq!(
