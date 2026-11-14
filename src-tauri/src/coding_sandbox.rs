@@ -1504,8 +1504,8 @@ mod tests {
 <AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
 <ClipboardRedirection>Disable</ClipboardRedirection>
 <PrinterRedirection>Disable</PrinterRedirection><ProtectedClient>Enable</ProtectedClient>
-<MappedFolders><MappedFolder><HostFolder>C:\\FRIDAY\\Snapshot</HostFolder>
-<SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder><ReadOnly>true</ReadOnly>
+<MappedFolders><MappedFolder><HostFolder>C:\FRIDAY\\Snapshot</HostFolder>
+<SandboxFolder>C:\FRIDAY\\Project</SandboxFolder><ReadOnly>true</ReadOnly>
 </MappedFolder></MappedFolders></Configuration>"#;
         for duplicate in [
             "<VGpu>Disable</VGpu>",
@@ -1516,8 +1516,8 @@ mod tests {
             "<PrinterRedirection>Disable</PrinterRedirection>",
             "<ProtectedClient>Enable</ProtectedClient>",
             "<ReadOnly>true</ReadOnly>",
-            "<HostFolder>C:\\FRIDAY\\Snapshot</HostFolder>",
-            "<SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder>",
+            "<HostFolder>C:\FRIDAY\\Snapshot</HostFolder>",
+            "<SandboxFolder>C:\FRIDAY\\Project</SandboxFolder>",
         ] {
             let mutated = safe.replacen(duplicate, &format!("{duplicate}{duplicate}"), 1);
             assert!(validate_sandbox_config_policy(&mutated).is_err(),
