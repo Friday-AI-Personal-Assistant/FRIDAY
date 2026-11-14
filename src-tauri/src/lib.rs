@@ -11,6 +11,8 @@ mod coding_assistant;
 mod coding_intelligence;
 mod coding_sandbox;
 mod coding_sandbox_fs;
+#[cfg(windows)]
+mod coding_sandbox_job;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

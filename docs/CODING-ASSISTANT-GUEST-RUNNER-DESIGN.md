@@ -754,3 +754,26 @@ This document records the required contract only. No Job Object is currently
 created, no guest process is launched, and no resource limit is yet enforced by
 this specification. Guest execution remains disabled until the implementation,
 CI coverage, and physical Windows acceptance gates all pass.
+
+
+## First Windows Job Object implementation batch — 2026-11-14
+
+The Windows-only coding_sandbox_job module now creates an unnamed FRIDAY-owned
+Job Object and applies a centralized, non-request-configurable policy:
+kill-on-job-close, a 16-process active-process ceiling, 256 MiB per-process
+memory, 512 MiB aggregate job memory, and a 20% CPU hard cap. It queries the
+kernel configuration back and refuses to continue if any required flag or
+value is absent or changed. The RAII owner closes the Job Object, making the
+kernel kill-on-close behavior the cleanup primitive for processes later
+assigned to it.
+
+The module also exposes a narrow unsafe assignment seam for a FRIDAY-created
+process that the caller guarantees is still suspended. It assigns the process
+and verifies Job Object membership; it never resumes a thread. The Windows CI
+regression creates a real Job Object and reads back every mandatory limit.
+
+This batch does not create or resume a process, implement the suspended
+CreateProcessW launch transaction, capture bounded stdout/stderr, or provide
+timeout/cancellation orchestration. Those remain required steps before a
+launch gate can exist. No guest process is launched, and guest execution
+remains disabled. Physical Windows acceptance is still required after CI.
