@@ -1124,3 +1124,23 @@ pattern, do not replace physical Windows acceptance on supported target
 machines, and do not create the restricted-token/AppContainer, Windows
 Sandbox, filesystem, or network isolation boundary. The production runner
 remains disconnected and guest execution remains disabled.
+
+
+## Windows Sandbox isolation configuration guard — 2026-11-14
+
+The generated Sandbox configuration is now checked against a fail-closed policy
+before it is returned to any future launcher. The guard requires networking,
+vGPU, audio input, video input, clipboard redirection and printer redirection
+to be disabled; Protected Client must be enabled; and exactly one mapped
+project folder must be present with read-only access. It rejects writable
+mapping, duplicate mapped-folder entries, missing controls, and a logon
+command. Regression tests mutate the template to attempt to enable networking,
+make the share writable, add an extra mapping, or disable Protected Client.
+
+This is a template-integrity guard only. It does not prove the Windows Sandbox
+host honored the settings, does not change the guest's default account into a
+restricted token, and does not establish a bounded writable result channel.
+The current project snapshot remains the only mapped folder and is read-only.
+No launcher is connected, no guest process is started, and guest execution
+remains disabled pending physical Windows verification and the remaining
+session ownership, filesystem, network, and result-storage gates.

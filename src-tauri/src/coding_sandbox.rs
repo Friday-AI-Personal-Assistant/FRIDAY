@@ -906,7 +906,7 @@ fn build_sandbox_config(snapshot_path: &Path) -> Result<String, String> {
         return Err("The snapshot path is not a safe absolute path.".into());
     }
     let escaped = xml_escape(host_folder);
-    Ok(format!(r#"<Configuration>
+    let config = format!(r#"<Configuration>
   <VGpu>Disable</VGpu>
   <Networking>Disable</Networking>
   <AudioInput>Disable</AudioInput>
@@ -917,12 +917,47 @@ fn build_sandbox_config(snapshot_path: &Path) -> Result<String, String> {
   <MappedFolders>
     <MappedFolder>
       <HostFolder>{escaped}</HostFolder>
-      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
+      <SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
   </MappedFolders>
 </Configuration>
-"#))
+"#);
+    validate_sandbox_config_policy(&config)?;
+    Ok(config)
+}
+
+/// Structural guard for security-sensitive Windows Sandbox settings. This
+/// catches template regressions before a future launcher can consume a config;
+/// it does not prove the Windows host enforces the settings.
+fn validate_sandbox_config_policy(config: &str) -> Result<(), String> {
+    const REQUIRED: &[&str] = &[
+        "<VGpu>Disable</VGpu>",
+        "<Networking>Disable</Networking>",
+        "<AudioInput>Disable</AudioInput>",
+        "<VideoInput>Disable</VideoInput>",
+        "<ClipboardRedirection>Disable</ClipboardRedirection>",
+        "<PrinterRedirection>Disable</PrinterRedirection>",
+        "<ProtectedClient>Enable</ProtectedClient>",
+        "<ReadOnly>true</ReadOnly>",
+    ];
+    if REQUIRED.iter().any(|setting| !config.contains(setting))
+        || config.matches("<MappedFolder>").count() != 1
+        || config.matches("</MappedFolder>").count() != 1
+        || config.matches("<HostFolder>").count() != 1
+        || config.matches("</HostFolder>").count() != 1
+        || config.matches("<SandboxFolder>").count() != 1
+        || config.matches("</SandboxFolder>").count() != 1
+        || config.matches("<ReadOnly>true</ReadOnly>").count() != 1
+        || config.contains("<ReadOnly>false</ReadOnly>")
+        || config.contains("<Networking>Enable</Networking>")
+        || config.contains("<ClipboardRedirection>Enable</ClipboardRedirection>")
+        || config.contains("<LogonCommand>")
+    {
+        return Err("The Windows Sandbox configuration does not satisfy FRIDAY's required isolation policy; launch is refused.".into());
+    }
+    Ok(())
+}
 }
 
 #[tauri::command]
@@ -1415,11 +1450,41 @@ mod tests {
         let config = build_sandbox_config(&canonical).unwrap();
         assert!(config.contains("<Networking>Disable</Networking>"));
         assert!(config.contains("<VGpu>Disable</VGpu>"));
+        assert!(config.contains("<AudioInput>Disable</AudioInput>"));
+        assert!(config.contains("<VideoInput>Disable</VideoInput>"));
         assert!(config.contains("<ClipboardRedirection>Disable</ClipboardRedirection>"));
+        assert!(config.contains("<PrinterRedirection>Disable</PrinterRedirection>"));
+        assert!(config.contains("<ProtectedClient>Enable</ProtectedClient>"));
         assert!(config.contains("<ReadOnly>true</ReadOnly>"));
+        validate_sandbox_config_policy(&config).unwrap();
         assert!(config.contains("<SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder>"));
         assert!(config.contains(canonical.to_str().unwrap()));
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn sandbox_config_policy_rejects_network_or_writable_share_regressions() {
+        let safe = r#"<Configuration>
+<VGpu>Disable</VGpu><Networking>Disable</Networking>
+<AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
+<ClipboardRedirection>Disable</ClipboardRedirection>
+<PrinterRedirection>Disable</PrinterRedirection><ProtectedClient>Enable</ProtectedClient>
+<MappedFolders><MappedFolder><HostFolder>C:\\FRIDAY\\Snapshot</HostFolder>
+<SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder><ReadOnly>true</ReadOnly>
+</MappedFolder></MappedFolders></Configuration>"#;
+        validate_sandbox_config_policy(safe).unwrap();
+        assert!(validate_sandbox_config_policy(&safe.replace(
+            "<Networking>Disable</Networking>", "<Networking>Enable</Networking>"
+        )).is_err());
+        assert!(validate_sandbox_config_policy(&safe.replace(
+            "<ReadOnly>true</ReadOnly>", "<ReadOnly>false</ReadOnly>"
+        )).is_err());
+        assert!(validate_sandbox_config_policy(&safe.replace(
+            "</MappedFolders>", "<MappedFolder></MappedFolder></MappedFolders>"
+        )).is_err());
+        assert!(validate_sandbox_config_policy(&safe.replace(
+            "<ProtectedClient>Enable</ProtectedClient>", "<ProtectedClient>Disable</ProtectedClient>"
+        )).is_err());
     }
 
     #[test]
