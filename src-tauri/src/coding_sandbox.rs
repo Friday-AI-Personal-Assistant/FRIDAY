@@ -1347,12 +1347,51 @@ fn attach_guest_result_vhdx(
     }
     let physical_path = guest_vhdx_physical_path(handle.0)
         .map_err(|error| format!("{error} The attachment handle will be closed for automatic cleanup."))?;
-    let observed_identifier = verify_guest_result_vhdx_identity(plan, trusted_storage_root)
-        .map_err(|error| format!("The attached result VHDX failed identity revalidation ({error}); the attachment handle will be closed."))?;
+    let observed_identifier = verify_attached_guest_result_vhdx_identity(
+        &handle, &physical_path, plan, trusted_storage_root,
+    ).map_err(|error| format!("The attached result VHDX failed identity revalidation ({error}); the attachment handle will be closed."))?;
     if observed_identifier != expected_identifier {
         return Err("The result VHDX identity changed during attachment; the attachment handle will be closed.".into());
     }
     Ok(OwnedAttachedGuestVhdx { handle, physical_path })
+}
+
+/// Revalidates an attached disk through the exact FRIDAY-owned handle rather
+/// than reopening its backing path while Windows has it attached.
+#[cfg(windows)]
+fn verify_attached_guest_result_vhdx_identity(
+    handle: &OwnedVirtualDiskHandle,
+    expected_physical_path: &str,
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<String, String> {
+    let recorded_identifier =
+        verify_guest_result_vhdx_ownership_marker(plan, trusted_storage_root, None)?;
+    let verified_path = verify_guest_result_vhdx_file_path(plan, trusted_storage_root)?;
+    let physical_path = guest_vhdx_physical_path(handle.0)?;
+    if physical_path != expected_physical_path {
+        return Err("The attached physical-device path changed during identity verification.".into());
+    }
+    let mut identifier_info = FridayGetVirtualDiskInfo {
+        version: 2, // GET_VIRTUAL_DISK_INFO_IDENTIFIER
+        data: FridayGetVirtualDiskInfoData { alignment: [0; 3] },
+    };
+    let mut identifier_bytes = std::mem::size_of::<FridayGetVirtualDiskInfo>() as u32;
+    let status = unsafe {
+        GetVirtualDiskInformation(handle.0, &mut identifier_bytes, &mut identifier_info, std::ptr::null_mut())
+    };
+    if status != 0 {
+        return Err(format!("Windows could not read the persistent identifier from FRIDAY's attached VHDX handle (error {status})."));
+    }
+    let observed_identifier = format_guest_vhdx_identifier(unsafe { identifier_info.data.identifier })?;
+    let verified_again = verify_guest_result_vhdx_file_path(plan, trusted_storage_root)?;
+    if verified_again != verified_path {
+        return Err("The result VHDX backing-file path changed during attached identity verification.".into());
+    }
+    if observed_identifier != recorded_identifier {
+        return Err("The attached VHDX persistent identifier does not match its FRIDAY ownership record.".into());
+    }
+    Ok(observed_identifier)
 }
 
 #[cfg(windows)]
@@ -2928,8 +2967,10 @@ fn initialize_guest_result_gpt(
         if guest_vhdx_physical_path(attached.handle.0)? != attached.physical_path {
             return Err("The attached physical-device identity changed after GPT initialization.".into());
         }
-        if verify_guest_result_vhdx_identity(plan, trusted_storage_root)? != identifier {
-            return Err("The VHDX persistent identity changed after GPT initialization.".into());
+        if verify_attached_guest_result_vhdx_identity(
+            &attached.handle, &attached.physical_path, plan, trusted_storage_root,
+        )? != identifier {
+            return Err("The attached VHDX persistent identity changed after GPT initialization.".into());
         }
         Ok(())
     })();
