@@ -543,9 +543,9 @@ fn valid_windows_sandbox_image_path(value: &str) -> bool {
         && bytes[1] == b':'
         && (bytes[2] == b'\\' || bytes[2] == b'/');
     let unc_absolute = value.starts_with(r"\\") || value.starts_with(r"\\?\\");
-    let normalized = value.replace('/', r"\\");
-    let has_parent_component = normalized.split(r"\\").any(|part| part == "..");
-    let file_name = normalized.rsplit(r"\\").next().unwrap_or("");
+    let normalized = value.replace('/', "\\");
+    let has_parent_component = normalized.split('\\').any(|part| part == "..");
+    let file_name = normalized.rsplit('\\').next().unwrap_or("");
     (drive_absolute || unc_absolute)
         && !has_parent_component
         && file_name.eq_ignore_ascii_case("WindowsSandbox.exe")
@@ -618,12 +618,18 @@ fn advance_sandbox_session(
             Ok(SandboxSessionState::StopRequested)
         }
         SandboxSessionEvent::ConfirmStopped if state == SandboxSessionState::StopRequested => {
-            if !process_confirmed_stopped {
-                return Err("The exact owned Sandbox process has not been confirmed stopped.".into());
+            let expected = identity.ok_or_else(|| "FRIDAY's recorded Sandbox process identity is missing.".to_string())?;
+            let observed = observed_identity.ok_or_else(|| "The final Sandbox process identity is missing.".to_string())?;
+            validate_sandbox_process_identity(expected)?;
+            validate_sandbox_process_identity(observed)?;
+            if expected != observed || !ownership_verified || !process_confirmed_stopped {
+                return Err("The exact owned Sandbox process was not positively verified as stopped.".into());
             }
             Ok(SandboxSessionState::Stopped)
         }
         SandboxSessionEvent::RemoveOwnershipRecord if state == SandboxSessionState::Stopped => {
+            let expected = identity.ok_or_else(|| "FRIDAY's recorded Sandbox process identity is missing.".to_string())?;
+            validate_sandbox_process_identity(expected)?;
             if !ownership_verified {
                 return Err("Sandbox ownership evidence is required before removing its session record.".into());
             }
@@ -1739,6 +1745,90 @@ mod tests {
         assert_eq!(advance_guest_result_storage_state(S::Shared, E::PreserveForRecovery, false, false).unwrap(), S::RecoveryRequired);
         assert!(advance_guest_result_storage_state(S::RecoveryRequired, E::RevokeShare, true, true).is_err());
         assert!(advance_guest_result_storage_state(S::Removed, E::PreserveForRecovery, true, true).is_err());
+    }
+
+    fn valid_test_sandbox_identity() -> SandboxProcessIdentity {
+        SandboxProcessIdentity {
+            session_id: "0123456789abcdef0123456789abcdef".into(),
+            process_id: 4321,
+            process_creation_time: 987654321,
+            image_path: r"C:\\Windows\\System32\\WindowsSandbox.exe".into(),
+        }
+    }
+
+    #[test]
+    fn sandbox_session_accepts_only_exact_owned_lifecycle() {
+        use SandboxSessionEvent as E;
+        use SandboxSessionState as S;
+        let identity = valid_test_sandbox_identity();
+        let mut state = S::Planned;
+        state = advance_sandbox_session(state, E::RequestLaunch, None, None, false, false).unwrap();
+        state = advance_sandbox_session(state, E::ObserveProcess, None, Some(&identity), false, false).unwrap();
+        state = advance_sandbox_session(state, E::ConfirmSession, Some(&identity), Some(&identity), true, false).unwrap();
+        state = advance_sandbox_session(state, E::ConfirmRunning, Some(&identity), Some(&identity), true, false).unwrap();
+        state = advance_sandbox_session(state, E::RequestStop, Some(&identity), Some(&identity), true, false).unwrap();
+        state = advance_sandbox_session(state, E::ConfirmStopped, Some(&identity), Some(&identity), true, true).unwrap();
+        state = advance_sandbox_session(state, E::RemoveOwnershipRecord, Some(&identity), None, true, true).unwrap();
+        assert_eq!(state, S::Removed);
+    }
+
+    #[test]
+    fn sandbox_session_rejects_invalid_process_identity_and_image_path() {
+        let mut identity = valid_test_sandbox_identity();
+        assert!(validate_sandbox_process_identity(&identity).is_ok());
+        identity.process_id = 0;
+        assert!(validate_sandbox_process_identity(&identity).is_err());
+        identity.process_id = 4321;
+        identity.process_creation_time = 0;
+        assert!(validate_sandbox_process_identity(&identity).is_err());
+        identity.process_creation_time = 1;
+        identity.image_path = r"C:\\Windows\\System32\\cmd.exe".into();
+        assert!(validate_sandbox_process_identity(&identity).is_err());
+        identity.image_path = r"C:\\Windows\\..\\Other\\WindowsSandbox.exe".into();
+        assert!(validate_sandbox_process_identity(&identity).is_err());
+    }
+
+    #[test]
+    fn sandbox_session_rejects_pid_reuse_and_foreign_process_substitution() {
+        use SandboxSessionEvent as E;
+        use SandboxSessionState as S;
+        let identity = valid_test_sandbox_identity();
+        let mut replacement = identity.clone();
+        replacement.process_creation_time += 1;
+        assert!(advance_sandbox_session(S::ProcessObserved, E::ConfirmSession,
+            Some(&identity), Some(&replacement), true, false).is_err());
+        assert!(advance_sandbox_session(S::Running, E::RequestStop,
+            Some(&identity), Some(&replacement), true, false).is_err());
+        replacement = identity.clone();
+        replacement.session_id = "fedcba9876543210fedcba9876543210".into();
+        assert!(advance_sandbox_session(S::Running, E::RequestStop,
+            Some(&identity), Some(&replacement), true, false).is_err());
+    }
+
+    #[test]
+    fn sandbox_session_refuses_stop_without_ownership_or_exit_evidence() {
+        use SandboxSessionEvent as E;
+        use SandboxSessionState as S;
+        let identity = valid_test_sandbox_identity();
+        assert!(advance_sandbox_session(S::Running, E::RequestStop,
+            Some(&identity), Some(&identity), false, false).is_err());
+        assert!(advance_sandbox_session(S::StopRequested, E::ConfirmStopped,
+            Some(&identity), Some(&identity), true, false).is_err());
+        assert!(advance_sandbox_session(S::StopRequested, E::ConfirmStopped,
+            Some(&identity), None, true, true).is_err());
+    }
+
+    #[test]
+    fn sandbox_session_recovery_state_blocks_all_automatic_actions() {
+        use SandboxSessionEvent as E;
+        use SandboxSessionState as S;
+        let identity = valid_test_sandbox_identity();
+        assert_eq!(advance_sandbox_session(S::Running, E::PreserveForRecovery,
+            Some(&identity), Some(&identity), false, false).unwrap(), S::RecoveryRequired);
+        assert!(advance_sandbox_session(S::RecoveryRequired, E::RequestStop,
+            Some(&identity), Some(&identity), true, true).is_err());
+        assert!(advance_sandbox_session(S::Removed, E::PreserveForRecovery,
+            Some(&identity), Some(&identity), true, true).is_err());
     }
 
     #[test]
