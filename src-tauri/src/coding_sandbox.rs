@@ -736,6 +736,49 @@ fn load_guest_result_storage_journal(
 
 
 
+
+/// Append one verified lifecycle transition through the durable journal boundary.
+/// A non-empty caller snapshot must exactly match the latest persisted generation;
+/// competing writers are serialized by exclusive generation-directory creation.
+fn append_and_persist_guest_result_storage_transition(
+    root: &Path,
+    current: &GuestResultStorageJournal,
+    event: GuestResultStorageEvent,
+    ownership_verified: bool,
+    guest_stopped: bool,
+) -> Result<GuestResultStorageJournal, String> {
+    validate_guest_result_storage_journal(current)?;
+    if current.entries.is_empty() {
+        for generation in 1..=MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES {
+            let path = guest_result_storage_journal_generation_path(root, generation);
+            match fs::symlink_metadata(path) {
+                Ok(_) => return Err("An initial result-storage journal cannot be created over existing recovery evidence.".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err("Existing result-storage journal evidence could not be inspected.".into()),
+            }
+        }
+    } else {
+        let latest = load_guest_result_storage_journal(
+            root, &current.run_id, &current.vhdx_identifier,
+        )?;
+        if latest != *current {
+            return Err("The supplied result-storage journal is stale or differs from persisted recovery history.".into());
+        }
+    }
+
+    let next = append_guest_result_storage_journal_entry(
+        current, event, ownership_verified, guest_stopped,
+    )?;
+    persist_guest_result_storage_journal(root, &next)?;
+    let verified = load_guest_result_storage_journal(
+        root, &next.run_id, &next.vhdx_identifier,
+    )?;
+    if verified != next {
+        return Err("The newly appended result-storage transition failed full recovery verification.".into());
+    }
+    Ok(next)
+}
+
 const GUEST_RESULT_VOLUME_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
 const GUEST_RESULT_VOLUME_GUEST_MOUNT: &str = r"C:\FRIDAY\Results";
 
@@ -2801,7 +2844,55 @@ mod tests {
     }
 
     #[test]
-    fn result_storage_journal_rejects_oversized_and_unknown_field_documents() {
+        #[test]
+    fn result_storage_journal_appends_only_from_latest_persisted_state() {
+        let root = make_test_directory("result-journal-append-gateway");
+        let empty = GuestResultStorageJournal {
+            schema_version: GUEST_RESULT_STORAGE_JOURNAL_SCHEMA,
+            run_id: "0123456789abcdef0123456789abcdef".into(),
+            vhdx_identifier: "12345678-1234-5678-9abc-def012345678".into(),
+            entries: Vec::new(),
+        };
+        let created = append_and_persist_guest_result_storage_transition(
+            &root, &empty, GuestResultStorageEvent::CreateVerified, true, false,
+        ).unwrap();
+        assert_eq!(validate_guest_result_storage_journal(&created).unwrap(), GuestResultStorageState::Created);
+        let attached = append_and_persist_guest_result_storage_transition(
+            &root, &created, GuestResultStorageEvent::AttachVerified, true, false,
+        ).unwrap();
+        assert_eq!(validate_guest_result_storage_journal(&attached).unwrap(), GuestResultStorageState::Attached);
+        assert_eq!(load_guest_result_storage_journal(
+            &root, &attached.run_id, &attached.vhdx_identifier,
+        ).unwrap(), attached);
+        assert!(append_and_persist_guest_result_storage_transition(
+            &root, &created, GuestResultStorageEvent::MountVerified, true, false,
+        ).is_err(), "a stale branch must not append over a newer persisted generation");
+        assert!(append_and_persist_guest_result_storage_transition(
+            &root, &attached, GuestResultStorageEvent::GrantShare, false, false,
+        ).is_err(), "unverified ownership must not be journaled as a successful transition");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn result_storage_journal_append_gateway_refuses_preexisting_incomplete_generation() {
+        let root = make_test_directory("result-journal-append-incomplete");
+        let empty = GuestResultStorageJournal {
+            schema_version: GUEST_RESULT_STORAGE_JOURNAL_SCHEMA,
+            run_id: "0123456789abcdef0123456789abcdef".into(),
+            vhdx_identifier: "12345678-1234-5678-9abc-def012345678".into(),
+            entries: Vec::new(),
+        };
+        let interrupted = guest_result_storage_journal_generation_path(&root, 1);
+        fs::create_dir(&interrupted).unwrap();
+        secure_private_workspace_directory(&interrupted).unwrap();
+        assert!(append_and_persist_guest_result_storage_transition(
+            &root, &empty, GuestResultStorageEvent::CreateVerified, true, false,
+        ).is_err());
+        assert!(interrupted.exists(), "uncertain recovery evidence must be preserved");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+fn result_storage_journal_rejects_oversized_and_unknown_field_documents() {
         assert!(parse_guest_result_storage_journal(
             &vec![b'x'; MAX_GUEST_RESULT_STORAGE_JOURNAL_BYTES + 1]
         ).is_err());

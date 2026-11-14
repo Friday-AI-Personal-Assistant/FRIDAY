@@ -1387,6 +1387,26 @@ execution remains disabled.
 
 ## Immutable result-storage journal persistence — 2026-11-14
 
+## Durable result-storage transition gateway — 2026-11-14
+
+Lifecycle transitions now have one host-side append gateway that validates the
+current state, requires a non-empty caller journal to exactly match the latest
+persisted history, appends the requested transition, writes the next immutable
+generation, and reloads the complete journal to verify the result. Initial
+creation refuses any pre-existing generation directory, including incomplete
+recovery evidence. Stale concurrent callers cannot overwrite a newer state:
+generation directories remain create-new, and a competing append fails rather
+than replacing the winner.
+
+Regression tests cover first and subsequent persisted transitions, full
+reload equality, stale-branch rejection, unverified ownership rejection, and
+preservation of an interrupted initial generation.
+
+This gateway records supplied evidence; it does not independently prove that
+the VHDX is attached, mounted, shared, or stopped. No native disk attach,
+filesystem formatting, mount, Sandbox mapping, or guest execution is wired to
+it. Guest execution remains disabled.
+
 The bounded result-storage journal now has a host-side persistence prototype.
 Each transition is stored as a new immutable generation directory containing
 exactly one bounded JSON state file. Generation directories are exclusively
