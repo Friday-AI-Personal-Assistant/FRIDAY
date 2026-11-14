@@ -1055,3 +1055,23 @@ that Windows accepts and reports the configured production policy.
 This improves fail-closed configuration verification; it does not prove memory
 exhaustion or CPU throttling under adversarial workloads, nor replace a native
 breakaway-attempt test. Guest execution remains disabled.
+
+
+## Native Windows Job Object breakaway-attempt regression — 2026-11-14
+
+A Windows-only integration regression launches a dedicated test-binary helper
+suspended, assigns it to a fresh FRIDAY-owned Job Object, verifies membership,
+and resumes it only after containment. The helper then attempts to create a
+benign child process with the native `CREATE_BREAKAWAY_FROM_JOB` creation
+flag. Because the private Job Object does not grant either breakaway
+permission, Windows must reject that creation with `ERROR_ACCESS_DENIED`.
+If Windows unexpectedly creates the child, the helper immediately terminates
+and reaps that exact child before failing.
+
+The parent test bounds the helper wait, checks its exit status, and waits for
+the private Job Object to become empty. The helper is inert during ordinary
+test-suite execution and activates only in the explicitly marked child
+process. This verifies native breakaway denial on the Windows CI host; it does
+not prove memory-pressure enforcement or CPU throttling under adversarial
+workloads, and it does not replace physical Windows acceptance. The production
+runner remains disconnected and guest execution remains disabled.

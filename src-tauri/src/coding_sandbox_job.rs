@@ -1395,6 +1395,69 @@ mod native_windows_process_integration_tests {
         process
     }
 
+
+    // Launch this exact test binary suspended inside the private job. The
+    // environment marker keeps the helper test inert in the parent test suite.
+    fn launch_test_binary_in_job(job: &OwnedGuestJob, test_name: &str) -> OwnedGuestProcess {
+        use windows_sys::Win32::System::Threading::{
+            CreateProcessW, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+            CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
+        };
+        let executable = std::env::current_exe().expect("current Rust test executable");
+        let mut application: Vec<u16> = executable.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut command_line = quote_windows_argument_wide(&application[..application.len() - 1]);
+        for argument in ["--exact", test_name, "--nocapture"] {
+            command_line.extend(OsStr::new(" ").encode_wide());
+            let wide: Vec<u16> = OsStr::new(argument).encode_wide().collect();
+            command_line.extend(quote_windows_argument_wide(&wide));
+        }
+        command_line.push(0);
+
+        let mut entries: Vec<Vec<u16>> = minimal_runner_environment()
+            .expect("minimal test environment")
+            .split(|unit| *unit == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| entry.to_vec())
+            .collect();
+        entries.push("FRIDAY_NATIVE_BREAKAWAY_CHILD=1".encode_utf16().collect());
+        entries.sort_by(|left, right| {
+            let key = |entry: &[u16]| {
+                let end = entry.iter().position(|unit| *unit == b'=' as u16).unwrap_or(entry.len());
+                String::from_utf16_lossy(&entry[..end]).to_ascii_lowercase()
+            };
+            key(left).cmp(&key(right))
+        });
+        let mut environment = Vec::new();
+        for entry in entries {
+            environment.extend(entry);
+            environment.push(0);
+        }
+        environment.push(0);
+
+        let mut startup: STARTUPINFOW = unsafe { zeroed() };
+        startup.cb = size_of::<STARTUPINFOW>() as u32;
+        let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
+        let created = unsafe {
+            CreateProcessW(
+                application.as_mut_ptr(), command_line.as_mut_ptr(),
+                ptr::null(), ptr::null(), 0,
+                CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                environment.as_ptr() as *const c_void, ptr::null(), &startup, &mut info,
+            )
+        };
+        assert_ne!(created, 0, "create breakaway regression helper suspended: {}", last_error("create breakaway regression helper"));
+        let mut process = OwnedGuestProcess {
+            process: info.hProcess, thread: info.hThread, resumed: false, output: None,
+        };
+        unsafe { job.assign_suspended_process(process.process).expect("assign breakaway helper to private job"); }
+        let prior = unsafe { ResumeThread(process.thread) };
+        assert_eq!(prior, 1, "breakaway helper must have exactly one initial suspension");
+        process.resumed = true;
+        unsafe { CloseHandle(process.thread); }
+        process.thread = ptr::null_mut();
+        process
+    }
+
     fn wait_until_job_empty(job: &OwnedGuestJob, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         loop {
@@ -1421,6 +1484,73 @@ mod native_windows_process_integration_tests {
                 None => std::thread::sleep(Duration::from_millis(20)),
             }
         }
+    }
+
+
+    #[test]
+    fn native_breakaway_attempt_child_helper() {
+        if std::env::var_os("FRIDAY_NATIVE_BREAKAWAY_CHILD").as_deref()
+            != Some(OsStr::new("1"))
+        {
+            return;
+        }
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetLastError};
+        use windows_sys::Win32::System::Threading::{
+            CreateProcessW, CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW,
+            CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
+            TerminateProcess, WaitForSingleObject,
+        };
+        let root = std::env::var_os("SystemRoot").expect("Windows SystemRoot");
+        let executable = std::path::PathBuf::from(root).join("System32").join("cmd.exe");
+        let mut application: Vec<u16> = executable.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut command_line = quote_windows_argument_wide(&application[..application.len() - 1]);
+        command_line.extend(OsStr::new(" /D /C exit 0").encode_wide());
+        command_line.push(0);
+        let environment = minimal_runner_environment().expect("minimal breakaway-attempt environment");
+        let mut startup: STARTUPINFOW = unsafe { zeroed() };
+        startup.cb = size_of::<STARTUPINFOW>() as u32;
+        let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
+        let created = unsafe {
+            CreateProcessW(
+                application.as_mut_ptr(), command_line.as_mut_ptr(),
+                ptr::null(), ptr::null(), 0,
+                CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                environment.as_ptr() as *const c_void, ptr::null(), &startup, &mut info,
+            )
+        };
+        if created != 0 {
+            unsafe {
+                TerminateProcess(info.hProcess, 99);
+                WaitForSingleObject(info.hProcess, 5_000);
+                CloseHandle(info.hThread);
+                CloseHandle(info.hProcess);
+            }
+            panic!("Windows allowed CREATE_BREAKAWAY_FROM_JOB from FRIDAY's private job");
+        }
+        let error = unsafe { GetLastError() };
+        assert_eq!(error, ERROR_ACCESS_DENIED,
+            "a breakaway request from a process in the private job must fail with access denied");
+    }
+
+    #[test]
+    fn real_windows_job_denies_a_native_breakaway_attempt() {
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+        let job = OwnedGuestJob::create().expect("create private no-breakaway test job");
+        let process = launch_test_binary_in_job(
+            &job,
+            "coding_sandbox_job::native_windows_process_integration_tests::native_breakaway_attempt_child_helper",
+        );
+        let waited = unsafe { WaitForSingleObject(process.process, 10_000) };
+        if waited != WAIT_OBJECT_0 {
+            unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(job.handle, 98); }
+            panic!("native breakaway helper did not finish before its deadline");
+        }
+        let mut exit_code = 0u32;
+        assert_ne!(unsafe { GetExitCodeProcess(process.process, &mut exit_code) }, 0,
+            "query native breakaway helper exit code");
+        assert_eq!(exit_code, 0, "native helper must observe Windows denying breakaway");
+        drop(process);
+        wait_until_job_empty(&job, Duration::from_secs(5));
     }
 
     #[test]
