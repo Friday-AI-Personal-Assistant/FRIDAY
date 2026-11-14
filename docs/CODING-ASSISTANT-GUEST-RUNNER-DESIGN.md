@@ -123,7 +123,7 @@ The newer `wsb` CLI documents an explicit Sandbox ID for stopping a session. A f
 
 Microsoft documents that Windows Sandbox writable mapped folders persist changes on the host, and that the default guest account is `WDAGUtilityAccount`. Microsoft's newer CLI also supports sharing a host folder with an explicit Sandbox ID and optional write permission. A normal writable host folder therefore remains an unacceptable result target without an enforceable capacity boundary.
 
-A candidate to prototype is a dedicated, per-run, fixed-capacity VHDX:
+A candidate to prototype is a dedicated, per-run, fixed-capacity VHDX. Its host-side per-run reservation directory is created exclusively and its permissions are restricted before the ownership marker is published: current user, SYSTEM and Administrators only on Windows, and owner-only on Unix. This protects host reservation metadata; it does not create or expose a writable guest volume:
 
 1. FRIDAY creates a new fixed-size VHDX using a supported Windows virtual-disk API, with a conservative hard maximum selected by policy (initial design target: 256 MiB, subject to test needs).
 2. The host initializes and formats the virtual disk, mounts it at a unique empty directory, and verifies the mounted volume identity, filesystem, capacity, free space and mount path.

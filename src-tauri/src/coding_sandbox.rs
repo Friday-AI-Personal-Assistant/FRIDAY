@@ -639,6 +639,11 @@ fn reserve_guest_result_volume_directory(
     validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
     fs::create_dir(&plan.run_directory)
         .map_err(|_| "FRIDAY could not exclusively reserve this result-volume run directory.".to_string())?;
+    // This is private host state, never a general guest share. Apply the same
+    // fail-closed owner/SYSTEM/Administrators boundary as the snapshot workspace
+    // before publishing any ownership metadata.
+    secure_private_workspace_directory(&plan.run_directory)
+        .map_err(|_| "FRIDAY could not restrict the reserved result-volume directory; it was preserved for recovery.".to_string())?;
 
     let marker = GuestResultVolumeOwnershipMarker {
         schema_version: GUEST_RESULT_VOLUME_OWNER_SCHEMA,
@@ -2198,6 +2203,13 @@ mod tests {
         let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
         let reserved = reserve_guest_result_volume_directory(&plan, &root).unwrap();
         assert_eq!(reserved, plan.run_directory);
+        let directory_metadata = fs::symlink_metadata(&reserved).unwrap();
+        assert!(directory_metadata.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(directory_metadata.permissions().mode() & 0o077, 0);
+        }
         assert!(reserved.join(GUEST_RESULT_VOLUME_OWNER_MARKER).is_file());
         assert_eq!(verify_guest_result_volume_directory(&plan, &root).unwrap(), reserved);
         assert!(reserve_guest_result_volume_directory(&plan, &root).is_err());
