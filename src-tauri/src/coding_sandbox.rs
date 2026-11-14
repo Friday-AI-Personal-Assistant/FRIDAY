@@ -1504,8 +1504,8 @@ mod tests {
 <AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
 <ClipboardRedirection>Disable</ClipboardRedirection>
 <PrinterRedirection>Disable</PrinterRedirection><ProtectedClient>Enable</ProtectedClient>
-<MappedFolders><MappedFolder><HostFolder>C:\FRIDAY\\Snapshot</HostFolder>
-<SandboxFolder>C:\FRIDAY\\Project</SandboxFolder><ReadOnly>true</ReadOnly>
+<MappedFolders><MappedFolder><HostFolder>C:\FRIDAY\Snapshot</HostFolder>
+<SandboxFolder>C:\FRIDAY\Project</SandboxFolder><ReadOnly>true</ReadOnly>
 </MappedFolder></MappedFolders></Configuration>"#;
         for duplicate in [
             "<VGpu>Disable</VGpu>",
