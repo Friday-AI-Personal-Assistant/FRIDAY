@@ -574,7 +574,37 @@ fn validate_guest_result_volume_plan(
     trusted_storage_root: &Path,
     expected_run_id: &str,
 ) -> Result<(), String> {
-    let expected = build_guest_result_volume_plan(trusted_storage_root, expected_run_id)?;
+    if !valid_snapshot_id(expected_run_id) {
+        return Err("The result-volume run identifier is invalid.".into());
+    }
+    if !trusted_storage_root.is_absolute() {
+        return Err("The result-volume storage root must be absolute.".into());
+    }
+    let root_metadata = fs::symlink_metadata(trusted_storage_root)
+        .map_err(|_| "The private result-volume storage root is unavailable.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The result-volume storage root must be an ordinary directory.".into());
+    }
+    let canonical_root = fs::canonicalize(trusted_storage_root)
+        .map_err(|_| "The private result-volume storage root could not be verified.".to_string())?;
+    let canonical_metadata = fs::symlink_metadata(&canonical_root)
+        .map_err(|_| "The canonical result-volume storage root could not be verified.".to_string())?;
+    if !canonical_metadata.is_dir() || is_reparse_or_symlink(&canonical_metadata) {
+        return Err("The canonical result-volume storage root is not an ordinary directory.".into());
+    }
+
+    // Validation intentionally does not require the run directory to be absent:
+    // reservation creates it before ownership evidence can be verified.
+    let expected_run_directory = canonical_root.join(expected_run_id);
+    let expected = GuestResultVolumePlan {
+        run_id: expected_run_id.to_string(),
+        storage_root: canonical_root,
+        run_directory: expected_run_directory.clone(),
+        vhdx_path: expected_run_directory.join("result.vhdx"),
+        guest_mount_path: GUEST_RESULT_VOLUME_GUEST_MOUNT.to_string(),
+        capacity_bytes: GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+        max_result_bytes: MAX_GUEST_RESULT_BYTES as u64,
+    };
     if plan != &expected {
         return Err("The result-volume plan differs from FRIDAY's fixed per-run policy.".into());
     }
