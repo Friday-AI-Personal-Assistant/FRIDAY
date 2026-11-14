@@ -2491,6 +2491,157 @@ fn validate_guest_result_partition_plan(
     Ok(())
 }
 
+
+const GUEST_RESULT_GPT_HEADER_BYTES: usize = 92;
+const GUEST_RESULT_GPT_ENTRY_COUNT: usize = 128;
+const GUEST_RESULT_GPT_ENTRY_BYTES: usize = 128;
+const GUEST_RESULT_GPT_ARRAY_BYTES: usize = GUEST_RESULT_GPT_ENTRY_COUNT * GUEST_RESULT_GPT_ENTRY_BYTES;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestResultGptMetadata {
+    protective_mbr: Vec<u8>,
+    primary_header: Vec<u8>,
+    primary_entries: Vec<u8>,
+    backup_entries: Vec<u8>,
+    backup_header: Vec<u8>,
+    disk_guid: String,
+}
+
+fn parse_canonical_guid_bytes(value: &str) -> Result<[u8; 16], String> {
+    let compact = value.replace('-', "");
+    if compact.len() != 32 || !compact.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("A GPT identifier is not a canonical hexadecimal GUID.".into());
+    }
+    let mut raw = [0u8; 16];
+    for (index, byte) in raw.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&compact[index * 2..index * 2 + 2], 16)
+            .map_err(|_| "A GPT identifier contains invalid hexadecimal data.".to_string())?;
+    }
+    // GPT stores GUID fields using the Windows/UEFI mixed-endian GUID layout.
+    raw[..4].reverse();
+    raw[4..6].reverse();
+    raw[6..8].reverse();
+    Ok(raw)
+}
+
+fn gpt_crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for byte in bytes {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+fn write_gpt_header(
+    sector: &mut [u8],
+    current_lba: u64,
+    backup_lba: u64,
+    first_usable_lba: u64,
+    last_usable_lba: u64,
+    disk_guid: &[u8; 16],
+    entries_lba: u64,
+    entries_crc: u32,
+) -> Result<(), String> {
+    if sector.len() != GUEST_RESULT_GPT_SECTOR_BYTES as usize {
+        return Err("The GPT header buffer does not match the fixed logical sector size.".into());
+    }
+    sector.fill(0);
+    sector[0..8].copy_from_slice(b"EFI PART");
+    sector[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+    sector[12..16].copy_from_slice(&(GUEST_RESULT_GPT_HEADER_BYTES as u32).to_le_bytes());
+    sector[24..32].copy_from_slice(&current_lba.to_le_bytes());
+    sector[32..40].copy_from_slice(&backup_lba.to_le_bytes());
+    sector[40..48].copy_from_slice(&first_usable_lba.to_le_bytes());
+    sector[48..56].copy_from_slice(&last_usable_lba.to_le_bytes());
+    sector[56..72].copy_from_slice(disk_guid);
+    sector[72..80].copy_from_slice(&entries_lba.to_le_bytes());
+    sector[80..84].copy_from_slice(&(GUEST_RESULT_GPT_ENTRY_COUNT as u32).to_le_bytes());
+    sector[84..88].copy_from_slice(&(GUEST_RESULT_GPT_ENTRY_BYTES as u32).to_le_bytes());
+    sector[88..92].copy_from_slice(&entries_crc.to_le_bytes());
+    let header_crc = gpt_crc32(&sector[..GUEST_RESULT_GPT_HEADER_BYTES]);
+    sector[16..20].copy_from_slice(&header_crc.to_le_bytes());
+    Ok(())
+}
+
+fn build_guest_result_gpt_metadata(
+    plan: &GuestResultPartitionPlan,
+) -> Result<GuestResultGptMetadata, String> {
+    validate_guest_result_partition_plan(plan, &plan.run_id)?;
+    let total_sectors = plan.disk_capacity_bytes / GUEST_RESULT_GPT_SECTOR_BYTES;
+    let backup_header_lba = total_sectors - 1;
+    let backup_entries_lba = backup_header_lba - (GUEST_RESULT_GPT_ARRAY_BYTES as u64 / GUEST_RESULT_GPT_SECTOR_BYTES);
+    if plan.first_lba < GUEST_RESULT_GPT_ALIGNMENT_SECTORS
+        || plan.last_lba >= backup_entries_lba
+        || backup_entries_lba <= plan.last_lba
+    {
+        return Err("The planned partition overlaps reserved GPT metadata.".into());
+    }
+
+    let partition_type = parse_canonical_guid_bytes(&plan.partition_type_guid)?;
+    let partition_id = parse_canonical_guid_bytes(&plan.partition_unique_guid)?;
+    let compact_run = plan.run_id.to_ascii_lowercase();
+    let mut disk_compact = compact_run.clone().into_bytes();
+    disk_compact[0] = if disk_compact[0] == b'0' { b'1' } else { b'0' };
+    let disk_guid_text = format!(
+        "{}-{}-{}-{}-{}",
+        String::from_utf8_lossy(&disk_compact[0..8]),
+        String::from_utf8_lossy(&disk_compact[8..12]),
+        String::from_utf8_lossy(&disk_compact[12..16]),
+        String::from_utf8_lossy(&disk_compact[16..20]),
+        String::from_utf8_lossy(&disk_compact[20..32]),
+    ).to_ascii_uppercase();
+    let disk_guid = parse_canonical_guid_bytes(&disk_guid_text)?;
+    if disk_guid == partition_id || disk_guid.iter().all(|byte| *byte == 0) {
+        return Err("The generated GPT disk identifier is not unique.".into());
+    }
+
+    let mut entries = vec![0u8; GUEST_RESULT_GPT_ARRAY_BYTES];
+    let entry = &mut entries[..GUEST_RESULT_GPT_ENTRY_BYTES];
+    entry[0..16].copy_from_slice(&partition_type);
+    entry[16..32].copy_from_slice(&partition_id);
+    entry[32..40].copy_from_slice(&plan.first_lba.to_le_bytes());
+    entry[40..48].copy_from_slice(&plan.last_lba.to_le_bytes());
+    let name: Vec<u16> = "FRIDAY_RESULTS".encode_utf16().collect();
+    for (index, unit) in name.iter().enumerate() {
+        let offset = 56 + index * 2;
+        entry[offset..offset + 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    let entries_crc = gpt_crc32(&entries);
+    let mut primary_header = vec![0u8; GUEST_RESULT_GPT_SECTOR_BYTES as usize];
+    let mut backup_header = vec![0u8; GUEST_RESULT_GPT_SECTOR_BYTES as usize];
+    write_gpt_header(
+        &mut primary_header, 1, backup_header_lba, 34, total_sectors - 34 - 1,
+        &disk_guid, 2, entries_crc,
+    )?;
+    write_gpt_header(
+        &mut backup_header, backup_header_lba, 1, 34, total_sectors - 34 - 1,
+        &disk_guid, backup_entries_lba, entries_crc,
+    )?;
+
+    let mut protective_mbr = vec![0u8; GUEST_RESULT_GPT_SECTOR_BYTES as usize];
+    let mbr_entry = &mut protective_mbr[446..462];
+    mbr_entry[1..4].copy_from_slice(&[0x00, 0x02, 0x00]);
+    mbr_entry[4] = 0xee;
+    mbr_entry[5..8].copy_from_slice(&[0xff, 0xff, 0xff]);
+    mbr_entry[8..12].copy_from_slice(&1u32.to_le_bytes());
+    let protective_sectors = (total_sectors - 1).min(u32::MAX as u64) as u32;
+    mbr_entry[12..16].copy_from_slice(&protective_sectors.to_le_bytes());
+    protective_mbr[510] = 0x55;
+    protective_mbr[511] = 0xaa;
+
+    Ok(GuestResultGptMetadata {
+        protective_mbr,
+        primary_header,
+        primary_entries: entries.clone(),
+        backup_entries: entries,
+        backup_header,
+        disk_guid: disk_guid_text,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

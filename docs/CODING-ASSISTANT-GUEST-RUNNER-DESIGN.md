@@ -1478,3 +1478,21 @@ mount a volume, or expose storage to Windows Sandbox. Native disk mutation
 must operate only through the exact FRIDAY-owned attached VHDX handle/device,
 verify the disk identity before and after every mutation, and preserve
 ambiguous state for recovery. Guest execution remains disabled.
+
+
+## GPT on-disk metadata construction and validation — 2026-11-14
+
+FRIDAY now builds the complete GPT metadata image for the fixed result-volume
+plan without touching a disk. The builder creates a protective MBR, primary
+and backup GPT headers, matching 128-entry partition arrays, and one NTFS
+Basic Data partition entry. It calculates the GPT CRC-32 checksums, encodes
+GUIDs in the UEFI/Windows on-disk byte order, and reserves the primary and
+backup metadata regions. The per-run disk GUID is distinct from the partition
+GUID; the partition bounds and fixed label come only from the validated plan.
+
+This is still an offline metadata-construction step. It does not open a
+PhysicalDrive, write sectors, initialize a disk, or format a filesystem.
+Native disk writes must first revalidate the attached VHDX identity and exact
+64 MiB geometry, write and flush only the planned sectors, then independently
+read back and validate both GPT copies and all CRCs. Any partial or ambiguous
+write must be preserved for recovery. Guest execution remains disabled.
