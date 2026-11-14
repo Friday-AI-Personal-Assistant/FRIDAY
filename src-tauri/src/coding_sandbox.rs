@@ -974,7 +974,7 @@ fn create_guest_result_vhdx(
         return Err("Windows returned a file without the expected VHDX signature; it was preserved for recovery.".into());
     }
     verify_guest_result_vhdx_capacity(&plan.vhdx_path, plan.capacity_bytes)
-        .map_err(|_| "The created VHDX failed Windows metadata verification; it was preserved for recovery.".to_string())?;
+        .map_err(|error| format!("The created VHDX failed Windows metadata verification ({error}); it was preserved for recovery."))?;
     Ok(plan.vhdx_path.clone())
 }
 
