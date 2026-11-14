@@ -851,7 +851,10 @@ fn validate_guest_result_vhdx_readback(
         || size.sector_size != 512
         || provider_subtype != 2 // VIRTUAL_DISK_TYPE_FIXED
     {
-        return Err("The result VHDX metadata does not match FRIDAY's fixed-capacity disk policy.".into());
+        return Err(format!(
+            "The result VHDX metadata does not match FRIDAY's fixed-capacity disk policy (expected_capacity={}, virtual_size={}, physical_size={}, block_size={}, sector_size={}, provider_subtype={}).",
+            expected_capacity, size.virtual_size, size.physical_size, size.block_size, size.sector_size, provider_subtype
+        ));
     }
     Ok(())
 }
