@@ -2104,11 +2104,11 @@ mod tests {
     #[test]
     fn bounded_single_file_reader_accepts_only_the_exact_regular_file() {
         let directory = make_test_directory("bounded-result-reader");
-        fs::write(directory.join("result.json"), b"{\\"status\\":\\"ok\\"}").unwrap();
+        fs::write(directory.join("result.json"), br#"{"status":"ok"}"#).unwrap();
         let bytes = read_single_bounded_file_from_directory(
             &directory, OsStr::new("result.json"), 128,
         ).unwrap();
-        assert_eq!(bytes, b"{\\"status\\":\\"ok\\"}");
+        assert_eq!(bytes, br#"{"status":"ok"}"#);
 
         fs::write(directory.join("extra.txt"), b"unexpected").unwrap();
         assert!(read_single_bounded_file_from_directory(

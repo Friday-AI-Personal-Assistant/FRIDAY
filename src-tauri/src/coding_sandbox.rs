@@ -110,8 +110,6 @@ fn validate_guest_result_json(
 
 const GUEST_RESULT_FILE_NAME: &str = "result.json";
 
-const GUEST_RESULT_FILE_NAME: &str = "result.json";
-
 fn read_verified_guest_result_file(
     result_directory: &Path,
     expected_run_id: &str,
