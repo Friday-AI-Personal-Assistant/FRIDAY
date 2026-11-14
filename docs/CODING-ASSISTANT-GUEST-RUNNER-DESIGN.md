@@ -1456,3 +1456,25 @@ folder into Windows Sandbox, or launch guest code. Attachment privilege and
 standard non-elevated Windows behavior still require physical-device
 acceptance; any API failure is fail-closed. The helper is not connected to the
 production guest-run lifecycle, and guest execution remains disabled.
+
+
+## Fixed GPT and NTFS result-partition plan — 2026-11-14
+
+The host now derives a deterministic, immutable partition plan for the exact
+64 MiB per-run result VHDX. The plan accepts only a valid 32-character run ID,
+the fixed 512-byte logical sector size, and the exact FRIDAY capacity. It
+specifies one Microsoft Basic Data GPT partition, aligned to a 1 MiB boundary,
+with a per-run unique partition GUID derived from the run ID, and the fixed
+NTFS filesystem label \`FRIDAY_RESULTS\`.
+
+The validator re-derives the complete plan from trusted run identity and fixed
+policy; any changed capacity, sector size, partition bounds, type GUID, unique
+GUID, filesystem, label, or partition count is rejected. Regression tests
+cover the exact layout, alignment, and attempted policy/identity substitution.
+
+This is a planning and validation contract only. It does not write a GPT,
+initialize a disk, create a partition, format NTFS, assign a drive letter,
+mount a volume, or expose storage to Windows Sandbox. Native disk mutation
+must operate only through the exact FRIDAY-owned attached VHDX handle/device,
+verify the disk identity before and after every mutation, and preserve
+ambiguous state for recovery. Guest execution remains disabled.

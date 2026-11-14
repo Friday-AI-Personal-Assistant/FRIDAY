@@ -2413,6 +2413,84 @@ pub async fn coding_sandbox_discard_snapshot(snapshot_id: String) -> Result<Stri
     Ok("The isolated snapshot copy was removed. The original project was not changed.".into())
 }
 
+
+const GUEST_RESULT_GPT_SECTOR_BYTES: u64 = 512;
+const GUEST_RESULT_GPT_ALIGNMENT_SECTORS: u64 = 2048;
+const GUEST_RESULT_GPT_METADATA_SECTORS: u64 = 34;
+const GUEST_RESULT_PARTITION_TYPE_GUID: &str = "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7";
+const GUEST_RESULT_FILESYSTEM_LABEL: &str = "FRIDAY_RESULTS";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestResultPartitionPlan {
+    run_id: String,
+    disk_capacity_bytes: u64,
+    logical_sector_bytes: u32,
+    partition_number: u32,
+    first_lba: u64,
+    last_lba: u64,
+    partition_type_guid: String,
+    partition_unique_guid: String,
+    filesystem: String,
+    filesystem_label: String,
+}
+
+fn build_guest_result_partition_plan(
+    run_id: &str,
+    disk_capacity_bytes: u64,
+    logical_sector_bytes: u32,
+) -> Result<GuestResultPartitionPlan, String> {
+    if !valid_snapshot_id(run_id)
+        || disk_capacity_bytes != GUEST_RESULT_VOLUME_CAPACITY_BYTES
+        || logical_sector_bytes as u64 != GUEST_RESULT_GPT_SECTOR_BYTES
+        || disk_capacity_bytes % GUEST_RESULT_GPT_SECTOR_BYTES != 0
+    {
+        return Err("The attached result disk does not match FRIDAY's fixed GPT layout policy.".into());
+    }
+    let total_sectors = disk_capacity_bytes / GUEST_RESULT_GPT_SECTOR_BYTES;
+    if total_sectors <= GUEST_RESULT_GPT_METADATA_SECTORS * 2 {
+        return Err("The result disk is too small for a safe GPT layout.".into());
+    }
+    let first_lba = GUEST_RESULT_GPT_ALIGNMENT_SECTORS;
+    let last_lba = total_sectors - GUEST_RESULT_GPT_METADATA_SECTORS - 1;
+    if first_lba > last_lba {
+        return Err("The result disk has no usable aligned GPT partition range.".into());
+    }
+    // Bind the unique partition GUID to the already-generated per-run identifier.
+    let compact = run_id.to_ascii_lowercase();
+    let partition_unique_guid = format!(
+        "{}-{}-{}-{}-{}",
+        &compact[0..8], &compact[8..12], &compact[12..16],
+        &compact[16..20], &compact[20..32]
+    ).to_ascii_uppercase();
+    Ok(GuestResultPartitionPlan {
+        run_id: run_id.to_string(),
+        disk_capacity_bytes,
+        logical_sector_bytes,
+        partition_number: 1,
+        first_lba,
+        last_lba,
+        partition_type_guid: GUEST_RESULT_PARTITION_TYPE_GUID.into(),
+        partition_unique_guid,
+        filesystem: "NTFS".into(),
+        filesystem_label: GUEST_RESULT_FILESYSTEM_LABEL.into(),
+    })
+}
+
+fn validate_guest_result_partition_plan(
+    plan: &GuestResultPartitionPlan,
+    expected_run_id: &str,
+) -> Result<(), String> {
+    let expected = build_guest_result_partition_plan(
+        expected_run_id,
+        GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+        GUEST_RESULT_GPT_SECTOR_BYTES as u32,
+    )?;
+    if plan != &expected {
+        return Err("The result partition plan differs from FRIDAY's fixed per-run GPT and NTFS policy.".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3495,6 +3573,42 @@ mod tests {
         std::os::unix::fs::symlink(&outside, plan.run_directory.join(GUEST_RESULT_VOLUME_OWNER_MARKER)).unwrap();
         assert!(verify_guest_result_volume_directory(&plan, &root).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+
+    #[test]
+    fn result_partition_plan_is_single_aligned_fixed_ntfs_partition() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_partition_plan(
+            run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, 512
+        ).unwrap();
+        assert_eq!(plan.partition_number, 1);
+        assert_eq!(plan.first_lba, 2048);
+        assert_eq!(plan.last_lba, (GUEST_RESULT_VOLUME_CAPACITY_BYTES / 512) - 35);
+        assert_eq!(plan.partition_type_guid, GUEST_RESULT_PARTITION_TYPE_GUID);
+        assert_eq!(plan.partition_unique_guid, "01234567-89AB-CDEF-0123-456789ABCDEF");
+        assert_eq!(plan.filesystem, "NTFS");
+        assert_eq!(plan.filesystem_label, GUEST_RESULT_FILESYSTEM_LABEL);
+        assert_eq!(plan.first_lba % GUEST_RESULT_GPT_ALIGNMENT_SECTORS, 0);
+        validate_guest_result_partition_plan(&plan, run_id).unwrap();
+    }
+
+    #[test]
+    fn result_partition_plan_rejects_capacity_sector_and_identifier_substitution() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        assert!(build_guest_result_partition_plan(run_id, 128 * 1024 * 1024, 512).is_err());
+        assert!(build_guest_result_partition_plan(run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, 4096).is_err());
+        assert!(build_guest_result_partition_plan("../outside", GUEST_RESULT_VOLUME_CAPACITY_BYTES, 512).is_err());
+        let mut plan = build_guest_result_partition_plan(
+            run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, 512
+        ).unwrap();
+        plan.last_lba -= 1;
+        assert!(validate_guest_result_partition_plan(&plan, run_id).is_err());
+        plan = build_guest_result_partition_plan(
+            run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, 512
+        ).unwrap();
+        plan.partition_unique_guid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA".into();
+        assert!(validate_guest_result_partition_plan(&plan, run_id).is_err());
     }
 
 }
