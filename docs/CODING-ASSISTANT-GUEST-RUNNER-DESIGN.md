@@ -944,3 +944,30 @@ finalization into a user-facing run coordinator, or enable a runner executable.
 The fixed minimal environment is still only bootstrap hardening, not network
 or filesystem isolation. No guest execution is connected or enabled; Windows
 CI and physical Windows acceptance remain mandatory.
+
+
+## Launch rollback and output-timeout containment hardening — 2026-11-14
+
+A failure-path audit tightened ownership immediately after successful
+`CreateProcessW`: the returned process and primary-thread handles are now
+wrapped in the suspended-process RAII owner before any subsequent fallible
+pipe-reader setup. If transferring/starting output readers fails, the owner
+terminates the still-suspended process and closes both handles rather than
+leaking a suspended process. Parent copies of child-only pipe/stdin handles
+are closed before the reader coordinator is attached.
+
+Output finalization now treats its deadline as a containment boundary. If the
+owned Job Object still has active processes when the output-drain deadline
+expires, FRIDAY terminates only that Job Object and waits for a further fixed
+two-second shutdown grace. If Windows still reports active members, the
+operation fails explicitly and does not claim complete output. This avoids
+leaving a descendant running indefinitely simply because it retained an
+inherited pipe writer.
+
+These changes improve rollback and timeout cleanup but are not yet a substitute
+for real Windows integration tests that spawn a contained parent/descendant
+tree, prove descendant termination on job close, and flood both native pipes.
+The launch primitive remains disconnected from user commands; guest execution
+is disabled pending restricted-token/AppContainer, network and filesystem
+isolation, protocol/result controls, CI integration tests, and physical Windows
+acceptance.

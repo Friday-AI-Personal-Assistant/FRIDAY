@@ -418,7 +418,26 @@ impl OwnedGuestProcess {
             }
             let now = Instant::now();
             if now >= deadline {
-                return Err("The FRIDAY-owned guest process tree did not become empty before the output-drain deadline; captured output is incomplete.".into());
+                // Never leave a process tree running merely because a descendant
+                // kept an inherited pipe open. Terminate only this run's job,
+                // then give Windows a bounded period to account for its exit.
+                if unsafe {
+                    windows_sys::Win32::System::JobObjects::TerminateJobObject(job.handle, 1)
+                } == 0 {
+                    return Err(last_error("terminate the FRIDAY-owned guest job after output-drain timeout"));
+                }
+                let shutdown_deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    if job.active_process_count()? == 0 {
+                        break;
+                    }
+                    let now = Instant::now();
+                    if now >= shutdown_deadline {
+                        return Err("The FRIDAY-owned guest process tree remained active after output-drain timeout and termination; captured output is incomplete.".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(25).min(shutdown_deadline.saturating_duration_since(now)));
+                }
+                break;
             }
             std::thread::sleep(Duration::from_millis(25).min(deadline.saturating_duration_since(now)));
         }
@@ -577,18 +596,22 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
             }
             return Err("Windows returned incomplete suspended-process handles; execution is refused.".into());
         }
-        // Close the parent's copies of every child-only write/stdin handle
-        // before starting readers. The child owns its allowlisted duplicates.
-        let output = pipes.take_readers()?;
-        drop(pipes.stdout_write);
-        drop(pipes.stderr_write);
-        drop(pipes.stdin_null);
-        Ok(OwnedGuestProcess {
+        // Establish process-handle ownership before any further fallible
+        // operation. If reader setup fails, dropping this guard terminates the
+        // still-suspended process and closes both kernel handles.
+        let mut process = OwnedGuestProcess {
             process: info.hProcess,
             thread: info.hThread,
             resumed: false,
-            output: Some(output),
-        })
+            output: None,
+        };
+        // Close the parent's copies of every child-only write/stdin handle
+        // before starting readers. The child owns its allowlisted duplicates.
+        drop(pipes.stdout_write);
+        drop(pipes.stderr_write);
+        drop(pipes.stdin_null);
+        process.output = Some(pipes.take_readers()?);
+        Ok(process)
     }
 
     fn assign_and_verify(&mut self, process: &mut Self::Process) -> Result<(), String> {
