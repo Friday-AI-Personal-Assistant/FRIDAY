@@ -772,8 +772,11 @@ fn secure_private_workspace_directory(path: &Path) -> Result<(), String> {
             .find(|value| value.starts_with("S-1-") && value.len() <= 184)
             .ok_or_else(|| "FRIDAY could not validate the current Windows account SID.".to_string())?;
         let script = r#"$ErrorActionPreference = 'Stop'
-$path = $args[0]
-$currentSid = $args[1]
+$path = [System.Environment]::GetEnvironmentVariable('FRIDAY_WORKSPACE_PATH')
+$currentSid = [System.Environment]::GetEnvironmentVariable('FRIDAY_WORKSPACE_SID')
+if ([string]::IsNullOrWhiteSpace($path) -or [string]::IsNullOrWhiteSpace($currentSid)) {
+  throw 'ACL_INPUT_MISSING'
+}
 $allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
 try {
   # Use the .NET filesystem ACL APIs directly. Keep stage-specific diagnostics
@@ -807,8 +810,11 @@ try {
         let powershell = system32.join("WindowsPowerShell").join("v1.0").join("powershell.exe");
         let applied = Command::new(powershell)
             .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
-            .arg(path)
-            .arg(sid)
+            // Pass values through the child process environment. PowerShell's
+            // -Command argument parsing does not reliably populate $args for
+            // this invocation shape, and paths may contain spaces or Unicode.
+            .env("FRIDAY_WORKSPACE_PATH", path.as_os_str())
+            .env("FRIDAY_WORKSPACE_SID", sid)
             .output()
             .map_err(|_| "FRIDAY could not apply restrictive Windows workspace permissions.".to_string())?;
         if !applied.status.success() {
