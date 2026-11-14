@@ -1075,3 +1075,25 @@ process. This verifies native breakaway denial on the Windows CI host; it does
 not prove memory-pressure enforcement or CPU throttling under adversarial
 workloads, and it does not replace physical Windows acceptance. The production
 runner remains disconnected and guest execution remains disabled.
+
+
+## Native Windows per-process memory enforcement regression — 2026-11-14
+
+A Windows-only integration regression now creates a real private Job Object
+with a stricter test-only policy: 64 MiB per process and 128 MiB aggregate.
+The test launches a dedicated test-binary helper suspended, assigns it to the
+job, verifies membership, and resumes it only after containment. The helper
+requests and touches 96 MiB through the native Windows virtual-memory API.
+
+The expected outcomes are that Windows refuses the over-limit commit, or
+terminates the exact contained process with the Windows quota-exceeded status.
+If the helper successfully commits and touches the full allocation, the test
+fails. The parent bounds the wait, checks the child result, closes its process
+handle, and verifies the private job becomes empty. The helper remains inert
+unless its explicit child-process environment marker is present.
+
+This regression exercises per-process memory-ceiling enforcement on Windows
+CI. It does not yet prove aggregate job-memory exhaustion behavior or CPU
+throttling under load, and it does not replace physical Windows acceptance.
+The production runner remains disconnected and guest execution remains
+disabled.

@@ -1398,7 +1398,7 @@ mod native_windows_process_integration_tests {
 
     // Launch this exact test binary suspended inside the private job. The
     // environment marker keeps the helper test inert in the parent test suite.
-    fn launch_test_binary_in_job(job: &OwnedGuestJob, test_name: &str) -> OwnedGuestProcess {
+    fn launch_test_binary_in_job(job: &OwnedGuestJob, test_name: &str, marker: &str) -> OwnedGuestProcess {
         use windows_sys::Win32::System::Threading::{
             CreateProcessW, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED,
             CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
@@ -1419,7 +1419,7 @@ mod native_windows_process_integration_tests {
             .filter(|entry| !entry.is_empty())
             .map(|entry| entry.to_vec())
             .collect();
-        entries.push("FRIDAY_NATIVE_BREAKAWAY_CHILD=1".encode_utf16().collect());
+        entries.push(marker.encode_utf16().collect());
         entries.sort_by(|left, right| {
             let key = |entry: &[u16]| {
                 let end = entry.iter().position(|unit| *unit == b'=' as u16).unwrap_or(entry.len());
@@ -1539,6 +1539,7 @@ mod native_windows_process_integration_tests {
         let process = launch_test_binary_in_job(
             &job,
             "coding_sandbox_job::native_windows_process_integration_tests::native_breakaway_attempt_child_helper",
+            "FRIDAY_NATIVE_BREAKAWAY_CHILD=1",
         );
         let waited = unsafe { WaitForSingleObject(process.process, 10_000) };
         if waited != WAIT_OBJECT_0 {
@@ -1549,6 +1550,65 @@ mod native_windows_process_integration_tests {
         assert_ne!(unsafe { GetExitCodeProcess(process.process, &mut exit_code) }, 0,
             "query native breakaway helper exit code");
         assert_eq!(exit_code, 0, "native helper must observe Windows denying breakaway");
+        drop(process);
+        wait_until_job_empty(&job, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn native_process_memory_limit_child_helper() {
+        if std::env::var_os("FRIDAY_NATIVE_MEMORY_CHILD").as_deref()
+            != Some(OsStr::new("1"))
+        {
+            return;
+        }
+        use windows_sys::Win32::System::Memory::{
+            VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
+        };
+        // The test job's per-process ceiling is 64 MiB. Request and touch 96 MiB
+        // so the OS must refuse the commit or terminate this exact test process.
+        const REQUEST_BYTES: usize = 96 * 1024 * 1024;
+        let allocation = unsafe {
+            VirtualAlloc(ptr::null_mut(), REQUEST_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)
+        };
+        if allocation.is_null() {
+            return; // Windows refused the over-limit commit.
+        }
+        // Touch one byte per page to force commitment/accounting rather than
+        // relying on an address-space reservation alone.
+        for offset in (0..REQUEST_BYTES).step_by(4096) {
+            unsafe { (allocation as *mut u8).add(offset).write_volatile(0x5A); }
+        }
+        unsafe { VirtualFree(allocation, 0, MEM_RELEASE); }
+        panic!("Windows allowed a process to commit and touch 96 MiB under a 64 MiB Job Object process ceiling");
+    }
+
+    #[test]
+    fn real_windows_job_enforces_per_process_memory_ceiling() {
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+        const QUOTA_EXCEEDED: u32 = 0xC000_0044;
+        let policy = GuestJobPolicy {
+            per_process_memory_bytes: 64 * 1024 * 1024,
+            job_memory_bytes: 128 * 1024 * 1024,
+            ..GUEST_JOB_POLICY
+        };
+        let job = OwnedGuestJob::create_with_policy(policy).expect("create bounded-memory test job");
+        let process = launch_test_binary_in_job(
+            &job,
+            "coding_sandbox_job::native_windows_process_integration_tests::native_process_memory_limit_child_helper",
+            "FRIDAY_NATIVE_MEMORY_CHILD=1",
+        );
+        let waited = unsafe { WaitForSingleObject(process.process, 15_000) };
+        if waited != WAIT_OBJECT_0 {
+            unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(job.handle, 97); }
+            panic!("memory-limit helper did not finish before its deadline");
+        }
+        let mut exit_code = 0u32;
+        assert_ne!(unsafe { GetExitCodeProcess(process.process, &mut exit_code) }, 0,
+            "query memory-limit helper exit code");
+        assert!(
+            exit_code == 0 || exit_code == QUOTA_EXCEEDED,
+            "expected Windows to refuse the over-limit allocation or terminate the process for quota exhaustion; exit code was {exit_code:#010x}",
+        );
         drop(process);
         wait_until_job_empty(&job, Duration::from_secs(5));
     }
