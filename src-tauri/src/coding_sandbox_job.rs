@@ -81,29 +81,14 @@ impl OwnedGuestJob {
             &mut actual as *mut _ as *mut c_void,
             size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>(),
             "verify process-count and memory limits")?;
-        let required = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
-            | JOB_OBJECT_LIMIT_PROCESS_MEMORY
-            | JOB_OBJECT_LIMIT_JOB_MEMORY;
-        let forbidden = JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
-        if actual.BasicLimitInformation.LimitFlags & required != required
-            || actual.BasicLimitInformation.LimitFlags & forbidden != 0
-            || actual.BasicLimitInformation.ActiveProcessLimit != policy.active_process_limit
-            || actual.ProcessMemoryLimit != policy.per_process_memory_bytes
-            || actual.JobMemoryLimit != policy.job_memory_bytes {
-            return Err("Windows did not retain every required guest process and memory limit; execution is refused.".into());
-        }
+        validate_job_limit_readback(policy, &actual)?;
 
         let mut actual_cpu: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION = unsafe { zeroed() };
         query_info(self.handle, JobObjectCpuRateControlInformation,
             &mut actual_cpu as *mut _ as *mut c_void,
             size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>(),
             "verify the CPU hard cap")?;
-        let cpu_flags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
-        if actual_cpu.ControlFlags & cpu_flags != cpu_flags
-            || unsafe { actual_cpu.Anonymous.CpuRate } != policy.cpu_rate {
-            return Err("Windows did not retain the required guest CPU hard cap; execution is refused.".into());
-        }
+        validate_cpu_limit_readback(policy, &actual_cpu)?;
         Ok(())
     }
 
@@ -146,6 +131,39 @@ impl OwnedGuestJob {
     }
 }
 
+
+/// Validate kernel-reported process and memory policy independently of Win32.
+fn validate_job_limit_readback(
+    policy: GuestJobPolicy,
+    actual: &JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+) -> Result<(), String> {
+    let required = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+        | JOB_OBJECT_LIMIT_PROCESS_MEMORY
+        | JOB_OBJECT_LIMIT_JOB_MEMORY;
+    let forbidden = JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+    if actual.BasicLimitInformation.LimitFlags & required != required
+        || actual.BasicLimitInformation.LimitFlags & forbidden != 0
+        || actual.BasicLimitInformation.ActiveProcessLimit != policy.active_process_limit
+        || actual.ProcessMemoryLimit != policy.per_process_memory_bytes
+        || actual.JobMemoryLimit != policy.job_memory_bytes {
+        return Err("Windows did not retain every required guest process and memory limit, or enabled a forbidden breakaway flag; execution is refused.".into());
+    }
+    Ok(())
+}
+
+fn validate_cpu_limit_readback(
+    policy: GuestJobPolicy,
+    actual: &JOBOBJECT_CPU_RATE_CONTROL_INFORMATION,
+) -> Result<(), String> {
+    let required = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+    if actual.ControlFlags & required != required
+        || unsafe { actual.Anonymous.CpuRate } != policy.cpu_rate {
+        return Err("Windows did not retain the required guest CPU hard cap; execution is refused.".into());
+    }
+    Ok(())
+}
+
 impl Drop for OwnedGuestJob {
     fn drop(&mut self) {
         if !self.handle.is_null() && self.handle != INVALID_HANDLE_VALUE {
@@ -184,6 +202,62 @@ mod tests {
         assert!(GUEST_JOB_POLICY.per_process_memory_bytes <= GUEST_JOB_POLICY.job_memory_bytes);
         assert!(GUEST_JOB_POLICY.active_process_limit > 0);
         assert!(GUEST_JOB_POLICY.cpu_rate > 0 && GUEST_JOB_POLICY.cpu_rate <= 10_000);
+    }
+
+
+    #[test]
+    fn job_limit_readback_rejects_missing_required_flags() {
+        let mut actual: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+        actual.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        assert!(validate_job_limit_readback(GUEST_JOB_POLICY, &actual).is_err());
+    }
+
+    #[test]
+    fn job_limit_readback_rejects_each_breakaway_flag() {
+        let mut actual: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+        actual.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY;
+        actual.BasicLimitInformation.ActiveProcessLimit = GUEST_JOB_POLICY.active_process_limit;
+        actual.ProcessMemoryLimit = GUEST_JOB_POLICY.per_process_memory_bytes;
+        actual.JobMemoryLimit = GUEST_JOB_POLICY.job_memory_bytes;
+        for flag in [JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK] {
+            actual.BasicLimitInformation.LimitFlags |= flag;
+            assert!(validate_job_limit_readback(GUEST_JOB_POLICY, &actual).is_err());
+            actual.BasicLimitInformation.LimitFlags &= !flag;
+        }
+        validate_job_limit_readback(GUEST_JOB_POLICY, &actual).expect("exact policy must pass");
+    }
+
+    #[test]
+    fn job_limit_readback_rejects_weakened_process_and_memory_ceilings() {
+        let mut actual: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+        actual.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY;
+        actual.BasicLimitInformation.ActiveProcessLimit = GUEST_JOB_POLICY.active_process_limit;
+        actual.ProcessMemoryLimit = GUEST_JOB_POLICY.per_process_memory_bytes;
+        actual.JobMemoryLimit = GUEST_JOB_POLICY.job_memory_bytes;
+        validate_job_limit_readback(GUEST_JOB_POLICY, &actual).expect("exact policy must pass");
+        actual.BasicLimitInformation.ActiveProcessLimit -= 1;
+        assert!(validate_job_limit_readback(GUEST_JOB_POLICY, &actual).is_err());
+        actual.BasicLimitInformation.ActiveProcessLimit = GUEST_JOB_POLICY.active_process_limit;
+        actual.ProcessMemoryLimit -= 1;
+        assert!(validate_job_limit_readback(GUEST_JOB_POLICY, &actual).is_err());
+        actual.ProcessMemoryLimit = GUEST_JOB_POLICY.per_process_memory_bytes;
+        actual.JobMemoryLimit -= 1;
+        assert!(validate_job_limit_readback(GUEST_JOB_POLICY, &actual).is_err());
+    }
+
+    #[test]
+    fn cpu_limit_readback_rejects_disabled_or_weakened_hard_cap() {
+        let mut actual: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION = unsafe { zeroed() };
+        actual.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+        unsafe { actual.Anonymous.CpuRate = GUEST_JOB_POLICY.cpu_rate; }
+        validate_cpu_limit_readback(GUEST_JOB_POLICY, &actual).expect("exact CPU policy must pass");
+        actual.ControlFlags &= !JOB_OBJECT_CPU_RATE_CONTROL_ENABLE;
+        assert!(validate_cpu_limit_readback(GUEST_JOB_POLICY, &actual).is_err());
+        actual.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+        unsafe { actual.Anonymous.CpuRate = GUEST_JOB_POLICY.cpu_rate - 1; }
+        assert!(validate_cpu_limit_readback(GUEST_JOB_POLICY, &actual).is_err());
     }
 
     #[test]

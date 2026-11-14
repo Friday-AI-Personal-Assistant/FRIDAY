@@ -1036,3 +1036,22 @@ limit without mistaking a retained handle for a still-running process.
 This test does not yet prove breakaway denial, memory-pressure termination, or
 CPU throttling under load. Those remain explicit resource-enforcement gaps;
 the guest runner is disconnected and guest execution remains disabled.
+
+
+## Fail-closed Job Object policy readback regressions — 2026-11-14
+
+The kernel-readback checks for process-count, per-process memory, aggregate job
+memory, kill-on-close, breakaway prohibition, and CPU hard-cap configuration
+are factored into pure validators. Production queries Windows and passes the
+actual kernel-returned structures through these validators before the Job
+Object can be used. Missing required flags, unexpected breakaway flags,
+altered ceilings, disabled CPU control, or weakened CPU rate are rejected.
+
+Deterministic regressions exercise missing required flags, each breakaway
+permission, weakened process and memory ceilings, disabled CPU enforcement,
+and an altered CPU rate. The existing native Windows test continues to verify
+that Windows accepts and reports the configured production policy.
+
+This improves fail-closed configuration verification; it does not prove memory
+exhaustion or CPU throttling under adversarial workloads, nor replace a native
+breakaway-attempt test. Guest execution remains disabled.
