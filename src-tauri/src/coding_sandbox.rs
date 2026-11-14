@@ -458,16 +458,16 @@ $mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sand
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum GuestResultStorageState {
-    Planned, Created, Attached, Mounted, Shared, GuestStopped,
+    Planned, Created, Attached, GptWriteInProgress, Partitioned, Mounted, Shared, GuestStopped,
     ShareRevoked, Detached, Removed, RecoveryRequired,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum GuestResultStorageEvent {
-    CreateVerified, AttachVerified, MountVerified, GrantShare,
-    ConfirmGuestStopped, RevokeShare, DetachVerified, DeleteVerified,
-    PreserveForRecovery,
+    CreateVerified, AttachVerified, BeginGptInitialization, CompleteGptInitialization,
+    MountVerified, GrantShare, ConfirmGuestStopped, RevokeShare, DetachVerified,
+    DeleteVerified, PreserveForRecovery,
 }
 
 /// Pure lifecycle gate for a future fixed-capacity result volume.
@@ -495,7 +495,9 @@ fn advance_guest_result_storage_state(
     match (state, event) {
         (GuestResultStorageState::Planned, GuestResultStorageEvent::CreateVerified) => Ok(GuestResultStorageState::Created),
         (GuestResultStorageState::Created, GuestResultStorageEvent::AttachVerified) => Ok(GuestResultStorageState::Attached),
-        (GuestResultStorageState::Attached, GuestResultStorageEvent::MountVerified) => Ok(GuestResultStorageState::Mounted),
+        (GuestResultStorageState::Attached, GuestResultStorageEvent::BeginGptInitialization) => Ok(GuestResultStorageState::GptWriteInProgress),
+        (GuestResultStorageState::GptWriteInProgress, GuestResultStorageEvent::CompleteGptInitialization) => Ok(GuestResultStorageState::Partitioned),
+        (GuestResultStorageState::Partitioned, GuestResultStorageEvent::MountVerified) => Ok(GuestResultStorageState::Mounted),
         (GuestResultStorageState::Mounted, GuestResultStorageEvent::GrantShare) => Ok(GuestResultStorageState::Shared),
         (GuestResultStorageState::Shared, GuestResultStorageEvent::ConfirmGuestStopped) if guest_stopped => Ok(GuestResultStorageState::GuestStopped),
         (GuestResultStorageState::GuestStopped, GuestResultStorageEvent::RevokeShare) => Ok(GuestResultStorageState::ShareRevoked),
@@ -2642,6 +2644,290 @@ fn build_guest_result_gpt_metadata(
     })
 }
 
+
+#[cfg(windows)]
+#[repr(C)]
+struct FridayDiskGeometry {
+    cylinders: i64,
+    media_type: u32,
+    tracks_per_cylinder: u32,
+    sectors_per_track: u32,
+    bytes_per_sector: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct FridayDiskGeometryEx {
+    geometry: FridayDiskGeometry,
+    disk_size: i64,
+    data: [u8; 1],
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateFileW(
+        file_name: *const u16,
+        desired_access: u32,
+        share_mode: u32,
+        security_attributes: *const std::ffi::c_void,
+        creation_disposition: u32,
+        flags_and_attributes: u32,
+        template_file: *mut std::ffi::c_void,
+    ) -> *mut std::ffi::c_void;
+    fn DeviceIoControl(
+        device: *mut std::ffi::c_void,
+        control_code: u32,
+        input_buffer: *const std::ffi::c_void,
+        input_buffer_size: u32,
+        output_buffer: *mut std::ffi::c_void,
+        output_buffer_size: u32,
+        bytes_returned: *mut u32,
+        overlapped: *mut std::ffi::c_void,
+    ) -> i32;
+    fn ReadFile(
+        file: *mut std::ffi::c_void,
+        buffer: *mut u8,
+        bytes_to_read: u32,
+        bytes_read: *mut u32,
+        overlapped: *mut std::ffi::c_void,
+    ) -> i32;
+    fn WriteFile(
+        file: *mut std::ffi::c_void,
+        buffer: *const u8,
+        bytes_to_write: u32,
+        bytes_written: *mut u32,
+        overlapped: *mut std::ffi::c_void,
+    ) -> i32;
+    fn SetFilePointerEx(
+        file: *mut std::ffi::c_void,
+        distance: i64,
+        new_position: *mut i64,
+        move_method: u32,
+    ) -> i32;
+    fn FlushFileBuffers(file: *mut std::ffi::c_void) -> i32;
+}
+
+#[cfg(windows)]
+struct OwnedRawGuestDisk(*mut std::ffi::c_void);
+
+#[cfg(windows)]
+impl Drop for OwnedRawGuestDisk {
+    fn drop(&mut self) {
+        const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+        if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+            unsafe { CloseHandle(self.0); }
+            self.0 = std::ptr::null_mut();
+        }
+    }
+}
+
+#[cfg(windows)]
+impl OwnedRawGuestDisk {
+    fn open_attached_device(attached: &OwnedAttachedGuestVhdx) -> Result<Self, String> {
+        use std::os::windows::ffi::OsStrExt;
+        let current_path = guest_vhdx_physical_path(attached.handle.0)?;
+        if current_path != attached.physical_path {
+            return Err("The attached VHDX physical-device identity changed; raw disk access was refused.".into());
+        }
+        let wide: Vec<u16> = std::ffi::OsStr::new(&current_path)
+            .encode_wide().chain(std::iter::once(0)).collect();
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        const OPEN_EXISTING: u32 = 3;
+        const FILE_ATTRIBUTE_NORMAL: u32 = 0x0000_0080;
+        const FILE_FLAG_WRITE_THROUGH: u32 = 0x8000_0000;
+        const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(), GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(),
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return Err("Windows refused raw access to FRIDAY's exact attached result disk.".into());
+        }
+        let owned = Self(handle);
+        owned.verify_fixed_geometry()?;
+        Ok(owned)
+    }
+
+    fn verify_fixed_geometry(&self) -> Result<(), String> {
+        const IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: u32 = 0x0007_00A0;
+        let mut output = [0u64; 8];
+        let mut returned = 0u32;
+        let ok = unsafe {
+            DeviceIoControl(
+                self.0, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+                std::ptr::null(), 0, output.as_mut_ptr() as *mut std::ffi::c_void,
+                std::mem::size_of_val(&output) as u32, &mut returned, std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 || returned < 32 {
+            return Err("Windows could not verify the attached result disk geometry.".into());
+        }
+        let geometry = unsafe { &*(output.as_ptr() as *const FridayDiskGeometryEx) };
+        if geometry.disk_size < 0
+            || geometry.disk_size as u64 != GUEST_RESULT_VOLUME_CAPACITY_BYTES
+            || geometry.geometry.bytes_per_sector as u64 != GUEST_RESULT_GPT_SECTOR_BYTES
+        {
+            return Err("The attached physical device does not match FRIDAY's exact 64 MiB / 512-byte disk policy.".into());
+        }
+        Ok(())
+    }
+
+    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> Result<(), String> {
+        if buffer.is_empty() || buffer.len() > u32::MAX as usize || offset > i64::MAX as u64 {
+            return Err("A raw result-disk read exceeded its fixed bounds.".into());
+        }
+        if unsafe { SetFilePointerEx(self.0, offset as i64, std::ptr::null_mut(), 0) } == 0 {
+            return Err("Windows could not position the result disk for verification.".into());
+        }
+        let mut read = 0u32;
+        if unsafe { ReadFile(self.0, buffer.as_mut_ptr(), buffer.len() as u32, &mut read, std::ptr::null_mut()) } == 0
+            || read as usize != buffer.len()
+        {
+            return Err("Windows returned an incomplete raw result-disk read.".into());
+        }
+        Ok(())
+    }
+
+    fn write_all_at(&self, offset: u64, buffer: &[u8]) -> Result<(), String> {
+        if buffer.is_empty() || buffer.len() > u32::MAX as usize || offset > i64::MAX as u64 {
+            return Err("A raw result-disk write exceeded its fixed bounds.".into());
+        }
+        if unsafe { SetFilePointerEx(self.0, offset as i64, std::ptr::null_mut(), 0) } == 0 {
+            return Err("Windows could not position the result disk for a bounded write.".into());
+        }
+        let mut written = 0u32;
+        if unsafe { WriteFile(self.0, buffer.as_ptr(), buffer.len() as u32, &mut written, std::ptr::null_mut()) } == 0
+            || written as usize != buffer.len()
+        {
+            return Err("Windows returned an incomplete raw result-disk write; the disk must be preserved for recovery.".into());
+        }
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<(), String> {
+        if unsafe { FlushFileBuffers(self.0) } == 0 {
+            return Err("Windows could not flush result-disk metadata; the disk must be preserved for recovery.".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn verify_zero_region(disk: &OwnedRawGuestDisk, first_lba: u64, sector_count: u64) -> Result<(), String> {
+    let total_bytes = sector_count.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+        .ok_or_else(|| "The GPT blank-region size overflowed.".to_string())?;
+    if total_bytes > GUEST_RESULT_VOLUME_CAPACITY_BYTES || total_bytes > 64 * 1024 {
+        return Err("The GPT blank-region check exceeded its fixed bounded read size.".into());
+    }
+    let mut bytes = vec![0u8; total_bytes as usize];
+    disk.read_exact_at(first_lba * GUEST_RESULT_GPT_SECTOR_BYTES, &mut bytes)?;
+    if bytes.iter().any(|byte| *byte != 0) {
+        return Err("The result disk already contains partition metadata or data; initialization was refused.".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn verify_guest_result_gpt_readback(
+    disk: &OwnedRawGuestDisk,
+    plan: &GuestResultPartitionPlan,
+    expected: &GuestResultGptMetadata,
+) -> Result<(), String> {
+    let total_sectors = plan.disk_capacity_bytes / GUEST_RESULT_GPT_SECTOR_BYTES;
+    let backup_entries_lba = total_sectors - 1 - (GUEST_RESULT_GPT_ARRAY_BYTES as u64 / GUEST_RESULT_GPT_SECTOR_BYTES);
+    let mut mbr = vec![0u8; 512];
+    let mut primary_header = vec![0u8; 512];
+    let mut primary_entries = vec![0u8; GUEST_RESULT_GPT_ARRAY_BYTES];
+    let mut backup_entries = vec![0u8; GUEST_RESULT_GPT_ARRAY_BYTES];
+    let mut backup_header = vec![0u8; 512];
+    disk.read_exact_at(0, &mut mbr)?;
+    disk.read_exact_at(512, &mut primary_header)?;
+    disk.read_exact_at(2 * 512, &mut primary_entries)?;
+    disk.read_exact_at(backup_entries_lba * 512, &mut backup_entries)?;
+    disk.read_exact_at((total_sectors - 1) * 512, &mut backup_header)?;
+    if mbr != expected.protective_mbr
+        || primary_header != expected.primary_header
+        || primary_entries != expected.primary_entries
+        || backup_entries != expected.backup_entries
+        || backup_header != expected.backup_header
+        || gpt_crc32(&primary_entries) != u32::from_le_bytes(primary_header[88..92].try_into().unwrap())
+        || gpt_crc32(&backup_entries) != u32::from_le_bytes(backup_header[88..92].try_into().unwrap())
+    {
+        return Err("The GPT metadata read-back differs from FRIDAY's exact layout or CRC policy.".into());
+    }
+    Ok(())
+}
+
+/// Initializes only the verified FRIDAY-owned attached VHDX. It refuses any
+/// nonblank metadata region, journals intent before the first write, writes
+/// backup structures before primary structures, flushes each phase, and
+/// independently reads back every GPT structure before recording success.
+#[cfg(windows)]
+fn initialize_guest_result_gpt(
+    attached: &OwnedAttachedGuestVhdx,
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    journal_root: &Path,
+    current_journal: &GuestResultStorageJournal,
+) -> Result<GuestResultStorageJournal, String> {
+    validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
+    let partition_plan = build_guest_result_partition_plan(
+        &plan.run_id, plan.capacity_bytes, GUEST_RESULT_GPT_SECTOR_BYTES as u32,
+    )?;
+    let metadata = build_guest_result_gpt_metadata(&partition_plan)?;
+    let identifier = verify_guest_result_vhdx_identity(plan, trusted_storage_root)?;
+    if current_journal.run_id != plan.run_id || current_journal.vhdx_identifier != identifier
+        || validate_guest_result_storage_journal(current_journal)? != GuestResultStorageState::Attached
+    {
+        return Err("The GPT initialization journal is not bound to this attached FRIDAY result disk.".into());
+    }
+    let disk = OwnedRawGuestDisk::open_attached_device(attached)?;
+    verify_zero_region(&disk, 0, 34)?;
+    let total_sectors = plan.capacity_bytes / GUEST_RESULT_GPT_SECTOR_BYTES;
+    let backup_entries_lba = total_sectors - 1 - (GUEST_RESULT_GPT_ARRAY_BYTES as u64 / GUEST_RESULT_GPT_SECTOR_BYTES);
+    verify_zero_region(&disk, backup_entries_lba, 33)?;
+
+    let in_progress = append_and_persist_guest_result_storage_transition(
+        journal_root, current_journal, GuestResultStorageEvent::BeginGptInitialization, true, false,
+    )?;
+    let write_result = (|| -> Result<(), String> {
+        disk.write_all_at(backup_entries_lba * 512, &metadata.backup_entries)?;
+        disk.write_all_at((total_sectors - 1) * 512, &metadata.backup_header)?;
+        disk.flush()?;
+        disk.write_all_at(2 * 512, &metadata.primary_entries)?;
+        disk.write_all_at(512, &metadata.primary_header)?;
+        disk.flush()?;
+        disk.write_all_at(0, &metadata.protective_mbr)?;
+        disk.flush()?;
+        verify_guest_result_gpt_readback(&disk, &partition_plan, &metadata)?;
+        disk.verify_fixed_geometry()?;
+        if guest_vhdx_physical_path(attached.handle.0)? != attached.physical_path {
+            return Err("The attached physical-device identity changed after GPT initialization.".into());
+        }
+        if verify_guest_result_vhdx_identity(plan, trusted_storage_root)? != identifier {
+            return Err("The VHDX persistent identity changed after GPT initialization.".into());
+        }
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = append_and_persist_guest_result_storage_transition(
+            journal_root, &in_progress, GuestResultStorageEvent::PreserveForRecovery, false, false,
+        );
+        return Err(format!("{error} The result disk has been preserved for recovery; no automatic retry will occur."));
+    }
+    append_and_persist_guest_result_storage_transition(
+        journal_root, &in_progress, GuestResultStorageEvent::CompleteGptInitialization, true, false,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2665,6 +2951,64 @@ mod tests {
 
     fn valid_guest_request_json() -> Vec<u8> {
         br#"{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","snapshotId":"abcdef0123456789abcdef0123456789","operation":"rust-cargo-test","maxDurationMs":120000,"maxOutputBytes":1048576}"#.to_vec()
+    }
+
+
+    #[test]
+    fn gpt_metadata_contains_matching_primary_backup_tables_and_crc_values() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_partition_plan(
+            run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, 512,
+        ).unwrap();
+        let metadata = build_guest_result_gpt_metadata(&plan).unwrap();
+        assert_eq!(&metadata.protective_mbr[510..512], &[0x55, 0xaa]);
+        assert_eq!(&metadata.primary_header[0..8], b"EFI PART");
+        assert_eq!(&metadata.backup_header[0..8], b"EFI PART");
+        assert_eq!(metadata.primary_entries, metadata.backup_entries);
+        assert_eq!(
+            gpt_crc32(&metadata.primary_entries),
+            u32::from_le_bytes(metadata.primary_header[88..92].try_into().unwrap()),
+        );
+        assert_eq!(
+            gpt_crc32(&metadata.backup_entries),
+            u32::from_le_bytes(metadata.backup_header[88..92].try_into().unwrap()),
+        );
+        assert_eq!(
+            u32::from_le_bytes(metadata.primary_header[16..20].try_into().unwrap()),
+            gpt_crc32(&metadata.primary_header[..GUEST_RESULT_GPT_HEADER_BYTES]),
+        );
+        assert_eq!(
+            u32::from_le_bytes(metadata.backup_header[16..20].try_into().unwrap()),
+            gpt_crc32(&metadata.backup_header[..GUEST_RESULT_GPT_HEADER_BYTES]),
+        );
+        assert_ne!(metadata.disk_guid, plan.partition_unique_guid);
+        assert_eq!(
+            u64::from_le_bytes(metadata.primary_header[24..32].try_into().unwrap()), 1,
+        );
+        assert_eq!(
+            u64::from_le_bytes(metadata.backup_header[24..32].try_into().unwrap()),
+            GUEST_RESULT_VOLUME_CAPACITY_BYTES / 512 - 1,
+        );
+    }
+
+    #[test]
+    fn gpt_lifecycle_requires_journaled_intent_before_completion() {
+        use GuestResultStorageEvent as E;
+        use GuestResultStorageState as S;
+        assert!(advance_guest_result_storage_state(S::Attached, E::CompleteGptInitialization, true, false).is_err());
+        assert_eq!(
+            advance_guest_result_storage_state(S::Attached, E::BeginGptInitialization, true, false).unwrap(),
+            S::GptWriteInProgress,
+        );
+        assert_eq!(
+            advance_guest_result_storage_state(S::GptWriteInProgress, E::CompleteGptInitialization, true, false).unwrap(),
+            S::Partitioned,
+        );
+        assert!(advance_guest_result_storage_state(S::GptWriteInProgress, E::MountVerified, true, false).is_err());
+        assert_eq!(
+            advance_guest_result_storage_state(S::GptWriteInProgress, E::PreserveForRecovery, false, false).unwrap(),
+            S::RecoveryRequired,
+        );
     }
 
     #[test]
@@ -3279,7 +3623,7 @@ mod tests {
         use GuestResultStorageEvent as E;
         use GuestResultStorageState as S;
         let mut state = S::Planned;
-        for event in [E::CreateVerified, E::AttachVerified, E::MountVerified, E::GrantShare,
+        for event in [E::CreateVerified, E::AttachVerified, E::BeginGptInitialization, E::CompleteGptInitialization, E::MountVerified, E::GrantShare,
             E::ConfirmGuestStopped, E::RevokeShare, E::DetachVerified, E::DeleteVerified] {
             state = advance_guest_result_storage_state(state, event, true, event == E::ConfirmGuestStopped)
                 .expect("valid lifecycle transition should succeed");
@@ -3601,6 +3945,28 @@ mod tests {
         assert_eq!(verify_guest_result_vhdx_identity(&plan, &root).unwrap(), identifier);
         let attached = attach_guest_result_vhdx(&plan, &root).unwrap();
         assert!(attached.physical_path().starts_with(r"\\.\PhysicalDrive"));
+        let journal_root = root.join("journal");
+        fs::create_dir(&journal_root).unwrap();
+        secure_private_workspace_directory(&journal_root).unwrap();
+        let empty_journal = GuestResultStorageJournal {
+            schema_version: GUEST_RESULT_STORAGE_JOURNAL_SCHEMA,
+            run_id: run_id.into(),
+            vhdx_identifier: identifier.clone(),
+            entries: Vec::new(),
+        };
+        let created_journal = append_and_persist_guest_result_storage_transition(
+            &journal_root, &empty_journal, GuestResultStorageEvent::CreateVerified, true, false,
+        ).unwrap();
+        let attached_journal = append_and_persist_guest_result_storage_transition(
+            &journal_root, &created_journal, GuestResultStorageEvent::AttachVerified, true, false,
+        ).unwrap();
+        let partitioned_journal = initialize_guest_result_gpt(
+            &attached, &plan, &root, &journal_root, &attached_journal,
+        ).unwrap();
+        assert_eq!(
+            validate_guest_result_storage_journal(&partitioned_journal).unwrap(),
+            GuestResultStorageState::Partitioned,
+        );
         attached.detach().unwrap();
 
         assert!(create_guest_result_vhdx(&plan, &root).is_err(),

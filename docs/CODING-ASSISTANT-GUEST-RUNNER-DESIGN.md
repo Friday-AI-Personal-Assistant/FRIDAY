@@ -1496,3 +1496,31 @@ Native disk writes must first revalidate the attached VHDX identity and exact
 64 MiB geometry, write and flush only the planned sectors, then independently
 read back and validate both GPT copies and all CRCs. Any partial or ambiguous
 write must be preserved for recovery. Guest execution remains disabled.
+
+
+## Journaled native GPT initialization and read-back — 2026-11-14
+
+The Windows host now has a narrowly scoped GPT initialization operation for
+the exact FRIDAY-owned attached result VHDX. It revalidates the per-run
+ownership marker and persistent VHDX identifier, confirms that the Virtual
+Disk API still reports the same PhysicalDrive path, opens only that returned
+device path, and verifies the attached device is exactly 64 MiB with 512-byte
+logical sectors. Before writing, it checks that both GPT metadata regions are
+entirely zero; any pre-existing metadata or data causes refusal.
+
+The durable lifecycle journal now records a begin-initialization transition
+before the first sector write. The operation writes the backup partition
+array/header first, flushes, writes the primary array/header, flushes, then
+writes the protective MBR last and flushes again. It reads back every GPT
+structure, compares the exact bytes, independently recomputes partition-array
+and header CRCs, rechecks disk geometry and VHDX identity, and only then
+records the partitioned state. Any write, flush, read-back, or identity error
+attempts to move the journal into RecoveryRequired; an interrupted journal
+remains fail-closed and must not be automatically retried.
+
+A Windows-native CI regression test now creates a fresh private VHDX, attaches
+it, performs the journaled GPT initialization, verifies the resulting state,
+and detaches it. This operation creates GPT metadata only: it does not create
+or format NTFS, assign a drive letter, mount the volume, expose it to Windows
+Sandbox, or launch guest code. Physical Windows acceptance and filesystem
+formatting remain separate steps; guest execution stays disabled.
