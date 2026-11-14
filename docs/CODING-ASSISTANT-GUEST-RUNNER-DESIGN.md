@@ -1169,3 +1169,27 @@ single exact template FRIDAY generates. It does not prove Windows honors the
 settings, does not create or launch a Sandbox, and does not establish guest
 identity, session ownership, writable result storage, or network isolation.
 The configuration remains preview-only and guest execution remains disabled.
+
+
+## Fixed-capacity result-volume lifecycle gate — 2026-11-14
+
+A pure host-side state machine now defines the only permitted lifecycle order
+for a future per-run fixed-capacity result volume: planned, created, attached,
+mounted, shared, guest-stopped, share-revoked, detached, and removed. Every
+normal transition requires verified FRIDAY ownership. The transition from
+shared to guest-stopped additionally requires positive evidence that the exact
+owned Sandbox session has stopped. Share revocation must precede detach, and
+detach must precede deletion. Out-of-order transitions fail closed.
+
+Any ambiguous or interrupted lifecycle can be moved to a terminal
+recovery-required state that blocks further automatic actions and preserves
+the resource; a removed resource cannot be resurrected into recovery.
+Regression tests cover the complete happy path, premature cleanup, missing
+ownership evidence, missing guest-stop evidence, and recovery-state blocking.
+
+This is a pure ordering/authorization guard, not VHDX creation, attachment,
+formatting, mounting, quota enforcement, Sandbox sharing, or cleanup code. It
+does not prove a mounted VHDX is safely writable through Windows Sandbox.
+Physical Windows tests for fixed capacity, disk-full behavior, guest identity,
+mount-point semantics, crash recovery, and safe dismount remain mandatory.
+Guest execution remains disabled.

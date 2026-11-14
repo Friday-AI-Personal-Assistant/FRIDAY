@@ -511,6 +511,54 @@ $mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sand
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuestResultStorageState {
+    Planned, Created, Attached, Mounted, Shared, GuestStopped,
+    ShareRevoked, Detached, Removed, RecoveryRequired,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuestResultStorageEvent {
+    CreateVerified, AttachVerified, MountVerified, GrantShare,
+    ConfirmGuestStopped, RevokeShare, DetachVerified, DeleteVerified,
+    PreserveForRecovery,
+}
+
+/// Pure lifecycle gate for a future fixed-capacity result volume.
+/// This records allowed ordering only; it performs no disk or Sandbox I/O.
+fn advance_guest_result_storage_state(
+    state: GuestResultStorageState,
+    event: GuestResultStorageEvent,
+    ownership_verified: bool,
+    guest_stopped: bool,
+) -> Result<GuestResultStorageState, String> {
+    if event == GuestResultStorageEvent::PreserveForRecovery {
+        return if state == GuestResultStorageState::Removed {
+            Err("Removed result storage cannot be moved back into recovery.".into())
+        } else {
+            Ok(GuestResultStorageState::RecoveryRequired)
+        };
+    }
+    if state == GuestResultStorageState::RecoveryRequired {
+        return Err("Result storage is preserved for recovery; automatic lifecycle actions are blocked.".into());
+    }
+    if !ownership_verified {
+        return Err("Result-storage ownership could not be verified; the operation was refused.".into());
+    }
+
+    match (state, event) {
+        (GuestResultStorageState::Planned, GuestResultStorageEvent::CreateVerified) => Ok(GuestResultStorageState::Created),
+        (GuestResultStorageState::Created, GuestResultStorageEvent::AttachVerified) => Ok(GuestResultStorageState::Attached),
+        (GuestResultStorageState::Attached, GuestResultStorageEvent::MountVerified) => Ok(GuestResultStorageState::Mounted),
+        (GuestResultStorageState::Mounted, GuestResultStorageEvent::GrantShare) => Ok(GuestResultStorageState::Shared),
+        (GuestResultStorageState::Shared, GuestResultStorageEvent::ConfirmGuestStopped) if guest_stopped => Ok(GuestResultStorageState::GuestStopped),
+        (GuestResultStorageState::GuestStopped, GuestResultStorageEvent::RevokeShare) => Ok(GuestResultStorageState::ShareRevoked),
+        (GuestResultStorageState::ShareRevoked, GuestResultStorageEvent::DetachVerified) => Ok(GuestResultStorageState::Detached),
+        (GuestResultStorageState::Detached, GuestResultStorageEvent::DeleteVerified) => Ok(GuestResultStorageState::Removed),
+        _ => Err("The result-storage lifecycle transition is out of order or lacks required evidence.".into()),
+    }
+}
+
 fn sandbox_policy_state(value: Option<&serde_json::Value>) -> String {
     match value {
         None | Some(serde_json::Value::Null) => "Not configured".into(),
@@ -1579,6 +1627,53 @@ mod tests {
         assert!(build_sandbox_config(&file).is_err());
         assert!(build_sandbox_config(&base.join("missing")).is_err());
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn result_storage_lifecycle_accepts_only_verified_ordered_happy_path() {
+        use GuestResultStorageEvent as E;
+        use GuestResultStorageState as S;
+        let mut state = S::Planned;
+        for event in [E::CreateVerified, E::AttachVerified, E::MountVerified, E::GrantShare,
+            E::ConfirmGuestStopped, E::RevokeShare, E::DetachVerified, E::DeleteVerified] {
+            state = advance_guest_result_storage_state(state, event, true, event == E::ConfirmGuestStopped)
+                .expect("valid lifecycle transition should succeed");
+        }
+        assert_eq!(state, S::Removed);
+    }
+
+    #[test]
+    fn result_storage_lifecycle_refuses_cleanup_before_guest_stop_and_share_revocation() {
+        use GuestResultStorageEvent as E;
+        use GuestResultStorageState as S;
+        assert!(advance_guest_result_storage_state(S::Shared, E::RevokeShare, true, true).is_err());
+        assert!(advance_guest_result_storage_state(S::Shared, E::DetachVerified, true, true).is_err());
+        assert!(advance_guest_result_storage_state(S::Mounted, E::DeleteVerified, true, true).is_err());
+    }
+
+    #[test]
+    fn result_storage_lifecycle_requires_verified_ownership_for_every_action() {
+        use GuestResultStorageEvent as E;
+        use GuestResultStorageState as S;
+        assert!(advance_guest_result_storage_state(S::Planned, E::CreateVerified, false, false).is_err());
+        assert!(advance_guest_result_storage_state(S::Detached, E::DeleteVerified, false, true).is_err());
+    }
+
+    #[test]
+    fn result_storage_lifecycle_requires_positive_guest_stop_evidence() {
+        use GuestResultStorageEvent as E;
+        use GuestResultStorageState as S;
+        assert!(advance_guest_result_storage_state(S::Shared, E::ConfirmGuestStopped, true, false).is_err());
+        assert_eq!(advance_guest_result_storage_state(S::Shared, E::ConfirmGuestStopped, true, true).unwrap(), S::GuestStopped);
+    }
+
+    #[test]
+    fn result_storage_recovery_state_preserves_resources_and_blocks_automatic_actions() {
+        use GuestResultStorageEvent as E;
+        use GuestResultStorageState as S;
+        assert_eq!(advance_guest_result_storage_state(S::Shared, E::PreserveForRecovery, false, false).unwrap(), S::RecoveryRequired);
+        assert!(advance_guest_result_storage_state(S::RecoveryRequired, E::RevokeShare, true, true).is_err());
+        assert!(advance_guest_result_storage_state(S::Removed, E::PreserveForRecovery, true, true).is_err());
     }
 
     #[test]
