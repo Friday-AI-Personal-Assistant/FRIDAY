@@ -1456,7 +1456,7 @@ mod tests {
         assert!(config.contains("<ProtectedClient>Enable</ProtectedClient>"));
         assert!(config.contains("<ReadOnly>true</ReadOnly>"));
         validate_sandbox_config_policy(&config).unwrap();
-        assert!(config.contains("<SandboxFolder>C:\FRIDAY\Project</SandboxFolder>"));
+        assert!(config.contains(r"<SandboxFolder>C:\FRIDAY\Project</SandboxFolder>"));
         assert!(config.contains(canonical.to_str().unwrap()));
         fs::remove_dir_all(base).unwrap();
     }
@@ -1469,7 +1469,7 @@ mod tests {
 <ClipboardRedirection>Disable</ClipboardRedirection>
 <PrinterRedirection>Disable</PrinterRedirection><ProtectedClient>Enable</ProtectedClient>
 <MappedFolders><MappedFolder><HostFolder>C:\\FRIDAY\\Snapshot</HostFolder>
-<SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder><ReadOnly>true</ReadOnly>
+<SandboxFolder>C:\FRIDAY\Project</SandboxFolder><ReadOnly>true</ReadOnly>
 </MappedFolder></MappedFolders></Configuration>"#;
         validate_sandbox_config_policy(safe).unwrap();
         assert!(validate_sandbox_config_policy(&safe.replace(
