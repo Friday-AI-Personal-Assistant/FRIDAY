@@ -236,7 +236,7 @@ impl ProcThreadAttributeList {
     fn new(inherited: &[HANDLE]) -> Result<Self, String> {
         use windows_sys::Win32::System::Threading::{
             InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
-            PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST, LPPROC_THREAD_ATTRIBUTE_LIST,
         };
         let mut required = 0usize;
         unsafe {
@@ -247,7 +247,7 @@ impl ProcThreadAttributeList {
         }
         let words = required.saturating_add(size_of::<usize>() - 1) / size_of::<usize>();
         let mut result = Self { storage: vec![0usize; words], initialized: false };
-        let list = result.storage.as_mut_ptr() as *mut windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_LIST;
+        let list = result.storage.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
         if unsafe { InitializeProcThreadAttributeList(list, 1, 0, &mut required) } == 0 {
             return Err(last_error("initialize the guest process handle allowlist"));
         }
@@ -268,7 +268,7 @@ impl ProcThreadAttributeList {
         Ok(result)
     }
 
-    fn as_mut_ptr(&mut self) -> *mut windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_LIST {
+    fn as_mut_ptr(&mut self) -> windows_sys::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST {
         self.storage.as_mut_ptr() as *mut windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_LIST
     }
 }
@@ -300,12 +300,13 @@ struct GuestPipeHandles {
 impl GuestPipeHandles {
     fn create() -> Result<Self, String> {
         use windows_sys::Win32::Foundation::{
-            SetHandleInformation, HANDLE_FLAG_INHERIT, SECURITY_ATTRIBUTES,
+            SetHandleInformation, HANDLE_FLAG_INHERIT, GENERIC_READ,
         };
         use windows_sys::Win32::System::Pipes::CreatePipe;
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
         use windows_sys::Win32::Storage::FileSystem::{
             CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            GENERIC_READ, OPEN_EXISTING,
+            OPEN_EXISTING,
         };
 
         let mut security: SECURITY_ATTRIBUTES = unsafe { zeroed() };
