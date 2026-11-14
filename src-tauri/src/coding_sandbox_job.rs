@@ -615,7 +615,7 @@ impl ProcessSupervisorBackend for WindowsProcessSupervisor<'_> {
         if unsafe { windows_sys::Win32::System::Threading::GetExitCodeProcess(self.process, &mut code) } == 0 {
             return Err(last_error("read the contained guest process exit code"));
         }
-        if code == STILL_ACTIVE {
+        if code == STILL_ACTIVE as u32 {
             return Err("Windows reported the guest process as still active after signaling it exited.".into());
         }
         Ok(code)
