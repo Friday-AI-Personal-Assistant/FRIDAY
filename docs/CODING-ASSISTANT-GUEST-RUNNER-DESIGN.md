@@ -991,3 +991,24 @@ reader workers must drain both streams to EOF while retaining no more than
 Windows-CI regressions; they do not enable the production runner, provide
 restricted-token/AppContainer or network/filesystem isolation, or replace
 physical Windows acceptance. Guest execution remains disabled.
+
+
+## Native Job Object lifecycle enforcement regressions — 2026-11-14
+
+The Windows CI integration suite now exercises the real kernel-backed lifecycle
+rather than relying only on injected supervisor fakes:
+
+- A contained long-running process is cancelled through the production
+  supervisor; the outcome must be `Cancelled`, and the private job must become
+  empty within the bounded shutdown period.
+- A contained long-running process is stopped by the production supervisor's
+  wall-clock timeout; the outcome must be `TimedOut`, and the private job must
+  become empty within the bounded shutdown period.
+- Closing the owned Job Object handle must terminate its still-running process,
+  verifying the configured `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` behavior.
+
+These tests exercise the owned test process only. They do not prove memory or
+CPU limits under adversarial load, active-process-limit exhaustion, breakaway
+attempt behavior, restricted-token/AppContainer isolation, filesystem or
+network isolation, or physical Windows acceptance. The production runner
+remains disconnected and guest execution remains disabled.

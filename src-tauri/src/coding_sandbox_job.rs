@@ -1346,6 +1346,48 @@ mod native_windows_process_integration_tests {
     }
 
     #[test]
+    fn real_windows_cancellation_terminates_only_the_owned_job() {
+        let job = OwnedGuestJob::create().expect("create real Windows job");
+        let process = launch_test_command_in_job(&job, "ping -n 30 127.0.0.1 >NUL");
+        let cancellation = std::sync::atomic::AtomicBool::new(true);
+        let outcome = supervise_contained_guest_runner(
+            &job,
+            &process,
+            Duration::from_secs(30),
+            &cancellation,
+        ).expect("native cancellation should stop the owned process");
+        assert_eq!(outcome, GuestProcessOutcome::Cancelled);
+        wait_until_job_empty(&job, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn real_windows_timeout_terminates_only_the_owned_job() {
+        let job = OwnedGuestJob::create().expect("create real Windows job");
+        let process = launch_test_command_in_job(&job, "ping -n 30 127.0.0.1 >NUL");
+        let cancellation = std::sync::atomic::AtomicBool::new(false);
+        let outcome = supervise_contained_guest_runner(
+            &job,
+            &process,
+            Duration::from_millis(100),
+            &cancellation,
+        ).expect("native timeout should stop the owned process");
+        assert_eq!(outcome, GuestProcessOutcome::TimedOut);
+        wait_until_job_empty(&job, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn closing_real_windows_job_handle_kills_its_running_process() {
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        let job = OwnedGuestJob::create().expect("create real Windows job");
+        let process = launch_test_command_in_job(&job, "ping -n 30 127.0.0.1 >NUL");
+        let running = unsafe { WaitForSingleObject(process.process, 100) };
+        assert_eq!(running, WAIT_TIMEOUT, "test process should still be running before job close");
+        drop(job); // KILL_ON_JOB_CLOSE must terminate every process owned by this job.
+        let stopped = unsafe { WaitForSingleObject(process.process, 5_000) };
+        assert_eq!(stopped, WAIT_OBJECT_0, "closing the private job must stop its process");
+    }
+
+    #[test]
     fn real_windows_job_owns_descendant_after_root_process_exits() {
         use windows_sys::Win32::System::Threading::WaitForSingleObject;
         let job = OwnedGuestJob::create().expect("create real Windows job");
