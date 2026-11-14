@@ -185,3 +185,284 @@ mod tests {
         assert_eq!(unsafe { cpu.Anonymous.CpuRate }, GUEST_JOB_POLICY.cpu_rate);
     }
 }
+
+
+/// A FRIDAY-owned process created suspended. The process is terminated on drop
+/// unless the complete containment transaction successfully resumes it.
+#[cfg(windows)]
+pub(crate) struct OwnedGuestProcess {
+    process: HANDLE,
+    thread: HANDLE,
+    resumed: bool,
+}
+
+#[cfg(windows)]
+impl OwnedGuestProcess {
+    fn terminate_if_suspended(&mut self) {
+        if !self.resumed && !self.process.is_null() && self.process != INVALID_HANDLE_VALUE {
+            unsafe { windows_sys::Win32::System::Threading::TerminateProcess(self.process, 1); }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnedGuestProcess {
+    fn drop(&mut self) {
+        self.terminate_if_suspended();
+        unsafe {
+            if !self.thread.is_null() && self.thread != INVALID_HANDLE_VALUE {
+                CloseHandle(self.thread);
+            }
+            if !self.process.is_null() && self.process != INVALID_HANDLE_VALUE {
+                CloseHandle(self.process);
+            }
+        }
+        self.thread = ptr::null_mut();
+        self.process = ptr::null_mut();
+    }
+}
+
+/// Inputs are constructed only by trusted FRIDAY code. There is deliberately no
+/// argument-vector or environment field: this first launch primitive starts only
+/// the pinned runner image, with no shell and no inherited handles.
+#[cfg(windows)]
+pub(crate) struct GuestRunnerLaunchSpec {
+    pub(crate) executable: std::path::PathBuf,
+    pub(crate) working_directory: std::path::PathBuf,
+}
+
+#[cfg(windows)]
+trait LaunchBackend {
+    type Process;
+    fn create_suspended(&mut self) -> Result<Self::Process, String>;
+    fn assign_and_verify(&mut self, process: &mut Self::Process) -> Result<(), String>;
+    fn resume(&mut self, process: &mut Self::Process) -> Result<(), String>;
+    fn terminate(&mut self, process: &mut Self::Process);
+}
+
+/// Shared transaction orchestrator. Its ordering is tested with an injected
+/// backend so an assignment/verification failure can never reach resume.
+#[cfg(windows)]
+fn run_launch_transaction<B: LaunchBackend>(backend: &mut B) -> Result<B::Process, String> {
+    let mut process = backend.create_suspended()?;
+    if let Err(error) = backend.assign_and_verify(&mut process) {
+        backend.terminate(&mut process);
+        return Err(error);
+    }
+    if let Err(error) = backend.resume(&mut process) {
+        backend.terminate(&mut process);
+        return Err(error);
+    }
+    Ok(process)
+}
+
+#[cfg(windows)]
+struct WindowsLaunchBackend<'a> {
+    job: &'a OwnedGuestJob,
+    spec: &'a GuestRunnerLaunchSpec,
+}
+
+#[cfg(windows)]
+impl LaunchBackend for WindowsLaunchBackend<'_> {
+    type Process = OwnedGuestProcess;
+
+    fn create_suspended(&mut self) -> Result<Self::Process, String> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::System::Threading::{
+            CreateProcessW, CREATE_NO_WINDOW, CREATE_SUSPENDED, STARTUPINFOW, PROCESS_INFORMATION,
+        };
+
+        // The runner and working directory are trusted FRIDAY paths, never
+        // supplied by the project, model, or guest request.
+        if !self.spec.executable.is_absolute() || !self.spec.working_directory.is_absolute() {
+            return Err("The guest runner executable and working directory must be absolute trusted paths.".into());
+        }
+        let executable_meta = std::fs::symlink_metadata(&self.spec.executable)
+            .map_err(|_| "The pinned guest runner executable is unavailable; execution is refused.".to_string())?;
+        if !executable_meta.file_type().is_file() || executable_meta.file_type().is_symlink() {
+            return Err("The pinned guest runner path is not an ordinary file; execution is refused.".into());
+        }
+        let working_meta = std::fs::symlink_metadata(&self.spec.working_directory)
+            .map_err(|_| "The guest working directory is unavailable; execution is refused.".to_string())?;
+        if !working_meta.file_type().is_dir() || working_meta.file_type().is_symlink() {
+            return Err("The guest working directory is not an ordinary directory; execution is refused.".into());
+        }
+
+        let mut application: Vec<u16> = self.spec.executable.as_os_str().encode_wide().collect();
+        if application.contains(&0) {
+            return Err("The pinned guest runner path contains an invalid NUL character.".into());
+        }
+        application.push(0);
+
+        // No caller-controlled arguments are accepted. The quoted executable is
+        // argv[0]; lpApplicationName independently pins the image being started.
+        let mut command_line = quote_windows_argument(&self.spec.executable);
+        if command_line.contains(&0) {
+            return Err("The guest runner command line contains an invalid NUL character.".into());
+        }
+        let mut command_line_wide: Vec<u16> = command_line.encode_utf16().collect();
+        command_line_wide.push(0);
+
+        let mut working_directory: Vec<u16> = self.spec.working_directory.as_os_str().encode_wide().collect();
+        if working_directory.contains(&0) {
+            return Err("The guest working directory contains an invalid NUL character.".into());
+        }
+        working_directory.push(0);
+
+        let mut startup: STARTUPINFOW = unsafe { zeroed() };
+        startup.cb = size_of::<STARTUPINFOW>() as u32;
+        let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
+        let flags = CREATE_SUSPENDED | CREATE_NO_WINDOW;
+
+        let created = unsafe {
+            CreateProcessW(
+                application.as_ptr(),
+                command_line_wide.as_mut_ptr(),
+                ptr::null(),
+                ptr::null(),
+                0, // No inherited handles.
+                flags,
+                ptr::null(), // Environment inheritance is not a security boundary; runner remains disabled until a fixed environment is added.
+                working_directory.as_ptr(),
+                &startup,
+                &mut info,
+            )
+        };
+        if created == 0 {
+            return Err(last_error("create the pinned guest runner in a suspended state"));
+        }
+        if info.hProcess.is_null() || info.hThread.is_null() {
+            if !info.hProcess.is_null() {
+                unsafe { windows_sys::Win32::System::Threading::TerminateProcess(info.hProcess, 1); }
+                unsafe { CloseHandle(info.hProcess); }
+            }
+            if !info.hThread.is_null() {
+                unsafe { CloseHandle(info.hThread); }
+            }
+            return Err("Windows returned incomplete suspended-process handles; execution is refused.".into());
+        }
+        Ok(OwnedGuestProcess { process: info.hProcess, thread: info.hThread, resumed: false })
+    }
+
+    fn assign_and_verify(&mut self, process: &mut Self::Process) -> Result<(), String> {
+        unsafe { self.job.assign_suspended_process(process.process) }
+    }
+
+    fn resume(&mut self, process: &mut Self::Process) -> Result<(), String> {
+        use windows_sys::Win32::System::Threading::ResumeThread;
+        let previous_suspend_count = unsafe { ResumeThread(process.thread) };
+        if previous_suspend_count == u32::MAX {
+            return Err(last_error("resume the contained guest runner"));
+        }
+        if previous_suspend_count != 1 {
+            // A newly created primary thread must have exactly one suspension
+            // from CREATE_SUSPENDED. Unexpected state is treated as unsafe.
+            return Err("The suspended guest runner had an unexpected thread suspend count; execution is refused.".into());
+        }
+        process.resumed = true;
+        unsafe { CloseHandle(process.thread); }
+        process.thread = ptr::null_mut();
+        Ok(())
+    }
+
+    fn terminate(&mut self, process: &mut Self::Process) {
+        process.terminate_if_suspended();
+    }
+}
+
+#[cfg(windows)]
+fn quote_windows_argument(path: &std::path::Path) -> String {
+    let value = path.to_string_lossy();
+    let mut quoted = String::from("\"");
+    let mut backslashes = 0usize;
+    for character in value.chars() {
+        match character {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.push_str(&"\\".repeat(backslashes * 2 + 1));
+                quoted.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                quoted.push_str(&"\\".repeat(backslashes));
+                backslashes = 0;
+                quoted.push(character);
+            }
+        }
+    }
+    quoted.push_str(&"\\".repeat(backslashes * 2));
+    quoted.push('"');
+    quoted
+}
+
+/// Create, contain, verify, then resume the pinned runner. This remains unused
+/// until a reviewed runner image, fixed environment, guest session and storage
+/// controls are implemented and physically verified.
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn launch_contained_guest_runner(
+    job: &OwnedGuestJob,
+    spec: &GuestRunnerLaunchSpec,
+) -> Result<OwnedGuestProcess, String> {
+    run_launch_transaction(&mut WindowsLaunchBackend { job, spec })
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod launch_transaction_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeBackend {
+        events: Vec<&'static str>,
+        fail_assignment: bool,
+        fail_resume: bool,
+    }
+
+    impl LaunchBackend for FakeBackend {
+        type Process = ();
+
+        fn create_suspended(&mut self) -> Result<Self::Process, String> {
+            self.events.push("create_suspended");
+            Ok(())
+        }
+        fn assign_and_verify(&mut self, _: &mut Self::Process) -> Result<(), String> {
+            self.events.push("assign_and_verify");
+            if self.fail_assignment { Err("assignment rejected".into()) } else { Ok(()) }
+        }
+        fn resume(&mut self, _: &mut Self::Process) -> Result<(), String> {
+            self.events.push("resume");
+            if self.fail_resume { Err("resume rejected".into()) } else { Ok(()) }
+        }
+        fn terminate(&mut self, _: &mut Self::Process) {
+            self.events.push("terminate");
+        }
+    }
+
+    #[test]
+    fn launch_transaction_assigns_and_verifies_before_resume() {
+        let mut backend = FakeBackend::default();
+        run_launch_transaction(&mut backend).unwrap();
+        assert_eq!(backend.events, ["create_suspended", "assign_and_verify", "resume"]);
+    }
+
+    #[test]
+    fn assignment_failure_terminates_without_resuming() {
+        let mut backend = FakeBackend { fail_assignment: true, ..Default::default() };
+        assert!(run_launch_transaction(&mut backend).is_err());
+        assert_eq!(backend.events, ["create_suspended", "assign_and_verify", "terminate"]);
+    }
+
+    #[test]
+    fn resume_failure_terminates_the_still_suspended_process() {
+        let mut backend = FakeBackend { fail_resume: true, ..Default::default() };
+        assert!(run_launch_transaction(&mut backend).is_err());
+        assert_eq!(backend.events, ["create_suspended", "assign_and_verify", "resume", "terminate"]);
+    }
+
+    #[test]
+    fn windows_argument_quoting_preserves_spaces_and_trailing_backslashes() {
+        assert_eq!(quote_windows_argument(std::path::Path::new(r"C:\Program Files\Friday\runner.exe")), r#""C:\Program Files\Friday\runner.exe""#);
+        assert_eq!(quote_windows_argument(std::path::Path::new(r"C:\Friday Folder\")), r#""C:\Friday Folder\\""#);
+    }
+}

@@ -777,3 +777,12 @@ CreateProcessW launch transaction, capture bounded stdout/stderr, or provide
 timeout/cancellation orchestration. Those remain required steps before a
 launch gate can exist. No guest process is launched, and guest execution
 remains disabled. Physical Windows acceptance is still required after CI.
+
+
+## Windows suspended-process containment transaction — implemented, not enabled
+
+The Windows Job Object module now includes a trusted-code launch primitive for a pinned runner image. It accepts only absolute FRIDAY-supplied executable and working-directory paths, verifies both are ordinary filesystem objects, starts the image with `CREATE_SUSPENDED | CREATE_NO_WINDOW`, disables handle inheritance, assigns the process to the already-configured private Job Object, verifies membership, and only then calls `ResumeThread`. The primary thread must report the expected initial suspend count of exactly one. Any assignment, verification, or resume failure terminates the still-suspended process; RAII closes its process/thread handles. There is no shell, model-supplied argument vector, arbitrary executable lookup, or host fallback.
+
+The transaction is factored behind a private launch-backend seam. Windows unit tests assert the exact create → assign/verify → resume order, and inject assignment and resume failures to prove that termination occurs and that assignment failure never reaches resume. A Windows argument-quoting regression covers spaces and trailing backslashes.
+
+This is a launch primitive only, not an enabled guest runner. No runner executable is currently provisioned, no launch call is connected to a user command, and the primitive intentionally has no caller-controlled arguments or protocol channel. It currently inherits the parent environment; that is explicitly not accepted as the final runner environment. Before connecting it, FRIDAY must add a fixed minimal environment, reviewed protocol/stdio handling, a real pinned runner image, bounded output draining, timeout/cancellation, guest session ownership, and enforceable result storage. Physical Windows validation remains mandatory. Guest execution remains disabled.
