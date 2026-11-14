@@ -1363,25 +1363,50 @@ mod native_windows_process_integration_tests {
         drop(process);
     }
 
+    // This test is inert in the parent suite. The flood test launches this
+    // exact test binary in helper mode so the child writes directly to real OS
+    // stdout/stderr pipes without relying on cmd.exe loop parsing or shell speed.
+    #[test]
+    fn native_pipe_flood_child_helper() {
+        if std::env::var_os("FRIDAY_NATIVE_PIPE_FLOOD_CHILD").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        let stderr = std::io::stderr();
+        let mut out = stdout.lock();
+        let mut err = stderr.lock();
+        for _ in 0..6_000 {
+            writeln!(out, "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO")
+                .expect("write native stdout flood");
+            writeln!(err, "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE")
+                .expect("write native stderr flood");
+        }
+        out.flush().expect("flush native stdout flood");
+        err.flush().expect("flush native stderr flood");
+    }
+
     #[test]
     fn real_windows_stdout_and_stderr_floods_are_drained_with_fixed_retention() {
-        let root = std::env::var_os("SystemRoot").expect("Windows SystemRoot");
-        let cmd = std::path::PathBuf::from(root).join("System32").join("cmd.exe");
-        let command = concat!(
-            "for /L %i in (1,1,5000) do @echo OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
-            " & for /L %i in (1,1,5000) do @echo EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE 1>&2"
-        );
-        let mut child = Command::new(cmd)
-            .args(["/D", "/C", command])
+        let executable = std::env::current_exe().expect("current Rust test executable");
+        let mut child = Command::new(executable)
+            .args([
+                "--exact",
+                "coding_sandbox_job::native_windows_process_integration_tests::native_pipe_flood_child_helper",
+                "--nocapture",
+            ])
+            .env("FRIDAY_NATIVE_PIPE_FLOOD_CHILD", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn native pipe flood test process");
+            .expect("spawn native Rust pipe flood test process");
         let stdout = child.stdout.take().expect("stdout pipe");
         let stderr = child.stderr.take().expect("stderr pipe");
         let capture = GuestOutputCapture::start(stdout, stderr);
         let status = wait_for_test_child(&mut child, Duration::from_secs(60));
-        assert!(status.success(), "pipe flood command should exit successfully");
+        assert!(status.success(), "native Rust pipe flood child should exit successfully");
         let result = capture.finish().expect("both native pipe readers should reach EOF");
         assert_eq!(result.stdout.retained_len(), GUEST_STDOUT_RETAIN_LIMIT);
         assert_eq!(result.stderr.retained_len(), GUEST_STDERR_RETAIN_LIMIT);
