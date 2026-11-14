@@ -917,7 +917,7 @@ fn build_sandbox_config(snapshot_path: &Path) -> Result<String, String> {
   <MappedFolders>
     <MappedFolder>
       <HostFolder>{escaped}</HostFolder>
-      <SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder>
+      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
   </MappedFolders>
@@ -1456,7 +1456,7 @@ mod tests {
         assert!(config.contains("<ProtectedClient>Enable</ProtectedClient>"));
         assert!(config.contains("<ReadOnly>true</ReadOnly>"));
         validate_sandbox_config_policy(&config).unwrap();
-        assert!(config.contains("<SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder>"));
+        assert!(config.contains("<SandboxFolder>C:\FRIDAY\Project</SandboxFolder>"));
         assert!(config.contains(canonical.to_str().unwrap()));
         fs::remove_dir_all(base).unwrap();
     }
