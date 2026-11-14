@@ -1024,10 +1024,14 @@ one-process test policy without changing production limits.
 
 A native Windows regression creates a real Job Object with an active-process
 ceiling of one, starts a benign root process inside it, and has that process
-attempt to launch a descendant while remaining alive. The test checks the
-kernel-reported active-process count remains one, then verifies the root exits
-and the job becomes empty within bounded deadlines. This supplements the
-existing policy readback test with a real process-creation enforcement check.
+attempt to launch a descendant. Windows rejects association when the active
+process ceiling would be exceeded and terminates the process being associated.
+The test verifies the root process is signaled, then closes FRIDAY's retained
+root process/thread handles before waiting for the kernel-reported job active
+process count to reach zero. This handle close is significant: Windows documents
+that active-process accounting is decremented only after the terminated process
+and all handles to it are closed. The test therefore checks the real process
+limit without mistaking a retained handle for a still-running process.
 
 This test does not yet prove breakaway denial, memory-pressure termination, or
 CPU throttling under load. Those remain explicit resource-enforcement gaps;

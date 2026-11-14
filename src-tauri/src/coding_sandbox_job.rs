@@ -1374,12 +1374,16 @@ mod native_windows_process_integration_tests {
             WAIT_OBJECT_0,
             "Windows should terminate the process that attempted to exceed the active-process ceiling",
         );
+        // Windows keeps a terminated process in active-process accounting
+        // until every handle to that process is closed. Drop our retained root
+        // process/thread handles before asserting the job has become empty.
+        drop(process);
+        wait_until_job_empty(&job, Duration::from_secs(5));
         assert_eq!(
             job.active_process_count().expect("query active process limit"),
             0,
-            "the over-limit process and any rejected descendant must not remain in the job",
+            "the job must be empty after the terminated process handles are closed",
         );
-        wait_until_job_empty(&job, Duration::from_secs(5));
     }
 
     #[test]
