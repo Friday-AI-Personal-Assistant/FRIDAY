@@ -36,7 +36,7 @@ pub(crate) fn collect_regular_file_paths(
 /// reparse traversal. If the native call is unavailable or rejects the
 /// request, the caller must fail closed rather than fall back to a path open.
 #[cfg(windows)]
-fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
+pub(crate) fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
     use std::{
         mem,
         os::windows::{ffi::OsStrExt, io::{AsRawHandle, FromRawHandle}},
@@ -181,7 +181,7 @@ fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
 /// parent directory. O_NONBLOCK prevents a raced-in FIFO from blocking before
 /// the opened handle can be checked as a regular file.
 #[cfg(unix)]
-fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
+pub(crate) fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
     use std::{
         ffi::CString,
         os::unix::{ffi::OsStrExt, io::{AsRawFd, FromRawFd}},
@@ -546,6 +546,70 @@ fn same_path_handle_identity(path: &Path, handle: &File) -> io::Result<bool> {
 fn same_handle_identity(left: &File, right: &File) -> io::Result<bool> {
     Ok(handle_identity(left)? == handle_identity(right)?)
 }
+
+/// Read exactly one bounded regular file from a directory whose identity is
+/// pinned by a verified handle. Enumeration and opening are relative to that
+/// held handle; no ambient child path is used for the file read.
+pub(crate) fn read_single_bounded_file_from_directory(
+    directory_path: &Path,
+    expected_name: &OsStr,
+    max_bytes: u64,
+) -> io::Result<Vec<u8>> {
+    if max_bytes == 0 || !is_single_normal_component(expected_name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "result file name and byte limit must be valid",
+        ));
+    }
+
+    let directory = open_verified_root_directory(directory_path)?;
+    let mut found: Option<Vec<u8>> = None;
+    for entry in read_dir(&directory, Path::new("."))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name != expected_name || found.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "result directory must contain exactly the expected file",
+            ));
+        }
+        let file_type = entry.file_type()?;
+        if !file_type.is_file() || file_type.is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "result entry is not an ordinary regular file",
+            ));
+        }
+
+        let mut file = open_file_nofollow(&directory, &name)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "result file is empty, non-regular, or exceeds its byte limit",
+            ));
+        }
+        let expected_length = metadata.len();
+        let mut contents = Vec::with_capacity(expected_length as usize);
+        file.by_ref().take(max_bytes.saturating_add(1)).read_to_end(&mut contents)?;
+        if contents.is_empty()
+            || contents.len() as u64 > max_bytes
+            || contents.len() as u64 != expected_length
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "result file changed or exceeded its byte limit while being read",
+            ));
+        }
+        found = Some(contents);
+    }
+
+    found.ok_or_else(|| io::Error::new(
+        io::ErrorKind::NotFound,
+        "result directory does not contain the expected file",
+    ))
+}
+
 
 fn is_single_normal_component(name: &OsStr) -> bool {
     let mut components = Path::new(name).components();
@@ -2036,6 +2100,83 @@ mod tests {
             max_total_bytes: 32 * 1024 * 1024,
         }
     }
+
+    #[test]
+    fn bounded_single_file_reader_accepts_only_the_exact_regular_file() {
+        let directory = make_test_directory("bounded-result-reader");
+        fs::write(directory.join("result.json"), b"{\\"status\\":\\"ok\\"}").unwrap();
+        let bytes = read_single_bounded_file_from_directory(
+            &directory, OsStr::new("result.json"), 128,
+        ).unwrap();
+        assert_eq!(bytes, b"{\\"status\\":\\"ok\\"}");
+
+        fs::write(directory.join("extra.txt"), b"unexpected").unwrap();
+        assert!(read_single_bounded_file_from_directory(
+            &directory, OsStr::new("result.json"), 128,
+        ).is_err());
+        fs::remove_file(directory.join("extra.txt")).unwrap();
+        assert!(read_single_bounded_file_from_directory(
+            &directory, OsStr::new("different.json"), 128,
+        ).is_err());
+        assert!(read_single_bounded_file_from_directory(
+            &directory, OsStr::new("result.json"), 4,
+        ).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_single_file_reader_rejects_file_and_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let parent = make_test_directory("bounded-result-links");
+        let outside = parent.join("outside");
+        let linked_directory = parent.join("linked-directory");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("result.json"), b"outside").unwrap();
+        symlink(&outside, &linked_directory).unwrap();
+        assert!(read_single_bounded_file_from_directory(
+            &linked_directory, OsStr::new("result.json"), 128,
+        ).is_err());
+
+        let local = parent.join("local");
+        fs::create_dir(&local).unwrap();
+        symlink(outside.join("result.json"), local.join("result.json")).unwrap();
+        assert!(read_single_bounded_file_from_directory(
+            &local, OsStr::new("result.json"), 128,
+        ).is_err());
+        fs::remove_file(local.join("result.json")).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bounded_single_file_reader_rejects_windows_junction_result_directory() {
+        use std::process::Command;
+
+        let parent = make_test_directory("bounded-result-junction");
+        let outside = parent.join("outside");
+        let linked = parent.join("linked");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("result.json"), b"outside").unwrap();
+        let output = Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&linked)
+            .arg(&outside)
+            .output()
+            .expect("cmd.exe should be available on Windows");
+        assert!(
+            output.status.success(),
+            "junction creation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(read_single_bounded_file_from_directory(
+            &linked, OsStr::new("result.json"), 128,
+        ).is_err(), "a junction must never be accepted as a result directory");
+        fs::remove_dir(&linked).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+
 
     #[test]
     fn bounded_snapshot_reads_nested_files_through_held_handles() {

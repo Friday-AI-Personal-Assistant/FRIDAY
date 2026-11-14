@@ -1193,3 +1193,26 @@ does not prove a mounted VHDX is safely writable through Windows Sandbox.
 Physical Windows tests for fixed capacity, disk-full behavior, guest identity,
 mount-point semantics, crash recovery, and safe dismount remain mandatory.
 Guest execution remains disabled.
+
+## Handle-relative guest result collection boundary — 2026-11-14
+
+The guest result-file reader now uses the same capability-oriented filesystem
+boundary as production snapshot creation and cleanup. It first acquires and
+identity-verifies the result directory, then enumerates its contents through
+the held directory handle. Exactly one expected filename is accepted. The
+entry must be an ordinary regular file and is opened relative to the held
+parent with the platform no-follow primitive; the opened handle's type and
+size are checked before a bounded read. No ambient absolute child path is used
+after the directory handle is acquired.
+
+Regression coverage verifies valid bounded reads, missing/wrong/extra entries,
+size overflow, Unix file and directory symlinks, and a Windows junction used as
+the result directory. The JSON schema, run ID, operation, exit/status
+consistency, duration, and per-run output checks still run after the safe read.
+
+This closes the prior path-based result-directory canonicalization window in
+which a directory could be replaced between a path check and subsequent
+enumeration. It does not authenticate guest output or create a guest result
+channel: no writable share, VHDX, Sandbox session, or execution path is
+connected. Windows CI remains necessary, and physical Windows mapped-folder,
+reparse-point, ownership, and crash-recovery acceptance remain separate gates.

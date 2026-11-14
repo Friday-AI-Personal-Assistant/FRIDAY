@@ -110,12 +110,7 @@ fn validate_guest_result_json(
 
 const GUEST_RESULT_FILE_NAME: &str = "result.json";
 
-fn validate_guest_result_directory_entries(names: &[String]) -> Result<(), String> {
-    if names.len() != 1 || names[0] != GUEST_RESULT_FILE_NAME {
-        return Err("The guest result folder must contain exactly one file named result.json; unexpected or missing entries are rejected.".into());
-    }
-    Ok(())
-}
+const GUEST_RESULT_FILE_NAME: &str = "result.json";
 
 fn read_verified_guest_result_file(
     result_directory: &Path,
@@ -123,60 +118,11 @@ fn read_verified_guest_result_file(
     expected_operation: GuestRunOperation,
     max_output_bytes: u64,
 ) -> Result<GuestRunResult, String> {
-    let directory_metadata = fs::symlink_metadata(result_directory)
-        .map_err(|_| "The guest result directory is unavailable.".to_string())?;
-    if !directory_metadata.is_dir() || is_reparse_or_symlink(&directory_metadata) {
-        return Err("The guest result directory is not a normal directory.".into());
-    }
-    let canonical_directory = fs::canonicalize(result_directory)
-        .map_err(|_| "FRIDAY could not verify the guest result directory.".to_string())?;
-
-    let entries = fs::read_dir(&canonical_directory)
-        .map_err(|_| "FRIDAY could not inspect the guest result directory.".to_string())?;
-    let mut entry_names = Vec::new();
-    for entry in entries {
-        let entry = entry
-            .map_err(|_| "FRIDAY could not inspect a guest result entry.".to_string())?;
-        let name = entry.file_name().into_string()
-            .map_err(|_| "The guest result directory contains a non-text filename.".to_string())?;
-        entry_names.push(name);
-    }
-    validate_guest_result_directory_entries(&entry_names)?;
-
-    let result_path = canonical_directory.join(GUEST_RESULT_FILE_NAME);
-    let path_metadata = fs::symlink_metadata(&result_path)
-        .map_err(|_| "The guest result file is unavailable.".to_string())?;
-    if !path_metadata.is_file() || is_reparse_or_symlink(&path_metadata)
-        || path_metadata.len() == 0 || path_metadata.len() > MAX_GUEST_RESULT_BYTES as u64
-    {
-        return Err("The guest result must be a bounded regular file, not a link or reparse point.".into());
-    }
-    let canonical_result = fs::canonicalize(&result_path)
-        .map_err(|_| "FRIDAY could not verify the guest result file path.".to_string())?;
-    if canonical_result.parent() != Some(canonical_directory.as_path())
-        || canonical_result.file_name() != Some(OsStr::new(GUEST_RESULT_FILE_NAME))
-    {
-        return Err("The guest result file failed its directory-boundary check.".into());
-    }
-
-    let mut file = open_source_file(&result_path)
-        .map_err(|_| "The guest result file could not be opened without following links.".to_string())?;
-    let opened_metadata = file.metadata()
-        .map_err(|_| "FRIDAY could not verify the opened guest result file.".to_string())?;
-    if !opened_metadata.is_file() || is_reparse_or_symlink(&opened_metadata)
-        || opened_metadata.len() != path_metadata.len()
-        || opened_metadata.len() > MAX_GUEST_RESULT_BYTES as u64
-    {
-        return Err("The guest result file changed or failed its size and file-type checks.".into());
-    }
-    let mut bytes = Vec::with_capacity(opened_metadata.len() as usize);
-    file.by_ref().take(MAX_GUEST_RESULT_BYTES as u64 + 1).read_to_end(&mut bytes)
-        .map_err(|_| "FRIDAY could not read the guest result file safely.".to_string())?;
-    if bytes.is_empty() || bytes.len() > MAX_GUEST_RESULT_BYTES
-        || bytes.len() as u64 != opened_metadata.len()
-    {
-        return Err("The guest result file is empty, oversized, or changed while being read.".into());
-    }
+    let bytes = crate::coding_sandbox_fs::read_single_bounded_file_from_directory(
+        result_directory,
+        OsStr::new(GUEST_RESULT_FILE_NAME),
+        MAX_GUEST_RESULT_BYTES as u64,
+    ).map_err(|_| "The guest result directory or file could not be safely verified and read.".to_string())?;
     validate_guest_result_json_with_limit(
         &bytes, expected_run_id, expected_operation, max_output_bytes,
     )
