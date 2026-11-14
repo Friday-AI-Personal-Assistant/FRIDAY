@@ -1,7 +1,7 @@
 //! Windows Job Object resource containment primitives for the future guest runner.
 use std::{ffi::c_void, mem::{size_of, zeroed}, ptr};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT, STILL_ACTIVE},
     System::{
         JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, QueryInformationJobObject,
@@ -594,7 +594,7 @@ struct WindowsProcessSupervisor<'a> {
 #[cfg(windows)]
 impl ProcessSupervisorBackend for WindowsProcessSupervisor<'_> {
     fn wait(&mut self, timeout_ms: u32) -> Result<ProcessWaitState, String> {
-        use windows_sys::Win32::System::Threading::{WaitForSingleObject, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
         match unsafe { WaitForSingleObject(self.process, timeout_ms) } {
             WAIT_OBJECT_0 => Ok(ProcessWaitState::Exited),
             WAIT_TIMEOUT => Ok(ProcessWaitState::StillRunning),
@@ -615,7 +615,7 @@ impl ProcessSupervisorBackend for WindowsProcessSupervisor<'_> {
         if unsafe { windows_sys::Win32::System::Threading::GetExitCodeProcess(self.process, &mut code) } == 0 {
             return Err(last_error("read the contained guest process exit code"));
         }
-        if code == windows_sys::Win32::System::Threading::STILL_ACTIVE {
+        if code == STILL_ACTIVE {
             return Err("Windows reported the guest process as still active after signaling it exited.".into());
         }
         Ok(code)
