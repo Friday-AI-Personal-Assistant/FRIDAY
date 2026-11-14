@@ -1216,3 +1216,31 @@ enumeration. It does not authenticate guest output or create a guest result
 channel: no writable share, VHDX, Sandbox session, or execution path is
 connected. Windows CI remains necessary, and physical Windows mapped-folder,
 reparse-point, ownership, and crash-recovery acceptance remain separate gates.
+
+
+## Exact Windows Sandbox session ownership and lifecycle gate — 2026-11-14
+
+A pure host-side session lifecycle gate now models the ownership sequence for a
+future FRIDAY-created Windows Sandbox session: planned, launch requested,
+process observed, session confirmed, running, stop requested, stopped, and
+ownership record removed. Any ambiguous state can be preserved for recovery,
+which blocks automatic stop or cleanup.
+
+The process identity contract binds four values together: a generated
+32-character run/session identifier, the exact process ID, the process
+creation timestamp, and the absolute WindowsSandbox.exe image path. PID alone
+is explicitly insufficient because Windows can reuse process IDs. Before
+session confirmation or a stop request, the observed identity must exactly
+match FRIDAY's recorded identity and ownership must be positively verified.
+The stop transition additionally requires explicit evidence that the exact
+process has exited. A mismatch, missing identity, invalid image path,
+out-of-order event, or missing stop evidence fails closed.
+
+Regression tests cover the complete owned lifecycle, malformed identities,
+PID reuse with a changed creation timestamp, executable-path substitution,
+foreign-process mismatch, stop without ownership proof, and recovery-state
+blocking. This is a pure contract/state-machine implementation: it does not
+launch, enumerate, terminate, or attach to Windows Sandbox processes, persist
+session records, or enable guest execution. The production launcher remains
+disconnected and guest execution remains disabled pending a supported bounded
+result-transfer mechanism and physical Windows acceptance.

@@ -503,6 +503,136 @@ fn advance_guest_result_storage_state(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SandboxSessionState {
+    Planned,
+    LaunchRequested,
+    ProcessObserved,
+    SessionConfirmed,
+    Running,
+    StopRequested,
+    Stopped,
+    Removed,
+    RecoveryRequired,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SandboxSessionEvent {
+    RequestLaunch,
+    ObserveProcess,
+    ConfirmSession,
+    ConfirmRunning,
+    RequestStop,
+    ConfirmStopped,
+    RemoveOwnershipRecord,
+    PreserveForRecovery,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SandboxProcessIdentity {
+    session_id: String,
+    process_id: u32,
+    process_creation_time: u64,
+    image_path: String,
+}
+
+fn valid_windows_sandbox_image_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let drive_absolute = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/');
+    let unc_absolute = value.starts_with(r"\\") || value.starts_with(r"\\?\\");
+    let normalized = value.replace('/', r"\\");
+    let has_parent_component = normalized.split(r"\\").any(|part| part == "..");
+    let file_name = normalized.rsplit(r"\\").next().unwrap_or("");
+    (drive_absolute || unc_absolute)
+        && !has_parent_component
+        && file_name.eq_ignore_ascii_case("WindowsSandbox.exe")
+}
+
+fn validate_sandbox_process_identity(identity: &SandboxProcessIdentity) -> Result<(), String> {
+    if !valid_snapshot_id(&identity.session_id)
+        || identity.process_id <= 4
+        || identity.process_creation_time == 0
+        || !valid_windows_sandbox_image_path(&identity.image_path)
+    {
+        return Err("The Windows Sandbox process identity is incomplete or invalid.".into());
+    }
+    Ok(())
+}
+
+/// Pure ownership gate. A stop or cleanup is authorized only for the exact
+/// process identity FRIDAY recorded and re-verified; PID alone is never enough.
+fn advance_sandbox_session(
+    state: SandboxSessionState,
+    event: SandboxSessionEvent,
+    identity: Option<&SandboxProcessIdentity>,
+    observed_identity: Option<&SandboxProcessIdentity>,
+    ownership_verified: bool,
+    process_confirmed_stopped: bool,
+) -> Result<SandboxSessionState, String> {
+    if event == SandboxSessionEvent::PreserveForRecovery {
+        return if state == SandboxSessionState::Removed {
+            Err("A removed Sandbox session record cannot be restored to recovery.".into())
+        } else {
+            Ok(SandboxSessionState::RecoveryRequired)
+        };
+    }
+    if state == SandboxSessionState::RecoveryRequired {
+        return Err("Sandbox session ownership is ambiguous; automatic actions are blocked.".into());
+    }
+    match event {
+        SandboxSessionEvent::RequestLaunch if state == SandboxSessionState::Planned => {
+            Ok(SandboxSessionState::LaunchRequested)
+        }
+        SandboxSessionEvent::ObserveProcess if state == SandboxSessionState::LaunchRequested => {
+            let observed = observed_identity.ok_or_else(|| "No Sandbox process identity was observed.".to_string())?;
+            validate_sandbox_process_identity(observed)?;
+            Ok(SandboxSessionState::ProcessObserved)
+        }
+        SandboxSessionEvent::ConfirmSession if state == SandboxSessionState::ProcessObserved => {
+            let expected = identity.ok_or_else(|| "FRIDAY's recorded Sandbox process identity is missing.".to_string())?;
+            let observed = observed_identity.ok_or_else(|| "The observed Sandbox process identity is missing.".to_string())?;
+            validate_sandbox_process_identity(expected)?;
+            validate_sandbox_process_identity(observed)?;
+            if expected != observed || !ownership_verified {
+                return Err("The observed Sandbox process does not match FRIDAY's exact owned session.".into());
+            }
+            Ok(SandboxSessionState::SessionConfirmed)
+        }
+        SandboxSessionEvent::ConfirmRunning if state == SandboxSessionState::SessionConfirmed => {
+            if !ownership_verified {
+                return Err("Sandbox ownership was not re-verified before marking the session running.".into());
+            }
+            Ok(SandboxSessionState::Running)
+        }
+        SandboxSessionEvent::RequestStop if state == SandboxSessionState::Running => {
+            let expected = identity.ok_or_else(|| "FRIDAY's recorded Sandbox process identity is missing.".to_string())?;
+            let observed = observed_identity.ok_or_else(|| "The current Sandbox process identity is missing.".to_string())?;
+            validate_sandbox_process_identity(expected)?;
+            validate_sandbox_process_identity(observed)?;
+            if expected != observed || !ownership_verified {
+                return Err("Stopping was refused because the Sandbox process identity or ownership changed.".into());
+            }
+            Ok(SandboxSessionState::StopRequested)
+        }
+        SandboxSessionEvent::ConfirmStopped if state == SandboxSessionState::StopRequested => {
+            if !process_confirmed_stopped {
+                return Err("The exact owned Sandbox process has not been confirmed stopped.".into());
+            }
+            Ok(SandboxSessionState::Stopped)
+        }
+        SandboxSessionEvent::RemoveOwnershipRecord if state == SandboxSessionState::Stopped => {
+            if !ownership_verified {
+                return Err("Sandbox ownership evidence is required before removing its session record.".into());
+            }
+            Ok(SandboxSessionState::Removed)
+        }
+        _ => Err("The Sandbox session transition is out of order or lacks exact ownership evidence.".into()),
+    }
+}
+
 fn sandbox_policy_state(value: Option<&serde_json::Value>) -> String {
     match value {
         None | Some(serde_json::Value::Null) => "Not configured".into(),
