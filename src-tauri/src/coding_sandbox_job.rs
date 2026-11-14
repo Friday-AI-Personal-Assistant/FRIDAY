@@ -269,7 +269,7 @@ impl ProcThreadAttributeList {
     }
 
     fn as_mut_ptr(&mut self) -> windows_sys::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST {
-        self.storage.as_mut_ptr() as *mut windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_LIST
+        self.storage.as_mut_ptr() as windows_sys::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST
     }
 }
 
@@ -537,10 +537,10 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
         }
         // Close the parent's copies of every child-only write/stdin handle
         // before starting readers. The child owns its allowlisted duplicates.
+        let output = pipes.take_readers()?;
         drop(pipes.stdout_write);
         drop(pipes.stderr_write);
         drop(pipes.stdin_null);
-        let output = pipes.take_readers()?;
         Ok(OwnedGuestProcess {
             process: info.hProcess,
             thread: info.hThread,
