@@ -621,6 +621,215 @@ fn validate_guest_result_volume_plan(
 const GUEST_RESULT_VOLUME_OWNER_MARKER: &str = ".friday-result-volume-owner.json";
 const GUEST_RESULT_VOLUME_OWNER_SCHEMA: u32 = 1;
 
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FridayWindowsGuid {
+    data1: u32,
+    data2: u16,
+    data3: u16,
+    data4: [u8; 8],
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct FridayVirtualStorageType {
+    device_id: u32,
+    vendor_id: FridayWindowsGuid,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FridayCreateVirtualDiskVersion2 {
+    unique_id: FridayWindowsGuid,
+    maximum_size: u64,
+    block_size_in_bytes: u32,
+    sector_size_in_bytes: u32,
+    physical_sector_size_in_bytes: u32,
+    parent_path: *const u16,
+    source_path: *const u16,
+    open_flags: u32,
+    parent_virtual_storage_type: FridayVirtualStorageType,
+    source_virtual_storage_type: FridayVirtualStorageType,
+    resiliency_guid: FridayWindowsGuid,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+union FridayCreateVirtualDiskParametersUnion {
+    version2: std::mem::ManuallyDrop<FridayCreateVirtualDiskVersion2>,
+    alignment: [u64; 16],
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct FridayCreateVirtualDiskParameters {
+    version: u32,
+    parameters: FridayCreateVirtualDiskParametersUnion,
+}
+
+#[cfg(windows)]
+#[link(name = "virtdisk")]
+extern "system" {
+    fn CreateVirtualDisk(
+        virtual_storage_type: *const FridayVirtualStorageType,
+        path: *const u16,
+        virtual_disk_access_mask: u32,
+        security_descriptor: *const std::ffi::c_void,
+        flags: u32,
+        provider_specific_flags: u32,
+        parameters: *const FridayCreateVirtualDiskParameters,
+        overlapped: *mut std::ffi::c_void,
+        handle: *mut *mut std::ffi::c_void,
+    ) -> u32;
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+}
+
+#[cfg(windows)]
+struct OwnedVirtualDiskHandle(*mut std::ffi::c_void);
+
+#[cfg(windows)]
+impl OwnedVirtualDiskHandle {
+    fn close(mut self) -> Result<(), String> {
+        let handle = std::mem::replace(&mut self.0, std::ptr::null_mut());
+        if handle.is_null() || unsafe { CloseHandle(handle) } == 0 {
+            return Err("Windows could not close the newly created virtual-disk handle; the resource was preserved for recovery.".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnedVirtualDiskHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { CloseHandle(self.0); }
+            self.0 = std::ptr::null_mut();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn create_guest_result_vhdx(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<PathBuf, String> {
+    validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
+    let verified_directory = verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    if verified_directory != plan.run_directory {
+        return Err("The result-volume directory identity changed; VHDX creation was refused.".into());
+    }
+    match fs::symlink_metadata(&plan.vhdx_path) {
+        Ok(_) => return Err("A result VHDX already exists; replacement is refused.".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("The result VHDX path could not be safely inspected.".into()),
+    }
+    if plan.capacity_bytes != GUEST_RESULT_VOLUME_CAPACITY_BYTES
+        || plan.capacity_bytes < 3 * 1024 * 1024
+        || plan.capacity_bytes % 512 != 0
+    {
+        return Err("The result VHDX capacity is outside FRIDAY's fixed creation policy.".into());
+    }
+
+    use std::os::windows::ffi::OsStrExt;
+    let path_wide: Vec<u16> = plan.vhdx_path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    if path_wide.len() <= 1 {
+        return Err("The result VHDX path is invalid.".into());
+    }
+
+    // Microsoft VHDX provider. Version 2 is required for the VHDX 1 MiB
+    // block-size and 4 KiB physical-sector settings. A zero GUID requests a
+    // system-generated unique disk identifier; no parent/source disk is used.
+    let storage_type = FridayVirtualStorageType {
+        device_id: 3, // VIRTUAL_STORAGE_TYPE_DEVICE_VHDX
+        vendor_id: FridayWindowsGuid {
+            data1: 0xec984aec,
+            data2: 0xa0f9,
+            data3: 0x47e9,
+            data4: [0x90, 0x1f, 0x71, 0x41, 0x5a, 0x66, 0x34, 0x5b],
+        },
+    };
+    let zero_guid = FridayWindowsGuid {
+        data1: 0, data2: 0, data3: 0, data4: [0; 8],
+    };
+    let version2 = FridayCreateVirtualDiskVersion2 {
+        unique_id: zero_guid,
+        maximum_size: plan.capacity_bytes,
+        block_size_in_bytes: 1024 * 1024,
+        sector_size_in_bytes: 512,
+        physical_sector_size_in_bytes: 4096,
+        parent_path: std::ptr::null(),
+        source_path: std::ptr::null(),
+        open_flags: 0,
+        parent_virtual_storage_type: FridayVirtualStorageType {
+            device_id: 0, vendor_id: zero_guid,
+        },
+        source_virtual_storage_type: FridayVirtualStorageType {
+            device_id: 0, vendor_id: zero_guid,
+        },
+        resiliency_guid: zero_guid,
+    };
+    let parameters = FridayCreateVirtualDiskParameters {
+        version: 2, // CREATE_VIRTUAL_DISK_VERSION_2
+        parameters: FridayCreateVirtualDiskParametersUnion {
+            version2: std::mem::ManuallyDrop::new(version2),
+        },
+    };
+
+    let mut raw_handle: *mut std::ffi::c_void = std::ptr::null_mut();
+    // VIRTUAL_DISK_ACCESS_NONE is required for Version 2. FULL_PHYSICAL_ALLOCATION
+    // requests a fixed-size VHDX instead of a dynamically expanding backing file.
+    let status = unsafe {
+        CreateVirtualDisk(
+            &storage_type,
+            path_wide.as_ptr(),
+            0,
+            std::ptr::null(),
+            0x1, // CREATE_VIRTUAL_DISK_FLAG_FULL_PHYSICAL_ALLOCATION
+            0,
+            &parameters,
+            std::ptr::null_mut(),
+            &mut raw_handle,
+        )
+    };
+    if status != 0 {
+        return Err(format!("Windows refused to create the private result VHDX (error {status}); the run directory was preserved."));
+    }
+    if raw_handle.is_null() {
+        return Err("Windows reported VHDX creation without returning an owned handle; the run directory was preserved.".into());
+    }
+    OwnedVirtualDiskHandle(raw_handle).close()?;
+
+    // Verify the resulting object through a no-follow file open. Never delete
+    // an unexpected or partially-created file automatically; recovery owns it.
+    let metadata = fs::symlink_metadata(&plan.vhdx_path)
+        .map_err(|_| "Windows created a VHDX that FRIDAY could not safely inspect; it was preserved for recovery.".to_string())?;
+    if !metadata.is_file() || is_reparse_or_symlink(&metadata) || metadata.len() < 8 {
+        return Err("The created result VHDX is not an ordinary non-empty file; it was preserved for recovery.".into());
+    }
+    let mut file = open_source_file(&plan.vhdx_path)
+        .map_err(|_| "The created result VHDX could not be opened without following links; it was preserved.".to_string())?;
+    let opened = file.metadata()
+        .map_err(|_| "The created result VHDX handle could not be verified; it was preserved.".to_string())?;
+    if !opened.is_file() || is_reparse_or_symlink(&opened) || opened.len() != metadata.len() {
+        return Err("The result VHDX changed during verification; it was preserved for recovery.".into());
+    }
+    let mut signature = [0u8; 8];
+    file.read_exact(&mut signature)
+        .map_err(|_| "The result VHDX header could not be read; it was preserved for recovery.".to_string())?;
+    if &signature != b"vhdxfile" {
+        return Err("Windows returned a file without the expected VHDX signature; it was preserved for recovery.".into());
+    }
+    Ok(plan.vhdx_path.clone())
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GuestResultVolumeOwnershipMarker {
@@ -2213,6 +2422,30 @@ mod tests {
         assert!(reserved.join(GUEST_RESULT_VOLUME_OWNER_MARKER).is_file());
         assert_eq!(verify_guest_result_volume_directory(&plan, &root).unwrap(), reserved);
         assert!(reserve_guest_result_volume_directory(&plan, &root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_result_vhdx_creation_produces_fixed_private_vhdx_and_refuses_reuse() {
+        let root = make_test_directory("native-result-vhdx");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        reserve_guest_result_volume_directory(&plan, &root).unwrap();
+        let created = create_guest_result_vhdx(&plan, &root).unwrap();
+        assert_eq!(created, plan.vhdx_path);
+        let metadata = fs::symlink_metadata(&created).unwrap();
+        assert!(metadata.is_file());
+        assert!(!is_reparse_or_symlink(&metadata));
+        assert!(metadata.len() >= 8);
+        let mut file = open_source_file(&created).unwrap();
+        let mut signature = [0u8; 8];
+        file.read_exact(&mut signature).unwrap();
+        assert_eq!(&signature, b"vhdxfile");
+        assert!(create_guest_result_vhdx(&plan, &root).is_err(),
+            "a pre-existing result VHDX must never be replaced");
+        drop(file);
+        fs::remove_file(created).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

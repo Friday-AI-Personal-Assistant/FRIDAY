@@ -1287,3 +1287,31 @@ missing or mismatched marker contents, and a symlinked marker. This is still
 only host directory reservation and ownership proof. VHDX creation, filesystem
 formatting, attachment, guest mapping, disk-full enforcement, share revocation,
 and cleanup are not implemented by this layer. No guest execution is enabled.
+
+
+## Native fixed-capacity result VHDX creation — 2026-11-14
+
+The first native Windows result-storage operation now uses the Windows Virtual
+Disk API to create a Microsoft VHDX at the exact per-run path derived by the
+trusted plan. Creation is permitted only after the run directory's private
+permissions and ownership marker have been verified. The operation uses the
+fixed 64 MiB policy capacity, VHDX format, 1 MiB block size, 512-byte logical
+sectors, 4 KiB physical sectors, no parent/source disk, and the fixed-size
+physical-allocation flag. Version 2 creation uses no virtual-disk access rights.
+
+The returned handle is immediately placed under RAII ownership and explicitly
+closed before the resulting file is inspected. FRIDAY then opens the file
+without following reparse points, verifies its ordinary-file identity and
+checks the VHDX file signature. Existing files are never replaced. Any
+ambiguous or partially-created resource is preserved for recovery rather than
+automatically deleted.
+
+A Windows-only integration regression creates a real 64 MiB fixed VHDX on the
+Windows CI host, checks its signature and ordinary-file identity, and verifies
+that a second creation attempt is refused. This step does not attach, partition,
+format, mount, share, or expose the VHDX to Windows Sandbox. It does not yet
+verify the virtual capacity through the Windows disk-information API or prove
+disk-full behavior. The result-storage lifecycle remains disconnected from
+guest execution, and guest execution remains disabled pending the remaining
+attachment, filesystem, mount, share-revocation, recovery, and physical Windows
+acceptance gates.
