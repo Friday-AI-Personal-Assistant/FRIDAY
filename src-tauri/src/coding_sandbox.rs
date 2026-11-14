@@ -2844,7 +2844,6 @@ mod tests {
     }
 
     #[test]
-        #[test]
     fn result_storage_journal_appends_only_from_latest_persisted_state() {
         let root = make_test_directory("result-journal-append-gateway");
         let empty = GuestResultStorageJournal {
@@ -2892,7 +2891,8 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-fn result_storage_journal_rejects_oversized_and_unknown_field_documents() {
+    #[test]
+    fn result_storage_journal_rejects_oversized_and_unknown_field_documents() {
         assert!(parse_guest_result_storage_journal(
             &vec![b'x'; MAX_GUEST_RESULT_STORAGE_JOURNAL_BYTES + 1]
         ).is_err());
