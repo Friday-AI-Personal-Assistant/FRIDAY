@@ -606,6 +606,135 @@ fn append_guest_result_storage_journal_entry(
     Ok(next)
 }
 
+const GUEST_RESULT_STORAGE_JOURNAL_DIR_PREFIX: &str = ".friday-result-journal-";
+const GUEST_RESULT_STORAGE_JOURNAL_FILE: &str = "state.json";
+
+fn guest_result_storage_journal_generation_path(root: &Path, generation: usize) -> PathBuf {
+    root.join(format!("{GUEST_RESULT_STORAGE_JOURNAL_DIR_PREFIX}{generation:02}"))
+}
+
+fn read_guest_result_storage_journal_generation(
+    root: &Path,
+    generation: usize,
+) -> Result<GuestResultStorageJournal, String> {
+    if generation == 0 || generation > MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES {
+        return Err("The result-storage journal generation is outside its fixed limit.".into());
+    }
+    let directory = guest_result_storage_journal_generation_path(root, generation);
+    let metadata = fs::symlink_metadata(&directory)
+        .map_err(|_| "A result-storage journal generation is missing or unavailable.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("A result-storage journal generation is not an ordinary directory.".into());
+    }
+    let bytes = crate::coding_sandbox_fs::read_single_bounded_file_from_directory(
+        &directory, OsStr::new(GUEST_RESULT_STORAGE_JOURNAL_FILE),
+        MAX_GUEST_RESULT_STORAGE_JOURNAL_BYTES as u64,
+    ).map_err(|_| "A result-storage journal generation is incomplete or unsafe.".to_string())?;
+    let journal = parse_guest_result_storage_journal(&bytes)?;
+    if journal.entries.len() != generation {
+        return Err("A result-storage journal generation does not match its sequence.".into());
+    }
+    Ok(journal)
+}
+
+/// Persist an immutable, create-new journal generation. Each generation is a
+/// separate private directory containing exactly one bounded, flushed file.
+/// Existing generations are never overwritten; an interrupted generation is
+/// retained and forces manual recovery instead of being silently repaired.
+fn persist_guest_result_storage_journal(
+    root: &Path,
+    journal: &GuestResultStorageJournal,
+) -> Result<(), String> {
+    let state = validate_guest_result_storage_journal(journal)?;
+    let generation = journal.entries.len();
+    if generation == 0 || generation > MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES {
+        return Err("Only a non-empty bounded result-storage journal can be persisted.".into());
+    }
+    let root_metadata = fs::symlink_metadata(root)
+        .map_err(|_| "The result-storage journal root is unavailable.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The result-storage journal root must be an ordinary directory.".into());
+    }
+    if generation > 1 {
+        let previous = read_guest_result_storage_journal_generation(root, generation - 1)?;
+        if previous.run_id != journal.run_id
+            || previous.vhdx_identifier != journal.vhdx_identifier
+            || previous.entries != journal.entries[..generation - 1]
+        {
+            return Err("The next result-storage journal generation does not extend the persisted history.".into());
+        }
+    } else {
+        let first = guest_result_storage_journal_generation_path(root, 1);
+        if fs::symlink_metadata(first).is_ok() {
+            return Err("The initial result-storage journal generation already exists.".into());
+        }
+    }
+    let directory = guest_result_storage_journal_generation_path(root, generation);
+    fs::create_dir(&directory)
+        .map_err(|_| "FRIDAY could not exclusively create the next result-storage journal generation.".to_string())?;
+    secure_private_workspace_directory(&directory)
+        .map_err(|_| "FRIDAY could not secure the new journal generation; it was preserved for recovery.".to_string())?;
+    let bytes = encode_guest_result_storage_journal(journal)?;
+    let file_path = directory.join(GUEST_RESULT_STORAGE_JOURNAL_FILE);
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&file_path)
+        .map_err(|_| "FRIDAY could not exclusively create the journal generation file; it was preserved.".to_string())?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|_| "FRIDAY could not write the journal generation; it was preserved.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "FRIDAY could not flush the journal generation; it was preserved.".to_string())?;
+    drop(file);
+    let verified = read_guest_result_storage_journal_generation(root, generation)?;
+    if verified != *journal || validate_guest_result_storage_journal(&verified)? != state {
+        return Err("The persisted result-storage journal did not pass read-back verification.".into());
+    }
+    Ok(())
+}
+
+/// Load the longest contiguous sequence of immutable journal generations.
+/// Gaps, malformed files, unexpected generation directories, and identity
+/// changes fail closed; callers must preserve the VHDX for manual recovery.
+fn load_guest_result_storage_journal(
+    root: &Path,
+    expected_run_id: &str,
+    expected_vhdx_identifier: &str,
+) -> Result<GuestResultStorageJournal, String> {
+    if !valid_snapshot_id(expected_run_id) || !valid_guest_vhdx_identifier(expected_vhdx_identifier) {
+        return Err("The expected result-storage journal identity is invalid.".into());
+    }
+    let root_metadata = fs::symlink_metadata(root)
+        .map_err(|_| "The result-storage journal root is unavailable.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The result-storage journal root must be an ordinary directory.".into());
+    }
+    let mut latest: Option<GuestResultStorageJournal> = None;
+    let mut gap_seen = false;
+    for generation in 1..=MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES {
+        let path = guest_result_storage_journal_generation_path(root, generation);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                gap_seen = true;
+            }
+            Err(_) => return Err("A result-storage journal generation could not be inspected.".into()),
+            Ok(_) if gap_seen => return Err("The result-storage journal contains a generation gap.".into()),
+            Ok(_) => {
+                let current = read_guest_result_storage_journal_generation(root, generation)?;
+                if current.run_id != expected_run_id || current.vhdx_identifier != expected_vhdx_identifier {
+                    return Err("The result-storage journal belongs to a different run or VHDX.".into());
+                }
+                if let Some(previous) = &latest {
+                    if current.entries[..generation - 1] != previous.entries {
+                        return Err("The result-storage journal history is not append-only.".into());
+                    }
+                }
+                latest = Some(current);
+            }
+        }
+    }
+    latest.ok_or_else(|| "No complete result-storage journal generation is available.".into())
+}
+
+
 
 const GUEST_RESULT_VOLUME_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
 const GUEST_RESULT_VOLUME_GUEST_MOUNT: &str = r"C:\FRIDAY\Results";
@@ -2620,6 +2749,55 @@ mod tests {
         let mut journal = valid_result_storage_journal();
         journal.run_id = "../foreign-run".into();
         assert!(validate_guest_result_storage_journal(&journal).is_err());
+    }
+
+    #[test]
+    fn result_storage_journal_persists_immutable_generations_and_recovers_latest() {
+        let root = make_test_directory("result-journal-durable");
+        let first = valid_result_storage_journal();
+        persist_guest_result_storage_journal(&root, &first).unwrap();
+        let second = append_guest_result_storage_journal_entry(
+            &first, GuestResultStorageEvent::PreserveForRecovery, true, false,
+        ).unwrap();
+        persist_guest_result_storage_journal(&root, &second).unwrap();
+        let loaded = load_guest_result_storage_journal(
+            &root, &first.run_id, &first.vhdx_identifier,
+        ).unwrap();
+        assert_eq!(loaded, second);
+        assert!(persist_guest_result_storage_journal(&root, &second).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn result_storage_journal_preserves_interrupted_generation_for_recovery() {
+        let root = make_test_directory("result-journal-interrupted");
+        let first = valid_result_storage_journal();
+        persist_guest_result_storage_journal(&root, &first).unwrap();
+        let interrupted = guest_result_storage_journal_generation_path(&root, 2);
+        fs::create_dir(&interrupted).unwrap();
+        secure_private_workspace_directory(&interrupted).unwrap();
+        assert!(load_guest_result_storage_journal(
+            &root, &first.run_id, &first.vhdx_identifier,
+        ).is_err());
+        assert!(interrupted.exists(), "incomplete journal evidence must be preserved");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn result_storage_journal_rejects_generation_gaps_and_identity_substitution() {
+        let root = make_test_directory("result-journal-gap");
+        let first = valid_result_storage_journal();
+        persist_guest_result_storage_journal(&root, &first).unwrap();
+        let later = guest_result_storage_journal_generation_path(&root, 3);
+        fs::create_dir(&later).unwrap();
+        secure_private_workspace_directory(&later).unwrap();
+        assert!(load_guest_result_storage_journal(
+            &root, &first.run_id, &first.vhdx_identifier,
+        ).is_err());
+        assert!(load_guest_result_storage_journal(
+            &root, "fedcba9876543210fedcba9876543210", &first.vhdx_identifier,
+        ).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -1383,3 +1383,28 @@ independently establish the truth of recorded ownership/stop evidence. Those
 storage and evidence-provenance requirements remain prerequisites before any
 attach/share/cleanup operation. No VHDX is attached or mounted, and guest
 execution remains disabled.
+
+
+## Immutable result-storage journal persistence — 2026-11-14
+
+The bounded result-storage journal now has a host-side persistence prototype.
+Each transition is stored as a new immutable generation directory containing
+exactly one bounded JSON state file. Generation directories are exclusively
+created, secured with the private workspace ACL, and never overwritten. The
+journal file is flushed with the operating-system file sync operation and
+read back through the bounded no-follow directory reader before persistence
+is reported successful.
+
+Recovery loads only a contiguous sequence of generations, validates each
+state-machine transition and append-only prefix, and binds every generation
+to the expected run identifier and VHDX persistent identifier. Missing or
+malformed files, reparse points, generation gaps, identity substitution,
+duplicate writes, and interrupted generation directories fail closed. An
+incomplete generation is deliberately preserved for manual recovery.
+
+This is an initial durable-file persistence layer, not yet a complete
+power-loss transaction protocol: directory-entry durability across sudden
+power loss and filesystem-specific guarantees still require native Windows
+acceptance and further hardening. It does not establish the truth of recorded
+ownership or guest-stop evidence, and it is not wired to VHDX attach, mount,
+share, detach, or delete operations. Guest execution remains disabled.
