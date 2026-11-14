@@ -323,7 +323,7 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
                 ptr::null(),
                 0, // No inherited handles.
                 flags,
-                environment.as_ptr(),
+                environment.as_ptr() as *const c_void,
                 working_directory.as_ptr(),
                 &startup,
                 &mut info,
@@ -397,7 +397,7 @@ fn quote_windows_argument_wide(value: &[u16]) -> Vec<u16> {
 
 #[cfg(windows)]
 fn minimal_runner_environment() -> Result<Vec<u16>, String> {
-    use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
+    use std::{ffi::OsString, os::windows::ffi::{OsStrExt, OsStringExt}, path::PathBuf};
     use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
 
     let mut root_buffer = vec![0u16; 32_768];
