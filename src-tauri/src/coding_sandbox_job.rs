@@ -514,6 +514,113 @@ mod launch_transaction_tests {
 }
 
 
+/// Fixed retained-output ceiling for each guest stream. Readers must continue
+/// draining the OS pipe after this limit is reached; excess bytes are discarded.
+pub(crate) const GUEST_STDOUT_RETAIN_LIMIT: usize = 256 * 1024;
+pub(crate) const GUEST_STDERR_RETAIN_LIMIT: usize = 256 * 1024;
+
+/// Bounded byte retention for one output stream. This type deliberately does
+/// not own a pipe: the reader must keep reading and call push() for every
+/// chunk, even after is_truncated() becomes true, to prevent pipe deadlocks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoundedGuestOutput {
+    bytes: Vec<u8>,
+    limit: usize,
+    truncated: bool,
+}
+
+impl BoundedGuestOutput {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self { bytes: Vec::with_capacity(limit.min(8 * 1024)), limit, truncated: false }
+    }
+
+    /// Retain only the prefix that fits. The caller must continue draining its
+    /// source after this method returns, including when the buffer is full.
+    pub(crate) fn push(&mut self, chunk: &[u8]) {
+        let remaining = self.limit.saturating_sub(self.bytes.len());
+        let retained = remaining.min(chunk.len());
+        self.bytes.extend_from_slice(&chunk[..retained]);
+        if retained < chunk.len() {
+            self.truncated = true;
+        }
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] { &self.bytes }
+    pub(crate) fn as_lossy_text(&self) -> String { String::from_utf8_lossy(&self.bytes).into_owned() }
+    pub(crate) fn is_truncated(&self) -> bool { self.truncated }
+    pub(crate) fn retained_len(&self) -> usize { self.bytes.len() }
+}
+
+/// Per-stream output result. Truncation is explicit so callers never mistake
+/// a retained prefix for complete compiler/runner output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GuestCapturedOutput {
+    pub(crate) stdout: BoundedGuestOutput,
+    pub(crate) stderr: BoundedGuestOutput,
+}
+
+impl GuestCapturedOutput {
+    pub(crate) fn new() -> Self {
+        Self {
+            stdout: BoundedGuestOutput::new(GUEST_STDOUT_RETAIN_LIMIT),
+            stderr: BoundedGuestOutput::new(GUEST_STDERR_RETAIN_LIMIT),
+        }
+    }
+
+    pub(crate) fn is_truncated(&self) -> bool {
+        self.stdout.is_truncated() || self.stderr.is_truncated()
+    }
+}
+
+#[cfg(test)]
+mod bounded_output_tests {
+    use super::*;
+
+    #[test]
+    fn output_retention_never_exceeds_the_configured_limit() {
+        let mut output = BoundedGuestOutput::new(8);
+        output.push(b"123456");
+        output.push(b"7890");
+        assert_eq!(output.as_bytes(), b"12345678");
+        assert_eq!(output.retained_len(), 8);
+        assert!(output.is_truncated());
+    }
+
+    #[test]
+    fn output_under_limit_is_preserved_without_truncation() {
+        let mut output = BoundedGuestOutput::new(16);
+        output.push(b"compiler ");
+        output.push(b"finished");
+        assert_eq!(output.as_lossy_text(), "compiler finished");
+        assert!(!output.is_truncated());
+    }
+
+    #[test]
+    fn zero_limit_discards_all_bytes_and_marks_truncation() {
+        let mut output = BoundedGuestOutput::new(0);
+        output.push(b"discard");
+        assert!(output.as_bytes().is_empty());
+        assert!(output.is_truncated());
+    }
+
+    #[test]
+    fn stdout_and_stderr_have_independent_fixed_budgets() {
+        let output = GuestCapturedOutput::new();
+        assert_eq!(output.stdout.limit, GUEST_STDOUT_RETAIN_LIMIT);
+        assert_eq!(output.stderr.limit, GUEST_STDERR_RETAIN_LIMIT);
+        assert_eq!(GUEST_STDOUT_RETAIN_LIMIT + GUEST_STDERR_RETAIN_LIMIT, 512 * 1024);
+    }
+
+    #[test]
+    fn additional_chunks_after_truncation_are_discarded_safely() {
+        let mut output = BoundedGuestOutput::new(4);
+        output.push(b"123456");
+        output.push(b"7890");
+        assert_eq!(output.as_bytes(), b"1234");
+        assert!(output.is_truncated());
+    }
+}
+
 /// Result of supervising a contained guest process.
 #[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

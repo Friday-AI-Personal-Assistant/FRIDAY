@@ -837,3 +837,28 @@ orchestration tests, not substitutes for Windows integration tests that spawn
 a benign process tree and verify kernel termination. Bounded stdout/stderr
 capture, real cancellation wiring, guest session isolation, and physical
 Windows acceptance remain outstanding. Guest execution remains disabled.
+
+
+## Bounded guest stdout/stderr retention policy — 2026-11-14
+
+The guest runner now has a fixed output-retention data model. Standard output
+and standard error each have an independent 256 KiB retained-byte ceiling,
+for a combined maximum of 512 KiB per run. The collector stores raw bytes and
+offers an explicit lossy UTF-8 presentation conversion; binary or malformed
+output therefore cannot cause an unbounded string allocation. Truncation is
+recorded independently for each stream and surfaced by the combined result.
+
+The buffer accepts chunks incrementally, retains only the prefix that fits,
+and safely discards later bytes. Its contract explicitly requires a future pipe
+reader to continue draining after retention is full; stopping reads at the
+cap would let a child block on a full pipe and defeat timeout/supervision.
+Regression tests cover exact limits, under-limit preservation, zero capacity,
+independent stream budgets, and repeated chunks after truncation.
+
+This batch implements and tests the bounded retention primitive only. It does
+not yet create inheritable stdout/stderr pipes, start reader threads, connect
+the buffers to CreateProcessW, or prove end-to-end output-flood resistance.
+Those native pipe and reader-lifecycle controls remain the next integration
+step. The launch primitive remains disconnected from user commands and guest
+execution remains disabled pending the full isolation and physical Windows
+acceptance gates.
