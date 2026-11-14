@@ -847,7 +847,7 @@ fn validate_guest_result_vhdx_readback(
     if expected_capacity != GUEST_RESULT_VOLUME_CAPACITY_BYTES
         || size.virtual_size != expected_capacity
         || size.physical_size < expected_capacity
-        || size.block_size != 1024 * 1024
+        || size.block_size != 0 // Windows reports the default block-size sentinel for fixed VHDX disks
         || size.sector_size != 512
         || provider_subtype != 2 // VIRTUAL_DISK_TYPE_FIXED
     {
@@ -911,7 +911,7 @@ fn create_guest_result_vhdx(
     let version2 = FridayCreateVirtualDiskVersion2 {
         unique_id: zero_guid,
         maximum_size: plan.capacity_bytes,
-        block_size_in_bytes: 1024 * 1024,
+        block_size_in_bytes: 0, // Fixed VHDX uses the Windows default block-size sentinel.
         sector_size_in_bytes: 512,
         physical_sector_size_in_bytes: 4096,
         parent_path: std::ptr::null(),
