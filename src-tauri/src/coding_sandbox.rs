@@ -536,7 +536,6 @@ fn validate_guest_result_storage_journal(
     if journal.schema_version != GUEST_RESULT_STORAGE_JOURNAL_SCHEMA
         || !valid_snapshot_id(&journal.run_id)
         || !valid_guest_vhdx_identifier(&journal.vhdx_identifier)
-        || journal.entries.is_empty()
         || journal.entries.len() > MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES
     {
         return Err("The result-storage recovery journal header or bounds are invalid.".into());
@@ -574,6 +573,9 @@ fn parse_guest_result_storage_journal(bytes: &[u8]) -> Result<GuestResultStorage
     }
     let journal: GuestResultStorageJournal = serde_json::from_slice(bytes)
         .map_err(|_| "The result-storage recovery journal is malformed or contains unsupported fields.".to_string())?;
+    if journal.entries.is_empty() {
+        return Err("The result-storage recovery journal contains no recorded transitions.".into());
+    }
     validate_guest_result_storage_journal(&journal)?;
     Ok(journal)
 }
