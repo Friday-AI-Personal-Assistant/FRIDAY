@@ -931,7 +931,15 @@ fn build_sandbox_config(snapshot_path: &Path) -> Result<String, String> {
 /// catches template regressions before a future launcher can consume a config;
 /// it does not prove the Windows host enforces the settings.
 fn validate_sandbox_config_policy(config: &str) -> Result<(), String> {
-    const REQUIRED: &[&str] = &[
+    // This validator consumes only FRIDAY's generated template. Require one
+    // exact, attribute-free occurrence of every security-sensitive element so
+    // duplicate/conflicting XML values cannot be mistaken for a safe setting.
+    const ELEMENTS: &[&str] = &[
+        "Configuration", "VGpu", "Networking", "AudioInput", "VideoInput",
+        "ClipboardRedirection", "PrinterRedirection", "ProtectedClient",
+        "MappedFolders", "MappedFolder", "HostFolder", "SandboxFolder", "ReadOnly",
+    ];
+    const REQUIRED_VALUES: &[&str] = &[
         "<VGpu>Disable</VGpu>",
         "<Networking>Disable</Networking>",
         "<AudioInput>Disable</AudioInput>",
@@ -941,18 +949,21 @@ fn validate_sandbox_config_policy(config: &str) -> Result<(), String> {
         "<ProtectedClient>Enable</ProtectedClient>",
         "<ReadOnly>true</ReadOnly>",
     ];
-    if REQUIRED.iter().any(|setting| !config.contains(setting))
-        || config.matches("<MappedFolder>").count() != 1
-        || config.matches("</MappedFolder>").count() != 1
-        || config.matches("<HostFolder>").count() != 1
-        || config.matches("</HostFolder>").count() != 1
-        || config.matches("<SandboxFolder>").count() != 1
-        || config.matches("</SandboxFolder>").count() != 1
-        || config.matches("<ReadOnly>true</ReadOnly>").count() != 1
+
+    let structure_is_unique = ELEMENTS.iter().all(|name| {
+        let opening = format!("<{name}>");
+        let closing = format!("</{name}>");
+        config.matches(opening.as_str()).count() == 1
+            && config.matches(closing.as_str()).count() == 1
+            && !config.contains(&format!("<{name} "))
+            && !config.contains(&format!("<{name}\\t"))
+    });
+    if !structure_is_unique
+        || REQUIRED_VALUES.iter().any(|setting| config.matches(setting).count() != 1)
+        || config.contains("<LogonCommand")
+        || config.contains("<Networking ")
+        || config.contains("<MappedFolder ")
         || config.contains("<ReadOnly>false</ReadOnly>")
-        || config.contains("<Networking>Enable</Networking>")
-        || config.contains("<ClipboardRedirection>Enable</ClipboardRedirection>")
-        || config.contains("<LogonCommand>")
     {
         return Err("The Windows Sandbox configuration does not satisfy FRIDAY's required isolation policy; launch is refused.".into());
     }
@@ -1483,6 +1494,60 @@ mod tests {
         )).is_err());
         assert!(validate_sandbox_config_policy(&safe.replace(
             "<ProtectedClient>Enable</ProtectedClient>", "<ProtectedClient>Disable</ProtectedClient>"
+        )).is_err());
+    }
+
+    #[test]
+    fn sandbox_config_policy_rejects_duplicate_or_conflicting_security_elements() {
+        let safe = r#"<Configuration>
+<VGpu>Disable</VGpu><Networking>Disable</Networking>
+<AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
+<ClipboardRedirection>Disable</ClipboardRedirection>
+<PrinterRedirection>Disable</PrinterRedirection><ProtectedClient>Enable</ProtectedClient>
+<MappedFolders><MappedFolder><HostFolder>C:\\FRIDAY\\Snapshot</HostFolder>
+<SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder><ReadOnly>true</ReadOnly>
+</MappedFolder></MappedFolders></Configuration>"#;
+        for duplicate in [
+            "<VGpu>Disable</VGpu>",
+            "<Networking>Disable</Networking>",
+            "<AudioInput>Disable</AudioInput>",
+            "<VideoInput>Disable</VideoInput>",
+            "<ClipboardRedirection>Disable</ClipboardRedirection>",
+            "<PrinterRedirection>Disable</PrinterRedirection>",
+            "<ProtectedClient>Enable</ProtectedClient>",
+            "<ReadOnly>true</ReadOnly>",
+            "<HostFolder>C:\\FRIDAY\\Snapshot</HostFolder>",
+            "<SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder>",
+        ] {
+            let mutated = safe.replacen(duplicate, &format!("{duplicate}{duplicate}"), 1);
+            assert!(validate_sandbox_config_policy(&mutated).is_err(),
+                "duplicate security element was accepted: {duplicate}");
+        }
+        let conflicting = safe.replace(
+            "</Configuration>",
+            "<VGpu>Enable</VGpu></Configuration>",
+        );
+        assert!(validate_sandbox_config_policy(&conflicting).is_err());
+    }
+
+    #[test]
+    fn sandbox_config_policy_rejects_attribute_overrides_and_extra_mapped_folders() {
+        let safe = r#"<Configuration>
+<VGpu>Disable</VGpu><Networking>Disable</Networking>
+<AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
+<ClipboardRedirection>Disable</ClipboardRedirection>
+<PrinterRedirection>Disable</PrinterRedirection><ProtectedClient>Enable</ProtectedClient>
+<MappedFolders><MappedFolder><HostFolder>C:\\FRIDAY\\Snapshot</HostFolder>
+<SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder><ReadOnly>true</ReadOnly>
+</MappedFolder></MappedFolders></Configuration>"#;
+        assert!(validate_sandbox_config_policy(&safe.replace(
+            "<Networking>", "<Networking enabled='true'>"
+        )).is_err());
+        assert!(validate_sandbox_config_policy(&safe.replace(
+            "</MappedFolders>", "<MappedFolder></MappedFolder></MappedFolders>"
+        )).is_err());
+        assert!(validate_sandbox_config_policy(&safe.replace(
+            "<Configuration>", "<Configuration><LogonCommand/>"
         )).is_err());
     }
 

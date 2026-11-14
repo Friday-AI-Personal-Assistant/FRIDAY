@@ -1144,3 +1144,9 @@ The current project snapshot remains the only mapped folder and is read-only.
 No launcher is connected, no guest process is started, and guest execution
 remains disabled pending physical Windows verification and the remaining
 session ownership, filesystem, network, and result-storage gates.
+
+## Windows Sandbox configuration policy guard hardening
+
+The generated .wsb template's structural validator now requires exactly one attribute-free opening and closing element for every security-sensitive setting and mapping element. Each required safe value must also occur exactly once. This prevents duplicate/conflicting values (for example, a safe value followed by an enabling override), extra mapped-folder entries, XML attributes on policy elements, and logon-command injection from being accepted by the template guard. Regression tests cover duplicated values, conflicting values, attribute overrides, extra mappings and logon-command elements.
+
+This is a structural regression guard over FRIDAY's generated template, not a general-purpose XML parser and not proof that Windows enforces the configuration. The generated config remains preview-only; FRIDAY does not write or launch it, and guest execution remains disabled.
