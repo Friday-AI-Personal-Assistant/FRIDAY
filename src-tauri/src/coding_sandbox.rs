@@ -1145,6 +1145,20 @@ union FridayOpenVirtualDiskParametersData {
 
 #[cfg(windows)]
 #[repr(C)]
+#[derive(Clone, Copy)]
+struct FridayAttachVirtualDiskVersion1 {
+    reserved: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct FridayAttachVirtualDiskParameters {
+    version: u32,
+    version1: FridayAttachVirtualDiskVersion1,
+}
+
+#[cfg(windows)]
+#[repr(C)]
 struct FridayOpenVirtualDiskParameters {
     version: u32,
     parameters: FridayOpenVirtualDiskParametersData,
@@ -1160,6 +1174,24 @@ extern "system" {
         flags: u32,
         parameters: *const FridayOpenVirtualDiskParameters,
         handle: *mut *mut std::ffi::c_void,
+    ) -> u32;
+    fn AttachVirtualDisk(
+        virtual_disk_handle: *mut std::ffi::c_void,
+        security_descriptor: *const std::ffi::c_void,
+        flags: u32,
+        provider_specific_flags: u32,
+        parameters: *const FridayAttachVirtualDiskParameters,
+        overlapped: *mut std::ffi::c_void,
+    ) -> u32;
+    fn DetachVirtualDisk(
+        virtual_disk_handle: *mut std::ffi::c_void,
+        flags: u32,
+        provider_specific_flags: u32,
+    ) -> u32;
+    fn GetVirtualDiskPhysicalPath(
+        virtual_disk_handle: *mut std::ffi::c_void,
+        disk_path_size_in_bytes: *mut u32,
+        disk_path: *mut u16,
     ) -> u32;
     fn GetVirtualDiskInformation(
         virtual_disk_handle: *mut std::ffi::c_void,
@@ -1208,6 +1240,117 @@ impl Drop for OwnedVirtualDiskHandle {
             self.0 = std::ptr::null_mut();
         }
     }
+}
+
+
+/// Owns a single FRIDAY-created VHDX attachment. The handle is deliberately
+/// non-permanent: process termination closes it and Windows releases the attach.
+#[cfg(windows)]
+struct OwnedAttachedGuestVhdx {
+    handle: OwnedVirtualDiskHandle,
+    physical_path: String,
+}
+
+#[cfg(windows)]
+impl OwnedAttachedGuestVhdx {
+    fn physical_path(&self) -> &str {
+        &self.physical_path
+    }
+
+    fn detach(self) -> Result<(), String> {
+        let status = unsafe { DetachVirtualDisk(self.handle.0, 0, 0) };
+        if status != 0 {
+            return Err(format!("Windows could not detach FRIDAY's owned result VHDX (error {status}); the attachment handle will be closed for automatic cleanup."));
+        }
+        if guest_vhdx_physical_path(self.handle.0).is_ok() {
+            return Err("Windows reported detachment but the result VHDX still has an attached physical-device path.".into());
+        }
+        self.handle.close()
+    }
+}
+
+#[cfg(windows)]
+fn guest_vhdx_physical_path(handle: *mut std::ffi::c_void) -> Result<String, String> {
+    let mut buffer = [0u16; 1024];
+    let mut size_bytes = (buffer.len() * std::mem::size_of::<u16>()) as u32;
+    let status = unsafe { GetVirtualDiskPhysicalPath(handle, &mut size_bytes, buffer.as_mut_ptr()) };
+    if status != 0 {
+        return Err(format!("Windows could not confirm the attached result VHDX device path (error {status})."));
+    }
+    if size_bytes < 2 || size_bytes as usize > buffer.len() * 2 || size_bytes % 2 != 0 {
+        return Err("Windows returned an invalid result VHDX device-path length.".into());
+    }
+    let end = buffer.iter().position(|unit| *unit == 0)
+        .ok_or_else(|| "Windows returned an unterminated result VHDX device path.".to_string())?;
+    let path = String::from_utf16(&buffer[..end])
+        .map_err(|_| "Windows returned a malformed result VHDX device path.".to_string())?;
+    let prefix = r"\\.\PhysicalDrive";
+    if !path.starts_with(prefix)
+        || path[prefix.len()..].is_empty()
+        || !path[prefix.len()..].bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("Windows returned a physical-device path outside the expected disk namespace.".into());
+    }
+    Ok(path)
+}
+
+/// Attaches only the exact FRIDAY-owned fixed VHDX, read/write, without drive
+/// letters or permanent lifetime. No partition is created or mounted here.
+#[cfg(windows)]
+fn attach_guest_result_vhdx(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<OwnedAttachedGuestVhdx, String> {
+    let expected_identifier = verify_guest_result_vhdx_identity(plan, trusted_storage_root)?;
+    use std::os::windows::ffi::OsStrExt;
+    let path_wide: Vec<u16> = plan.vhdx_path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    if path_wide.len() <= 1 {
+        return Err("The result VHDX path is invalid for attachment.".into());
+    }
+    let storage_type = FridayVirtualStorageType {
+        device_id: 3,
+        vendor_id: FridayWindowsGuid {
+            data1: 0xec984aec,
+            data2: 0xa0f9,
+            data3: 0x47e9,
+            data4: [0x90, 0x1f, 0x71, 0x41, 0x5a, 0x66, 0x34, 0x5b],
+        },
+    };
+    let open_parameters = FridayOpenVirtualDiskParameters {
+        version: 1,
+        parameters: FridayOpenVirtualDiskParametersData {
+            version1: FridayOpenVirtualDiskVersion1 { read_write_depth: 1 },
+        },
+    };
+    let mut raw_handle = std::ptr::null_mut();
+    // ATTACH_RW | DETACH | GET_INFO. The handle is scoped to this owner.
+    let open_status = unsafe {
+        OpenVirtualDisk(&storage_type, path_wide.as_ptr(), 0x0002_0000 | 0x0004_0000 | 0x0008_0000,
+            0, &open_parameters, &mut raw_handle)
+    };
+    if open_status != 0 || raw_handle.is_null() {
+        return Err(format!("Windows could not open the verified result VHDX for controlled attachment (error {open_status})."));
+    }
+    let handle = OwnedVirtualDiskHandle(raw_handle);
+    let parameters = FridayAttachVirtualDiskParameters {
+        version: 1,
+        version1: FridayAttachVirtualDiskVersion1 { reserved: 0 },
+    };
+    // NO_DRIVE_LETTER. PERMANENT_LIFETIME is intentionally never set.
+    let attach_status = unsafe {
+        AttachVirtualDisk(handle.0, std::ptr::null(), 0x2, 0, &parameters, std::ptr::null_mut())
+    };
+    if attach_status != 0 {
+        return Err(format!("Windows refused to attach the private result VHDX (error {attach_status}); no volume was exposed."));
+    }
+    let physical_path = guest_vhdx_physical_path(handle.0)
+        .map_err(|error| format!("{error} The attachment handle will be closed for automatic cleanup."))?;
+    let observed_identifier = verify_guest_result_vhdx_identity(plan, trusted_storage_root)
+        .map_err(|error| format!("The attached result VHDX failed identity revalidation ({error}); the attachment handle will be closed."))?;
+    if observed_identifier != expected_identifier {
+        return Err("The result VHDX identity changed during attachment; the attachment handle will be closed.".into());
+    }
+    Ok(OwnedAttachedGuestVhdx { handle, physical_path })
 }
 
 #[cfg(windows)]
@@ -3227,6 +3370,10 @@ mod tests {
         assert!(valid_guest_vhdx_identifier(&identifier));
         assert_eq!(verify_guest_result_vhdx_ownership_marker(&plan, &root, Some(&identifier)).unwrap(), identifier);
         assert_eq!(verify_guest_result_vhdx_identity(&plan, &root).unwrap(), identifier);
+        let attached = attach_guest_result_vhdx(&plan, &root).unwrap();
+        assert!(attached.physical_path().starts_with(r"\\.\PhysicalDrive"));
+        attached.detach().unwrap();
+
         assert!(create_guest_result_vhdx(&plan, &root).is_err(),
             "a pre-existing result VHDX must never be replaced");
         drop(file);

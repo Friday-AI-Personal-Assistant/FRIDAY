@@ -1428,3 +1428,31 @@ power loss and filesystem-specific guarantees still require native Windows
 acceptance and further hardening. It does not establish the truth of recorded
 ownership or guest-stop evidence, and it is not wired to VHDX attach, mount,
 share, detach, or delete operations. Guest execution remains disabled.
+
+
+## Native FRIDAY-owned VHDX attachment and explicit detach — 2026-11-14
+
+The Windows host now has a narrowly scoped attachment owner for a verified
+FRIDAY result VHDX. Before opening the disk, it revalidates the private run
+directory, ownership marker, fixed geometry, and persistent VHDX identifier.
+The Virtual Disk API handle requests only the attach-read/write, detach, and
+information rights needed for this operation. Attachment uses the fixed
+Microsoft VHDX provider, a version-1 attach request, and NO_DRIVE_LETTER; the
+permanent-lifetime flag is never used. The returned physical-device path is
+validated against the Windows PhysicalDrive namespace, and the VHDX identity
+is checked again while attached.
+
+The attachment is represented by an RAII owner. Explicit detach calls
+DetachVirtualDisk, verifies that the attached-device path is no longer
+available, and closes the handle. If the process exits unexpectedly, the
+non-permanent attachment is tied to the handle lifetime and Windows releases
+it when the handle closes. A native Windows regression test creates a fresh
+private fixed VHDX, attaches it, checks the returned physical-device path,
+detaches it, and then cleans up the test fixture.
+
+This is only a raw disk attachment primitive. It does not initialize a disk,
+create partitions or filesystems, assign drive letters, mount a volume, map a
+folder into Windows Sandbox, or launch guest code. Attachment privilege and
+standard non-elevated Windows behavior still require physical-device
+acceptance; any API failure is fail-closed. The helper is not connected to the
+production guest-run lifecycle, and guest execution remains disabled.
