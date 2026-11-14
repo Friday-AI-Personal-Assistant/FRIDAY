@@ -813,3 +813,27 @@ remains disconnected from user commands, and guest execution remains disabled.
 Physical Windows acceptance, bounded output, timeout/cancellation, a pinned
 runner image, guest-session ownership, and protocol/storage controls remain
 outstanding.
+
+
+## Contained process timeout and cancellation supervision — 2026-11-14
+
+The Windows Job Object launch primitive now has a separate process-supervision
+layer. It waits on the exact FRIDAY-created process handle, reads the exit code
+only after the process is signaled, and never searches for or terminates a
+process by name or PID. A fixed polling interval allows a cancellation signal
+to be observed while a bounded wall-clock deadline is enforced.
+
+On cancellation or timeout, supervision terminates only the FRIDAY-owned Job
+Object, which applies to the contained process tree, then waits for a bounded
+two-second shutdown grace. If the process does not signal exit within that
+grace, supervision returns an error rather than claiming successful cleanup.
+Normal process exit returns the actual Windows exit code. The helper does not
+own or prematurely close the Job Object; the caller must retain its owner for
+the entire run and close it as the final kill-on-close backstop.
+
+Injected backend regressions cover normal exit-code reporting, cancellation,
+zero-duration timeout, and failure to stop within the grace period. These are
+orchestration tests, not substitutes for Windows integration tests that spawn
+a benign process tree and verify kernel termination. Bounded stdout/stderr
+capture, real cancellation wiring, guest session isolation, and physical
+Windows acceptance remain outstanding. Guest execution remains disabled.

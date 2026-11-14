@@ -512,3 +512,198 @@ mod launch_transaction_tests {
         assert_eq!(&output[1..output.len() - 1], input.as_slice());
     }
 }
+
+
+/// Result of supervising a contained guest process.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GuestProcessOutcome {
+    Exited { exit_code: u32 },
+    TimedOut,
+    Cancelled,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessWaitState {
+    Exited,
+    StillRunning,
+}
+
+#[cfg(windows)]
+trait ProcessSupervisorBackend {
+    fn wait(&mut self, timeout_ms: u32) -> Result<ProcessWaitState, String>;
+    fn terminate_owned_job(&mut self) -> Result<(), String>;
+    fn exit_code(&mut self) -> Result<u32, String>;
+}
+
+/// Supervise only the process already created by this launch transaction and
+/// the Job Object that owns its descendants. Cancellation and timeout both
+/// terminate the whole owned job, then allow only a bounded shutdown grace.
+#[cfg(windows)]
+fn supervise_process<B: ProcessSupervisorBackend>(
+    backend: &mut B,
+    timeout: std::time::Duration,
+    cancellation: &std::sync::atomic::AtomicBool,
+    shutdown_grace: std::time::Duration,
+) -> Result<GuestProcessOutcome, String> {
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+
+    let deadline = Instant::now().checked_add(timeout)
+        .ok_or_else(|| "The guest timeout value is outside the supported range.".to_string())?;
+
+    loop {
+        if cancellation.load(Ordering::Acquire) {
+            backend.terminate_owned_job()?;
+            return match backend.wait(shutdown_grace.as_millis().min(u32::MAX as u128) as u32)? {
+                ProcessWaitState::Exited => Ok(GuestProcessOutcome::Cancelled),
+                ProcessWaitState::StillRunning => Err(
+                    "The cancelled guest process tree did not stop within the shutdown grace period.".into()
+                ),
+            };
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            backend.terminate_owned_job()?;
+            return match backend.wait(shutdown_grace.as_millis().min(u32::MAX as u128) as u32)? {
+                ProcessWaitState::Exited => Ok(GuestProcessOutcome::TimedOut),
+                ProcessWaitState::StillRunning => Err(
+                    "The timed-out guest process tree did not stop within the shutdown grace period.".into()
+                ),
+            };
+        }
+
+        let poll = remaining.min(std::time::Duration::from_millis(50));
+        match backend.wait(poll.as_millis().max(1).min(u32::MAX as u128) as u32)? {
+            ProcessWaitState::Exited => {
+                return Ok(GuestProcessOutcome::Exited { exit_code: backend.exit_code()? });
+            }
+            ProcessWaitState::StillRunning => {}
+        }
+    }
+}
+
+#[cfg(windows)]
+struct WindowsProcessSupervisor<'a> {
+    job: &'a OwnedGuestJob,
+    process: HANDLE,
+}
+
+#[cfg(windows)]
+impl ProcessSupervisorBackend for WindowsProcessSupervisor<'_> {
+    fn wait(&mut self, timeout_ms: u32) -> Result<ProcessWaitState, String> {
+        use windows_sys::Win32::System::Threading::{WaitForSingleObject, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        match unsafe { WaitForSingleObject(self.process, timeout_ms) } {
+            WAIT_OBJECT_0 => Ok(ProcessWaitState::Exited),
+            WAIT_TIMEOUT => Ok(ProcessWaitState::StillRunning),
+            _ => Err(last_error("wait for the contained guest process")),
+        }
+    }
+
+    fn terminate_owned_job(&mut self) -> Result<(), String> {
+        if unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job.handle, 1) } == 0 {
+            Err(last_error("terminate the FRIDAY-owned guest Job Object"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn exit_code(&mut self) -> Result<u32, String> {
+        let mut code = 0u32;
+        if unsafe { windows_sys::Win32::System::Threading::GetExitCodeProcess(self.process, &mut code) } == 0 {
+            return Err(last_error("read the contained guest process exit code"));
+        }
+        if code == windows_sys::Win32::System::Threading::STILL_ACTIVE {
+            return Err("Windows reported the guest process as still active after signaling it exited.".into());
+        }
+        Ok(code)
+    }
+}
+
+/// Wait for a launched process with a fixed caller-selected deadline and
+/// cancellation signal. The job remains owned by the caller for the full run.
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn supervise_contained_guest_runner(
+    job: &OwnedGuestJob,
+    process: &OwnedGuestProcess,
+    timeout: std::time::Duration,
+    cancellation: &std::sync::atomic::AtomicBool,
+) -> Result<GuestProcessOutcome, String> {
+    let mut backend = WindowsProcessSupervisor { job, process: process.process };
+    supervise_process(&mut backend, timeout, cancellation, std::time::Duration::from_secs(2))
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod process_supervision_tests {
+    use super::*;
+    use std::{collections::VecDeque, sync::atomic::AtomicBool, time::Duration};
+
+    struct FakeSupervisor {
+        waits: VecDeque<Result<ProcessWaitState, String>>,
+        terminated: bool,
+        code: u32,
+    }
+
+    impl ProcessSupervisorBackend for FakeSupervisor {
+        fn wait(&mut self, _: u32) -> Result<ProcessWaitState, String> {
+            self.waits.pop_front().unwrap_or(Ok(ProcessWaitState::StillRunning))
+        }
+        fn terminate_owned_job(&mut self) -> Result<(), String> {
+            self.terminated = true;
+            Ok(())
+        }
+        fn exit_code(&mut self) -> Result<u32, String> { Ok(self.code) }
+    }
+
+    #[test]
+    fn supervision_returns_exit_code_when_process_finishes() {
+        let mut fake = FakeSupervisor {
+            waits: VecDeque::from([Ok(ProcessWaitState::Exited)]),
+            terminated: false,
+            code: 23,
+        };
+        let result = supervise_process(&mut fake, Duration::from_secs(5), &AtomicBool::new(false), Duration::from_secs(1)).unwrap();
+        assert_eq!(result, GuestProcessOutcome::Exited { exit_code: 23 });
+        assert!(!fake.terminated);
+    }
+
+    #[test]
+    fn cancellation_terminates_owned_job_and_waits_for_shutdown() {
+        let mut fake = FakeSupervisor {
+            waits: VecDeque::from([Ok(ProcessWaitState::Exited)]),
+            terminated: false,
+            code: 0,
+        };
+        let result = supervise_process(&mut fake, Duration::from_secs(5), &AtomicBool::new(true), Duration::from_secs(1)).unwrap();
+        assert_eq!(result, GuestProcessOutcome::Cancelled);
+        assert!(fake.terminated);
+    }
+
+    #[test]
+    fn timeout_terminates_owned_job_and_waits_for_shutdown() {
+        let mut fake = FakeSupervisor {
+            waits: VecDeque::from([Ok(ProcessWaitState::Exited)]),
+            terminated: false,
+            code: 0,
+        };
+        let result = supervise_process(&mut fake, Duration::ZERO, &AtomicBool::new(false), Duration::from_secs(1)).unwrap();
+        assert_eq!(result, GuestProcessOutcome::TimedOut);
+        assert!(fake.terminated);
+    }
+
+    #[test]
+    fn cancellation_fails_closed_if_job_does_not_stop_in_grace_period() {
+        let mut fake = FakeSupervisor {
+            waits: VecDeque::from([Ok(ProcessWaitState::StillRunning)]),
+            terminated: false,
+            code: 0,
+        };
+        let result = supervise_process(&mut fake, Duration::from_secs(5), &AtomicBool::new(true), Duration::from_millis(10));
+        assert!(result.is_err());
+        assert!(fake.terminated);
+    }
+}
