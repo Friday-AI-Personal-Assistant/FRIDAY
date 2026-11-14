@@ -634,6 +634,7 @@ struct FridayWindowsGuid {
 
 #[cfg(windows)]
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct FridayVirtualStorageType {
     device_id: u32,
     vendor_id: FridayWindowsGuid,
