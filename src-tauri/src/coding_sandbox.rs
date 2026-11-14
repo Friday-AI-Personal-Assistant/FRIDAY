@@ -681,7 +681,8 @@ fn write_guest_result_vhdx_ownership_marker(
         .map_err(|_| "FRIDAY could not write VHDX ownership metadata.".to_string())?;
     file.sync_all()
         .map_err(|_| "FRIDAY could not persist VHDX ownership metadata.".to_string())?;
-    verify_guest_result_vhdx_ownership_marker(plan, trusted_storage_root, Some(identifier))
+    verify_guest_result_vhdx_ownership_marker(plan, trusted_storage_root, Some(identifier))?;
+    Ok(())
 }
 
 fn verify_guest_result_vhdx_ownership_marker(
