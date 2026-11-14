@@ -1511,7 +1511,7 @@ mod tests {
   <MappedFolders>
     <MappedFolder>
       <HostFolder>{}</HostFolder>
-      <SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder>
+      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
   </MappedFolders>
