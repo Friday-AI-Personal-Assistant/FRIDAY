@@ -1012,3 +1012,23 @@ CPU limits under adversarial load, active-process-limit exhaustion, breakaway
 attempt behavior, restricted-token/AppContainer isolation, filesystem or
 network isolation, or physical Windows acceptance. The production runner
 remains disconnected and guest execution remains disabled.
+
+
+## Native Windows active-process ceiling regression — 2026-11-14
+
+The Job Object policy setup now accepts a private policy value internally,
+while the production constructor always supplies the single centralized
+`GUEST_JOB_POLICY`. No guest request can choose or weaken these limits. This
+narrow seam lets Windows CI exercise process-count exhaustion with a stricter
+one-process test policy without changing production limits.
+
+A native Windows regression creates a real Job Object with an active-process
+ceiling of one, starts a benign root process inside it, and has that process
+attempt to launch a descendant while remaining alive. The test checks the
+kernel-reported active-process count remains one, then verifies the root exits
+and the job becomes empty within bounded deadlines. This supplements the
+existing policy readback test with a real process-creation enforcement check.
+
+This test does not yet prove breakaway denial, memory-pressure termination, or
+CPU throttling under load. Those remain explicit resource-enforcement gaps;
+the guest runner is disconnected and guest execution remains disabled.
