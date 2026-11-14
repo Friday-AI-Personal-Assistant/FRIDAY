@@ -958,7 +958,6 @@ fn validate_sandbox_config_policy(config: &str) -> Result<(), String> {
     }
     Ok(())
 }
-}
 
 #[tauri::command]
 pub async fn coding_sandbox_recover_workspaces(app: AppHandle) -> Result<CodingSandboxRecovery, String> {
