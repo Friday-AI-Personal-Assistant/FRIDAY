@@ -927,47 +927,74 @@ fn build_sandbox_config(snapshot_path: &Path) -> Result<String, String> {
     Ok(config)
 }
 
-/// Structural guard for security-sensitive Windows Sandbox settings. This
-/// catches template regressions before a future launcher can consume a config;
-/// it does not prove the Windows host enforces the settings.
+/// Strict validator for FRIDAY's one generated Windows Sandbox template.
+/// This intentionally accepts only the exact template grammar, not arbitrary XML.
+/// It does not prove that the Windows host enforces the settings.
 fn validate_sandbox_config_policy(config: &str) -> Result<(), String> {
-    // This validator consumes only FRIDAY's generated template. Require one
-    // exact, attribute-free occurrence of every security-sensitive element so
-    // duplicate/conflicting XML values cannot be mistaken for a safe setting.
-    const ELEMENTS: &[&str] = &[
-        "Configuration", "VGpu", "Networking", "AudioInput", "VideoInput",
-        "ClipboardRedirection", "PrinterRedirection", "ProtectedClient",
-        "MappedFolders", "MappedFolder", "HostFolder", "SandboxFolder", "ReadOnly",
-    ];
-    const REQUIRED_VALUES: &[&str] = &[
-        "<VGpu>Disable</VGpu>",
-        "<Networking>Disable</Networking>",
-        "<AudioInput>Disable</AudioInput>",
-        "<VideoInput>Disable</VideoInput>",
-        "<ClipboardRedirection>Disable</ClipboardRedirection>",
-        "<PrinterRedirection>Disable</PrinterRedirection>",
-        "<ProtectedClient>Enable</ProtectedClient>",
-        "<ReadOnly>true</ReadOnly>",
-    ];
+    const PREFIX: &str = r#"<Configuration>
+  <VGpu>Disable</VGpu>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>"#;
+    const SUFFIX: &str = r#"</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#;
 
-    let structure_is_unique = ELEMENTS.iter().all(|name| {
-        let opening = format!("<{name}>");
-        let closing = format!("</{name}>");
-        config.matches(opening.as_str()).count() == 1
-            && config.matches(closing.as_str()).count() == 1
-            && !config.contains(&format!("<{name} "))
-            && !config.contains(&format!("<{name}\\t"))
-    });
-    if !structure_is_unique
-        || REQUIRED_VALUES.iter().any(|setting| config.matches(setting).count() != 1)
-        || config.contains("<LogonCommand")
-        || config.contains("<Networking ")
-        || config.contains("<MappedFolder ")
-        || config.contains("<ReadOnly>false</ReadOnly>")
+    let Some(encoded_host_path) = config.strip_prefix(PREFIX)
+        .and_then(|rest| rest.strip_suffix(SUFFIX))
+    else {
+        return Err("The Windows Sandbox configuration does not match FRIDAY's exact isolation template; launch is refused.".into());
+    };
+    if encoded_host_path.is_empty() {
+        return Err("The Windows Sandbox host folder is empty; launch is refused.".into());
+    }
+
+    // Only the five named entities emitted by xml_escape are accepted. Decode
+    // and re-encode to reject malformed, unknown, or raw entity syntax.
+    let decoded = decode_xml_text(encoded_host_path)
+        .ok_or_else(|| "The Windows Sandbox host folder contains invalid XML text; launch is refused.".to_string())?;
+    if decoded.is_empty() || decoded.chars().any(char::is_control)
+        || xml_escape(&decoded) != encoded_host_path
     {
-        return Err("The Windows Sandbox configuration does not satisfy FRIDAY's required isolation policy; launch is refused.".into());
+        return Err("The Windows Sandbox host folder is not safely XML-escaped; launch is refused.".into());
     }
     Ok(())
+}
+
+fn decode_xml_text(value: &str) -> Option<String> {
+    let mut decoded = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(index) = rest.find('&') {
+        decoded.push_str(&rest[..index]);
+        rest = &rest[index..];
+        let (entity, replacement) = if rest.starts_with("&amp;") {
+            ("&amp;", "&")
+        } else if rest.starts_with("&lt;") {
+            ("&lt;", "<")
+        } else if rest.starts_with("&gt;") {
+            ("&gt;", ">")
+        } else if rest.starts_with("&quot;") {
+            ("&quot;", "\"")
+        } else if rest.starts_with("&apos;") {
+            ("&apos;", "'")
+        } else {
+            return None;
+        };
+        decoded.push_str(replacement);
+        rest = &rest[entity.len()..];
+    }
+    decoded.push_str(rest);
+    Some(decoded)
 }
 
 #[tauri::command]
@@ -1472,83 +1499,70 @@ mod tests {
         fs::remove_dir_all(base).unwrap();
     }
 
+    fn safe_sandbox_config_fixture(host_folder: &str) -> String {
+        format!(r#"<Configuration>
+  <VGpu>Disable</VGpu>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>{}</HostFolder>
+      <SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#, xml_escape(host_folder))
+    }
+
     #[test]
     fn sandbox_config_policy_rejects_network_or_writable_share_regressions() {
-        let safe = r#"<Configuration>
-<VGpu>Disable</VGpu><Networking>Disable</Networking>
-<AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
-<ClipboardRedirection>Disable</ClipboardRedirection>
-<PrinterRedirection>Disable</PrinterRedirection><ProtectedClient>Enable</ProtectedClient>
-<MappedFolders><MappedFolder><HostFolder>C:\\FRIDAY\\Snapshot</HostFolder>
-<SandboxFolder>C:\FRIDAY\Project</SandboxFolder><ReadOnly>true</ReadOnly>
-</MappedFolder></MappedFolders></Configuration>"#;
-        validate_sandbox_config_policy(safe).unwrap();
-        assert!(validate_sandbox_config_policy(&safe.replace(
-            "<Networking>Disable</Networking>", "<Networking>Enable</Networking>"
-        )).is_err());
-        assert!(validate_sandbox_config_policy(&safe.replace(
-            "<ReadOnly>true</ReadOnly>", "<ReadOnly>false</ReadOnly>"
-        )).is_err());
-        assert!(validate_sandbox_config_policy(&safe.replace(
-            "</MappedFolders>", "<MappedFolder></MappedFolder></MappedFolders>"
-        )).is_err());
-        assert!(validate_sandbox_config_policy(&safe.replace(
-            "<ProtectedClient>Enable</ProtectedClient>", "<ProtectedClient>Disable</ProtectedClient>"
-        )).is_err());
-    }
-
-    #[test]
-    fn sandbox_config_policy_rejects_duplicate_or_conflicting_security_elements() {
-        let safe = r#"<Configuration>
-<VGpu>Disable</VGpu><Networking>Disable</Networking>
-<AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
-<ClipboardRedirection>Disable</ClipboardRedirection>
-<PrinterRedirection>Disable</PrinterRedirection><ProtectedClient>Enable</ProtectedClient>
-<MappedFolders><MappedFolder><HostFolder>C:\FRIDAY\Snapshot</HostFolder>
-<SandboxFolder>C:\FRIDAY\Project</SandboxFolder><ReadOnly>true</ReadOnly>
-</MappedFolder></MappedFolders></Configuration>"#;
-        for duplicate in [
-            "<VGpu>Disable</VGpu>",
-            "<Networking>Disable</Networking>",
-            "<AudioInput>Disable</AudioInput>",
-            "<VideoInput>Disable</VideoInput>",
-            "<ClipboardRedirection>Disable</ClipboardRedirection>",
-            "<PrinterRedirection>Disable</PrinterRedirection>",
-            "<ProtectedClient>Enable</ProtectedClient>",
-            "<ReadOnly>true</ReadOnly>",
-            r"<HostFolder>C:\FRIDAY\Snapshot</HostFolder>",
-            r"<SandboxFolder>C:\FRIDAY\Project</SandboxFolder>",
+        let safe = safe_sandbox_config_fixture(r"C:\FRIDAY\Snapshot");
+        validate_sandbox_config_policy(&safe).unwrap();
+        for (from, to) in [
+            ("<Networking>Disable</Networking>", "<Networking>Enable</Networking>"),
+            ("<ReadOnly>true</ReadOnly>", "<ReadOnly>false</ReadOnly>"),
+            ("<ProtectedClient>Enable</ProtectedClient>", "<ProtectedClient>Disable</ProtectedClient>"),
         ] {
-            let mutated = safe.replacen(duplicate, &format!("{duplicate}{duplicate}"), 1);
-            assert!(validate_sandbox_config_policy(&mutated).is_err(),
-                "duplicate security element was accepted: {duplicate}");
+            assert!(validate_sandbox_config_policy(&safe.replace(from, to)).is_err());
         }
-        let conflicting = safe.replace(
-            "</Configuration>",
-            "<VGpu>Enable</VGpu></Configuration>",
-        );
-        assert!(validate_sandbox_config_policy(&conflicting).is_err());
-    }
-
-    #[test]
-    fn sandbox_config_policy_rejects_attribute_overrides_and_extra_mapped_folders() {
-        let safe = r#"<Configuration>
-<VGpu>Disable</VGpu><Networking>Disable</Networking>
-<AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
-<ClipboardRedirection>Disable</ClipboardRedirection>
-<PrinterRedirection>Disable</PrinterRedirection><ProtectedClient>Enable</ProtectedClient>
-<MappedFolders><MappedFolder><HostFolder>C:\\FRIDAY\\Snapshot</HostFolder>
-<SandboxFolder>C:\\FRIDAY\\Project</SandboxFolder><ReadOnly>true</ReadOnly>
-</MappedFolder></MappedFolders></Configuration>"#;
-        assert!(validate_sandbox_config_policy(&safe.replace(
-            "<Networking>", "<Networking enabled='true'>"
-        )).is_err());
         assert!(validate_sandbox_config_policy(&safe.replace(
             "</MappedFolders>", "<MappedFolder></MappedFolder></MappedFolders>"
         )).is_err());
-        assert!(validate_sandbox_config_policy(&safe.replace(
-            "<Configuration>", "<Configuration><LogonCommand/>"
-        )).is_err());
+    }
+
+    #[test]
+    fn sandbox_config_policy_rejects_any_non_template_xml_structure() {
+        let safe = safe_sandbox_config_fixture(r"C:\FRIDAY\Snapshot");
+        for mutation in [
+            safe.replace("<Networking>", "<Networking enabled='true'>"),
+            safe.replace("</Configuration>", "<VGpu>Enable</VGpu></Configuration>"),
+            safe.replace("</Configuration>", "<LogonCommand/></Configuration>"),
+            safe.replace("</Configuration>", "<!-- injected --></Configuration>"),
+            safe.replace("<HostFolder>", "<HostFolder><![CDATA["),
+            safe.replace("</HostFolder>", "]]></HostFolder>"),
+            safe.replace("<ReadOnly>true</ReadOnly>", "<ReadOnly>true</ReadOnly><ReadOnly>false</ReadOnly>"),
+            safe.replace("<VGpu>Disable</VGpu>", "<Unknown>value</Unknown><VGpu>Disable</VGpu>"),
+        ] {
+            assert!(validate_sandbox_config_policy(&mutation).is_err(),
+                "non-template XML structure was accepted");
+        }
+    }
+
+    #[test]
+    fn sandbox_config_policy_accepts_escaped_path_text_and_rejects_bad_entities() {
+        let safe = safe_sandbox_config_fixture(r#"C:\FRIDAY\Work & <Finance> "Q1""#);
+        validate_sandbox_config_policy(&safe).unwrap();
+        let bad_entity = safe.replace("&amp;", "&bogus;");
+        assert!(validate_sandbox_config_policy(&bad_entity).is_err());
+        let raw_ampersand = safe.replace("&amp;", "&");
+        assert!(validate_sandbox_config_policy(&raw_ampersand).is_err());
+        let raw_tag = safe.replace("&lt;Finance&gt;", "<Networking>Enable</Networking>");
+        assert!(validate_sandbox_config_policy(&raw_tag).is_err());
     }
 
     #[test]

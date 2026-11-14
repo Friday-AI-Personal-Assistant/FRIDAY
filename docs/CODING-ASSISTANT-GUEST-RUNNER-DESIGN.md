@@ -1150,3 +1150,22 @@ session ownership, filesystem, network, and result-storage gates.
 The generated .wsb template's structural validator now requires exactly one attribute-free opening and closing element for every security-sensitive setting and mapping element. Each required safe value must also occur exactly once. This prevents duplicate/conflicting values (for example, a safe value followed by an enabling override), extra mapped-folder entries, XML attributes on policy elements, and logon-command injection from being accepted by the template guard. Regression tests cover duplicated values, conflicting values, attribute overrides, extra mappings and logon-command elements.
 
 This is a structural regression guard over FRIDAY's generated template, not a general-purpose XML parser and not proof that Windows enforces the configuration. The generated config remains preview-only; FRIDAY does not write or launch it, and guest execution remains disabled.
+
+
+## Exact-template Windows Sandbox configuration validation — 2026-11-14
+
+The Sandbox configuration guard now accepts only the exact FRIDAY-generated
+configuration grammar, including the precise nesting, ordering, whitespace,
+security values, single mapped-folder structure, and fixed guest destination.
+The only variable text is the host snapshot path, which must be validly escaped
+using the five XML entities emitted by FRIDAY's path escaper. Unknown entities,
+raw entity delimiters, control characters, comments, CDATA, attributes,
+additional elements, duplicate settings, and any other template deviation are
+rejected. Regression tests exercise these mutation classes and escaped path
+text.
+
+This is intentionally not a general-purpose XML parser: it validates only the
+single exact template FRIDAY generates. It does not prove Windows honors the
+settings, does not create or launch a Sandbox, and does not establish guest
+identity, session ownership, writable result storage, or network isolation.
+The configuration remains preview-only and guest execution remains disabled.
