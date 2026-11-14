@@ -690,3 +690,67 @@ These tests strengthen the crash-recovery contract but do not simulate power
 loss on physical hardware, prove directory metadata durability on every
 filesystem, or replace the remaining Windows path/reparse/volume review and
 physical Windows acceptance tests. Guest execution remains disabled.
+
+
+## Windows guest-process containment implementation contract — 2026-11-14
+
+The next implementation stage is Windows Job Object containment. It is a
+separate security boundary from Windows Sandbox: the Job Object limits and
+owns the process tree FRIDAY explicitly launches, while Windows Sandbox remains
+the outer guest isolation boundary. Neither mechanism is a substitute for the
+other.
+
+The implementation must use a FRIDAY-created, unnamed Job Object with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, an active-process ceiling, a per-job
+memory ceiling, a per-process memory ceiling, and a CPU-rate ceiling. The
+resource values must be centralized in one reviewed policy definition; request
+JSON must never be able to raise them. Unsupported or rejected limits are a
+hard failure, not a reason to launch without containment.
+
+Process launch ordering is security-critical:
+
+1. Resolve a fixed, verified absolute executable path and a fixed argument
+   vector for an allowlisted operation. Do not invoke a shell.
+2. Create the process suspended, with inherited handles disabled except for
+   explicitly reviewed standard streams and the required guest protocol.
+3. Assign the still-suspended process to the FRIDAY-owned Job Object.
+4. Query the Job Object and verify the configured limits and process
+   membership before resuming the primary thread.
+5. If creation, assignment, configuration, or verification fails, terminate
+   the suspended process and close the Job Object. Never resume it.
+6. Keep the Job Object handle alive for the full run. Closing it must terminate
+   every process in the job, including descendants, on timeout, cancellation,
+   or runner failure.
+
+The Job Object must not permit breakaway. FRIDAY must not attach to, terminate,
+or otherwise manage unrelated Windows Sandbox or user processes. Any
+watchdog/cleanup path must be keyed to an unguessable FRIDAY run identity and
+verified process ownership, never a process name alone.
+
+Output collection is a separate bounded channel: stdout/stderr must be drained
+while the process runs, but retained bytes may never exceed the fixed per-run
+budget. Once the budget is reached, continue draining or safely close the
+pipes so a full pipe cannot deadlock the guest; mark truncation and do not
+allocate without bound. Wall-clock timeout and cancellation must close the
+owned Job Object, then wait for process termination within a bounded grace
+period.
+
+Required Windows tests before this boundary can be considered implemented:
+
+- Create/configure/query a Job Object and assert every requested limit.
+- Prove an over-limit child process is rejected or terminated.
+- Prove a spawned descendant remains in the job and dies when the job closes.
+- Prove breakaway is denied.
+- Prove the primary process is never resumed when assignment or verification
+  fails (using an injectable launch seam).
+- Exercise timeout, cancellation, process-count exhaustion, memory pressure,
+  and bounded stdout/stderr flooding.
+- Verify unrelated processes are never affected and that a foreign Sandbox
+  session is never terminated.
+- Run on the supported Windows CI image, followed by physical Windows
+  acceptance on the target machine.
+
+This document records the required contract only. No Job Object is currently
+created, no guest process is launched, and no resource limit is yet enforced by
+this specification. Guest execution remains disabled until the implementation,
+CI coverage, and physical Windows acceptance gates all pass.
