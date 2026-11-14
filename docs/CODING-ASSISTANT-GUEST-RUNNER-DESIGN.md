@@ -1315,3 +1315,24 @@ disk-full behavior. The result-storage lifecycle remains disconnected from
 guest execution, and guest execution remains disabled pending the remaining
 attachment, filesystem, mount, share-revocation, recovery, and physical Windows
 acceptance gates.
+
+
+## Native VHDX capacity and allocation readback — 2026-11-14
+
+After creating a result VHDX and verifying its ordinary-file identity and VHDX
+signature, FRIDAY now reopens it through the Windows Virtual Disk API with the
+read-only `VIRTUAL_DISK_ACCESS_GET_INFO` right. It queries the kernel/provider
+for virtual size, physical size, block size, logical sector size, and provider
+subtype. The operation fails closed unless the virtual capacity is exactly the
+fixed 64 MiB policy, physical allocation is at least that capacity, block size
+is 1 MiB, sector size is 512 bytes, and provider subtype reports a fixed disk.
+The metadata handle is RAII-owned and closed without requesting attach or
+write access.
+
+The Windows-only creation regression now exercises this metadata readback on
+the native CI host, in addition to checking the VHDX signature and refusal to
+replace an existing file. This proves the VHDX provider's reported geometry
+and fixed/dynamic subtype on that CI host; it does not prove actual disk-full
+behavior, filesystem formatting, attachment ownership, guest mount semantics,
+or physical Windows acceptance. No disk is attached or mounted, no result
+volume is shared, and guest execution remains disabled.
