@@ -621,6 +621,150 @@ mod bounded_output_tests {
     }
 }
 
+
+/// A single stream reader that drains to EOF on a dedicated thread while
+/// retaining only a bounded prefix. The reader continues consuming bytes
+/// after the retention limit is reached, preventing a full child pipe from
+/// blocking the process.
+pub(crate) struct GuestOutputReader {
+    worker: Option<std::thread::JoinHandle<Result<BoundedGuestOutput, String>>>,
+}
+
+impl GuestOutputReader {
+    pub(crate) fn start<R>(mut reader: R, limit: usize) -> Self
+    where
+        R: std::io::Read + Send + 'static,
+    {
+        let worker = std::thread::spawn(move || {
+            let mut output = BoundedGuestOutput::new(limit);
+            let mut chunk = [0u8; 8 * 1024];
+            loop {
+                match reader.read(&mut chunk) {
+                    Ok(0) => return Ok(output),
+                    Ok(count) => output.push(&chunk[..count]),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(format!("Guest output stream could not be drained: {error}")),
+                }
+            }
+        });
+        Self { worker: Some(worker) }
+    }
+
+    /// Join only after the owned process tree has exited and all writer handles
+    /// are closed. A panic or read failure is surfaced rather than hidden.
+    pub(crate) fn finish(&mut self) -> Result<BoundedGuestOutput, String> {
+        let worker = self.worker.take()
+            .ok_or_else(|| "Guest output reader was already joined.".to_string())?;
+        worker.join()
+            .map_err(|_| "Guest output reader thread terminated unexpectedly.".to_string())?
+    }
+}
+
+/// Concurrent stdout/stderr drain coordinator. Both readers must be started
+/// before waiting for process completion so neither stream can fill its pipe.
+pub(crate) struct GuestOutputCapture {
+    stdout: GuestOutputReader,
+    stderr: GuestOutputReader,
+}
+
+impl GuestOutputCapture {
+    pub(crate) fn start<R1, R2>(stdout: R1, stderr: R2) -> Self
+    where
+        R1: std::io::Read + Send + 'static,
+        R2: std::io::Read + Send + 'static,
+    {
+        Self {
+            stdout: GuestOutputReader::start(stdout, GUEST_STDOUT_RETAIN_LIMIT),
+            stderr: GuestOutputReader::start(stderr, GUEST_STDERR_RETAIN_LIMIT),
+        }
+    }
+
+    /// Call after the contained process tree is confirmed stopped and both
+    /// pipe writers have closed. Each reader has drained through EOF.
+    pub(crate) fn finish(mut self) -> Result<GuestCapturedOutput, String> {
+        let stdout = self.stdout.finish()?;
+        let stderr = self.stderr.finish()?;
+        Ok(GuestCapturedOutput { stdout, stderr })
+    }
+}
+
+#[cfg(test)]
+mod output_reader_tests {
+    use super::*;
+    use std::io::{Cursor, Read};
+
+    #[test]
+    fn reader_drains_entire_stream_after_retention_limit() {
+        let bytes = vec![b'x'; 128 * 1024];
+        let reader = GuestOutputReader::start(Cursor::new(bytes.clone()), 1024);
+        let mut reader = reader;
+        let output = reader.finish().unwrap();
+        assert_eq!(output.retained_len(), 1024);
+        assert!(output.is_truncated());
+        assert_eq!(output.as_bytes(), &bytes[..1024]);
+    }
+
+    #[test]
+    fn stdout_and_stderr_are_drained_concurrently_with_independent_limits() {
+        let stdout = vec![b'o'; GUEST_STDOUT_RETAIN_LIMIT + 4096];
+        let stderr = vec![b'e'; GUEST_STDERR_RETAIN_LIMIT + 8192];
+        let capture = GuestOutputCapture::start(Cursor::new(stdout), Cursor::new(stderr));
+        let result = capture.finish().unwrap();
+        assert_eq!(result.stdout.retained_len(), GUEST_STDOUT_RETAIN_LIMIT);
+        assert_eq!(result.stderr.retained_len(), GUEST_STDERR_RETAIN_LIMIT);
+        assert!(result.stdout.is_truncated());
+        assert!(result.stderr.is_truncated());
+        assert!(result.is_truncated());
+    }
+
+    struct InterruptThenData {
+        interrupted: bool,
+        data: Cursor<Vec<u8>>,
+    }
+
+    impl Read for InterruptThenData {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            self.data.read(buffer)
+        }
+    }
+
+    #[test]
+    fn reader_retries_interrupted_reads_and_preserves_complete_output() {
+        let source = InterruptThenData {
+            interrupted: false,
+            data: Cursor::new(b"compiler finished".to_vec()),
+        };
+        let mut reader = GuestOutputReader::start(source, 64);
+        let output = reader.finish().unwrap();
+        assert_eq!(output.as_bytes(), b"compiler finished");
+        assert!(!output.is_truncated());
+    }
+
+    struct FailingReader;
+    impl Read for FailingReader {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "simulated pipe failure"))
+        }
+    }
+
+    #[test]
+    fn reader_surfaces_stream_errors() {
+        let mut reader = GuestOutputReader::start(FailingReader, 64);
+        assert!(reader.finish().unwrap_err().contains("could not be drained"));
+    }
+
+    #[test]
+    fn reader_cannot_be_joined_twice() {
+        let mut reader = GuestOutputReader::start(Cursor::new(b"done".to_vec()), 64);
+        assert_eq!(reader.finish().unwrap().as_bytes(), b"done");
+        assert!(reader.finish().unwrap_err().contains("already joined"));
+    }
+}
+
 /// Result of supervising a contained guest process.
 #[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

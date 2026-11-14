@@ -862,3 +862,28 @@ Those native pipe and reader-lifecycle controls remain the next integration
 step. The launch primitive remains disconnected from user commands and guest
 execution remains disabled pending the full isolation and physical Windows
 acceptance gates.
+
+
+## Concurrent bounded guest-output drain workers — 2026-11-14
+
+The bounded output-retention buffers now have a reusable concurrent reader
+layer. Each reader consumes its source in fixed 8 KiB chunks on a dedicated
+thread, retries interrupted reads, retains only its configured prefix, and
+continues draining through EOF after the retention ceiling is reached. Read
+errors and worker panics are surfaced to the caller rather than converted into
+apparently complete output.
+
+A two-stream coordinator starts stdout and stderr readers independently so
+both streams are drained while the process runs. Its finish operation joins
+both workers and returns the existing per-stream bounded result, including
+truncation flags. It must only be called after the FRIDAY-owned process tree
+has stopped and all inherited writer handles have closed; otherwise joining
+can wait indefinitely.
+
+Regression coverage verifies drain-after-cap behavior, concurrent independent
+stream budgets, interrupted-read retry, read-error reporting, and single-use
+join semantics. These workers are now ready to consume native pipe read ends,
+but this batch does not create Windows pipes, configure an explicit inherited
+handle allowlist, or connect the readers to CreateProcessW. Native pipe
+creation and safe handle-list launch integration remain the next step. Guest
+execution remains disabled.
