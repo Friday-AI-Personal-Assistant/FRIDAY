@@ -588,7 +588,7 @@ mod bounded_output_tests {
 
     #[test]
     fn output_under_limit_is_preserved_without_truncation() {
-        let mut output = BoundedGuestOutput::new(16);
+        let mut output = BoundedGuestOutput::new(32);
         output.push(b"compiler ");
         output.push(b"finished");
         assert_eq!(output.as_lossy_text(), "compiler finished");
