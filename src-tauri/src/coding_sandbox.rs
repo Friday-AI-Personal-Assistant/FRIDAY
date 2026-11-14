@@ -776,14 +776,14 @@ $path = $args[0]
 $currentSid = $args[1]
 $allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
 try {
-  # Windows PowerShell is launched without a profile, so load the ACL cmdlets explicitly.
-  Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+  # Use the .NET filesystem ACL APIs directly. This avoids PowerShell's
+  # Microsoft.PowerShell.Security module auto-loading/format-data dependency.
   # A protected SDDL descriptor avoids ambiguous rule-merging and purge behavior.
   $sddl = "D:P(A;OICI;FA;;;$currentSid)(A;OICI;FA;;;S-1-5-18)(A;OICI;FA;;;S-1-5-32-544)"
-  $acl = Get-Acl -LiteralPath $path
+  $acl = [System.IO.Directory]::GetAccessControl($path)
   $acl.SetSecurityDescriptorSddlForm($sddl)
-  Set-Acl -LiteralPath $path -AclObject $acl
-  $check = Get-Acl -LiteralPath $path
+  [System.IO.Directory]::SetAccessControl($path, $acl)
+  $check = [System.IO.Directory]::GetAccessControl($path)
   if (-not $check.AreAccessRulesProtected) { throw 'ACL_INHERITANCE' }
   $rules = @($check.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
   if ($rules.Count -ne 3) { throw 'ACL_RULE_COUNT' }
