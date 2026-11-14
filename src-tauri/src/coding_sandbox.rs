@@ -1389,7 +1389,10 @@ fn verify_attached_guest_result_vhdx_identity(
         return Err("The result VHDX backing-file path changed during attached identity verification.".into());
     }
     if observed_identifier != recorded_identifier {
-        return Err("The attached VHDX persistent identifier does not match its FRIDAY ownership record.".into());
+        return Err(format!(
+            "The attached VHDX persistent identifier does not match its FRIDAY ownership record (recorded={}, observed={}).",
+            recorded_identifier, observed_identifier
+        ));
     }
     Ok(observed_identifier)
 }
