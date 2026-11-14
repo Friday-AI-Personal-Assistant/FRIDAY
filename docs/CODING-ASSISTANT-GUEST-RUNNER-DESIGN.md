@@ -1524,3 +1524,18 @@ and detaches it. This operation creates GPT metadata only: it does not create
 or format NTFS, assign a drive letter, mount the volume, expose it to Windows
 Sandbox, or launch guest code. Physical Windows acceptance and filesystem
 formatting remain separate steps; guest execution stays disabled.
+
+## VHDX-specific persistent identity query — 2026-11-15
+
+The persistent identity check now uses the VHDX-specific
+GET_VIRTUAL_DISK_INFO_VIRTUAL_DISK_ID information version (14), both when
+recording the newly created disk identity and when revalidating the exact
+attached VHDX handle. The generic GET_VIRTUAL_DISK_INFO_IDENTIFIER version
+(2) is not used for VHDX identity. This distinction follows the VHDX-specific
+handling documented by Microsoft's Windows virtual-disk API ecosystem.
+
+The ownership marker remains bound to the exact run and recorded persistent
+VHDX ID. A mismatch still fails closed; no identity comparison has been
+weakened. Windows-native CI must confirm the corrected query across creation,
+attachment, GPT initialization, read-back, and detachment. Guest execution
+remains disabled.

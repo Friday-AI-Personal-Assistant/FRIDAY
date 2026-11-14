@@ -1057,6 +1057,9 @@ fn verify_guest_result_vhdx_identity(
 }
 
 #[cfg(windows)]
+const FRIDAY_GET_VIRTUAL_DISK_INFO_VIRTUAL_DISK_ID: u32 = 14;
+
+#[cfg(windows)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct FridayWindowsGuid {
@@ -1373,7 +1376,7 @@ fn verify_attached_guest_result_vhdx_identity(
         return Err("The attached physical-device path changed during identity verification.".into());
     }
     let mut identifier_info = FridayGetVirtualDiskInfo {
-        version: 2, // GET_VIRTUAL_DISK_INFO_IDENTIFIER
+        version: FRIDAY_GET_VIRTUAL_DISK_INFO_VIRTUAL_DISK_ID, // VHDX GET_VIRTUAL_DISK_INFO_VIRTUAL_DISK_ID
         data: FridayGetVirtualDiskInfoData { alignment: [0; 3] },
     };
     let mut identifier_bytes = std::mem::size_of::<FridayGetVirtualDiskInfo>() as u32;
