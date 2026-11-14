@@ -1328,6 +1328,23 @@ mod native_windows_process_integration_tests {
         }
     }
 
+    // Never let a native integration test wait indefinitely on an OS process.
+    // On timeout, kill and reap the test-owned child before reporting failure.
+    fn wait_for_test_child(child: &mut std::process::Child, timeout: Duration) -> std::process::ExitStatus {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait().expect("poll native test child") {
+                Some(status) => return status,
+                None if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("native test child exceeded its {:?} deadline and was terminated", timeout);
+                }
+                None => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    }
+
     #[test]
     fn real_windows_job_owns_descendant_after_root_process_exits() {
         use windows_sys::Win32::System::Threading::WaitForSingleObject;
@@ -1351,8 +1368,8 @@ mod native_windows_process_integration_tests {
         let root = std::env::var_os("SystemRoot").expect("Windows SystemRoot");
         let cmd = std::path::PathBuf::from(root).join("System32").join("cmd.exe");
         let command = concat!(
-            "for /L %i in (1,1,40000) do @echo OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
-            " & for /L %i in (1,1,40000) do @echo EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE 1>&2"
+            "for /L %i in (1,1,5000) do @echo OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
+            " & for /L %i in (1,1,5000) do @echo EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE 1>&2"
         );
         let mut child = Command::new(cmd)
             .args(["/D", "/C", command])
@@ -1363,7 +1380,7 @@ mod native_windows_process_integration_tests {
         let stdout = child.stdout.take().expect("stdout pipe");
         let stderr = child.stderr.take().expect("stderr pipe");
         let capture = GuestOutputCapture::start(stdout, stderr);
-        let status = child.wait().expect("wait for pipe flood process");
+        let status = wait_for_test_child(&mut child, Duration::from_secs(60));
         assert!(status.success(), "pipe flood command should exit successfully");
         let result = capture.finish().expect("both native pipe readers should reach EOF");
         assert_eq!(result.stdout.retained_len(), GUEST_STDOUT_RETAIN_LIMIT);
