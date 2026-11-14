@@ -776,13 +776,17 @@ $path = $args[0]
 $currentSid = $args[1]
 $allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
 try {
-  # Use the .NET filesystem ACL APIs directly. This avoids PowerShell's
-  # Microsoft.PowerShell.Security module auto-loading/format-data dependency.
+  # Use the .NET filesystem ACL APIs directly. Keep stage-specific diagnostics
+  # so Windows CI identifies the exact failing ACL operation.
   # A protected SDDL descriptor avoids ambiguous rule-merging and purge behavior.
   $sddl = "D:P(A;OICI;FA;;;$currentSid)(A;OICI;FA;;;S-1-5-18)(A;OICI;FA;;;S-1-5-32-544)"
+  $stage = 'read-acl'
   $acl = [System.IO.Directory]::GetAccessControl($path)
+  $stage = 'apply-sddl'
   $acl.SetSecurityDescriptorSddlForm($sddl)
+  $stage = 'write-acl'
   [System.IO.Directory]::SetAccessControl($path, $acl)
+  $stage = 'verify-acl'
   $check = [System.IO.Directory]::GetAccessControl($path)
   if (-not $check.AreAccessRulesProtected) { throw 'ACL_INHERITANCE' }
   $rules = @($check.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
@@ -793,7 +797,8 @@ try {
     }
   }
 } catch {
-  [Console]::Error.WriteLine('PRIVATE_WORKSPACE_ACL_FAILED:' + $_.FullyQualifiedErrorId)
+  $message = ($_.Exception.Message -replace '[\r\n]+', ' ').Trim()
+  [Console]::Error.WriteLine('PRIVATE_WORKSPACE_ACL_FAILED:' + $stage + ':' + $_.Exception.GetType().FullName + ':' + $message + ':' + $_.FullyQualifiedErrorId)
   exit 1
 }
 "#;
