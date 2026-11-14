@@ -1267,3 +1267,23 @@ apply a filesystem, attach or mount a virtual disk, configure Sandbox mapping,
 enforce disk-full behavior, or revoke a share. Those native Windows operations
 and crash/recovery semantics remain separate implementation and physical
 acceptance gates. No writable share or guest execution is enabled.
+
+
+## Exclusive result-volume directory reservation and ownership evidence — 2026-11-14
+
+The next host-side layer now reserves the per-run result directory with an
+exclusive directory create, then writes a small schema-versioned ownership
+marker using create-new semantics and flushes the marker to disk. A failed or
+interrupted marker write intentionally leaves the incomplete directory in
+place for recovery; FRIDAY does not recursively delete uncertain data.
+
+Before accepting the directory as owned, verification rechecks the trusted
+storage root, exact direct-child relationship, ordinary non-reparse directory
+type, and a bounded no-follow read of the ownership marker. The marker must
+match the exact run identifier, schema, and FRIDAY result-volume owner.
+
+Regression tests cover successful exclusive reservation, duplicate reservation,
+missing or mismatched marker contents, and a symlinked marker. This is still
+only host directory reservation and ownership proof. VHDX creation, filesystem
+formatting, attachment, guest mapping, disk-full enforcement, share revocation,
+and cleanup are not implemented by this layer. No guest execution is enabled.

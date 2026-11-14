@@ -587,6 +587,99 @@ fn validate_guest_result_volume_plan(
     Ok(())
 }
 
+
+const GUEST_RESULT_VOLUME_OWNER_MARKER: &str = ".friday-result-volume-owner.json";
+const GUEST_RESULT_VOLUME_OWNER_SCHEMA: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestResultVolumeOwnershipMarker {
+    schema_version: u32,
+    run_id: String,
+    owner: String,
+}
+
+/// Atomically reserves a new per-run directory and writes its ownership record.
+/// If marker creation or persistence fails, the incomplete directory is left
+/// untouched for recovery rather than being recursively deleted.
+fn reserve_guest_result_volume_directory(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<PathBuf, String> {
+    validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
+    fs::create_dir(&plan.run_directory)
+        .map_err(|_| "FRIDAY could not exclusively reserve this result-volume run directory.".to_string())?;
+
+    let marker = GuestResultVolumeOwnershipMarker {
+        schema_version: GUEST_RESULT_VOLUME_OWNER_SCHEMA,
+        run_id: plan.run_id.clone(),
+        owner: "FRIDAY-CodingAssistant-ResultVolume".to_string(),
+    };
+    let bytes = serde_json::to_vec(&marker)
+        .map_err(|_| "FRIDAY could not prepare result-volume ownership metadata.".to_string())?;
+    let marker_path = plan.run_directory.join(GUEST_RESULT_VOLUME_OWNER_MARKER);
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&marker_path)
+        .map_err(|_| "FRIDAY could not exclusively create result-volume ownership metadata; the directory was preserved.".to_string())?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|_| "FRIDAY could not write result-volume ownership metadata; the directory was preserved.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "FRIDAY could not persist result-volume ownership metadata; the directory was preserved.".to_string())?;
+    verify_guest_result_volume_directory(plan, trusted_storage_root)
+}
+
+/// Verifies the exact per-run child directory and its no-follow ownership marker.
+/// This does not authorize disk detach or recursive deletion.
+fn verify_guest_result_volume_directory(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<PathBuf, String> {
+    validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
+    let root = fs::canonicalize(trusted_storage_root)
+        .map_err(|_| "The trusted result-volume root could not be reverified.".to_string())?;
+    let metadata = fs::symlink_metadata(&plan.run_directory)
+        .map_err(|_| "The result-volume run directory is unavailable.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("The result-volume run directory is not an ordinary directory.".into());
+    }
+    let canonical = fs::canonicalize(&plan.run_directory)
+        .map_err(|_| "The result-volume run directory could not be canonicalized.".to_string())?;
+    if canonical.parent() != Some(root.as_path())
+        || canonical.file_name().and_then(OsStr::to_str) != Some(plan.run_id.as_str())
+    {
+        return Err("The result-volume run directory failed its exact-child ownership check.".into());
+    }
+
+    let marker_path = canonical.join(GUEST_RESULT_VOLUME_OWNER_MARKER);
+    let marker_metadata = fs::symlink_metadata(&marker_path)
+        .map_err(|_| "Result-volume ownership evidence is missing; the directory was preserved.".to_string())?;
+    if !marker_metadata.is_file() || is_reparse_or_symlink(&marker_metadata) || marker_metadata.len() > 1024 {
+        return Err("Result-volume ownership evidence is not a small regular file.".into());
+    }
+    let mut marker_file = open_source_file(&marker_path)
+        .map_err(|_| "Result-volume ownership evidence could not be opened without following links.".to_string())?;
+    let opened_metadata = marker_file.metadata()
+        .map_err(|_| "Result-volume ownership evidence could not be verified.".to_string())?;
+    if !opened_metadata.is_file() || is_reparse_or_symlink(&opened_metadata) || opened_metadata.len() > 1024 {
+        return Err("Result-volume ownership evidence changed or exceeded its size limit.".into());
+    }
+    let mut bytes = Vec::new();
+    marker_file.take(1025).read_to_end(&mut bytes)
+        .map_err(|_| "Result-volume ownership evidence could not be read.".to_string())?;
+    if bytes.len() > 1024 {
+        return Err("Result-volume ownership evidence exceeded its read limit.".into());
+    }
+    let marker: GuestResultVolumeOwnershipMarker = serde_json::from_slice(&bytes)
+        .map_err(|_| "Result-volume ownership evidence is malformed.".to_string())?;
+    if marker.schema_version != GUEST_RESULT_VOLUME_OWNER_SCHEMA
+        || marker.run_id != plan.run_id
+        || marker.owner != "FRIDAY-CodingAssistant-ResultVolume"
+    {
+        return Err("Result-volume ownership evidence does not match this FRIDAY run.".into());
+    }
+    Ok(canonical)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SandboxSessionState {
     Planned,
@@ -2065,6 +2158,47 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
         assert!(build_guest_result_volume_plan(&link, "0123456789abcdef0123456789abcdef").is_err());
         fs::remove_dir_all(base).unwrap();
+    }
+
+
+    #[test]
+    fn result_volume_directory_is_exclusively_reserved_and_verified() {
+        let root = make_test_directory("result-volume-reserve");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        let reserved = reserve_guest_result_volume_directory(&plan, &root).unwrap();
+        assert_eq!(reserved, plan.run_directory);
+        assert!(reserved.join(GUEST_RESULT_VOLUME_OWNER_MARKER).is_file());
+        assert_eq!(verify_guest_result_volume_directory(&plan, &root).unwrap(), reserved);
+        assert!(reserve_guest_result_volume_directory(&plan, &root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn result_volume_directory_refuses_missing_or_tampered_ownership_evidence() {
+        let root = make_test_directory("result-volume-marker");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        fs::create_dir(&plan.run_directory).unwrap();
+        assert!(verify_guest_result_volume_directory(&plan, &root).is_err());
+        fs::write(plan.run_directory.join(GUEST_RESULT_VOLUME_OWNER_MARKER),
+            br#"{"schemaVersion":1,"runId":"ffffffffffffffffffffffffffffffff","owner":"FRIDAY-CodingAssistant-ResultVolume"}"#).unwrap();
+        assert!(verify_guest_result_volume_directory(&plan, &root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn result_volume_directory_refuses_symlinked_ownership_marker() {
+        let root = make_test_directory("result-volume-marker-link");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        fs::create_dir(&plan.run_directory).unwrap();
+        let outside = root.join("outside-marker");
+        fs::write(&outside, b"not ownership evidence").unwrap();
+        std::os::unix::fs::symlink(&outside, plan.run_directory.join(GUEST_RESULT_VOLUME_OWNER_MARKER)).unwrap();
+        assert!(verify_guest_result_volume_directory(&plan, &root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
 }
