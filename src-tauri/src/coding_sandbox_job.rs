@@ -38,16 +38,20 @@ pub(crate) struct OwnedGuestJob { handle: HANDLE }
 impl OwnedGuestJob {
     /// Create an unnamed job, apply all mandatory limits, and verify kernel state.
     pub(crate) fn create() -> Result<Self, String> {
+        Self::create_with_policy(GUEST_JOB_POLICY)
+    }
+
+    fn create_with_policy(policy: GuestJobPolicy) -> Result<Self, String> {
         let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
         if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             return Err(last_error("create the private guest Job Object"));
         }
         let job = Self { handle };
-        job.configure_and_verify()?;
+        job.configure_and_verify(policy)?;
         Ok(job)
     }
 
-    fn configure_and_verify(&self) -> Result<(), String> {
+    fn configure_and_verify(&self, policy: GuestJobPolicy) -> Result<(), String> {
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
         limits.BasicLimitInformation = JOBOBJECT_BASIC_LIMIT_INFORMATION {
             LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -56,9 +60,9 @@ impl OwnedGuestJob {
                 | JOB_OBJECT_LIMIT_JOB_MEMORY,
             ..unsafe { zeroed() }
         };
-        limits.BasicLimitInformation.ActiveProcessLimit = GUEST_JOB_POLICY.active_process_limit;
-        limits.ProcessMemoryLimit = GUEST_JOB_POLICY.per_process_memory_bytes;
-        limits.JobMemoryLimit = GUEST_JOB_POLICY.job_memory_bytes;
+        limits.BasicLimitInformation.ActiveProcessLimit = policy.active_process_limit;
+        limits.ProcessMemoryLimit = policy.per_process_memory_bytes;
+        limits.JobMemoryLimit = policy.job_memory_bytes;
         set_info(self.handle, JobObjectExtendedLimitInformation,
             &limits as *const _ as *const c_void,
             size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>(),
@@ -66,7 +70,7 @@ impl OwnedGuestJob {
 
         let mut cpu: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION = unsafe { zeroed() };
         cpu.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
-        unsafe { cpu.Anonymous.CpuRate = GUEST_JOB_POLICY.cpu_rate; }
+        unsafe { cpu.Anonymous.CpuRate = policy.cpu_rate; }
         set_info(self.handle, JobObjectCpuRateControlInformation,
             &cpu as *const _ as *const c_void,
             size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>(),
@@ -84,9 +88,9 @@ impl OwnedGuestJob {
         let forbidden = JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
         if actual.BasicLimitInformation.LimitFlags & required != required
             || actual.BasicLimitInformation.LimitFlags & forbidden != 0
-            || actual.BasicLimitInformation.ActiveProcessLimit != GUEST_JOB_POLICY.active_process_limit
-            || actual.ProcessMemoryLimit != GUEST_JOB_POLICY.per_process_memory_bytes
-            || actual.JobMemoryLimit != GUEST_JOB_POLICY.job_memory_bytes {
+            || actual.BasicLimitInformation.ActiveProcessLimit != policy.active_process_limit
+            || actual.ProcessMemoryLimit != policy.per_process_memory_bytes
+            || actual.JobMemoryLimit != policy.job_memory_bytes {
             return Err("Windows did not retain every required guest process and memory limit; execution is refused.".into());
         }
 
@@ -97,7 +101,7 @@ impl OwnedGuestJob {
             "verify the CPU hard cap")?;
         let cpu_flags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
         if actual_cpu.ControlFlags & cpu_flags != cpu_flags
-            || unsafe { actual_cpu.Anonymous.CpuRate } != GUEST_JOB_POLICY.cpu_rate {
+            || unsafe { actual_cpu.Anonymous.CpuRate } != policy.cpu_rate {
             return Err("Windows did not retain the required guest CPU hard cap; execution is refused.".into());
         }
         Ok(())
@@ -1343,6 +1347,34 @@ mod native_windows_process_integration_tests {
                 None => std::thread::sleep(Duration::from_millis(20)),
             }
         }
+    }
+
+    #[test]
+    fn active_process_limit_refuses_a_second_process_in_a_real_windows_job() {
+        // Use a stricter test-only policy so exhaustion is deterministic and
+        // does not require spawning the production ceiling of sixteen images.
+        let policy = GuestJobPolicy {
+            active_process_limit: 1,
+            ..GUEST_JOB_POLICY
+        };
+        let job = OwnedGuestJob::create_with_policy(policy).expect("create one-process test job");
+        let process = launch_test_command_in_job(
+            &job,
+            r#"start "" /B cmd.exe /D /C "ping -n 8 127.0.0.1 >NUL" & ping -n 5 127.0.0.1 >NUL"#,
+        );
+        // The root remains alive while it attempts to start a descendant.
+        // With a one-process ceiling, the descendant must not join the job.
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            job.active_process_count().expect("query active process limit"),
+            1,
+            "the Job Object must not admit a second process beyond its active-process ceiling",
+        );
+        let stopped = unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(process.process, 5_000)
+        };
+        assert_eq!(stopped, WAIT_OBJECT_0, "bounded test root should finish");
+        wait_until_job_empty(&job, Duration::from_secs(5));
     }
 
     #[test]
