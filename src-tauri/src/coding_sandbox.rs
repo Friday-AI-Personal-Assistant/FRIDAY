@@ -780,14 +780,16 @@ try {
   # so Windows CI identifies the exact failing ACL operation.
   # A protected SDDL descriptor avoids ambiguous rule-merging and purge behavior.
   $sddl = "D:P(A;OICI;FA;;;$currentSid)(A;OICI;FA;;;S-1-5-18)(A;OICI;FA;;;S-1-5-32-544)"
+  # Windows PowerShell 5.1 exposes ACL methods on DirectoryInfo instances.
+  $directory = [System.IO.DirectoryInfo]::new($path)
   $stage = 'read-acl'
-  $acl = [System.IO.Directory]::GetAccessControl($path)
+  $acl = $directory.GetAccessControl()
   $stage = 'apply-sddl'
   $acl.SetSecurityDescriptorSddlForm($sddl)
   $stage = 'write-acl'
-  [System.IO.Directory]::SetAccessControl($path, $acl)
+  $directory.SetAccessControl($acl)
   $stage = 'verify-acl'
-  $check = [System.IO.Directory]::GetAccessControl($path)
+  $check = $directory.GetAccessControl()
   if (-not $check.AreAccessRulesProtected) { throw 'ACL_INHERITANCE' }
   $rules = @($check.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
   if ($rules.Count -ne 3) { throw 'ACL_RULE_COUNT' }
