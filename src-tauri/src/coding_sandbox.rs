@@ -621,6 +621,102 @@ fn validate_guest_result_volume_plan(
 const GUEST_RESULT_VOLUME_OWNER_MARKER: &str = ".friday-result-volume-owner.json";
 const GUEST_RESULT_VOLUME_OWNER_SCHEMA: u32 = 1;
 
+const GUEST_RESULT_VHDX_OWNER_MARKER: &str = ".friday-result-vhdx-owner.json";
+const GUEST_RESULT_VHDX_OWNER_SCHEMA: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestResultVhdxOwnershipMarker {
+    schema_version: u32,
+    run_id: String,
+    owner: String,
+    identifier: String,
+    capacity_bytes: u64,
+}
+
+fn validate_guest_result_vhdx_ownership_marker(
+    marker: &GuestResultVhdxOwnershipMarker,
+    expected_run_id: &str,
+    expected_identifier: Option<&str>,
+) -> Result<(), String> {
+    if !valid_snapshot_id(expected_run_id)
+        || marker.schema_version != GUEST_RESULT_VHDX_OWNER_SCHEMA
+        || marker.run_id != expected_run_id
+        || marker.owner != "FRIDAY-CodingAssistant-ResultVhdx"
+        || marker.capacity_bytes != GUEST_RESULT_VOLUME_CAPACITY_BYTES
+        || !valid_guest_vhdx_identifier(&marker.identifier)
+        || expected_identifier.is_some_and(|expected| expected != marker.identifier)
+    {
+        return Err("The result VHDX ownership record does not match FRIDAY's exact run and disk identity.".into());
+    }
+    Ok(())
+}
+
+/// Persists the VHDX's stable on-disk identifier in a separate exclusive marker.
+/// This marker is evidence for later verification, not authorization to attach,
+/// mount, detach, or delete the virtual disk.
+fn write_guest_result_vhdx_ownership_marker(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    identifier: &str,
+) -> Result<(), String> {
+    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    if !valid_guest_vhdx_identifier(identifier) {
+        return Err("The result VHDX identifier is invalid; ownership was not recorded.".into());
+    }
+    let marker = GuestResultVhdxOwnershipMarker {
+        schema_version: GUEST_RESULT_VHDX_OWNER_SCHEMA,
+        run_id: plan.run_id.clone(),
+        owner: "FRIDAY-CodingAssistant-ResultVhdx".to_string(),
+        identifier: identifier.to_string(),
+        capacity_bytes: GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+    };
+    let bytes = serde_json::to_vec(&marker)
+        .map_err(|_| "FRIDAY could not prepare VHDX ownership metadata.".to_string())?;
+    let marker_path = plan.run_directory.join(GUEST_RESULT_VHDX_OWNER_MARKER);
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&marker_path)
+        .map_err(|_| "FRIDAY could not exclusively create VHDX ownership metadata.".to_string())?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|_| "FRIDAY could not write VHDX ownership metadata.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "FRIDAY could not persist VHDX ownership metadata.".to_string())?;
+    verify_guest_result_vhdx_ownership_marker(plan, trusted_storage_root, Some(identifier))
+}
+
+fn verify_guest_result_vhdx_ownership_marker(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    expected_identifier: Option<&str>,
+) -> Result<String, String> {
+    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    let marker_path = plan.run_directory.join(GUEST_RESULT_VHDX_OWNER_MARKER);
+    let metadata = fs::symlink_metadata(&marker_path)
+        .map_err(|_| "VHDX ownership evidence is missing; the resource was preserved.".to_string())?;
+    if !metadata.is_file() || is_reparse_or_symlink(&metadata) || metadata.len() == 0 || metadata.len() > 1024 {
+        return Err("VHDX ownership evidence is not a bounded ordinary file.".into());
+    }
+    let mut file = open_source_file(&marker_path)
+        .map_err(|_| "VHDX ownership evidence could not be opened without following links.".to_string())?;
+    let opened = file.metadata()
+        .map_err(|_| "VHDX ownership evidence could not be verified.".to_string())?;
+    if !opened.is_file() || is_reparse_or_symlink(&opened) || opened.len() != metadata.len() || opened.len() > 1024 {
+        return Err("VHDX ownership evidence changed while being opened.".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(1025).read_to_end(&mut bytes)
+        .map_err(|_| "VHDX ownership evidence could not be read.".to_string())?;
+    if bytes.is_empty() || bytes.len() > 1024 {
+        return Err("VHDX ownership evidence exceeded its read limit.".into());
+    }
+    let marker: GuestResultVhdxOwnershipMarker = serde_json::from_slice(&bytes)
+        .map_err(|_| "VHDX ownership evidence is malformed or contains unsupported fields.".to_string())?;
+    validate_guest_result_vhdx_ownership_marker(&marker, &plan.run_id, expected_identifier)?;
+    Ok(marker.identifier)
+}
+
+
+
 
 #[cfg(windows)]
 #[repr(C)]
@@ -685,6 +781,7 @@ struct FridayVirtualDiskSizeInfo {
 #[repr(C)]
 union FridayGetVirtualDiskInfoData {
     size: FridayVirtualDiskSizeInfo,
+    identifier: FridayWindowsGuid,
     provider_subtype: u32,
     alignment: [u64; 3],
 }
@@ -778,7 +875,7 @@ impl Drop for OwnedVirtualDiskHandle {
 }
 
 #[cfg(windows)]
-fn query_guest_result_vhdx_info(path: &Path) -> Result<(FridayVirtualDiskSizeInfo, u32), String> {
+fn query_guest_result_vhdx_info(path: &Path) -> Result<(FridayVirtualDiskSizeInfo, u32, String), String> {
     use std::os::windows::ffi::OsStrExt;
     let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     if path_wide.len() <= 1 {
@@ -834,14 +931,56 @@ fn query_guest_result_vhdx_info(path: &Path) -> Result<(FridayVirtualDiskSizeInf
         return Err(format!("Windows could not verify the result VHDX allocation type (error {subtype_status})."));
     }
     let subtype = unsafe { subtype_info.data.provider_subtype };
+
+    let mut identifier_info = FridayGetVirtualDiskInfo {
+        version: 2, // GET_VIRTUAL_DISK_INFO_IDENTIFIER
+        data: FridayGetVirtualDiskInfoData { alignment: [0; 3] },
+    };
+    let mut identifier_bytes = std::mem::size_of::<FridayGetVirtualDiskInfo>() as u32;
+    let identifier_status = unsafe {
+        GetVirtualDiskInformation(handle.0, &mut identifier_bytes, &mut identifier_info, std::ptr::null_mut())
+    };
+    if identifier_status != 0 {
+        return Err(format!("Windows could not read the persistent result VHDX identifier (error {identifier_status})."));
+    }
+    let identifier = unsafe { identifier_info.data.identifier };
+    let identifier = format_guest_vhdx_identifier(identifier)?;
     handle.close()?;
-    Ok((size, subtype))
+    Ok((size, subtype, identifier))
+}
+
+fn valid_guest_vhdx_identifier(value: &str) -> bool {
+    value.len() == 36
+        && [8, 13, 18, 23].iter().all(|index| value.as_bytes().get(*index) == Some(&b'-'))
+        && value.bytes().enumerate().all(|(index, byte)| {
+            [8, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit()
+        })
+        && value.bytes().any(|byte| byte != b'0' && byte != b'-')
+        && value == value.to_ascii_lowercase()
+}
+
+#[cfg(windows)]
+fn format_guest_vhdx_identifier(value: FridayWindowsGuid) -> Result<String, String> {
+    if value.data1 == 0 && value.data2 == 0 && value.data3 == 0 && value.data4.iter().all(|byte| *byte == 0) {
+        return Err("Windows returned an empty result VHDX identifier.".into());
+    }
+    let formatted = format!(
+        "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        value.data1, value.data2, value.data3,
+        value.data4[0], value.data4[1], value.data4[2], value.data4[3],
+        value.data4[4], value.data4[5], value.data4[6], value.data4[7]
+    );
+    if !valid_guest_vhdx_identifier(&formatted) {
+        return Err("Windows returned a malformed result VHDX identifier.".into());
+    }
+    Ok(formatted)
 }
 
 #[cfg(windows)]
 fn validate_guest_result_vhdx_readback(
     size: FridayVirtualDiskSizeInfo,
     provider_subtype: u32,
+    identifier: &str,
     expected_capacity: u64,
 ) -> Result<(), String> {
     if expected_capacity != GUEST_RESULT_VOLUME_CAPACITY_BYTES
@@ -850,19 +989,21 @@ fn validate_guest_result_vhdx_readback(
         || size.block_size != 0 // Windows reports the default block-size sentinel for fixed VHDX disks
         || size.sector_size != 512
         || provider_subtype != 2 // VIRTUAL_DISK_TYPE_FIXED
+        || !valid_guest_vhdx_identifier(identifier)
     {
         return Err(format!(
-            "The result VHDX metadata does not match FRIDAY's fixed-capacity disk policy (expected_capacity={}, virtual_size={}, physical_size={}, block_size={}, sector_size={}, provider_subtype={}).",
-            expected_capacity, size.virtual_size, size.physical_size, size.block_size, size.sector_size, provider_subtype
+            "The result VHDX metadata does not match FRIDAY's fixed-capacity disk policy (expected_capacity={}, virtual_size={}, physical_size={}, block_size={}, sector_size={}, provider_subtype={}, identifier_valid={}).",
+            expected_capacity, size.virtual_size, size.physical_size, size.block_size, size.sector_size, provider_subtype, valid_guest_vhdx_identifier(identifier)
         ));
     }
     Ok(())
 }
 
 #[cfg(windows)]
-fn verify_guest_result_vhdx_capacity(path: &Path, expected_capacity: u64) -> Result<(), String> {
-    let (size, provider_subtype) = query_guest_result_vhdx_info(path)?;
-    validate_guest_result_vhdx_readback(size, provider_subtype, expected_capacity)
+fn verify_guest_result_vhdx_capacity(path: &Path, expected_capacity: u64) -> Result<String, String> {
+    let (size, provider_subtype, identifier) = query_guest_result_vhdx_info(path)?;
+    validate_guest_result_vhdx_readback(size, provider_subtype, &identifier, expected_capacity)?;
+    Ok(identifier)
 }
 
 #[cfg(windows)]
@@ -976,8 +1117,10 @@ fn create_guest_result_vhdx(
     if &signature != b"vhdxfile" {
         return Err("Windows returned a file without the expected VHDX signature; it was preserved for recovery.".into());
     }
-    verify_guest_result_vhdx_capacity(&plan.vhdx_path, plan.capacity_bytes)
+    let identifier = verify_guest_result_vhdx_capacity(&plan.vhdx_path, plan.capacity_bytes)
         .map_err(|error| format!("The created VHDX failed Windows metadata verification ({error}); it was preserved for recovery."))?;
+    write_guest_result_vhdx_ownership_marker(plan, trusted_storage_root, &identifier)
+        .map_err(|error| format!("The created VHDX identity could not be bound to its FRIDAY run ({error}); it was preserved for recovery."))?;
     Ok(plan.vhdx_path.clone())
 }
 
@@ -2593,11 +2736,71 @@ mod tests {
         let mut signature = [0u8; 8];
         file.read_exact(&mut signature).unwrap();
         assert_eq!(&signature, b"vhdxfile");
-        verify_guest_result_vhdx_capacity(&created, GUEST_RESULT_VOLUME_CAPACITY_BYTES).unwrap();
+        let identifier = verify_guest_result_vhdx_capacity(&created, GUEST_RESULT_VOLUME_CAPACITY_BYTES).unwrap();
+        assert!(valid_guest_vhdx_identifier(&identifier));
+        assert_eq!(verify_guest_result_vhdx_ownership_marker(&plan, &root, Some(&identifier)).unwrap(), identifier);
         assert!(create_guest_result_vhdx(&plan, &root).is_err(),
             "a pre-existing result VHDX must never be replaced");
         drop(file);
         fs::remove_file(created).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+
+    #[test]
+    fn result_vhdx_identity_marker_binds_exact_run_capacity_and_identifier() {
+        let marker = GuestResultVhdxOwnershipMarker {
+            schema_version: GUEST_RESULT_VHDX_OWNER_SCHEMA,
+            run_id: "0123456789abcdef0123456789abcdef".into(),
+            owner: "FRIDAY-CodingAssistant-ResultVhdx".into(),
+            identifier: "12345678-1234-5678-9abc-def012345678".into(),
+            capacity_bytes: GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+        };
+        assert!(validate_guest_result_vhdx_ownership_marker(
+            &marker, "0123456789abcdef0123456789abcdef", Some("12345678-1234-5678-9abc-def012345678")
+        ).is_ok());
+        assert!(validate_guest_result_vhdx_ownership_marker(
+            &marker, "ffffffffffffffffffffffffffffffff", None
+        ).is_err());
+        assert!(validate_guest_result_vhdx_ownership_marker(
+            &marker, "0123456789abcdef0123456789abcdef", Some("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        ).is_err());
+        let mut wrong_capacity = marker;
+        wrong_capacity.capacity_bytes += 512;
+        assert!(validate_guest_result_vhdx_ownership_marker(
+            &wrong_capacity, "0123456789abcdef0123456789abcdef", None
+        ).is_err());
+    }
+
+    #[test]
+    fn result_vhdx_identity_marker_is_exclusive_and_rejects_tampering() {
+        let root = make_test_directory("result-vhdx-identity");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        reserve_guest_result_volume_directory(&plan, &root).unwrap();
+        let identifier = "12345678-1234-5678-9abc-def012345678";
+        write_guest_result_vhdx_ownership_marker(&plan, &root, identifier).unwrap();
+        assert_eq!(verify_guest_result_vhdx_ownership_marker(&plan, &root, Some(identifier)).unwrap(), identifier);
+        assert!(write_guest_result_vhdx_ownership_marker(&plan, &root, identifier).is_err());
+        assert!(verify_guest_result_vhdx_ownership_marker(&plan, &root, Some("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")).is_err());
+        fs::remove_file(plan.run_directory.join(GUEST_RESULT_VHDX_OWNER_MARKER)).unwrap();
+        fs::write(plan.run_directory.join(GUEST_RESULT_VHDX_OWNER_MARKER),
+            br#"{"schemaVersion":1,"runId":"ffffffffffffffffffffffffffffffff","owner":"FRIDAY-CodingAssistant-ResultVhdx","identifier":"12345678-1234-5678-9abc-def012345678","capacityBytes":67108864}"#).unwrap();
+        assert!(verify_guest_result_vhdx_ownership_marker(&plan, &root, None).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn result_vhdx_identity_marker_rejects_symlink() {
+        let root = make_test_directory("result-vhdx-identity-link");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        reserve_guest_result_volume_directory(&plan, &root).unwrap();
+        let outside = root.join("outside-vhdx-marker");
+        fs::write(&outside, b"not ownership evidence").unwrap();
+        std::os::unix::fs::symlink(&outside, plan.run_directory.join(GUEST_RESULT_VHDX_OWNER_MARKER)).unwrap();
+        assert!(verify_guest_result_vhdx_ownership_marker(&plan, &root, None).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

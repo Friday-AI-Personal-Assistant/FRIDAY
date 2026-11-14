@@ -1336,3 +1336,12 @@ and fixed/dynamic subtype on that CI host; it does not prove actual disk-full
 behavior, filesystem formatting, attachment ownership, guest mount semantics,
 or physical Windows acceptance. No disk is attached or mounted, no result
 volume is shared, and guest execution remains disabled.
+
+
+## Fixed VHDX persistent identity binding — implemented, not attached
+
+The host now reads the persistent VHDX identifier with `GetVirtualDiskInformation` using `GET_VIRTUAL_DISK_INFO_IDENTIFIER` after fixed-disk metadata verification. It rejects an empty or malformed identifier and records the exact identifier, run ID, FRIDAY ownership label, and fixed 64 MiB capacity in a separate exclusively-created `.friday-result-vhdx-owner.json` marker inside the already-private run directory. Marker reads use no-follow file opening, bounded size checks, exact run/capacity/owner validation, and optional comparison against an expected identifier. A copied or substituted VHDX with a different persistent identifier can therefore be detected by a later read-only identity check.
+
+Regression tests cover exact run binding, capacity mismatch, identifier mismatch, exclusive marker creation, tampered ownership data, and symlink rejection. The Windows-native VHDX test additionally verifies that the persisted marker matches the identifier returned by the Windows virtual-disk API.
+
+This adds identity evidence only. It does not attach, initialize, partition, format, mount, share, detach, or delete a VHDX, and it does not prove that a VHDX can be safely initialized under a standard non-elevated token. The non-elevated hard-quota/result-transfer acceptance gate remains unresolved; no elevated helper, guest execution, or execution enablement is introduced.
