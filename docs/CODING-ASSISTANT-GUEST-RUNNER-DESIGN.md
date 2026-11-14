@@ -1365,3 +1365,21 @@ Windows race testing and a future handle-safe/native ownership design remain
 necessary. It does not attach, initialize, partition, format, mount, share,
 detach, or delete a VHDX. No elevated helper or guest execution is connected;
 guest execution remains disabled.
+
+
+## Bounded result-storage recovery journal contract — 2026-11-14
+
+A versioned, bounded recovery-journal data contract now records the exact run
+identifier, VHDX persistent identifier, and ordered lifecycle transitions.
+Every entry records its sequence number, prior state, event, resulting state,
+ownership-verification evidence, and guest-stopped evidence. Parsing rejects
+unknown fields, malformed or oversized documents, invalid run IDs, broken
+sequence/state chains, and transition results that do not match the production
+lifecycle gate. The journal is capped at 16 KiB and 16 entries.
+
+This is a validated serialization/state-history contract, not durable journal
+storage: it does not write files, provide crash-atomic persistence, or
+independently establish the truth of recorded ownership/stop evidence. Those
+storage and evidence-provenance requirements remain prerequisites before any
+attach/share/cleanup operation. No VHDX is attached or mounted, and guest
+execution remains disabled.

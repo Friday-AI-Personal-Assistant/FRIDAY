@@ -455,13 +455,15 @@ $mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sand
     )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum GuestResultStorageState {
     Planned, Created, Attached, Mounted, Shared, GuestStopped,
     ShareRevoked, Detached, Removed, RecoveryRequired,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum GuestResultStorageEvent {
     CreateVerified, AttachVerified, MountVerified, GrantShare,
     ConfirmGuestStopped, RevokeShare, DetachVerified, DeleteVerified,
@@ -501,6 +503,105 @@ fn advance_guest_result_storage_state(
         (GuestResultStorageState::Detached, GuestResultStorageEvent::DeleteVerified) => Ok(GuestResultStorageState::Removed),
         _ => Err("The result-storage lifecycle transition is out of order or lacks required evidence.".into()),
     }
+}
+
+
+const GUEST_RESULT_STORAGE_JOURNAL_SCHEMA: u32 = 1;
+const MAX_GUEST_RESULT_STORAGE_JOURNAL_BYTES: usize = 16 * 1024;
+const MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES: usize = 16;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestResultStorageJournalEntry {
+    sequence: u32,
+    previous_state: GuestResultStorageState,
+    event: GuestResultStorageEvent,
+    next_state: GuestResultStorageState,
+    ownership_verified: bool,
+    guest_stopped: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestResultStorageJournal {
+    schema_version: u32,
+    run_id: String,
+    vhdx_identifier: String,
+    entries: Vec<GuestResultStorageJournalEntry>,
+}
+
+fn validate_guest_result_storage_journal(
+    journal: &GuestResultStorageJournal,
+) -> Result<GuestResultStorageState, String> {
+    if journal.schema_version != GUEST_RESULT_STORAGE_JOURNAL_SCHEMA
+        || !valid_snapshot_id(&journal.run_id)
+        || !valid_guest_vhdx_identifier(&journal.vhdx_identifier)
+        || journal.entries.is_empty()
+        || journal.entries.len() > MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES
+    {
+        return Err("The result-storage recovery journal header or bounds are invalid.".into());
+    }
+    let mut state = GuestResultStorageState::Planned;
+    for (index, entry) in journal.entries.iter().enumerate() {
+        if entry.sequence != index as u32 + 1 || entry.previous_state != state {
+            return Err("The result-storage recovery journal is out of sequence or has a broken state chain.".into());
+        }
+        state = advance_guest_result_storage_state(
+            state, entry.event, entry.ownership_verified, entry.guest_stopped,
+        )?;
+        if entry.next_state != state {
+            return Err("The result-storage recovery journal contains an invalid transition result.".into());
+        }
+    }
+    Ok(state)
+}
+
+fn encode_guest_result_storage_journal(
+    journal: &GuestResultStorageJournal,
+) -> Result<Vec<u8>, String> {
+    validate_guest_result_storage_journal(journal)?;
+    let bytes = serde_json::to_vec(journal)
+        .map_err(|_| "The result-storage recovery journal could not be encoded.".to_string())?;
+    if bytes.is_empty() || bytes.len() > MAX_GUEST_RESULT_STORAGE_JOURNAL_BYTES {
+        return Err("The result-storage recovery journal exceeds its fixed size limit.".into());
+    }
+    Ok(bytes)
+}
+
+fn parse_guest_result_storage_journal(bytes: &[u8]) -> Result<GuestResultStorageJournal, String> {
+    if bytes.is_empty() || bytes.len() > MAX_GUEST_RESULT_STORAGE_JOURNAL_BYTES {
+        return Err("The result-storage recovery journal is empty or oversized.".into());
+    }
+    let journal: GuestResultStorageJournal = serde_json::from_slice(bytes)
+        .map_err(|_| "The result-storage recovery journal is malformed or contains unsupported fields.".to_string())?;
+    validate_guest_result_storage_journal(&journal)?;
+    Ok(journal)
+}
+
+fn append_guest_result_storage_journal_entry(
+    journal: &GuestResultStorageJournal,
+    event: GuestResultStorageEvent,
+    ownership_verified: bool,
+    guest_stopped: bool,
+) -> Result<GuestResultStorageJournal, String> {
+    let state = validate_guest_result_storage_journal(journal)?;
+    if journal.entries.len() >= MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES {
+        return Err("The result-storage recovery journal reached its fixed transition limit.".into());
+    }
+    let next_state = advance_guest_result_storage_state(
+        state, event, ownership_verified, guest_stopped,
+    )?;
+    let mut next = journal.clone();
+    next.entries.push(GuestResultStorageJournalEntry {
+        sequence: next.entries.len() as u32 + 1,
+        previous_state: state,
+        event,
+        next_state,
+        ownership_verified,
+        guest_stopped,
+    });
+    encode_guest_result_storage_journal(&next)?;
+    Ok(next)
 }
 
 
@@ -2476,6 +2577,58 @@ mod tests {
         assert!(build_sandbox_config(&file).is_err());
         assert!(build_sandbox_config(&base.join("missing")).is_err());
         fs::remove_dir_all(base).unwrap();
+    }
+
+
+    fn valid_result_storage_journal() -> GuestResultStorageJournal {
+        let journal = GuestResultStorageJournal {
+            schema_version: GUEST_RESULT_STORAGE_JOURNAL_SCHEMA,
+            run_id: "0123456789abcdef0123456789abcdef".into(),
+            vhdx_identifier: "12345678-1234-5678-9abc-def012345678".into(),
+            entries: Vec::new(),
+        };
+        append_guest_result_storage_journal_entry(
+            &journal, GuestResultStorageEvent::CreateVerified, true, false,
+        ).unwrap()
+    }
+
+    #[test]
+    fn result_storage_journal_round_trips_and_preserves_recovery_state() {
+        let journal = append_guest_result_storage_journal_entry(
+            &valid_result_storage_journal(),
+            GuestResultStorageEvent::PreserveForRecovery, true, false,
+        ).unwrap();
+        let bytes = encode_guest_result_storage_journal(&journal).unwrap();
+        let parsed = parse_guest_result_storage_journal(&bytes).unwrap();
+        assert_eq!(parsed, journal);
+        assert_eq!(validate_guest_result_storage_journal(&parsed).unwrap(), GuestResultStorageState::RecoveryRequired);
+        assert!(append_guest_result_storage_journal_entry(
+            &parsed, GuestResultStorageEvent::DeleteVerified, true, true,
+        ).is_err());
+    }
+
+    #[test]
+    fn result_storage_journal_rejects_reordering_and_forged_transitions() {
+        let mut journal = valid_result_storage_journal();
+        journal.entries[0].sequence = 9;
+        assert!(validate_guest_result_storage_journal(&journal).is_err());
+        let mut journal = valid_result_storage_journal();
+        journal.entries[0].next_state = GuestResultStorageState::Removed;
+        assert!(validate_guest_result_storage_journal(&journal).is_err());
+        let mut journal = valid_result_storage_journal();
+        journal.run_id = "../foreign-run".into();
+        assert!(validate_guest_result_storage_journal(&journal).is_err());
+    }
+
+    #[test]
+    fn result_storage_journal_rejects_oversized_and_unknown_field_documents() {
+        assert!(parse_guest_result_storage_journal(
+            &vec![b'x'; MAX_GUEST_RESULT_STORAGE_JOURNAL_BYTES + 1]
+        ).is_err());
+        let mut bytes = encode_guest_result_storage_journal(&valid_result_storage_journal()).unwrap();
+        bytes.pop();
+        bytes.extend_from_slice(br#","unexpected":true}"#);
+        assert!(parse_guest_result_storage_journal(&bytes).is_err());
     }
 
     #[test]
