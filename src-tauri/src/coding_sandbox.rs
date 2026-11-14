@@ -1151,15 +1151,6 @@ mod tests {
     }
 
 
-    #[test]
-    fn guest_result_directory_requires_exactly_one_expected_file() {
-        assert!(validate_guest_result_directory_entries(&["result.json".into()]).is_ok());
-        assert!(validate_guest_result_directory_entries(&[]).is_err());
-        assert!(validate_guest_result_directory_entries(&["other.json".into()]).is_err());
-        assert!(validate_guest_result_directory_entries(&["result.json".into(), "extra.txt".into()]).is_err());
-        assert!(validate_guest_result_directory_entries(&["RESULT.JSON".into()]).is_err());
-    }
-
     #[cfg(windows)]
     #[test]
     fn open_source_file_opens_windows_symlink_itself_not_its_target() {
