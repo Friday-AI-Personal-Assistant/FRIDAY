@@ -1362,18 +1362,23 @@ mod native_windows_process_integration_tests {
             &job,
             r#"start "" /B cmd.exe /D /C "ping -n 8 127.0.0.1 >NUL" & ping -n 5 127.0.0.1 >NUL"#,
         );
-        // The root remains alive while it attempts to start a descendant.
-        // With a one-process ceiling, the descendant must not join the job.
-        std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(
-            job.active_process_count().expect("query active process limit"),
-            1,
-            "the Job Object must not admit a second process beyond its active-process ceiling",
-        );
+        // Windows enforces JOB_OBJECT_LIMIT_ACTIVE_PROCESS by rejecting the
+        // attempted child creation and terminating the process that attempted
+        // it. Therefore the correct observable state may be an empty job,
+        // rather than a still-running root process.
         let stopped = unsafe {
             windows_sys::Win32::System::Threading::WaitForSingleObject(process.process, 5_000)
         };
-        assert_eq!(stopped, WAIT_OBJECT_0, "bounded test root should finish");
+        assert_eq!(
+            stopped,
+            WAIT_OBJECT_0,
+            "Windows should terminate the process that attempted to exceed the active-process ceiling",
+        );
+        assert_eq!(
+            job.active_process_count().expect("query active process limit"),
+            0,
+            "the over-limit process and any rejected descendant must not remain in the job",
+        );
         wait_until_job_empty(&job, Duration::from_secs(5));
     }
 
