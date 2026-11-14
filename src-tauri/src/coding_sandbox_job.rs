@@ -605,12 +605,15 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
             resumed: false,
             output: None,
         };
-        // Close the parent's copies of every child-only write/stdin handle
-        // before starting readers. The child owns its allowlisted duplicates.
+        // Transfer the read ends into their drain workers before moving any
+        // child-only handles out of the pipe owner. If this fails, the process
+        // guard still terminates the suspended child during rollback.
+        process.output = Some(pipes.take_readers()?);
+        // Close the parent's copies of every child-only write/stdin handle.
+        // The child owns its allowlisted duplicates; only reader ends remain.
         drop(pipes.stdout_write);
         drop(pipes.stderr_write);
         drop(pipes.stdin_null);
-        process.output = Some(pipes.take_readers()?);
         Ok(process)
     }
 
