@@ -887,3 +887,33 @@ but this batch does not create Windows pipes, configure an explicit inherited
 handle allowlist, or connect the readers to CreateProcessW. Native pipe
 creation and safe handle-list launch integration remain the next step. Guest
 execution remains disabled.
+
+
+## Native Windows guest stdio pipes and explicit inherited-handle allowlist — 2026-11-14
+
+The suspended Windows runner launch now creates dedicated anonymous stdout
+and stderr pipes plus a null-device stdin handle. Parent-side read handles are
+made non-inheritable immediately. The child receives standard streams through
+STARTF_USESTDHANDLES, and CreateProcessW uses STARTUPINFOEX with
+PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Handle inheritance is enabled only for the
+two child pipe write ends and the null stdin handle; unrelated inheritable
+handles in the FRIDAY process are excluded by the explicit list.
+
+After successful process creation, FRIDAY closes its copies of the child-only
+write/stdin handles and transfers the two read handles to the concurrent
+bounded reader workers. Each worker continues draining through EOF while
+retaining at most 256 KiB per stream. The process owner retains the capture
+coordinator so the caller can later collect the bounded result after the
+contained process tree has exited and all writer handles have closed.
+
+The Windows dependency now enables the narrowly required System::Pipes and
+Storage::FileSystem APIs. The launch remains suspended until the existing Job
+Object assignment and membership verification transaction succeeds.
+
+This batch wires the native stdio transport and explicit handle allowlist but
+does not yet expose an end-to-end output-result API or prove native output
+flooding under a real Windows child process. A future lifecycle coordinator
+must wait for the entire job process tree to finish before joining output
+readers; waiting only for the root process can leave descendant pipe handles
+open. Windows CI and physical Windows acceptance remain required. Guest
+execution remains disabled.

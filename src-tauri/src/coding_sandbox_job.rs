@@ -190,6 +190,188 @@ mod tests {
 }
 
 
+
+/// RAII wrapper for a Windows handle owned by the current FRIDAY process.
+#[cfg(windows)]
+struct OwnedWinHandle(HANDLE);
+
+#[cfg(windows)]
+impl OwnedWinHandle {
+    fn new(handle: HANDLE, operation: &str) -> Result<Self, String> {
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            Err(last_error(operation))
+        } else {
+            Ok(Self(handle))
+        }
+    }
+
+    fn raw(&self) -> HANDLE { self.0 }
+
+    fn into_raw(mut self) -> HANDLE {
+        let handle = self.0;
+        self.0 = ptr::null_mut();
+        handle
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnedWinHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+            unsafe { CloseHandle(self.0); }
+            self.0 = ptr::null_mut();
+        }
+    }
+}
+
+/// Attribute-list storage for CreateProcessW's explicit inherited-handle list.
+#[cfg(windows)]
+struct ProcThreadAttributeList {
+    storage: Vec<usize>,
+    initialized: bool,
+}
+
+#[cfg(windows)]
+impl ProcThreadAttributeList {
+    fn new(inherited: &[HANDLE]) -> Result<Self, String> {
+        use windows_sys::Win32::System::Threading::{
+            InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        };
+        let mut required = 0usize;
+        unsafe {
+            InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut required);
+        }
+        if required == 0 {
+            return Err(last_error("size the guest process handle allowlist"));
+        }
+        let words = required.saturating_add(size_of::<usize>() - 1) / size_of::<usize>();
+        let mut result = Self { storage: vec![0usize; words], initialized: false };
+        let list = result.storage.as_mut_ptr() as *mut windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_LIST;
+        if unsafe { InitializeProcThreadAttributeList(list, 1, 0, &mut required) } == 0 {
+            return Err(last_error("initialize the guest process handle allowlist"));
+        }
+        result.initialized = true;
+        if unsafe {
+            UpdateProcThreadAttribute(
+                list,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                inherited.as_ptr() as *mut c_void,
+                inherited.len() * size_of::<HANDLE>(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        } == 0 {
+            return Err(last_error("apply the guest process handle allowlist"));
+        }
+        Ok(result)
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_LIST {
+        self.storage.as_mut_ptr() as *mut windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_LIST
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcThreadAttributeList {
+    fn drop(&mut self) {
+        if self.initialized {
+            unsafe {
+                windows_sys::Win32::System::Threading::DeleteProcThreadAttributeList(self.as_mut_ptr());
+            }
+            self.initialized = false;
+        }
+    }
+}
+
+/// Creates anonymous stdout/stderr pipes. Only the child write ends are
+/// inheritable; parent read ends are explicitly non-inheritable.
+#[cfg(windows)]
+struct GuestPipeHandles {
+    stdout_read: Option<OwnedWinHandle>,
+    stdout_write: OwnedWinHandle,
+    stderr_read: Option<OwnedWinHandle>,
+    stderr_write: OwnedWinHandle,
+    stdin_null: OwnedWinHandle,
+}
+
+#[cfg(windows)]
+impl GuestPipeHandles {
+    fn create() -> Result<Self, String> {
+        use windows_sys::Win32::Foundation::{
+            SetHandleInformation, HANDLE_FLAG_INHERIT, SECURITY_ATTRIBUTES,
+        };
+        use windows_sys::Win32::System::Pipes::CreatePipe;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            GENERIC_READ, OPEN_EXISTING,
+        };
+
+        let mut security: SECURITY_ATTRIBUTES = unsafe { zeroed() };
+        security.nLength = size_of::<SECURITY_ATTRIBUTES>() as u32;
+        security.bInheritHandle = 1;
+
+        let mut stdout_read = ptr::null_mut();
+        let mut stdout_write = ptr::null_mut();
+        if unsafe { CreatePipe(&mut stdout_read, &mut stdout_write, &security, 0) } == 0 {
+            return Err(last_error("create the guest stdout pipe"));
+        }
+        let stdout_read = OwnedWinHandle::new(stdout_read, "own the guest stdout read handle")?;
+        let stdout_write = OwnedWinHandle::new(stdout_write, "own the guest stdout write handle")?;
+        if unsafe { SetHandleInformation(stdout_read.raw(), HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(last_error("make the guest stdout read handle non-inheritable"));
+        }
+
+        let mut stderr_read = ptr::null_mut();
+        let mut stderr_write = ptr::null_mut();
+        if unsafe { CreatePipe(&mut stderr_read, &mut stderr_write, &security, 0) } == 0 {
+            return Err(last_error("create the guest stderr pipe"));
+        }
+        let stderr_read = OwnedWinHandle::new(stderr_read, "own the guest stderr read handle")?;
+        let stderr_write = OwnedWinHandle::new(stderr_write, "own the guest stderr write handle")?;
+        if unsafe { SetHandleInformation(stderr_read.raw(), HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(last_error("make the guest stderr read handle non-inheritable"));
+        }
+
+        let nul: Vec<u16> = "NUL".encode_utf16().chain(std::iter::once(0)).collect();
+        let stdin = unsafe {
+            CreateFileW(
+                nul.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                &security,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                ptr::null_mut(),
+            )
+        };
+        let stdin_null = OwnedWinHandle::new(stdin, "open the null guest stdin handle")?;
+        Ok(Self {
+            stdout_read: Some(stdout_read),
+            stdout_write,
+            stderr_read: Some(stderr_read),
+            stderr_write,
+            stdin_null,
+        })
+    }
+
+    fn inherited_handles(&self) -> [HANDLE; 3] {
+        [self.stdout_write.raw(), self.stderr_write.raw(), self.stdin_null.raw()]
+    }
+
+    fn take_readers(&mut self) -> Result<GuestOutputCapture, String> {
+        use std::os::windows::io::FromRawHandle;
+        let stdout = self.stdout_read.take()
+            .ok_or_else(|| "Guest stdout read handle was already transferred.".to_string())?;
+        let stderr = self.stderr_read.take()
+            .ok_or_else(|| "Guest stderr read handle was already transferred.".to_string())?;
+        let stdout_file = unsafe { std::fs::File::from_raw_handle(stdout.into_raw() as _) };
+        let stderr_file = unsafe { std::fs::File::from_raw_handle(stderr.into_raw() as _) };
+        Ok(GuestOutputCapture::start(stdout_file, stderr_file))
+    }
+}
+
 /// A FRIDAY-owned process created suspended. The process is terminated on drop
 /// unless the complete containment transaction successfully resumes it.
 #[cfg(windows)]
@@ -197,6 +379,7 @@ pub(crate) struct OwnedGuestProcess {
     process: HANDLE,
     thread: HANDLE,
     resumed: bool,
+    output: Option<GuestOutputCapture>,
 }
 
 #[cfg(windows)]
@@ -272,7 +455,8 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
     fn create_suspended(&mut self) -> Result<Self::Process, String> {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::System::Threading::{
-            CreateProcessW, CREATE_NO_WINDOW, CREATE_SUSPENDED, STARTUPINFOW, PROCESS_INFORMATION,
+            CreateProcessW, CREATE_NO_WINDOW, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT,
+            STARTF_USESTDHANDLES, STARTUPINFOEXW, PROCESS_INFORMATION,
         };
 
         // The runner and working directory are trusted FRIDAY paths, never
@@ -308,11 +492,19 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
         }
         working_directory.push(0);
 
-        let mut startup: STARTUPINFOW = unsafe { zeroed() };
-        startup.cb = size_of::<STARTUPINFOW>() as u32;
+        let mut pipes = GuestPipeHandles::create()?;
+        let inherited = pipes.inherited_handles();
+        let mut attributes = ProcThreadAttributeList::new(&inherited)?;
+        let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
+        startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+        startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = pipes.stdin_null.raw();
+        startup.StartupInfo.hStdOutput = pipes.stdout_write.raw();
+        startup.StartupInfo.hStdError = pipes.stderr_write.raw();
+        startup.lpAttributeList = attributes.as_mut_ptr();
         let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
         let environment = minimal_runner_environment()?;
-        let flags = CREATE_SUSPENDED | CREATE_NO_WINDOW
+        let flags = CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT
             | windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
 
         let created = unsafe {
@@ -321,11 +513,11 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
                 command_line_wide.as_mut_ptr(),
                 ptr::null(),
                 ptr::null(),
-                0, // No inherited handles.
+                1, // Only the explicit PROC_THREAD_ATTRIBUTE_HANDLE_LIST is inherited.
                 flags,
                 environment.as_ptr() as *const c_void,
                 working_directory.as_ptr(),
-                &startup,
+                &startup.StartupInfo,
                 &mut info,
             )
         };
@@ -342,7 +534,18 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
             }
             return Err("Windows returned incomplete suspended-process handles; execution is refused.".into());
         }
-        Ok(OwnedGuestProcess { process: info.hProcess, thread: info.hThread, resumed: false })
+        // Close the parent's copies of every child-only write/stdin handle
+        // before starting readers. The child owns its allowlisted duplicates.
+        drop(pipes.stdout_write);
+        drop(pipes.stderr_write);
+        drop(pipes.stdin_null);
+        let output = pipes.take_readers()?;
+        Ok(OwnedGuestProcess {
+            process: info.hProcess,
+            thread: info.hThread,
+            resumed: false,
+            output: Some(output),
+        })
     }
 
     fn assign_and_verify(&mut self, process: &mut Self::Process) -> Result<(), String> {
