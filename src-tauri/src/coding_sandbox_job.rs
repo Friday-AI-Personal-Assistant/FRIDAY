@@ -4,7 +4,7 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE},
     System::{
         JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, QueryInformationJobObject,
+            AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, QueryInformationJobObject,
             SetInformationJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
             JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
             JobObjectCpuRateControlInformation, JobObjectExtendedLimitInformation,
@@ -12,7 +12,6 @@ use windows_sys::Win32::{
             JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
         },
-        Threading::IsProcessInJob,
     },
 };
 
