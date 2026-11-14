@@ -1244,3 +1244,26 @@ launch, enumerate, terminate, or attach to Windows Sandbox processes, persist
 session records, or enable guest execution. The production launcher remains
 disconnected and guest execution remains disabled pending a supported bounded
 result-transfer mechanism and physical Windows acceptance.
+
+
+## Fixed-capacity per-run result-volume planning contract — 2026-11-14
+
+A host-side planner now derives one immutable result-volume plan from a trusted
+private storage root and a validated 32-character run identifier. The VHDX
+location is fixed to a new per-run directory and the filename `result.vhdx`;
+the guest mount point is fixed to `C:\\FRIDAY\\Results`. Capacity is fixed
+at 64 MiB and the accepted result JSON remains capped at 1 MiB. Neither the
+guest request nor the model can choose or increase the host path, mount point,
+capacity, or result-size ceiling.
+
+The planner rejects relative roots, non-directory or reparse-point roots,
+invalid run identifiers, pre-existing run directories, and any plan whose
+fields differ from a fresh derivation from trusted inputs. Tests cover the
+fixed policy, path containment, attempted plan mutation, run-directory reuse,
+and symlinked roots.
+
+This is a planning and validation boundary only. It does not create a VHDX,
+apply a filesystem, attach or mount a virtual disk, configure Sandbox mapping,
+enforce disk-full behavior, or revoke a share. Those native Windows operations
+and crash/recovery semantics remain separate implementation and physical
+acceptance gates. No writable share or guest execution is enabled.

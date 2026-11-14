@@ -503,6 +503,90 @@ fn advance_guest_result_storage_state(
     }
 }
 
+
+const GUEST_RESULT_VOLUME_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
+const GUEST_RESULT_VOLUME_GUEST_MOUNT: &str = r"C:\FRIDAY\Results";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestResultVolumePlan {
+    run_id: String,
+    storage_root: PathBuf,
+    run_directory: PathBuf,
+    vhdx_path: PathBuf,
+    guest_mount_path: String,
+    capacity_bytes: u64,
+    max_result_bytes: u64,
+}
+
+/// Builds an immutable, policy-owned plan for one bounded result volume.
+/// This does not create, attach, format, mount, or share a VHDX.
+fn build_guest_result_volume_plan(
+    storage_root: &Path,
+    run_id: &str,
+) -> Result<GuestResultVolumePlan, String> {
+    if !valid_snapshot_id(run_id) {
+        return Err("The result-volume run identifier is invalid.".into());
+    }
+    if !storage_root.is_absolute() {
+        return Err("The result-volume storage root must be absolute.".into());
+    }
+    let root_metadata = fs::symlink_metadata(storage_root)
+        .map_err(|_| "The private result-volume storage root is unavailable.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The result-volume storage root must be an ordinary directory.".into());
+    }
+    let canonical_root = fs::canonicalize(storage_root)
+        .map_err(|_| "The private result-volume storage root could not be verified.".to_string())?;
+    let canonical_metadata = fs::symlink_metadata(&canonical_root)
+        .map_err(|_| "The canonical result-volume storage root could not be verified.".to_string())?;
+    if !canonical_metadata.is_dir() || is_reparse_or_symlink(&canonical_metadata) {
+        return Err("The canonical result-volume storage root is not an ordinary directory.".into());
+    }
+
+    let run_directory = canonical_root.join(run_id);
+    match fs::symlink_metadata(&run_directory) {
+        Ok(_) => return Err("A result-volume run directory already exists; reuse is refused.".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("The result-volume run directory could not be safely inspected.".into()),
+    }
+    let vhdx_path = run_directory.join("result.vhdx");
+    if !vhdx_path.starts_with(&canonical_root)
+        || run_directory.file_name().and_then(OsStr::to_str) != Some(run_id)
+    {
+        return Err("The result-volume path failed its containment check.".into());
+    }
+
+    Ok(GuestResultVolumePlan {
+        run_id: run_id.to_string(),
+        storage_root: canonical_root,
+        run_directory,
+        vhdx_path,
+        guest_mount_path: GUEST_RESULT_VOLUME_GUEST_MOUNT.to_string(),
+        capacity_bytes: GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+        max_result_bytes: MAX_GUEST_RESULT_BYTES as u64,
+    })
+}
+
+/// Re-derives the plan from trusted host inputs and compares every field.
+/// A guest request can never choose a path, mount point, capacity, or result cap.
+fn validate_guest_result_volume_plan(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    expected_run_id: &str,
+) -> Result<(), String> {
+    let expected = build_guest_result_volume_plan(trusted_storage_root, expected_run_id)?;
+    if plan != &expected {
+        return Err("The result-volume plan differs from FRIDAY's fixed per-run policy.".into());
+    }
+    if plan.capacity_bytes < plan.max_result_bytes
+        || plan.max_result_bytes != MAX_GUEST_RESULT_BYTES as u64
+        || plan.guest_mount_path != GUEST_RESULT_VOLUME_GUEST_MOUNT
+    {
+        return Err("The result-volume capacity or guest mount point violates FRIDAY's fixed policy.".into());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SandboxSessionState {
     Planned,
@@ -1926,4 +2010,61 @@ mod tests {
         assert!(!safe_relative_path(Path::new("../outside.rs")));
         assert!(!safe_relative_path(Path::new("/absolute/path")));
     }
+
+    #[test]
+    fn result_volume_plan_uses_fixed_capacity_and_guest_mount() {
+        let root = make_test_directory("result-volume-plan");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        assert_eq!(plan.run_id, run_id);
+        assert_eq!(plan.storage_root, fs::canonicalize(&root).unwrap());
+        assert_eq!(plan.run_directory, plan.storage_root.join(run_id));
+        assert_eq!(plan.vhdx_path, plan.run_directory.join("result.vhdx"));
+        assert_eq!(plan.capacity_bytes, 64 * 1024 * 1024);
+        assert_eq!(plan.max_result_bytes, MAX_GUEST_RESULT_BYTES as u64);
+        assert_eq!(plan.guest_mount_path, r"C:\FRIDAY\Results");
+        validate_guest_result_volume_plan(&plan, &root, run_id).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn result_volume_plan_rejects_untrusted_paths_and_reused_run_directories() {
+        let root = make_test_directory("result-volume-invalid");
+        assert!(build_guest_result_volume_plan(&root, "../outside").is_err());
+        assert!(build_guest_result_volume_plan(Path::new("relative"), "0123456789abcdef0123456789abcdef").is_err());
+        let run_id = "0123456789abcdef0123456789abcdef";
+        fs::create_dir(root.join(run_id)).unwrap();
+        assert!(build_guest_result_volume_plan(&root, run_id).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn result_volume_plan_rejects_mutated_capacity_paths_and_guest_mount() {
+        let root = make_test_directory("result-volume-tamper");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        let mut changed = plan.clone();
+        changed.capacity_bytes *= 2;
+        assert!(validate_guest_result_volume_plan(&changed, &root, run_id).is_err());
+        changed = plan.clone();
+        changed.vhdx_path = root.join("outside.vhdx");
+        assert!(validate_guest_result_volume_plan(&changed, &root, run_id).is_err());
+        changed = plan.clone();
+        changed.guest_mount_path = r"C:\FRIDAY\Project".into();
+        assert!(validate_guest_result_volume_plan(&changed, &root, run_id).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn result_volume_plan_rejects_symlinked_storage_root() {
+        let base = make_test_directory("result-volume-link");
+        let real = base.join("real");
+        fs::create_dir(&real).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(build_guest_result_volume_plan(&link, "0123456789abcdef0123456789abcdef").is_err());
+        fs::remove_dir_all(base).unwrap();
+    }
+
 }
