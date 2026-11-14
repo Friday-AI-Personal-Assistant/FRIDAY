@@ -1516,8 +1516,8 @@ mod tests {
             "<PrinterRedirection>Disable</PrinterRedirection>",
             "<ProtectedClient>Enable</ProtectedClient>",
             "<ReadOnly>true</ReadOnly>",
-            "<HostFolder>C:\FRIDAY\\Snapshot</HostFolder>",
-            "<SandboxFolder>C:\FRIDAY\\Project</SandboxFolder>",
+            r"<HostFolder>C:\FRIDAY\Snapshot</HostFolder>",
+            r"<SandboxFolder>C:\FRIDAY\Project</SandboxFolder>",
         ] {
             let mutated = safe.replacen(duplicate, &format!("{duplicate}{duplicate}"), 1);
             assert!(validate_sandbox_config_policy(&mutated).is_err(),
