@@ -297,7 +297,7 @@ impl LaunchBackend for WindowsLaunchBackend<'_> {
         // No caller-controlled arguments are accepted. The quoted executable is
         // argv[0]; lpApplicationName independently pins the image being started.
         let mut command_line = quote_windows_argument(&self.spec.executable);
-        if command_line.contains(&0) {
+        if command_line.contains('\0') {
             return Err("The guest runner command line contains an invalid NUL character.".into());
         }
         let mut command_line_wide: Vec<u16> = command_line.encode_utf16().collect();
