@@ -719,6 +719,66 @@ fn verify_guest_result_vhdx_ownership_marker(
 
 
 
+/// Verifies that the result VHDX is the exact ordinary file directly inside
+/// FRIDAY's verified per-run directory. This is a read-only path/handle check;
+/// it does not authorize attachment, mounting, sharing, or deletion.
+fn verify_guest_result_vhdx_file_path(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<PathBuf, String> {
+    let verified_directory = verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    if plan.vhdx_path.parent() != Some(plan.run_directory.as_path())
+        || plan.vhdx_path.file_name() != Some(OsStr::new("result.vhdx"))
+    {
+        return Err("The result VHDX path is not FRIDAY's exact per-run disk path.".into());
+    }
+    let metadata = fs::symlink_metadata(&plan.vhdx_path)
+        .map_err(|_| "The result VHDX is unavailable; it was preserved for recovery.".to_string())?;
+    if !metadata.is_file() || is_reparse_or_symlink(&metadata) || metadata.len() < 8 {
+        return Err("The result VHDX is not an ordinary non-empty file.".into());
+    }
+    let canonical = fs::canonicalize(&plan.vhdx_path)
+        .map_err(|_| "The result VHDX path could not be verified.".to_string())?;
+    if canonical.parent() != Some(verified_directory.as_path())
+        || canonical.file_name() != Some(OsStr::new("result.vhdx"))
+    {
+        return Err("The result VHDX is not the exact direct child of its owned run directory.".into());
+    }
+    let mut file = open_source_file(&plan.vhdx_path)
+        .map_err(|_| "The result VHDX could not be opened without following links.".to_string())?;
+    let opened = file.metadata()
+        .map_err(|_| "The opened result VHDX handle could not be verified.".to_string())?;
+    if !opened.is_file() || is_reparse_or_symlink(&opened) || opened.len() != metadata.len() {
+        return Err("The result VHDX changed while its file handle was opened.".into());
+    }
+    let mut signature = [0u8; 8];
+    file.read_exact(&mut signature)
+        .map_err(|_| "The result VHDX header could not be read.".to_string())?;
+    if &signature != b"vhdxfile" {
+        return Err("The result file does not contain the VHDX signature.".into());
+    }
+    Ok(canonical)
+}
+
+#[cfg(windows)]
+fn verify_guest_result_vhdx_identity(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<String, String> {
+    let recorded_identifier =
+        verify_guest_result_vhdx_ownership_marker(plan, trusted_storage_root, None)?;
+    let verified_path = verify_guest_result_vhdx_file_path(plan, trusted_storage_root)?;
+    let observed_identifier =
+        verify_guest_result_vhdx_capacity(&verified_path, GUEST_RESULT_VOLUME_CAPACITY_BYTES)?;
+    // Recheck the directory and file after the path-based Virtual Disk API query.
+    // A changed path or replaced file is never accepted as ownership evidence.
+    let verified_again = verify_guest_result_vhdx_file_path(plan, trusted_storage_root)?;
+    if verified_again != verified_path || observed_identifier != recorded_identifier {
+        return Err("The result VHDX identity changed or does not match its FRIDAY ownership record.".into());
+    }
+    Ok(observed_identifier)
+}
+
 #[cfg(windows)]
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1122,6 +1182,8 @@ fn create_guest_result_vhdx(
         .map_err(|error| format!("The created VHDX failed Windows metadata verification ({error}); it was preserved for recovery."))?;
     write_guest_result_vhdx_ownership_marker(plan, trusted_storage_root, &identifier)
         .map_err(|error| format!("The created VHDX identity could not be bound to its FRIDAY run ({error}); it was preserved for recovery."))?;
+    verify_guest_result_vhdx_identity(plan, trusted_storage_root)
+        .map_err(|error| format!("The created VHDX failed its final read-only ownership check ({error}); it was preserved for recovery."))?;
     Ok(plan.vhdx_path.clone())
 }
 
@@ -2740,6 +2802,7 @@ mod tests {
         let identifier = verify_guest_result_vhdx_capacity(&created, GUEST_RESULT_VOLUME_CAPACITY_BYTES).unwrap();
         assert!(valid_guest_vhdx_identifier(&identifier));
         assert_eq!(verify_guest_result_vhdx_ownership_marker(&plan, &root, Some(&identifier)).unwrap(), identifier);
+        assert_eq!(verify_guest_result_vhdx_identity(&plan, &root).unwrap(), identifier);
         assert!(create_guest_result_vhdx(&plan, &root).is_err(),
             "a pre-existing result VHDX must never be replaced");
         drop(file);
@@ -2747,6 +2810,37 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+
+    #[test]
+    fn result_vhdx_file_path_requires_exact_owned_regular_vhdx_file() {
+        let root = make_test_directory("result-vhdx-file-path");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        reserve_guest_result_volume_directory(&plan, &root).unwrap();
+        fs::write(&plan.vhdx_path, b"vhdxfile-test").unwrap();
+        assert_eq!(
+            verify_guest_result_vhdx_file_path(&plan, &root).unwrap(),
+            fs::canonicalize(&plan.vhdx_path).unwrap()
+        );
+        fs::remove_file(&plan.vhdx_path).unwrap();
+        fs::write(plan.run_directory.join("unexpected.vhdx"), b"vhdxfile-test").unwrap();
+        assert!(verify_guest_result_vhdx_file_path(&plan, &root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn result_vhdx_file_path_rejects_symlink_substitution() {
+        let root = make_test_directory("result-vhdx-file-link");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        reserve_guest_result_volume_directory(&plan, &root).unwrap();
+        let outside = root.join("outside-result.vhdx");
+        fs::write(&outside, b"vhdxfile-test").unwrap();
+        std::os::unix::fs::symlink(&outside, &plan.vhdx_path).unwrap();
+        assert!(verify_guest_result_vhdx_file_path(&plan, &root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn result_vhdx_identity_marker_binds_exact_run_capacity_and_identifier() {

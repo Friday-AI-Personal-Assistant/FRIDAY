@@ -1345,3 +1345,23 @@ The host now reads the persistent VHDX identifier with `GetVirtualDiskInformatio
 Regression tests cover exact run binding, capacity mismatch, identifier mismatch, exclusive marker creation, tampered ownership data, and symlink rejection. The Windows-native VHDX test additionally verifies that the persisted marker matches the identifier returned by the Windows virtual-disk API.
 
 This adds identity evidence only. It does not attach, initialize, partition, format, mount, share, detach, or delete a VHDX, and it does not prove that a VHDX can be safely initialized under a standard non-elevated token. The non-elevated hard-quota/result-transfer acceptance gate remains unresolved; no elevated helper, guest execution, or execution enablement is introduced.
+
+
+## Read-only result VHDX path and persistent-identity revalidation — 2026-11-14
+
+A read-only verifier now rechecks the per-run directory ownership marker, exact
+direct-child path, ordinary non-reparse file identity, opened file metadata,
+and VHDX signature. On Windows it additionally reads the VHDX provider's fixed
+capacity/type and persistent identifier, compares that identifier with the
+exclusive FRIDAY VHDX ownership record, and repeats the path/file check after
+the Virtual Disk API query. Creation now completes only after this final
+read-only ownership verification succeeds. Regression tests cover exact path
+acceptance and symlink substitution; the native Windows creation test also
+exercises persistent-identifier revalidation.
+
+This is defense-in-depth around read-only identity checks, not a handle-bound
+Virtual Disk API open: the Windows API still receives a path, so physical
+Windows race testing and a future handle-safe/native ownership design remain
+necessary. It does not attach, initialize, partition, format, mount, share,
+detach, or delete a VHDX. No elevated helper or guest execution is connected;
+guest execution remains disabled.
