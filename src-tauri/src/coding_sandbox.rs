@@ -2743,18 +2743,18 @@ fn observe_windows_sandbox_process_identity(process_id: u32, run_id: &str) -> Re
 }
 
 fn windows_sandbox_image_path_in_system_directory(image_path: &str, system_directory: &str) -> bool {
-    // Normalize separators and ASCII case character-by-character so the
-    // comparison is identical on Windows and non-Windows test hosts.
+    // Compare normalized parent and filename separately. This avoids building
+    // a path with escaped separators and behaves identically on every host.
     let normalize = |value: &str| {
-        value.chars()
-            .map(|character| {
-                if character == '\u{002f}' { '\u{005c}' } else { character.to_ascii_lowercase() }
-            })
-            .collect::<String>()
+        value.replace('/', "\\").to_ascii_lowercase()
     };
-    let system_directory = system_directory.trim_end_matches(['\u{005c}', '\u{002f}']);
-    let expected = format!("{}\u{005c}windowsandbox.exe", normalize(system_directory));
-    normalize(image_path) == expected
+    let expected_directory = normalize(system_directory);
+    let expected_directory = expected_directory.trim_end_matches('\\');
+    let normalized_image = normalize(image_path);
+    let Some((image_directory, image_name)) = normalized_image.rsplit_once('\\') else {
+        return false;
+    };
+    image_directory == expected_directory && image_name == "windowsandbox.exe"
 }
 
 #[cfg(windows)]
