@@ -2746,11 +2746,11 @@ fn windows_sandbox_image_path_in_system_directory(image_path: &str, system_direc
     // Compare path components directly so this check is independent of the
     // host OS path parser and of separator replacement/escaping behavior.
     let image_parts: Vec<&str> = image_path
-        .split(['\\\\', '/'])
+        .split(['\\', '/'])
         .filter(|part| !part.is_empty())
         .collect();
     let directory_parts: Vec<&str> = system_directory
-        .split(['\\\\', '/'])
+        .split(['\\', '/'])
         .filter(|part| !part.is_empty())
         .collect();
 
