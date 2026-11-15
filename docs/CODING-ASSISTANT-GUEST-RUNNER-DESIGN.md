@@ -1665,3 +1665,18 @@ The VHDX is not detached by these gateways.
 These gateways are Windows-only and are not yet connected to Sandbox sharing
 or guest execution. Native mount/unmount integration tests and physical
 Windows acceptance remain required. Guest execution remains disabled.
+
+## Two-folder Windows Sandbox mapping contract — implemented, not launched
+
+The host now has a separate strict configuration builder for the future two-folder runner contract:
+
+- The project snapshot is mapped to the fixed guest path `C:\\FRIDAY\\Project` with `ReadOnly=true`.
+- The result volume is mapped to `C:\\FRIDAY\\Results` with `ReadOnly=false`.
+- Network, vGPU, audio input, video input, clipboard redirection, and printer redirection remain disabled; Protected Client remains enabled.
+- The validator accepts only this exact ordered two-mapping template. It rejects arbitrary XML, extra mappings, swapped guest paths, a writable project mapping, a read-only result mapping, unknown entities, and injected configuration elements.
+- The Windows production gateway requires the durable result-storage journal to be exactly in `Mounted`, matches the journal run ID and VHDX identifier to the FRIDAY-owned attached disk, verifies the attached VHDX identity, and reads back the exact expected volume GUID at the fixed per-run `result-mount` path before producing the writable mapping.
+- The mounted path is not canonicalized as a normal directory: Windows mounted-volume paths are reparse points. The native volume-GUID readback is the authoritative identity check.
+
+This change adds configuration construction and validation only. It does not write a `.wsb` file, call the Windows Sandbox CLI, create or share a Sandbox session, launch guest code, or enable execution. The Windows Sandbox mapped-folder policies must separately permit mapped folders and writes; FRIDAY does not change Group Policy. The writable target is constrained to the already-created 64 MiB per-run VHDX, but physical Windows acceptance must still prove guest write access, disk-full behavior, host ACL behavior, cleanup, and that no alternate host path is exposed. If any of those checks fail, execution remains disabled.
+
+

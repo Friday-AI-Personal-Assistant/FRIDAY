@@ -2597,6 +2597,144 @@ fn validate_sandbox_config_policy(config: &str) -> Result<(), String> {
     Ok(())
 }
 
+
+
+/// Builds the exact two-folder Sandbox configuration only after the caller has
+/// independently verified the mounted, bounded FRIDAY result volume.
+/// The snapshot is read-only; the result mapping is writable and must point
+/// only at the fixed per-run mount directory on the 64 MiB result VHDX.
+fn build_sandbox_config_with_result_paths(
+    snapshot_path: &Path,
+    result_mount_path: &Path,
+) -> Result<String, String> {
+    let metadata = fs::symlink_metadata(snapshot_path)
+        .map_err(|_| "The isolated snapshot is unavailable.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("The snapshot is not a safe normal directory.".into());
+    }
+    let canonical_snapshot = fs::canonicalize(snapshot_path)
+        .map_err(|_| "FRIDAY could not verify the snapshot path.".to_string())?;
+    if canonical_snapshot.as_path() != snapshot_path
+        || !canonical_snapshot.is_absolute()
+        || canonical_snapshot.components().any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err("The snapshot path changed or is not a safe absolute path.".into());
+    }
+    // A mounted-volume path is a Windows mount-point reparse point. Do not
+    // canonicalize it; the Windows wrapper below proves its exact volume GUID.
+    if !result_mount_path.is_absolute()
+        || result_mount_path.components().any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err("The result mount path is not a safe absolute path.".into());
+    }
+    let snapshot_text = canonical_snapshot.to_str()
+        .ok_or_else(|| "The snapshot path cannot be represented safely in Sandbox configuration.".to_string())?;
+    let result_text = result_mount_path.to_str()
+        .ok_or_else(|| "The result mount path cannot be represented safely in Sandbox configuration.".to_string())?;
+    if snapshot_text.chars().any(char::is_control) || result_text.chars().any(char::is_control) {
+        return Err("A Sandbox mapped-folder path contains unsupported control characters.".into());
+    }
+    let config = format!(r#"<Configuration>
+  <VGpu>Disable</VGpu>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>{}</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>{}</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#, xml_escape(snapshot_text), xml_escape(result_text));
+    validate_sandbox_config_with_result_policy(&config)?;
+    Ok(config)
+}
+
+/// Windows-only production gateway: a writable mapping is emitted only when
+/// the durable journal says Mounted and the exact FRIDAY-owned attached VHDX,
+/// its identity, and its volume-GUID mount point all verify.
+#[cfg(windows)]
+#[allow(dead_code)]
+fn build_sandbox_config_for_mounted_result(
+    snapshot_path: &Path,
+    attached: &OwnedAttachedGuestVhdx,
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    current_journal: &GuestResultStorageJournal,
+    expected_volume_path: &str,
+) -> Result<String, String> {
+    let identifier = verify_attached_guest_result_vhdx_identity(
+        &attached.handle, &attached.physical_path, plan, trusted_storage_root,
+    )?;
+    if current_journal.run_id != plan.run_id
+        || current_journal.vhdx_identifier != identifier
+        || validate_guest_result_storage_journal(current_journal)? != GuestResultStorageState::Mounted
+    {
+        return Err("The writable Sandbox result mapping is not backed by the current verified Mounted journal state.".into());
+    }
+    verify_guest_result_volume_mount(plan, trusted_storage_root, expected_volume_path)?;
+    if plan.host_mount_directory != plan.run_directory.join("result-mount") {
+        return Err("The writable Sandbox mapping is not the fixed per-run result mount directory.".into());
+    }
+    build_sandbox_config_with_result_paths(snapshot_path, &plan.host_mount_directory)
+}
+
+/// Exact two-mapping template validator. Arbitrary XML and arbitrary writable
+/// host paths are not accepted; path text is decoded and round-trip checked.
+fn validate_sandbox_config_with_result_policy(config: &str) -> Result<(), String> {
+    const PREFIX: &str = r#"<Configuration>
+  <VGpu>Disable</VGpu>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>"#;
+    const BETWEEN: &str = r#"</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>"#;
+    const SUFFIX: &str = r#"</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#;
+    let Some(body) = config.strip_prefix(PREFIX).and_then(|rest| rest.strip_suffix(SUFFIX)) else {
+        return Err("The two-folder Windows Sandbox configuration does not match FRIDAY's exact isolation template.".into());
+    };
+    let Some((snapshot_encoded, result_encoded)) = body.split_once(BETWEEN) else {
+        return Err("The Sandbox configuration must contain exactly one read-only project mapping followed by one result mapping.".into());
+    };
+    for encoded in [snapshot_encoded, result_encoded] {
+        if encoded.is_empty() {
+            return Err("A Sandbox mapped-folder host path is empty.".into());
+        }
+        let decoded = decode_xml_text(encoded)
+            .ok_or_else(|| "A Sandbox mapped-folder path contains invalid XML text.".to_string())?;
+        if decoded.is_empty() || decoded.chars().any(char::is_control) || xml_escape(&decoded) != encoded {
+            return Err("A Sandbox mapped-folder path is not safely XML-escaped.".into());
+        }
+    }
+    Ok(())
+}
+
 fn decode_xml_text(value: &str) -> Option<String> {
     let mut decoded = String::with_capacity(value.len());
     let mut rest = value;
@@ -4142,6 +4280,95 @@ mod tests {
         validate_sandbox_config_policy(&config).unwrap();
         assert!(config.contains(r"<SandboxFolder>C:\FRIDAY\Project</SandboxFolder>"));
         assert!(config.contains(canonical.to_str().unwrap()));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    fn safe_sandbox_config_with_result_fixture(snapshot: &str, result: &str) -> String {
+        format!(r#"<Configuration>
+  <VGpu>Disable</VGpu>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>{}</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>{}</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#, xml_escape(snapshot), xml_escape(result))
+    }
+
+    #[test]
+    fn two_folder_sandbox_policy_allows_only_read_only_project_and_bounded_result_mapping() {
+        let safe = safe_sandbox_config_with_result_fixture(
+            r"C:\FRIDAY\Snapshots\abc",
+            r"C:\FRIDAY\Runs\abc\result-mount",
+        );
+        validate_sandbox_config_with_result_policy(&safe).unwrap();
+        assert!(safe.contains("<ReadOnly>true</ReadOnly>"));
+        assert!(safe.contains("<ReadOnly>false</ReadOnly>"));
+        assert!(safe.contains(r"<SandboxFolder>C:\FRIDAY\Project</SandboxFolder>"));
+        assert!(safe.contains(r"<SandboxFolder>C:\FRIDAY\Results</SandboxFolder>"));
+    }
+
+    #[test]
+    fn two_folder_sandbox_policy_rejects_writable_project_and_read_only_results() {
+        let safe = safe_sandbox_config_with_result_fixture(
+            r"C:\FRIDAY\Snapshots\abc",
+            r"C:\FRIDAY\Runs\abc\result-mount",
+        );
+        assert!(validate_sandbox_config_with_result_policy(
+            &safe.replace("<ReadOnly>true</ReadOnly>", "<ReadOnly>false</ReadOnly>")
+        ).is_err());
+        assert!(validate_sandbox_config_with_result_policy(
+            &safe.replace("<ReadOnly>false</ReadOnly>", "<ReadOnly>true</ReadOnly>")
+        ).is_err());
+    }
+
+    #[test]
+    fn two_folder_sandbox_policy_rejects_extra_mappings_and_network_or_xml_injection() {
+        let safe = safe_sandbox_config_with_result_fixture(
+            r#"C:\FRIDAY\Snapshot & <Project>"#,
+            r#"C:\FRIDAY\Runs\abc\result-mount"#,
+        );
+        validate_sandbox_config_with_result_policy(&safe).unwrap();
+        for mutation in [
+            safe.replace("<Networking>Disable</Networking>", "<Networking>Enable</Networking>"),
+            safe.replace("</MappedFolders>", "<MappedFolder></MappedFolder></MappedFolders>"),
+            safe.replace("<SandboxFolder>C:\\FRIDAY\\Results</SandboxFolder>",
+                "<SandboxFolder>C:\\Other</SandboxFolder>"),
+            safe.replace("&amp;", "&bogus;"),
+            safe.replace("</Configuration>", "<LogonCommand/></Configuration>"),
+            safe.replace("<ReadOnly>false</ReadOnly>", "<ReadOnly>false</ReadOnly><ReadOnly>true</ReadOnly>"),
+        ] {
+            assert!(validate_sandbox_config_with_result_policy(&mutation).is_err());
+        }
+    }
+
+    #[test]
+    fn two_folder_sandbox_config_builder_rejects_unsafe_snapshot_and_result_paths() {
+        let base = make_test_directory("wsb-dual-config");
+        let snapshot = base.join("snapshot");
+        fs::create_dir(&snapshot).unwrap();
+        let canonical = fs::canonicalize(&snapshot).unwrap();
+        let result = base.join("run").join("result-mount");
+        assert!(build_sandbox_config_with_result_paths(&canonical, &result).is_err(),
+            "result mapping must be an absolute path");
+        let result = PathBuf::from(r"C:\FRIDAY\Runs\abc\result-mount");
+        let config = build_sandbox_config_with_result_paths(&canonical, &result).unwrap();
+        validate_sandbox_config_with_result_policy(&config).unwrap();
+        assert!(config.contains("<ReadOnly>true</ReadOnly>"));
+        assert!(config.contains("<ReadOnly>false</ReadOnly>"));
         fs::remove_dir_all(base).unwrap();
     }
 
