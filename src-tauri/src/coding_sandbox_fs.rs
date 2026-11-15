@@ -2010,6 +2010,46 @@ pub(crate) fn create_bounded_snapshot_destination(
 }
 
 
+/// Verify a completed snapshot's exact ownership inventory before it is mapped
+/// into Windows Sandbox. This is a read-only preflight: it never repairs or
+/// removes uncertain files. The returned path is the canonical fixed child
+/// workspace/<snapshot_id>.
+pub(crate) fn verify_snapshot_for_sandbox_mapping(
+    workspace_path: &Path,
+    snapshot_id: &str,
+    limits: (usize, usize, u64, u64),
+) -> io::Result<PathBuf> {
+    if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot identifier is invalid"));
+    }
+    if !workspace_path.is_absolute() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot workspace must be absolute"));
+    }
+    let workspace = open_verified_root_directory(workspace_path)?;
+    let canonical_workspace = std::fs::canonicalize(workspace_path)?;
+    if !same_path_handle_identity(&canonical_workspace, &workspace)? {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot workspace identity changed"));
+    }
+    let snapshot_path = canonical_workspace.join(snapshot_id);
+    let snapshot = open_verified_root_directory(&snapshot_path)?;
+    let policy = BoundedSnapshotLimits {
+        max_depth: limits.0,
+        max_files: limits.1,
+        max_file_bytes: limits.2,
+        max_total_bytes: limits.3,
+    };
+    preflight_snapshot_tree(&snapshot, snapshot_id, policy)?;
+    let canonical_snapshot = std::fs::canonicalize(&snapshot_path)?;
+    if canonical_snapshot != snapshot_path
+        || snapshot_path.parent() != Some(canonical_workspace.as_path())
+        || snapshot_path.file_name().and_then(OsStr::to_str) != Some(snapshot_id)
+        || !same_path_handle_identity(&canonical_snapshot, &snapshot)?
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot path no longer matches its verified workspace child"));
+    }
+    Ok(canonical_snapshot)
+}
+
 /// Production entry point: collect bounded source bytes through verified
 /// directory capabilities and create an exclusive schema-2 snapshot.
 /// A truncated collection is rejected; incomplete snapshots are never marked
@@ -3365,6 +3405,57 @@ mod tests {
 
         drop(workspace);
         fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn sandbox_mapping_preflight_accepts_only_exact_complete_owned_snapshot() {
+        let base = make_test_directory("sandbox-map-preflight");
+        let source = base.join("source");
+        let workspace = base.join("workspace");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        fs::write(source.join("main.rs"), b"fn main() {}").unwrap();
+        let snapshot_id = "0123456789abcdef0123456789abcdef";
+        prepare_snapshot_from_paths(
+            &source, &workspace, snapshot_id,
+            (12, 2000, 1_048_576, 32 * 1024 * 1024),
+            |_| true, |_| false,
+        ).unwrap();
+        let verified = verify_snapshot_for_sandbox_mapping(
+            &workspace, snapshot_id, (12, 2000, 1_048_576, 32 * 1024 * 1024),
+        ).unwrap();
+        assert_eq!(verified, fs::canonicalize(workspace.join(snapshot_id)).unwrap());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn sandbox_mapping_preflight_rejects_tampered_or_unexpected_snapshot_entries() {
+        let base = make_test_directory("sandbox-map-preflight-tamper");
+        let source = base.join("source");
+        let workspace = base.join("workspace");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        fs::write(source.join("main.rs"), b"fn main() {}").unwrap();
+        let snapshot_id = "fedcba9876543210fedcba9876543210";
+        prepare_snapshot_from_paths(
+            &source, &workspace, snapshot_id,
+            (12, 2000, 1_048_576, 32 * 1024 * 1024),
+            |_| true, |_| false,
+        ).unwrap();
+        let snapshot = workspace.join(snapshot_id);
+        fs::write(snapshot.join("main.rs"), b"tampered").unwrap();
+        assert!(verify_snapshot_for_sandbox_mapping(
+            &workspace, snapshot_id, (12, 2000, 1_048_576, 32 * 1024 * 1024),
+        ).is_err());
+        fs::remove_file(snapshot.join("main.rs")).unwrap();
+        fs::write(snapshot.join("unexpected.txt"), b"unexpected").unwrap();
+        assert!(verify_snapshot_for_sandbox_mapping(
+            &workspace, snapshot_id, (12, 2000, 1_048_576, 32 * 1024 * 1024),
+        ).is_err());
+        assert!(verify_snapshot_for_sandbox_mapping(
+            &workspace, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", (12, 2000, 1_048_576, 32 * 1024 * 1024),
+        ).is_err());
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

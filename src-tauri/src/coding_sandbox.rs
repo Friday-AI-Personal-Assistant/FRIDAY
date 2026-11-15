@@ -2667,12 +2667,22 @@ fn build_sandbox_config_with_result_paths(
 #[allow(dead_code)]
 fn build_sandbox_config_for_mounted_result(
     snapshot_path: &Path,
+    trusted_snapshot_workspace: &Path,
+    expected_snapshot_id: &str,
     attached: &OwnedAttachedGuestVhdx,
     plan: &GuestResultVolumePlan,
     trusted_storage_root: &Path,
     current_journal: &GuestResultStorageJournal,
     expected_volume_path: &str,
 ) -> Result<String, String> {
+    let verified_snapshot = crate::coding_sandbox_fs::verify_snapshot_for_sandbox_mapping(
+        trusted_snapshot_workspace,
+        expected_snapshot_id,
+        (MAX_SNAPSHOT_DEPTH, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_FILE_BYTES, MAX_SNAPSHOT_TOTAL_BYTES),
+    ).map_err(|_| "The project snapshot failed FRIDAY's ownership-inventory preflight and cannot be shared with Sandbox.".to_string())?;
+    if snapshot_path != verified_snapshot {
+        return Err("The requested Sandbox project mapping does not match the verified FRIDAY snapshot.".into());
+    }
     let identifier = verify_attached_guest_result_vhdx_identity(
         &attached.handle, &attached.physical_path, plan, trusted_storage_root,
     )?;

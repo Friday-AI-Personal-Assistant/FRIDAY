@@ -1679,4 +1679,16 @@ The host now has a separate strict configuration builder for the future two-fold
 
 This change adds configuration construction and validation only. It does not write a `.wsb` file, call the Windows Sandbox CLI, create or share a Sandbox session, launch guest code, or enable execution. The Windows Sandbox mapped-folder policies must separately permit mapped folders and writes; FRIDAY does not change Group Policy. The writable target is constrained to the already-created 64 MiB per-run VHDX, but physical Windows acceptance must still prove guest write access, disk-full behavior, host ACL behavior, cleanup, and that no alternate host path is exposed. If any of those checks fail, execution remains disabled.
 
+## Snapshot inventory preflight before Sandbox mapping
+
+The production two-folder configuration gateway now also requires the project snapshot to pass the same schema-2 ownership inventory used by FRIDAY's snapshot lifecycle:
+
+- The expected snapshot ID must be a 32-character hexadecimal ID and the snapshot must be the exact direct child of the trusted canonical workspace.
+- FRIDAY opens and pins the workspace and snapshot directory identities, then validates the ownership manifest and complete directory/file inventory before any mapping is emitted.
+- Missing or malformed ownership markers, extra files/directories, missing entries, size changes, links/reparse points, path substitutions, or identity changes fail closed.
+- This preflight is read-only. It does not repair, rewrite, or delete uncertain snapshot contents.
+- The mounted result-volume identity and Mounted journal checks remain independently required for the writable mapping.
+
+The gateway still only constructs a validated configuration string. It does not write a .wsb file, launch Windows Sandbox, or enable guest execution. Windows physical acceptance and policy checks remain outstanding.
+
 
