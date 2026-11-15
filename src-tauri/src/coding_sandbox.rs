@@ -2053,7 +2053,7 @@ fn build_windows_sandbox_cli_plan(
 ) -> Result<WindowsSandboxCliPlan, String> {
     if !valid_absolute_windows_drive_path(executable_path)
         || !executable_path
-            .rsplit(['\\\\', '/'])
+            .rsplit(|character| character == '\\' || character == '/')
             .next()
             .is_some_and(|name| name.eq_ignore_ascii_case(WINDOWS_SANDBOX_CLI_FILE_NAME))
     {
