@@ -1701,3 +1701,12 @@ The Windows host now has a bounded staging path for the exact two-folder Sandbox
 The configuration is written to the fixed `sandbox.wsb` filename using exclusive create-new semantics, capped at 16 KiB, flushed, reopened without following a final-component link, read back byte-for-byte, and passed through the strict two-folder template validator again. Existing files, including partial/interrupted files, are preserved and never overwritten. The file is stored in the private per-run directory, not inside the guest-writable result mount.
 
 This stages and verifies configuration only. It does not invoke Windows Sandbox, launch a session, share any additional host path, or execute guest code. Native Windows staging tests run in CI; physical Windows acceptance of ACL inheritance, mapped-folder policy, guest access and lifecycle remains mandatory. Guest execution remains disabled.
+
+
+## Durable Windows Sandbox session ownership journal — implemented, not launched
+
+The host now has a bounded append-only journal for the future FRIDAY-owned Windows Sandbox session lifecycle. Each immutable generation records the run ID, sequence, previous and next state, event, exact process identity evidence, ownership-verification result, and positive stopped-process evidence. The journal rejects unknown fields, malformed or oversized records, invalid transitions, identity substitution, stale writers, generation gaps, and non-append-only history.
+
+Each generation is created exclusively in its own private directory, secured with FRIDAY's private-directory policy, flushed, and reopened through the bounded no-follow file reader for exact read-back verification. Existing or interrupted generations are preserved rather than overwritten. The journal is a recovery record, not proof that a process or Sandbox session is genuinely owned; future Windows process/session observation must independently establish that evidence before transitions are authorized.
+
+This batch does not launch or stop Windows Sandbox, does not adopt an existing session, and does not enable guest execution. Physical Windows validation of session discovery, CLI session identifiers, process creation-time identity, cancellation, and crash recovery remains required.

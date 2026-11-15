@@ -2003,7 +2003,8 @@ fn unmount_guest_result_volume_from_private_directory(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum SandboxSessionState {
     Planned,
     LaunchRequested,
@@ -2016,7 +2017,8 @@ enum SandboxSessionState {
     RecoveryRequired,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum SandboxSessionEvent {
     RequestLaunch,
     ObserveProcess,
@@ -2028,7 +2030,8 @@ enum SandboxSessionEvent {
     PreserveForRecovery,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SandboxProcessIdentity {
     session_id: String,
     process_id: u32,
@@ -2137,6 +2140,284 @@ fn advance_sandbox_session(
         }
         _ => Err("The Sandbox session transition is out of order or lacks exact ownership evidence.".into()),
     }
+}
+
+
+const SANDBOX_SESSION_JOURNAL_SCHEMA: u32 = 1;
+const MAX_SANDBOX_SESSION_JOURNAL_BYTES: usize = 16 * 1024;
+const MAX_SANDBOX_SESSION_JOURNAL_ENTRIES: usize = 8;
+const SANDBOX_SESSION_JOURNAL_DIR_PREFIX: &str = ".friday-sandbox-session-";
+const SANDBOX_SESSION_JOURNAL_FILE: &str = "state.json";
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SandboxSessionJournalEntry {
+    sequence: u32,
+    previous_state: SandboxSessionState,
+    event: SandboxSessionEvent,
+    next_state: SandboxSessionState,
+    identity: Option<SandboxProcessIdentity>,
+    observed_identity: Option<SandboxProcessIdentity>,
+    ownership_verified: bool,
+    process_confirmed_stopped: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SandboxSessionJournal {
+    schema_version: u32,
+    run_id: String,
+    entries: Vec<SandboxSessionJournalEntry>,
+}
+
+fn validate_sandbox_session_journal(
+    journal: &SandboxSessionJournal,
+) -> Result<SandboxSessionState, String> {
+    if journal.schema_version != SANDBOX_SESSION_JOURNAL_SCHEMA
+        || !valid_snapshot_id(&journal.run_id)
+        || journal.entries.is_empty()
+        || journal.entries.len() > MAX_SANDBOX_SESSION_JOURNAL_ENTRIES
+    {
+        return Err("The Sandbox session journal header or bounds are invalid.".into());
+    }
+    let mut state = SandboxSessionState::Planned;
+    let mut recorded_identity: Option<SandboxProcessIdentity> = None;
+    for (index, entry) in journal.entries.iter().enumerate() {
+        if entry.sequence != index as u32 + 1 || entry.previous_state != state {
+            return Err("The Sandbox session journal is out of sequence or has a broken state chain.".into());
+        }
+        if entry.identity != recorded_identity {
+            return Err("The Sandbox session journal changed FRIDAY's recorded process identity.".into());
+        }
+        if entry.event == SandboxSessionEvent::ObserveProcess {
+            if entry.observed_identity.is_none() || entry.identity.is_some()
+                || entry.ownership_verified || entry.process_confirmed_stopped
+            {
+                return Err("The observed Sandbox process record contains unexpected ownership evidence.".into());
+            }
+        } else if entry.event != SandboxSessionEvent::PreserveForRecovery
+            && entry.event != SandboxSessionEvent::RemoveOwnershipRecord
+            && entry.observed_identity.is_none()
+        {
+            return Err("The Sandbox session transition is missing its observed process identity.".into());
+        }
+        state = advance_sandbox_session(
+            state,
+            entry.event,
+            recorded_identity.as_ref(),
+            entry.observed_identity.as_ref(),
+            entry.ownership_verified,
+            entry.process_confirmed_stopped,
+        )?;
+        if entry.next_state != state {
+            return Err("The Sandbox session journal contains an invalid transition result.".into());
+        }
+        if entry.event == SandboxSessionEvent::ObserveProcess {
+            recorded_identity = entry.observed_identity.clone();
+        }
+    }
+    Ok(state)
+}
+
+fn encode_sandbox_session_journal(
+    journal: &SandboxSessionJournal,
+) -> Result<Vec<u8>, String> {
+    validate_sandbox_session_journal(journal)?;
+    let bytes = serde_json::to_vec(journal)
+        .map_err(|_| "The Sandbox session journal could not be encoded.".to_string())?;
+    if bytes.is_empty() || bytes.len() > MAX_SANDBOX_SESSION_JOURNAL_BYTES {
+        return Err("The Sandbox session journal exceeds its fixed size limit.".into());
+    }
+    Ok(bytes)
+}
+
+fn parse_sandbox_session_journal(
+    bytes: &[u8],
+) -> Result<SandboxSessionJournal, String> {
+    if bytes.is_empty() || bytes.len() > MAX_SANDBOX_SESSION_JOURNAL_BYTES {
+        return Err("The Sandbox session journal is empty or oversized.".into());
+    }
+    let journal: SandboxSessionJournal = serde_json::from_slice(bytes)
+        .map_err(|_| "The Sandbox session journal is malformed or contains unsupported fields.".to_string())?;
+    validate_sandbox_session_journal(&journal)?;
+    Ok(journal)
+}
+
+fn append_sandbox_session_journal_entry(
+    journal: &SandboxSessionJournal,
+    event: SandboxSessionEvent,
+    observed_identity: Option<&SandboxProcessIdentity>,
+    ownership_verified: bool,
+    process_confirmed_stopped: bool,
+) -> Result<SandboxSessionJournal, String> {
+    let state = validate_sandbox_session_journal(journal)?;
+    if journal.entries.len() >= MAX_SANDBOX_SESSION_JOURNAL_ENTRIES {
+        return Err("The Sandbox session journal reached its fixed transition limit.".into());
+    }
+    let recorded_identity = journal.entries.iter()
+        .rev()
+        .find(|entry| entry.event == SandboxSessionEvent::ObserveProcess)
+        .and_then(|entry| entry.observed_identity.as_ref());
+    let next_state = advance_sandbox_session(
+        state, event, recorded_identity, observed_identity,
+        ownership_verified, process_confirmed_stopped,
+    )?;
+    let mut next = journal.clone();
+    next.entries.push(SandboxSessionJournalEntry {
+        sequence: next.entries.len() as u32 + 1,
+        previous_state: state,
+        event,
+        next_state,
+        identity: recorded_identity.cloned(),
+        observed_identity: observed_identity.cloned(),
+        ownership_verified,
+        process_confirmed_stopped,
+    });
+    encode_sandbox_session_journal(&next)?;
+    Ok(next)
+}
+
+fn sandbox_session_journal_generation_path(root: &Path, generation: usize) -> PathBuf {
+    root.join(format!("{SANDBOX_SESSION_JOURNAL_DIR_PREFIX}{generation:02}"))
+}
+
+fn read_sandbox_session_journal_generation(
+    root: &Path,
+    generation: usize,
+) -> Result<SandboxSessionJournal, String> {
+    if generation == 0 || generation > MAX_SANDBOX_SESSION_JOURNAL_ENTRIES {
+        return Err("The Sandbox session journal generation is outside its fixed limit.".into());
+    }
+    let directory = sandbox_session_journal_generation_path(root, generation);
+    let metadata = fs::symlink_metadata(&directory)
+        .map_err(|_| "A Sandbox session journal generation is missing or unavailable.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("A Sandbox session journal generation is not an ordinary directory.".into());
+    }
+    let bytes = crate::coding_sandbox_fs::read_single_bounded_file_from_directory(
+        &directory, OsStr::new(SANDBOX_SESSION_JOURNAL_FILE),
+        MAX_SANDBOX_SESSION_JOURNAL_BYTES as u64,
+    ).map_err(|_| "A Sandbox session journal generation is incomplete or unsafe.".to_string())?;
+    let journal = parse_sandbox_session_journal(&bytes)?;
+    if journal.entries.len() != generation {
+        return Err("A Sandbox session journal generation does not match its sequence.".into());
+    }
+    Ok(journal)
+}
+
+/// Persists each session transition as an immutable generation. Existing or
+/// interrupted generations are never overwritten; ambiguity requires recovery.
+fn persist_sandbox_session_journal(
+    root: &Path,
+    journal: &SandboxSessionJournal,
+) -> Result<(), String> {
+    validate_sandbox_session_journal(journal)?;
+    let generation = journal.entries.len();
+    if generation == 0 || generation > MAX_SANDBOX_SESSION_JOURNAL_ENTRIES {
+        return Err("Only a non-empty bounded Sandbox session journal can be persisted.".into());
+    }
+    let root_metadata = fs::symlink_metadata(root)
+        .map_err(|_| "The Sandbox session journal root is unavailable.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The Sandbox session journal root must be an ordinary directory.".into());
+    }
+    if generation > 1 {
+        let previous = read_sandbox_session_journal_generation(root, generation - 1)?;
+        if previous.run_id != journal.run_id
+            || previous.entries != journal.entries[..generation - 1]
+        {
+            return Err("The next Sandbox session journal generation does not extend persisted history.".into());
+        }
+    } else if fs::symlink_metadata(sandbox_session_journal_generation_path(root, 1)).is_ok() {
+        return Err("The initial Sandbox session journal generation already exists.".into());
+    }
+    let directory = sandbox_session_journal_generation_path(root, generation);
+    fs::create_dir(&directory)
+        .map_err(|_| "FRIDAY could not exclusively create the Sandbox session journal generation.".to_string())?;
+    secure_private_workspace_directory(&directory)
+        .map_err(|_| "FRIDAY could not secure the new session journal generation; it was preserved.".to_string())?;
+    let bytes = encode_sandbox_session_journal(journal)?;
+    let file_path = directory.join(SANDBOX_SESSION_JOURNAL_FILE);
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&file_path)
+        .map_err(|_| "FRIDAY could not exclusively create the Sandbox session journal file; it was preserved.".to_string())?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|_| "FRIDAY could not write the Sandbox session journal; it was preserved.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "FRIDAY could not flush the Sandbox session journal; it was preserved.".to_string())?;
+    drop(file);
+    let verified = read_sandbox_session_journal_generation(root, generation)?;
+    if verified != *journal {
+        return Err("The persisted Sandbox session journal failed exact read-back verification.".into());
+    }
+    Ok(())
+}
+
+fn load_sandbox_session_journal(
+    root: &Path,
+    expected_run_id: &str,
+) -> Result<SandboxSessionJournal, String> {
+    if !valid_snapshot_id(expected_run_id) {
+        return Err("The expected Sandbox session run identifier is invalid.".into());
+    }
+    let root_metadata = fs::symlink_metadata(root)
+        .map_err(|_| "The Sandbox session journal root is unavailable.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The Sandbox session journal root must be an ordinary directory.".into());
+    }
+    let mut latest: Option<SandboxSessionJournal> = None;
+    let mut gap_seen = false;
+    for generation in 1..=MAX_SANDBOX_SESSION_JOURNAL_ENTRIES {
+        let path = sandbox_session_journal_generation_path(root, generation);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => gap_seen = true,
+            Err(_) => return Err("A Sandbox session journal generation could not be inspected.".into()),
+            Ok(_) if gap_seen => return Err("The Sandbox session journal contains a generation gap.".into()),
+            Ok(_) => {
+                let current = read_sandbox_session_journal_generation(root, generation)?;
+                if current.run_id != expected_run_id {
+                    return Err("The Sandbox session journal belongs to a different FRIDAY run.".into());
+                }
+                if let Some(previous) = &latest {
+                    if current.entries[..generation - 1] != previous.entries {
+                        return Err("The Sandbox session journal history is not append-only.".into());
+                    }
+                }
+                latest = Some(current);
+            }
+        }
+    }
+    latest.ok_or_else(|| "No complete Sandbox session journal generation is available.".into())
+}
+
+fn append_and_persist_sandbox_session_transition(
+    root: &Path,
+    current: &SandboxSessionJournal,
+    event: SandboxSessionEvent,
+    observed_identity: Option<&SandboxProcessIdentity>,
+    ownership_verified: bool,
+    process_confirmed_stopped: bool,
+) -> Result<SandboxSessionJournal, String> {
+    validate_sandbox_session_journal(current)?;
+    if current.entries.is_empty() {
+        for generation in 1..=MAX_SANDBOX_SESSION_JOURNAL_ENTRIES {
+            match fs::symlink_metadata(sandbox_session_journal_generation_path(root, generation)) {
+                Ok(_) => return Err("An initial Sandbox session journal cannot overwrite existing recovery evidence.".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err("Existing Sandbox session journal evidence could not be inspected.".into()),
+            }
+        }
+    } else if load_sandbox_session_journal(root, &current.run_id)? != *current {
+        return Err("The supplied Sandbox session journal is stale or differs from persisted history.".into());
+    }
+    let next = append_sandbox_session_journal_entry(
+        current, event, observed_identity, ownership_verified, process_confirmed_stopped,
+    )?;
+    persist_sandbox_session_journal(root, &next)?;
+    if load_sandbox_session_journal(root, &next.run_id)? != next {
+        return Err("The newly appended Sandbox session transition failed recovery verification.".into());
+    }
+    Ok(next)
 }
 
 fn sandbox_policy_state(value: Option<&serde_json::Value>) -> String {
@@ -4838,6 +5119,82 @@ mod tests {
             process_creation_time: 987654321,
             image_path: r"C:\\Windows\\System32\\WindowsSandbox.exe".into(),
         }
+    }
+
+    fn empty_test_sandbox_session_journal() -> SandboxSessionJournal {
+        SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: "0123456789abcdef0123456789abcdef".into(),
+            entries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn sandbox_session_journal_persists_and_reloads_exact_owned_lifecycle() {
+        use SandboxSessionEvent as E;
+        let root = make_test_directory("session-journal");
+        let identity = valid_test_sandbox_identity();
+        let mut journal = empty_test_sandbox_session_journal();
+        for (event, observed, owned, stopped) in [
+            (E::RequestLaunch, None, false, false),
+            (E::ObserveProcess, Some(identity.clone()), false, false),
+            (E::ConfirmSession, Some(identity.clone()), true, false),
+            (E::ConfirmRunning, Some(identity.clone()), true, false),
+            (E::RequestStop, Some(identity.clone()), true, false),
+            (E::ConfirmStopped, Some(identity.clone()), true, true),
+            (E::RemoveOwnershipRecord, None, true, true),
+        ] {
+            journal = append_and_persist_sandbox_session_transition(
+                &root, &journal, event, observed.as_ref(), owned, stopped,
+            ).unwrap();
+        }
+        assert_eq!(validate_sandbox_session_journal(&journal).unwrap(), SandboxSessionState::Removed);
+        assert_eq!(load_sandbox_session_journal(&root, &journal.run_id).unwrap(), journal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sandbox_session_journal_rejects_tampering_gaps_and_stale_writers() {
+        use SandboxSessionEvent as E;
+        let root = make_test_directory("session-journal-tamper");
+        let identity = valid_test_sandbox_identity();
+        let mut journal = empty_test_sandbox_session_journal();
+        journal = append_and_persist_sandbox_session_transition(
+            &root, &journal, E::RequestLaunch, None, false, false,
+        ).unwrap();
+        let stale = empty_test_sandbox_session_journal();
+        let next = append_and_persist_sandbox_session_transition(
+            &root, &journal, E::ObserveProcess, Some(&identity), false, false,
+        ).unwrap();
+        assert!(append_and_persist_sandbox_session_transition(
+            &root, &stale, E::RequestLaunch, None, false, false,
+        ).is_err());
+        assert_eq!(load_sandbox_session_journal(&root, &next.run_id).unwrap(), next);
+        fs::remove_dir_all(sandbox_session_journal_generation_path(&root, 1)).unwrap();
+        assert!(load_sandbox_session_journal(&root, &next.run_id).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sandbox_session_journal_rejects_identity_substitution_and_unknown_fields() {
+        use SandboxSessionEvent as E;
+        let identity = valid_test_sandbox_identity();
+        let mut journal = empty_test_sandbox_session_journal();
+        journal = append_sandbox_session_journal_entry(
+            &journal, E::RequestLaunch, None, false, false,
+        ).unwrap();
+        journal = append_sandbox_session_journal_entry(
+            &journal, E::ObserveProcess, Some(&identity), false, false,
+        ).unwrap();
+        let mut replacement = identity.clone();
+        replacement.process_creation_time += 1;
+        assert!(append_sandbox_session_journal_entry(
+            &journal, E::ConfirmSession, Some(&replacement), true, false,
+        ).is_err());
+        let bytes = encode_sandbox_session_journal(&journal).unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        value["unexpected"] = serde_json::json!(true);
+        assert!(parse_sandbox_session_journal(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 
     #[test]
