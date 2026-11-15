@@ -3185,7 +3185,12 @@ fn validate_guest_result_ntfs_format_report(
         || report.size_remaining > report.volume_size
         || report.drive_letter.as_ref().is_some_and(|value| !value.trim().is_empty())
     {
-        return Err("Windows' NTFS format report does not match the exact FRIDAY disk, partition, filesystem, label, capacity, or no-drive-letter policy.".into());
+        return Err(format!(
+            "Windows' NTFS format report did not satisfy the fixed FRIDAY storage policy (disk={}, disk_guid={}, partition_guid={}, offset={}, partition_size={}, filesystem={}, label={}, volume_path={}, volume_size={}, remaining={}, drive_letter={:?}).",
+            report.disk_number, report.disk_guid, report.partition_guid, report.partition_offset,
+            report.partition_size, report.file_system, report.file_system_label, report.volume_path,
+            report.volume_size, report.size_remaining, report.drive_letter
+        ));
     }
     Ok(())
 }
@@ -3308,7 +3313,8 @@ if ($formatted.Count -ne 1) { throw 'FRIDAY_FORMAT_RESULT_CARDINALITY' }
 $volume = Get-Volume -Partition $partition -ErrorAction Stop
 if ($null -eq $volume) { throw 'FRIDAY_VOLUME_NOT_DISCOVERED' }
 $volumePath = [string]$volume.Path
-$driveLetter = if ([string]::IsNullOrEmpty([string]$volume.DriveLetter)) { $null } else { [string]$volume.DriveLetter }
+$volumeDriveLetter = ([string]$volume.DriveLetter).Trim([char]0)
+$driveLetter = if ([string]::IsNullOrEmpty($volumeDriveLetter)) { $null } else { $volumeDriveLetter }
 [pscustomobject]@{
   diskNumber = [uint32]$disk.Number
   diskGuid = ([guid]$disk.Guid).ToString('D')
