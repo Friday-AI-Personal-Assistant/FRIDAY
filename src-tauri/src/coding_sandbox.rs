@@ -3499,7 +3499,7 @@ fn format_guest_result_ntfs(
     trusted_storage_root: &Path,
     journal_root: &Path,
     current_journal: &GuestResultStorageJournal,
-) -> Result<GuestResultStorageJournal, String> {
+) -> Result<(GuestResultStorageJournal, String), String> {
     validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
     let partition_plan = build_guest_result_partition_plan(&plan.run_id, plan.capacity_bytes, GUEST_RESULT_GPT_SECTOR_BYTES as u32)?;
     let metadata = build_guest_result_gpt_metadata(&partition_plan)?;
@@ -3585,7 +3585,7 @@ $driveLetter = if ([string]::IsNullOrEmpty($volumeDriveLetter)) { $null } else {
     command.env("FRIDAY_RESULT_PARTITION_GUID", &partition_plan.partition_unique_guid);
     command.env("FRIDAY_RESULT_PARTITION_OFFSET", (partition_plan.first_lba * GUEST_RESULT_GPT_SECTOR_BYTES).to_string());
     command.env("FRIDAY_RESULT_PARTITION_SIZE", ((partition_plan.last_lba - partition_plan.first_lba + 1) * GUEST_RESULT_GPT_SECTOR_BYTES).to_string());
-    let result = (|| -> Result<(), String> {
+    let result = (|| -> Result<String, String> {
         let (status, stdout, stderr) = run_bounded_storage_operation(command)?;
         if !status.success() {
             let diagnostic = String::from_utf8_lossy(&stderr).chars().take(1200).collect::<String>();
@@ -3597,6 +3597,7 @@ $driveLetter = if ([string]::IsNullOrEmpty($volumeDriveLetter)) { $null } else {
         let report: GuestResultNtfsFormatReport = serde_json::from_slice(&stdout)
             .map_err(|_| "Windows returned malformed or unsupported NTFS format evidence.".to_string())?;
         validate_guest_result_ntfs_format_report(&report, disk_number, &metadata, &partition_plan)?;
+        let volume_path = report.volume_path.clone();
         if guest_vhdx_physical_path(attached.handle.0)? != attached.physical_path
             || verify_attached_guest_result_vhdx_identity(&attached.handle, &attached.physical_path, plan, trusted_storage_root)? != identifier {
             return Err("The attached result disk identity changed during NTFS formatting.".into());
@@ -3604,15 +3605,19 @@ $driveLetter = if ([string]::IsNullOrEmpty($volumeDriveLetter)) { $null } else {
         let raw_disk = OwnedRawGuestDisk::open_attached_device(attached)?;
         raw_disk.verify_fixed_geometry()?;
         raw_disk.verify_windows_partition_layout(&partition_plan, &metadata)?;
-        Ok(())
+        Ok(volume_path)
     })();
-    if let Err(error) = result {
-        let _ = append_and_persist_guest_result_storage_transition(journal_root, &in_progress, GuestResultStorageEvent::PreserveForRecovery, false, false);
-        return Err(format!("{error} The result disk has been preserved for recovery; no automatic retry will occur."));
-    }
-    append_and_persist_guest_result_storage_transition(
+    let volume_path = match result {
+        Ok(volume_path) => volume_path,
+        Err(error) => {
+            let _ = append_and_persist_guest_result_storage_transition(journal_root, &in_progress, GuestResultStorageEvent::PreserveForRecovery, false, false);
+            return Err(format!("{error} The result disk has been preserved for recovery; no automatic retry will occur."));
+        }
+    };
+    let formatted_journal = append_and_persist_guest_result_storage_transition(
         journal_root, &in_progress, GuestResultStorageEvent::CompleteNtfsFormat, true, false,
-    )
+    )?;
+    Ok((formatted_journal, volume_path))
 }
 
 #[cfg(test)]
@@ -4711,14 +4716,36 @@ mod tests {
             validate_guest_result_storage_journal(&partitioned_journal).unwrap(),
             GuestResultStorageState::Partitioned,
         );
-        let formatted_journal = format_guest_result_ntfs(
+        let (formatted_journal, volume_path) = format_guest_result_ntfs(
             &attached, &plan, &root, &journal_root, &partitioned_journal,
         ).unwrap();
         assert_eq!(
             validate_guest_result_storage_journal(&formatted_journal).unwrap(),
             GuestResultStorageState::Formatted,
         );
+        assert!(valid_windows_volume_guid_path(&volume_path));
+
+        let mount_directory = reserve_guest_result_host_mount_directory(&plan, &root).unwrap();
+        let mounted_journal = mount_guest_result_volume_journaled(
+            &plan, &root, &journal_root, &formatted_journal, &volume_path,
+        ).unwrap();
+        assert_eq!(
+            validate_guest_result_storage_journal(&mounted_journal).unwrap(),
+            GuestResultStorageState::Mounted,
+        );
+        verify_guest_result_volume_mount(&plan, &root, &volume_path).unwrap();
+        let marker = mount_directory.join("mount-roundtrip.txt");
+        fs::write(&marker, b"FRIDAY result volume mount verification").unwrap();
+        assert_eq!(fs::read(&marker).unwrap(), b"FRIDAY result volume mount verification");
+        fs::remove_file(&marker).unwrap();
+        unmount_guest_result_volume_from_private_directory(&plan, &root, &volume_path).unwrap();
+        let mount_path = format!("{}\\", mount_directory.to_string_lossy().trim_end_matches(['\\', '/']));
+        let mount_wide = windows_wide_null(&mount_path).unwrap();
+        let mut observed_volume = [0u16; 1024];
+        assert_eq!(unsafe { GetVolumeNameForVolumeMountPointW(mount_wide.as_ptr(), observed_volume.as_mut_ptr(), observed_volume.len() as u32) }, 0);
         attached.detach().unwrap();
+        assert!(mount_directory.is_dir());
+        assert_eq!(fs::read_dir(&mount_directory).unwrap().count(), 0);
 
         assert!(create_guest_result_vhdx(&plan, &root).is_err(),
             "a pre-existing result VHDX must never be replaced");

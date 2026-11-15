@@ -1609,9 +1609,11 @@ before the operation; any error preserves the result disk for recovery and
 blocks automatic retry.
 
 The native Windows integration test now exercises VHDX creation, attachment,
-GPT initialization, NTFS formatting, read-back verification, and detachment.
-This step does not create a host directory mount point, share the volume with
-Windows Sandbox, launch a Sandbox session, or execute guest code. Physical
+GPT initialization, NTFS formatting, read-back verification, private host
+mount-point reservation, journaled volume mounting, exact volume-GUID mapping
+read-back, a bounded write/read/delete round trip on the mounted NTFS volume,
+explicit unmount verification, and detachment. The test does not share the
+volume with Windows Sandbox, launch a Sandbox session, or execute guest code. Physical
 Windows acceptance remains required, and guest execution remains disabled.
 
 
