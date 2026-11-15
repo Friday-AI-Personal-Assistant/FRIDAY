@@ -7352,4 +7352,43 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert_eq!(store.lock().unwrap().pending_count(), 0);
     }
 
+
+    #[test]
+    fn approval_store_rejects_every_mutated_execution_plan_field() {
+        let original = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+
+        let mut mutations = Vec::new();
+
+        let mut changed_duration = original.clone();
+        changed_duration.max_duration += Duration::from_millis(1);
+        mutations.push(changed_duration);
+
+        let mut changed_output_limit = original.clone();
+        changed_output_limit.max_output_bytes += 1;
+        mutations.push(changed_output_limit);
+
+        let mut changed_operation = original.clone();
+        changed_operation.operation = GuestRunOperation::PythonUnittest;
+        changed_operation.command = guest_operation_command(changed_operation.operation);
+        mutations.push(changed_operation);
+
+        let mut changed_command = original.clone();
+        changed_command.command = GuestOperationCommand {
+            program: "cmd.exe",
+            arguments: &["/c", "whoami"],
+        };
+        mutations.push(changed_command);
+
+        for mutated_plan in mutations {
+            let mut store = GuestRunApprovalStore::default();
+            let token = store.issue(&original, 1_000).unwrap();
+
+            assert!(store.consume(&mutated_plan, &token, 1_001).is_err());
+            assert_eq!(store.pending_count(), 0);
+            assert!(store.consume(&original, &token, 1_002).is_err());
+        }
+    }
+
 }

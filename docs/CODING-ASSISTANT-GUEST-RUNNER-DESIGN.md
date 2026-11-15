@@ -1981,3 +1981,16 @@ that no pending grant remains afterward.
 
 This is authorization-store concurrency coverage only. It does not launch
 Windows Sandbox, execute a guest command, or enable guest execution.
+
+
+## Exact execution-plan mutation matrix — regression coverage
+
+Approval-store tests now mutate each security-relevant execution-plan field
+independently after a grant is issued: the time limit, output limit, typed
+operation, and fixed executable/argument contract. Each altered plan must be
+rejected, and the failed consume attempt must permanently remove the pending
+grant so that retrying with the original plan and token also fails.
+
+This supplements the existing run/snapshot mismatch tests and the concurrent
+single-consumer test. It remains authorization-only coverage: no Sandbox
+process is started and no guest command is executed.
