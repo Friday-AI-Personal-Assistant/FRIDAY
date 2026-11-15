@@ -1539,3 +1539,28 @@ VHDX ID. A mismatch still fails closed; no identity comparison has been
 weakened. Windows-native CI must confirm the corrected query across creation,
 attachment, GPT initialization, read-back, and detachment. Guest execution
 remains disabled.
+
+
+## Windows storage-stack GPT partition-layout verification — 2026-11-15
+
+After writing and independently reading back the protective MBR, both GPT
+headers, and both partition arrays, FRIDAY now asks Windows' storage stack for
+the attached result disk's `DRIVE_LAYOUT_INFORMATION_EX` using
+`IOCTL_DISK_GET_DRIVE_LAYOUT_EX`. The bounded response must report GPT style,
+exactly one partition, the expected per-run disk GUID, the expected usable
+range, and a single partition with the exact Microsoft Basic Data type GUID,
+per-run partition GUID, byte offsets/length, partition number, zero attributes,
+and `FRIDAY_RESULTS` label. Any truncated, malformed, substituted, or
+additional partition layout fails closed and leaves the result disk in its
+recovery state.
+
+A platform-independent byte-layout validator has regression coverage for the
+valid Windows ABI response and rejects extra partitions, changed offsets,
+changed partition identity, and truncated output. The native Windows VHDX
+integration path now requires this Windows-reported layout check after GPT
+read-back and before the journal can advance to `Partitioned`.
+
+This is independent read-only verification; it does not format NTFS, assign a
+drive letter, mount a volume, expose a share, or launch guest code. Windows CI
+must validate the real storage-stack response, and physical Windows acceptance
+remains required before enabling guest execution.

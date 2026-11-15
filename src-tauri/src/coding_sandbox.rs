@@ -2801,6 +2801,36 @@ impl OwnedRawGuestDisk {
         Ok(owned)
     }
 
+    fn verify_windows_partition_layout(
+        &self,
+        plan: &GuestResultPartitionPlan,
+        metadata: &GuestResultGptMetadata,
+    ) -> Result<(), String> {
+        const IOCTL_DISK_GET_DRIVE_LAYOUT_EX: u32 = 0x0007_0050;
+        let mut output = vec![0u64; 8192];
+        let mut returned = 0u32;
+        let ok = unsafe {
+            DeviceIoControl(
+                self.0,
+                IOCTL_DISK_GET_DRIVE_LAYOUT_EX,
+                std::ptr::null(),
+                0,
+                output.as_mut_ptr() as *mut std::ffi::c_void,
+                (output.len() * std::mem::size_of::<u64>()) as u32,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err("Windows could not independently enumerate the result disk's partition layout.".into());
+        }
+        let returned = returned as usize;
+        let output_bytes = unsafe {
+            std::slice::from_raw_parts(output.as_ptr() as *const u8, output.len() * 8)
+        };
+        verify_guest_result_windows_partition_layout_bytes(output_bytes, returned, plan, metadata)
+    }
+
     fn verify_fixed_geometry(&self) -> Result<(), String> {
         const IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: u32 = 0x0007_00A0;
         let mut output = [0u64; 8];
@@ -2880,6 +2910,75 @@ fn verify_zero_region(disk: &OwnedRawGuestDisk, first_lba: u64, sector_count: u6
     Ok(())
 }
 
+
+const FRIDAY_DRIVE_LAYOUT_EX_HEADER_BYTES: usize = 48;
+const FRIDAY_PARTITION_INFORMATION_EX_BYTES: usize = 144;
+
+/// Validates the layout reported by Windows' storage stack, independently of
+/// the raw GPT-sector comparison. The byte offsets follow the documented
+/// DRIVE_LAYOUT_INFORMATION_EX / PARTITION_INFORMATION_EX ABI.
+fn verify_guest_result_windows_partition_layout_bytes(
+    bytes: &[u8],
+    returned_bytes: usize,
+    plan: &GuestResultPartitionPlan,
+    metadata: &GuestResultGptMetadata,
+) -> Result<(), String> {
+    let required = FRIDAY_DRIVE_LAYOUT_EX_HEADER_BYTES
+        .checked_add(FRIDAY_PARTITION_INFORMATION_EX_BYTES)
+        .ok_or_else(|| "The Windows partition-layout size overflowed.".to_string())?;
+    if returned_bytes > bytes.len() || returned_bytes < required {
+        return Err("Windows returned a truncated drive-layout structure.".into());
+    }
+    let data = &bytes[..returned_bytes];
+    let read_u32 = |offset: usize| -> Result<u32, String> {
+        let raw: [u8; 4] = data.get(offset..offset + 4)
+            .ok_or_else(|| "Windows returned a truncated partition-layout field.".to_string())?
+            .try_into().map_err(|_| "Windows returned an invalid partition-layout field.".to_string())?;
+        Ok(u32::from_le_bytes(raw))
+    };
+    let read_u64 = |offset: usize| -> Result<u64, String> {
+        let raw: [u8; 8] = data.get(offset..offset + 8)
+            .ok_or_else(|| "Windows returned a truncated partition-layout field.".to_string())?
+            .try_into().map_err(|_| "Windows returned an invalid partition-layout field.".to_string())?;
+        Ok(u64::from_le_bytes(raw))
+    };
+    if read_u32(0)? != 1 || read_u32(4)? != 1 {
+        return Err("Windows does not recognize exactly one GPT partition on the result disk.".into());
+    }
+    if data[8..24] != metadata.primary_header[56..72] {
+        return Err("Windows reported a GPT disk identifier different from FRIDAY's recorded layout.".into());
+    }
+    let expected_usable_start = 34u64.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+        .ok_or_else(|| "The GPT usable-range calculation overflowed.".to_string())?;
+    let total_sectors = plan.disk_capacity_bytes / GUEST_RESULT_GPT_SECTOR_BYTES;
+    let expected_usable_length = (total_sectors - 68)
+        .checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+        .ok_or_else(|| "The GPT usable-range calculation overflowed.".to_string())?;
+    if read_u64(24)? != expected_usable_start || read_u64(32)? != expected_usable_length || read_u32(40)? < 1 {
+        return Err("Windows reported an unexpected GPT usable range or partition capacity.".into());
+    }
+
+    let entry = FRIDAY_DRIVE_LAYOUT_EX_HEADER_BYTES;
+    if read_u32(entry)? != 1
+        || read_u64(entry + 8)? != plan.first_lba * GUEST_RESULT_GPT_SECTOR_BYTES
+        || read_u64(entry + 16)? != (plan.last_lba - plan.first_lba + 1) * GUEST_RESULT_GPT_SECTOR_BYTES
+        || read_u32(entry + 24)? != 1
+        || data[entry + 28] != 0
+        || data[entry + 80..entry + 96] != metadata.primary_entries[0..16]
+        || data[entry + 96..entry + 112] != metadata.primary_entries[16..32]
+        || read_u64(entry + 112)? != 0
+    {
+        return Err("Windows' partition entry differs from FRIDAY's exact partition type, identity, bounds, or attributes.".into());
+    }
+    let mut expected_name = [0u8; 72];
+    for (index, unit) in "FRIDAY_RESULTS".encode_utf16().enumerate() {
+        expected_name[index * 2..index * 2 + 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    if data[entry + 120..entry + 192] != expected_name {
+        return Err("Windows reported an unexpected result-partition label.".into());
+    }
+    Ok(())
+}
 
 fn verify_gpt_header_crc(header: &[u8]) -> bool {
     if header.len() < GUEST_RESULT_GPT_HEADER_BYTES {
@@ -2970,6 +3069,7 @@ fn initialize_guest_result_gpt(
         disk.flush()?;
         verify_guest_result_gpt_readback(&disk, &partition_plan, &metadata)?;
         disk.verify_fixed_geometry()?;
+        disk.verify_windows_partition_layout(&partition_plan, &metadata)?;
         if guest_vhdx_physical_path(attached.handle.0)? != attached.physical_path {
             return Err("The attached physical-device identity changed after GPT initialization.".into());
         }
@@ -3060,6 +3160,43 @@ mod tests {
             u64::from_le_bytes(metadata.backup_header[24..32].try_into().unwrap()),
             GUEST_RESULT_VOLUME_CAPACITY_BYTES / 512 - 1,
         );
+    }
+
+    #[test]
+    fn windows_partition_layout_parser_accepts_only_the_exact_single_gpt_partition() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_partition_plan(run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, 512).unwrap();
+        let metadata = build_guest_result_gpt_metadata(&plan).unwrap();
+        let mut bytes = vec![0u8; FRIDAY_DRIVE_LAYOUT_EX_HEADER_BYTES + FRIDAY_PARTITION_INFORMATION_EX_BYTES];
+        bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+        bytes[8..24].copy_from_slice(&metadata.primary_header[56..72]);
+        bytes[24..32].copy_from_slice(&(34u64 * 512).to_le_bytes());
+        let total_sectors = plan.disk_capacity_bytes / 512;
+        bytes[32..40].copy_from_slice(&((total_sectors - 68) * 512).to_le_bytes());
+        bytes[40..44].copy_from_slice(&128u32.to_le_bytes());
+        let entry = FRIDAY_DRIVE_LAYOUT_EX_HEADER_BYTES;
+        bytes[entry..entry + 4].copy_from_slice(&1u32.to_le_bytes());
+        bytes[entry + 8..entry + 16].copy_from_slice(&(plan.first_lba * 512).to_le_bytes());
+        bytes[entry + 16..entry + 24].copy_from_slice(&((plan.last_lba - plan.first_lba + 1) * 512).to_le_bytes());
+        bytes[entry + 24..entry + 28].copy_from_slice(&1u32.to_le_bytes());
+        bytes[entry + 80..entry + 96].copy_from_slice(&metadata.primary_entries[0..16]);
+        bytes[entry + 96..entry + 112].copy_from_slice(&metadata.primary_entries[16..32]);
+        for (index, unit) in "FRIDAY_RESULTS".encode_utf16().enumerate() {
+            bytes[entry + 120 + index * 2..entry + 122 + index * 2].copy_from_slice(&unit.to_le_bytes());
+        }
+        assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len(), &plan, &metadata).is_ok());
+
+        let mut altered = bytes.clone();
+        altered[4..8].copy_from_slice(&2u32.to_le_bytes());
+        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata).is_err());
+        let mut altered = bytes.clone();
+        altered[entry + 8..entry + 16].copy_from_slice(&0u64.to_le_bytes());
+        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata).is_err());
+        let mut altered = bytes.clone();
+        altered[entry + 96] ^= 0x80;
+        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata).is_err());
+        assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, 80, &plan, &metadata).is_err());
     }
 
     #[test]
