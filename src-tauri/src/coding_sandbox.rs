@@ -71,6 +71,31 @@ enum GuestRunOperation {
     PythonUnittest,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GuestOperationCommand {
+    program: &'static str,
+    arguments: &'static [&'static str],
+}
+
+/// Maps a typed operation to a fixed command contract. The guest request never
+/// carries an executable path, argument vector, shell fragment, or environment.
+fn guest_operation_command(operation: GuestRunOperation) -> GuestOperationCommand {
+    match operation {
+        GuestRunOperation::RustCargoTest => GuestOperationCommand {
+            program: "cargo",
+            arguments: &["test", "--locked", "--offline"],
+        },
+        GuestRunOperation::NodeNpmTest => GuestOperationCommand {
+            program: "npm",
+            arguments: &["test", "--", "--runInBand"],
+        },
+        GuestRunOperation::PythonUnittest => GuestOperationCommand {
+            program: "python",
+            arguments: &["-m", "unittest", "discover", "-v"],
+        },
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum GuestRunStatus {
@@ -4942,6 +4967,35 @@ mod tests {
             advance_guest_result_storage_state(S::GptWriteInProgress, E::PreserveForRecovery, false, false).unwrap(),
             S::RecoveryRequired,
         );
+    }
+
+    #[test]
+    fn guest_operation_commands_are_fixed_and_have_no_shell_or_user_arguments() {
+        let cases = [
+            (GuestRunOperation::RustCargoTest, "cargo", &["test", "--locked", "--offline"][..]),
+            (GuestRunOperation::NodeNpmTest, "npm", &["test", "--", "--runInBand"][..]),
+            (GuestRunOperation::PythonUnittest, "python", &["-m", "unittest", "discover", "-v"][..]),
+        ];
+        for (operation, expected_program, expected_arguments) in cases {
+            let plan = guest_operation_command(operation);
+            assert_eq!(plan.program, expected_program);
+            assert_eq!(plan.arguments, expected_arguments);
+            assert!(!plan.program.is_empty());
+            assert!(plan.arguments.iter().all(|argument| !argument.is_empty()));
+            assert!(!plan.arguments.iter().any(|argument| argument.contains(['&', '|', ';', '\\n', '\\r'])));
+        }
+    }
+
+    #[test]
+    fn guest_operation_contract_covers_every_deserializable_operation() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let plan = guest_operation_command(operation);
+            assert!(!plan.arguments.is_empty());
+        }
     }
 
     #[test]
