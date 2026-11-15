@@ -4982,7 +4982,13 @@ mod tests {
             assert_eq!(plan.arguments, expected_arguments);
             assert!(!plan.program.is_empty());
             assert!(plan.arguments.iter().all(|argument| !argument.is_empty()));
-            assert!(!plan.arguments.iter().any(|argument| argument.chars().any(|ch| matches!(ch, '&' | '|' | ';' | '\\n' | '\\r'))));
+            assert!(!plan.arguments.iter().any(|argument| {
+                argument.contains('&')
+                    || argument.contains('|')
+                    || argument.contains(';')
+                    || argument.contains('\n')
+                    || argument.contains('\r')
+            }));
         }
     }
 
