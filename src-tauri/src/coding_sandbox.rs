@@ -1854,20 +1854,28 @@ fn verify_guest_result_host_mount_directory_for_mount(
     plan: &GuestResultVolumePlan,
     trusted_storage_root: &Path,
 ) -> Result<PathBuf, String> {
-    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    let canonical_run_directory = verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    if plan.host_mount_directory != plan.run_directory.join("result-mount")
+        || plan.host_mount_directory.parent() != Some(plan.run_directory.as_path())
+        || plan.host_mount_directory.file_name() != Some(OsStr::new("result-mount"))
+    {
+        return Err("The result-volume mount path differs from FRIDAY's fixed per-run child.".into());
+    }
     let metadata = fs::symlink_metadata(&plan.host_mount_directory)
         .map_err(|_| "The private result-volume mount directory is unavailable.".to_string())?;
-    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
-        return Err("The result-volume mount directory was substituted or is not an ordinary directory.".into());
+    // A mounted Windows volume intentionally makes its mount-point directory a
+    // reparse point. Do not canonicalize the mount-point itself: Windows resolves
+    // that path into the mounted volume root. The exact volume-GUID read-back
+    // below is the authority that proves which volume occupies this fixed child.
+    if !metadata.is_dir() || !is_reparse_or_symlink(&metadata) {
+        return Err("The result-volume mount point is not the expected mounted directory.".into());
     }
-    let canonical = fs::canonicalize(&plan.host_mount_directory)
-        .map_err(|_| "The result-volume mount directory could not be verified.".to_string())?;
-    if canonical.parent() != Some(plan.run_directory.as_path())
-        || canonical.file_name() != Some(OsStr::new("result-mount"))
+    if fs::canonicalize(&plan.run_directory).map_err(|_| "The result-volume run directory could not be reverified.".to_string())?
+        != canonical_run_directory
     {
-        return Err("The result-volume mount directory failed its exact-child ownership check.".into());
+        return Err("The result-volume run directory changed while verifying its mount point.".into());
     }
-    Ok(canonical)
+    Ok(plan.host_mount_directory.clone())
 }
 
 /// Mounts only the verified NTFS volume GUID at FRIDAY's reserved private directory.
@@ -1881,7 +1889,8 @@ fn mount_guest_result_volume_at_private_directory(
     if !valid_windows_volume_guid_path(volume_path) {
         return Err("The formatted result volume GUID path is invalid; mounting was refused.".into());
     }
-    let mount_directory = verify_guest_result_host_mount_directory_for_mount(plan, trusted_storage_root)?;
+    // Before mounting, require the original empty, ordinary private directory.
+    let mount_directory = verify_guest_result_host_mount_directory(plan, trusted_storage_root)?;
     let mount_path = format!("{}\\", mount_directory.to_string_lossy().trim_end_matches(['\\', '/']));
     let mount_wide = windows_wide_null(&mount_path)?;
     let volume_wide = windows_wide_null(volume_path)?;
