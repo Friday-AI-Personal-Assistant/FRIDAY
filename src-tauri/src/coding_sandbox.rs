@@ -5320,11 +5320,12 @@ mod tests {
         other.run_id = "11111111111111111111111111111111".into();
         let mut store = GuestRunApprovalStore::default();
         store.issue(&plan, 1_000).unwrap();
-        store.issue(&other, 1_000).unwrap();
+        let other_token = store.issue(&other, 1_000).unwrap();
         assert!(store.revoke(&plan.run_id));
         assert!(!store.revoke(&plan.run_id));
         assert_eq!(store.pending_count(), 1);
-        assert!(store.consume(&other, &store.issue(&other, 1_001).unwrap(), 1_002).is_err());
+        assert!(store.consume(&other, &other_token, 1_001).is_ok());
+        assert_eq!(store.pending_count(), 0);
     }
 
 
