@@ -9,7 +9,7 @@ use std::{
     sync::Mutex,
     process::{Command, ExitStatus, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use rand::RngCore;
 use tauri::{AppHandle, Manager};
@@ -247,6 +247,58 @@ impl GuestRunApprovalStore {
 
 static GUEST_RUN_APPROVALS: Mutex<GuestRunApprovalStore> =
     Mutex::new(GuestRunApprovalStore { grants: BTreeMap::new() });
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuestRunApprovalReceipt {
+    token: String,
+    expires_at_unix_seconds: u64,
+}
+
+fn guest_run_now_unix_seconds() -> Result<u64, String> {
+    SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| "FRIDAY could not read a trustworthy system clock for guest approval.".into())
+}
+
+/// Called only after the user explicitly approves the exact guest-run review.
+/// The request is parsed again here; no command or path is accepted from the UI.
+#[tauri::command]
+fn issue_guest_run_execution_approval(request_json: String) -> Result<GuestRunApprovalReceipt, String> {
+    let request = parse_guest_run_request(request_json.as_bytes())?;
+    let plan = build_guest_run_execution_plan(request)?;
+    let now = guest_run_now_unix_seconds()?;
+    let token = {
+        let mut approvals = GUEST_RUN_APPROVALS.lock()
+            .map_err(|_| "FRIDAY's guest approval registry is unavailable; restart FRIDAY before retrying.".to_string())?;
+        approvals.issue(&plan, now)?
+    };
+    let expires_at_unix_seconds = now.checked_add(GUEST_RUN_APPROVAL_TTL_SECONDS)
+        .ok_or("FRIDAY could not establish a safe approval expiry.")?;
+    Ok(GuestRunApprovalReceipt { token, expires_at_unix_seconds })
+}
+
+/// Consumes the one-time approval for this exact request. This does not execute it.
+#[tauri::command]
+fn consume_guest_run_execution_approval(request_json: String, token: String) -> Result<(), String> {
+    let request = parse_guest_run_request(request_json.as_bytes())?;
+    let plan = build_guest_run_execution_plan(request)?;
+    let now = guest_run_now_unix_seconds()?;
+    let mut approvals = GUEST_RUN_APPROVALS.lock()
+        .map_err(|_| "FRIDAY's guest approval registry is unavailable; restart FRIDAY before retrying.".to_string())?;
+    approvals.consume(&plan, &token, now)
+}
+
+/// Cancels a pending approval. Run IDs are fixed-width hexadecimal identifiers.
+#[tauri::command]
+fn revoke_guest_run_execution_approval(run_id: String) -> Result<bool, String> {
+    if !valid_snapshot_id(&run_id) {
+        return Err("The guest run identifier is invalid.".into());
+    }
+    let mut approvals = GUEST_RUN_APPROVALS.lock()
+        .map_err(|_| "FRIDAY's guest approval registry is unavailable; restart FRIDAY before retrying.".to_string())?;
+    Ok(approvals.revoke(&run_id))
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
