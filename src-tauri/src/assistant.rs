@@ -626,10 +626,14 @@ mod tests {
             Message { role: "user".into(), content: "task".into() },
         ];
         assert!(validate_coding_chat_request(&too_large_system, "llama3.2:1b").is_err());
-        let too_large_total = vec![
+        let mut too_large_total = vec![
             Message { role: "system".into(), content: "instructions".into() },
-            Message { role: "user".into(), content: "x".repeat(MAX_CODING_TOTAL_MESSAGE_BYTES) },
         ];
+        too_large_total.extend((0..12).map(|_| Message {
+            role: "user".into(),
+            content: "x".repeat(MAX_MESSAGE_BYTES),
+        }));
+        assert!(validate_chat_request(&too_large_total, "llama3.2:1b").is_ok());
         assert!(validate_coding_chat_request(&too_large_total, "llama3.2:1b").is_err());
     }
 
