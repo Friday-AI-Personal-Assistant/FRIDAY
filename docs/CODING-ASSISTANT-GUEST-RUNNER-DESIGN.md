@@ -1613,3 +1613,27 @@ GPT initialization, NTFS formatting, read-back verification, and detachment.
 This step does not create a host directory mount point, share the volume with
 Windows Sandbox, launch a Sandbox session, or execute guest code. Physical
 Windows acceptance remains required, and guest execution remains disabled.
+
+
+## Native private result-volume mount-point primitives — 2026-11-15
+
+The Windows host now has narrowly scoped native mount-point primitives for the
+per-run result volume. They accept only a syntactically valid Windows volume
+GUID path and FRIDAY's exact reserved `result-mount` directory beneath the
+verified per-run storage directory. The mount operation refuses an existing
+mapping, calls `SetVolumeMountPointW`, then reads the mapping back with
+`GetVolumeNameForVolumeMountPointW` and requires an exact case-insensitive
+volume-GUID match. If read-back fails, it attempts to remove only the mount
+point it just created; if that cleanup cannot be confirmed, it reports a
+recovery-required error.
+
+The unmount primitive first verifies that the exact private directory maps to
+the expected volume GUID, calls `DeleteVolumeMountPointW`, and confirms that
+the directory no longer resolves to a mounted volume. The mount directory is
+not recursively deleted by either operation.
+
+These are native API primitives only. They are not yet connected to the
+journaled production lifecycle or Sandbox folder mapping, and no guest process
+is launched. The current Windows CI test coverage must still exercise actual
+mount/unmount behavior and physical Windows acceptance remains mandatory.
+Guest execution remains disabled.

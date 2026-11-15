@@ -1233,6 +1233,9 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    fn SetVolumeMountPointW(volume_mount_point: *const u16, volume_name: *const u16) -> i32;
+    fn GetVolumeNameForVolumeMountPointW(volume_mount_point: *const u16, volume_name: *mut u16, buffer_length: u32) -> i32;
+    fn DeleteVolumeMountPointW(volume_mount_point: *const u16) -> i32;
 }
 
 #[cfg(windows)]
@@ -1804,6 +1807,132 @@ fn verify_guest_result_volume_directory(
         return Err("Result-volume ownership evidence does not match this FRIDAY run.".into());
     }
     Ok(canonical)
+}
+
+
+/// Validates the canonical Windows volume-GUID path returned by the storage stack.
+fn valid_windows_volume_guid_path(path: &str) -> bool {
+    const PREFIX: &str = r"\\?\Volume{";
+    if !path.starts_with(PREFIX) || !path.ends_with(r"}\") {
+        return false;
+    }
+    parse_canonical_guid_bytes(&path[PREFIX.len()..path.len() - 2]).is_ok()
+}
+
+#[cfg(windows)]
+fn windows_wide_null(value: &str) -> Result<Vec<u16>, String> {
+    if value.is_empty() || value.contains('\0') {
+        return Err("A Windows volume path was empty or contained a null character.".into());
+    }
+    use std::os::windows::ffi::OsStrExt;
+    Ok(std::ffi::OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect())
+}
+
+#[cfg(windows)]
+fn verify_guest_result_volume_mount(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    expected_volume_path: &str,
+) -> Result<(), String> {
+    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    if !valid_windows_volume_guid_path(expected_volume_path) {
+        return Err("The result volume GUID path is malformed; mounting was refused.".into());
+    }
+    let mount_directory = verify_guest_result_host_mount_directory_for_mount(plan, trusted_storage_root)?;
+    let mount_path = format!("{}\\", mount_directory.to_string_lossy().trim_end_matches(['\\', '/']));
+    let mount_wide = windows_wide_null(&mount_path)?;
+    let mut observed = [0u16; 1024];
+    let ok = unsafe {
+        GetVolumeNameForVolumeMountPointW(mount_wide.as_ptr(), observed.as_mut_ptr(), observed.len() as u32)
+    };
+    if ok == 0 {
+        return Err("Windows could not verify the result-volume mount point.".into());
+    }
+    let end = observed.iter().position(|unit| *unit == 0)
+        .ok_or_else(|| "Windows returned an unterminated mounted-volume identity.".to_string())?;
+    let observed_path = String::from_utf16(&observed[..end])
+        .map_err(|_| "Windows returned an invalid mounted-volume identity.".to_string())?;
+    if !observed_path.eq_ignore_ascii_case(expected_volume_path) {
+        return Err("The host mount directory resolves to a different volume than FRIDAY's formatted result volume.".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn verify_guest_result_host_mount_directory_for_mount(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<PathBuf, String> {
+    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    let metadata = fs::symlink_metadata(&plan.host_mount_directory)
+        .map_err(|_| "The private result-volume mount directory is unavailable.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("The result-volume mount directory was substituted or is not an ordinary directory.".into());
+    }
+    let canonical = fs::canonicalize(&plan.host_mount_directory)
+        .map_err(|_| "The result-volume mount directory could not be verified.".to_string())?;
+    if canonical.parent() != Some(plan.run_directory.as_path())
+        || canonical.file_name() != Some(OsStr::new("result-mount"))
+    {
+        return Err("The result-volume mount directory failed its exact-child ownership check.".into());
+    }
+    Ok(canonical)
+}
+
+/// Mounts only the verified NTFS volume GUID at FRIDAY's reserved private directory.
+/// This primitive is not wired to guest execution or Sandbox folder sharing.
+#[cfg(windows)]
+fn mount_guest_result_volume_at_private_directory(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    volume_path: &str,
+) -> Result<(), String> {
+    if !valid_windows_volume_guid_path(volume_path) {
+        return Err("The formatted result volume GUID path is invalid; mounting was refused.".into());
+    }
+    let mount_directory = verify_guest_result_host_mount_directory_for_mount(plan, trusted_storage_root)?;
+    let mount_path = format!("{}\\", mount_directory.to_string_lossy().trim_end_matches(['\\', '/']));
+    let mount_wide = windows_wide_null(&mount_path)?;
+    let volume_wide = windows_wide_null(volume_path)?;
+    // Refuse an already-mounted path rather than replacing or stacking a mapping.
+    let mut existing = [0u16; 1024];
+    if unsafe { GetVolumeNameForVolumeMountPointW(mount_wide.as_ptr(), existing.as_mut_ptr(), existing.len() as u32) } != 0 {
+        return Err("The private result-volume mount directory is already a mount point; reuse is refused.".into());
+    }
+    if unsafe { SetVolumeMountPointW(mount_wide.as_ptr(), volume_wide.as_ptr()) } == 0 {
+        return Err("Windows refused to mount the verified result volume at FRIDAY's private directory.".into());
+    }
+    if let Err(error) = verify_guest_result_volume_mount(plan, trusted_storage_root, volume_path) {
+        // Undo only the exact mount point FRIDAY just created. If cleanup cannot be
+        // verified, preserve the directory and surface the ambiguity to recovery.
+        if unsafe { DeleteVolumeMountPointW(mount_wide.as_ptr()) } == 0 {
+            return Err(format!("{error} Windows could not revoke the unverified mount; the result volume requires recovery."));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Removes only FRIDAY's exact private directory mount and confirms it is no longer mapped.
+#[cfg(windows)]
+fn unmount_guest_result_volume_from_private_directory(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    expected_volume_path: &str,
+) -> Result<(), String> {
+    verify_guest_result_volume_mount(plan, trusted_storage_root, expected_volume_path)?;
+    let mount_directory = verify_guest_result_volume_directory(plan, trusted_storage_root)?
+        .join("result-mount");
+    let mount_path = format!("{}\\", mount_directory.to_string_lossy().trim_end_matches(['\\', '/']));
+    let mount_wide = windows_wide_null(&mount_path)?;
+    if unsafe { DeleteVolumeMountPointW(mount_wide.as_ptr()) } == 0 {
+        return Err("Windows refused to unmount FRIDAY's verified private result-volume directory.".into());
+    }
+    let mut observed = [0u16; 1024];
+    if unsafe { GetVolumeNameForVolumeMountPointW(mount_wide.as_ptr(), observed.as_mut_ptr(), observed.len() as u32) } != 0 {
+        return Err("Windows still reports a volume mounted at FRIDAY's private result directory; recovery is required.".into());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
