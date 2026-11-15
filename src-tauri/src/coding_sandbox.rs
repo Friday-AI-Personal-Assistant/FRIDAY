@@ -7231,4 +7231,70 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         }
     }
 
+
+    fn unique_guest_run_request_json() -> (String, String) {
+        let mut random = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut random);
+        let run_id = random.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&valid_guest_request_json()).unwrap();
+        value["runId"] = serde_json::json!(run_id);
+        (run_id, serde_json::to_string(&value).unwrap())
+    }
+
+    #[test]
+    fn guest_approval_commands_issue_serializable_receipt_and_consume_once() {
+        let (_run_id, request_json) = unique_guest_run_request_json();
+        let receipt = issue_guest_run_execution_approval(request_json.clone()).unwrap();
+        assert_eq!(receipt.token.len(), 48);
+        assert!(receipt.token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(receipt.expires_at_unix_seconds > guest_run_now_unix_seconds().unwrap());
+
+        let serialized = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(serialized["token"], receipt.token);
+        assert_eq!(
+            serialized["expiresAtUnixSeconds"],
+            serde_json::json!(receipt.expires_at_unix_seconds),
+        );
+        assert!(serialized.get("expires_at_unix_seconds").is_none());
+
+        assert!(consume_guest_run_execution_approval(
+            request_json.clone(), receipt.token.clone(),
+        ).is_ok());
+        assert!(consume_guest_run_execution_approval(
+            request_json, receipt.token,
+        ).is_err());
+    }
+
+    #[test]
+    fn guest_approval_commands_reject_mismatch_revoke_and_malformed_requests() {
+        let (run_id, request_json) = unique_guest_run_request_json();
+        let receipt = issue_guest_run_execution_approval(request_json.clone()).unwrap();
+
+        let mut changed: serde_json::Value =
+            serde_json::from_str(&request_json).unwrap();
+        changed["snapshotId"] = serde_json::json!("11111111111111111111111111111111");
+        let changed_request = serde_json::to_string(&changed).unwrap();
+        assert!(consume_guest_run_execution_approval(
+            changed_request, receipt.token.clone(),
+        ).is_err());
+        assert!(consume_guest_run_execution_approval(
+            request_json, receipt.token,
+        ).is_err());
+
+        let (revoked_run_id, revoked_request) = unique_guest_run_request_json();
+        let revoked = issue_guest_run_execution_approval(revoked_request.clone()).unwrap();
+        assert!(revoke_guest_run_execution_approval(revoked_run_id.clone()).unwrap());
+        assert!(!revoke_guest_run_execution_approval(revoked_run_id).unwrap());
+        assert!(consume_guest_run_execution_approval(
+            revoked_request, revoked.token,
+        ).is_err());
+
+        assert!(issue_guest_run_execution_approval(
+            "{\\"schemaVersion\\":1,\\"unexpected\\":true}".to_string(),
+        ).is_err());
+        assert!(revoke_guest_run_execution_approval("not-a-run-id".to_string()).is_err());
+        assert!(revoke_guest_run_execution_approval(run_id).is_ok());
+    }
+
 }

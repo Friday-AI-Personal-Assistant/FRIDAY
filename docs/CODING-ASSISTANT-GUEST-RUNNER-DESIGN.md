@@ -1942,3 +1942,20 @@ Regression tests cover exact match, absent ownership proof, PID reuse, PID subst
 ## Native Windows Sandbox process re-observation — implemented, not yet wired to stop
 
 The Windows-only process observer opens only the recorded PID with limited query rights, reads the process creation FILETIME and full executable image path through kernel32, and closes the process handle with RAII. It obtains the trusted system directory directly from GetSystemDirectoryW (not the mutable SystemRoot environment variable) and accepts only the exact WindowsSandbox.exe path in that directory. A stop re-observation wrapper compares the live identity tuple to the durable journal and still requires an independent authoritative ownership proof. It does not enumerate processes, establish causal launch ownership, invoke wsb stop, or enable guest execution. The pure path policy is covered by cross-platform regression tests; native API behavior requires Windows CI and later physical Windows acceptance.
+
+
+## Public approval command contract tests — implemented, authorization only
+
+The three Tauri approval commands now have direct command-surface regression
+coverage in addition to the underlying store and token unit tests. The tests
+call the registered command functions with serialized request payloads and
+verify that issuance returns a 48-character hexadecimal token and a
+camelCase-serialized expiry receipt; the exact request consumes the token
+once; replay is rejected; changing the snapshot invalidates the pending
+approval; revocation succeeds only once; malformed requests and invalid run
+identifiers are rejected.
+
+These tests exercise the public host command boundary, not a UI workflow or
+guest execution. Approval issuance remains a capability grant only: consuming
+it does not launch a process, start Windows Sandbox, or authorize any
+unreviewed command. No guest execution has been enabled.
