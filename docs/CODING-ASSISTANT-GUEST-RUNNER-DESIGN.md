@@ -1968,3 +1968,16 @@ approval-token submissions are terminal consume attempts. A failed token attempt
 removes the pending grant; retrying with the genuine token must also fail. This
 preserves the registry's fail-closed, no-probing, no-replay behavior. These tests
 do not launch Windows Sandbox or execute guest code.
+
+
+## Concurrent approval consumption — regression coverage
+
+The in-memory approval registry is protected by one host mutex, and each
+consume attempt removes the run's pending grant before validating it. A
+concurrency regression now starts eight consumers together with the same
+valid run plan and token. Exactly one consumer may succeed; all competing
+attempts observe that the grant has already been removed. The test verifies
+that no pending grant remains afterward.
+
+This is authorization-store concurrency coverage only. It does not launch
+Windows Sandbox, execute a guest command, or enable guest execution.

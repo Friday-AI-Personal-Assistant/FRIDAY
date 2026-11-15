@@ -7322,4 +7322,33 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert!(revoke_guest_run_execution_approval(run_id).is_ok());
     }
 
+
+    #[test]
+    fn approval_store_allows_exactly_one_concurrent_consumer() {
+        let plan = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let mut initial_store = GuestRunApprovalStore::default();
+        let token = initial_store.issue(&plan, 1_000).unwrap();
+        let store = std::sync::Arc::new(Mutex::new(initial_store));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+
+        let workers = (0..8).map(|_| {
+            let store = std::sync::Arc::clone(&store);
+            let start = std::sync::Arc::clone(&start);
+            let plan = plan.clone();
+            let token = token.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                store.lock().unwrap().consume(&plan, &token, 1_001).is_ok()
+            })
+        }).collect::<Vec<_>>();
+
+        let successful_consumers = workers.into_iter()
+            .filter(|worker| worker.join().unwrap())
+            .count();
+        assert_eq!(successful_consumers, 1);
+        assert_eq!(store.lock().unwrap().pending_count(), 0);
+    }
+
 }
