@@ -2201,6 +2201,34 @@ struct WindowsSandboxCliListEntry {
     extra: BTreeMap<String, serde_json::Value>,
 }
 
+#[cfg(windows)]
+fn query_windows_sandbox_cli_inventory(
+    executable_path: &str,
+) -> Result<Vec<WindowsSandboxCliSession>, String> {
+    // This is deliberately read-only: it never starts or stops a Sandbox.
+    let run_id = "00000000000000000000000000000000";
+    let plan = build_windows_sandbox_cli_plan(
+        executable_path, run_id, WindowsSandboxCliCommand::List, None,
+    )?;
+    validate_windows_sandbox_cli_plan(
+        &plan, executable_path, run_id, WindowsSandboxCliCommand::List, None,
+    )?;
+
+    // Invoke the resolved executable directly with the fixed argument vector.
+    // No shell, command string, user-provided arguments, or inherited stdin.
+    let mut command = Command::new(&plan.executable_path);
+    command.args(&plan.arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let (status, stdout) = run_bounded_probe(command)?;
+    if !status.success() {
+        return Err("The Windows Sandbox CLI inventory command failed; session state is unverified.".into());
+    }
+    parse_windows_sandbox_cli_list(&stdout)
+}
+
 fn parse_windows_sandbox_cli_list(bytes: &[u8]) -> Result<Vec<WindowsSandboxCliSession>, String> {
     if bytes.is_empty() || bytes.len() > MAX_WINDOWS_SANDBOX_CLI_OUTPUT_BYTES {
         return Err("The Windows Sandbox CLI inventory is empty or exceeds its fixed output limit.".into());

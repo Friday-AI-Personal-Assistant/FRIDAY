@@ -1843,3 +1843,18 @@ leaving the child blocked on a full pipe.
 
 Tests cover exact-limit output, oversized output, and zero-capacity draining.
 This does not invoke the Windows Sandbox CLI or launch a guest process.
+
+
+## Read-only Windows Sandbox CLI inventory invocation — implemented
+
+FRIDAY now has a Windows-only inventory query that validates the exact fixed
+`wsb.exe list --raw` plan, invokes the resolved executable directly (without
+a shell or inherited stdin), captures stdout and stderr through the bounded
+pipe-draining runner, enforces its existing timeout, rejects non-zero exit
+status, and parses only the strict supported inventory schema.
+
+This operation is read-only: it does not start, stop, adopt, or modify any
+Sandbox session. The returned inventory is not yet connected to the launch
+transaction or durable ownership journal. A later launch integration must
+obtain a fresh inventory immediately before requesting launch and apply the
+empty-inventory gate; guest execution remains disabled.
