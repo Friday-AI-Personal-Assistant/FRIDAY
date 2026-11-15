@@ -250,7 +250,7 @@ static GUEST_RUN_APPROVALS: Mutex<GuestRunApprovalStore> =
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GuestRunApprovalReceipt {
+pub struct GuestRunApprovalReceipt {
     token: String,
     expires_at_unix_seconds: u64,
 }
