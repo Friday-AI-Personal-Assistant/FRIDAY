@@ -1280,9 +1280,30 @@ extern "system" {
 }
 
 #[cfg(windows)]
+#[repr(C)]
+struct FridayFileTime { low: u32, high: u32 }
+
+#[cfg(windows)]
+struct OwnedObservedProcessHandle(*mut std::ffi::c_void);
+
+#[cfg(windows)]
+impl Drop for OwnedObservedProcessHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { CloseHandle(self.0); }
+            self.0 = std::ptr::null_mut();
+        }
+    }
+}
+
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut std::ffi::c_void;
+    fn GetProcessTimes(process: *mut std::ffi::c_void, creation_time: *mut FridayFileTime, exit_time: *mut FridayFileTime, kernel_time: *mut FridayFileTime, user_time: *mut FridayFileTime) -> i32;
+    fn QueryFullProcessImageNameW(process: *mut std::ffi::c_void, flags: u32, image_name: *mut u16, size: *mut u32) -> i32;
+    fn GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32;
     fn SetVolumeMountPointW(volume_mount_point: *const u16, volume_name: *const u16) -> i32;
     fn GetVolumeNameForVolumeMountPointW(volume_mount_point: *const u16, volume_name: *mut u16, buffer_length: u32) -> i32;
     fn DeleteVolumeMountPointW(volume_mount_point: *const u16) -> i32;
@@ -2669,6 +2690,74 @@ fn validate_sandbox_session_journal(
         }
     }
     Ok(state)
+}
+
+#[cfg(windows)]
+fn observe_windows_sandbox_process_identity(process_id: u32, run_id: &str) -> Result<SandboxProcessIdentity, String> {
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    if !valid_snapshot_id(run_id) || process_id <= 4 {
+        return Err("The Sandbox process observation request is invalid.".into());
+    }
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    if raw.is_null() {
+        return Err("Windows could not open the recorded Sandbox process for limited identity inspection.".into());
+    }
+    let _process = OwnedObservedProcessHandle(raw);
+    let mut creation = FridayFileTime { low: 0, high: 0 };
+    let mut exit = FridayFileTime { low: 0, high: 0 };
+    let mut kernel = FridayFileTime { low: 0, high: 0 };
+    let mut user = FridayFileTime { low: 0, high: 0 };
+    if unsafe { GetProcessTimes(raw, &mut creation, &mut exit, &mut kernel, &mut user) } == 0 {
+        return Err("Windows could not verify the recorded Sandbox process creation time.".into());
+    }
+    let creation_time = ((creation.high as u64) << 32) | creation.low as u64;
+    if creation_time == 0 { return Err("Windows returned an invalid Sandbox process creation time.".into()); }
+
+    let mut image_buffer = vec![0u16; 32_768];
+    let mut image_length = image_buffer.len() as u32;
+    if unsafe { QueryFullProcessImageNameW(raw, 0, image_buffer.as_mut_ptr(), &mut image_length) } == 0
+        || image_length == 0 || image_length as usize > image_buffer.len()
+    {
+        return Err("Windows could not verify the recorded Sandbox executable path.".into());
+    }
+    image_buffer.truncate(image_length as usize);
+    let image_path = String::from_utf16(&image_buffer)
+        .map_err(|_| "Windows returned an invalid Sandbox executable path.".to_string())?;
+
+    let mut system_buffer = vec![0u16; 32_768];
+    let system_length = unsafe { GetSystemDirectoryW(system_buffer.as_mut_ptr(), system_buffer.len() as u32) };
+    if system_length == 0 || system_length as usize >= system_buffer.len() {
+        return Err("Windows could not establish its system directory for Sandbox identity verification.".into());
+    }
+    system_buffer.truncate(system_length as usize);
+    let system_directory = String::from_utf16(&system_buffer)
+        .map_err(|_| "Windows returned an invalid system directory.".to_string())?;
+    if !windows_sandbox_image_path_in_system_directory(&image_path, &system_directory) {
+        return Err("The observed process image is not the Windows system-directory Sandbox executable.".into());
+    }
+    let identity = SandboxProcessIdentity {
+        session_id: run_id.to_string(), process_id, process_creation_time: creation_time, image_path,
+    };
+    validate_sandbox_process_identity(&identity)?;
+    Ok(identity)
+}
+
+fn windows_sandbox_image_path_in_system_directory(image_path: &str, system_directory: &str) -> bool {
+    let normalize = |value: &str| value.replace('/', "\\").trim_end_matches('\\').to_ascii_lowercase();
+    normalize(image_path) == format!("{}\\windowsandbox.exe", normalize(system_directory))
+}
+
+#[cfg(windows)]
+fn reobserve_windows_sandbox_process_for_stop(journal: &SandboxSessionJournal, ownership_verified: bool) -> Result<(), String> {
+    if validate_sandbox_session_journal(journal)? != SandboxSessionState::Running {
+        return Err("The Sandbox journal is not in the Running state.".into());
+    }
+    let recorded = journal.entries.iter().rev()
+        .find(|entry| entry.event == SandboxSessionEvent::ObserveProcess)
+        .and_then(|entry| entry.observed_identity.as_ref())
+        .ok_or_else(|| "The Sandbox journal has no recorded process identity.".to_string())?;
+    let observed = observe_windows_sandbox_process_identity(recorded.process_id, &journal.run_id)?;
+    verify_reobserved_sandbox_process_for_stop(journal, &observed, ownership_verified)
 }
 
 /// Require a fresh native process observation to match the exact identity
@@ -6414,6 +6503,20 @@ mod tests {
 
     #[test]
         #[test]
+    #[test]
+    fn windows_sandbox_image_path_must_be_exact_system_directory_image() {
+        assert!(windows_sandbox_image_path_in_system_directory(
+            r"C:\Windows\System32\WindowsSandbox.exe", r"C:\Windows\System32"));
+        assert!(windows_sandbox_image_path_in_system_directory(
+            r"c:/windows/system32/WindowsSandbox.exe", r"C:/Windows/System32/"));
+        assert!(!windows_sandbox_image_path_in_system_directory(
+            r"C:\Temp\WindowsSandbox.exe", r"C:\Windows\System32"));
+        assert!(!windows_sandbox_image_path_in_system_directory(
+            r"C:\Windows\System32\Other.exe", r"C:\Windows\System32"));
+        assert!(!windows_sandbox_image_path_in_system_directory(
+            r"C:\Windows\System32\..\Temp\WindowsSandbox.exe", r"C:\Windows\System32"));
+    }
+
     fn sandbox_stop_reobservation_requires_exact_identity_and_authoritative_ownership() {
         let run_id = "0123456789abcdef0123456789abcdef";
         let identity = SandboxProcessIdentity {
