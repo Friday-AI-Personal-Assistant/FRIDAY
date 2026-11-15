@@ -10,6 +10,9 @@ const MAX_TOTAL_MESSAGE_BYTES: usize = 250_000;
 const MAX_MESSAGES: usize = 50;
 const MAX_CODING_RESPONSE_BODY_BYTES: usize = 256 * 1024;
 const MAX_CODING_OUTPUT_BYTES: usize = 128 * 1024;
+const MAX_CODING_MESSAGES: usize = 50;
+const MAX_CODING_TOTAL_MESSAGE_BYTES: usize = 230_000;
+const MAX_CODING_SYSTEM_MESSAGE_BYTES: usize = 8_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Message {
@@ -61,6 +64,25 @@ fn validate_chat_request(messages: &[Message], model: &str) -> Result<(), String
         }
     }
 
+    Ok(())
+}
+
+
+fn validate_coding_chat_request(messages: &[Message], model: &str) -> Result<(), String> {
+    validate_chat_request(messages, model)?;
+    if messages.len() < 2
+        || messages.len() > MAX_CODING_MESSAGES
+        || messages.first().map_or(true, |message| message.role != "system")
+        || messages.last().map_or(true, |message| message.role != "user")
+        || messages.iter().skip(1).any(|message| message.role != "user")
+        || messages.first().is_some_and(|message| message.content.len() > MAX_CODING_SYSTEM_MESSAGE_BYTES)
+    {
+        return Err("The coding request must contain one bounded system instruction followed by project context and a final user task.".into());
+    }
+    let total = messages.iter().fold(0usize, |sum, message| sum.saturating_add(message.content.len()));
+    if total > MAX_CODING_TOTAL_MESSAGE_BYTES {
+        return Err("The selected project context and coding task exceed FRIDAY's dedicated coding-request size limit. Select fewer or smaller files.".into());
+    }
     Ok(())
 }
 
@@ -466,7 +488,7 @@ async fn read_bounded_ollama_body(
 
 #[tauri::command]
 pub async fn ollama_coding_chat(messages: Vec<Message>, model: String) -> Result<String, String> {
-    validate_chat_request(&messages, &model)?;
+    validate_coding_chat_request(&messages, &model)?;
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(240))
@@ -577,6 +599,38 @@ mod tests {
         }];
         assert!(validate_chat_request(&messages, "llama3.2:1b").is_err());
         assert!(validate_chat_request(&[], &"m".repeat(MAX_MODEL_NAME_BYTES + 1)).is_err());
+    }
+
+
+    #[test]
+    fn coding_chat_requires_system_context_and_a_final_user_task() {
+        let valid = vec![
+            Message { role: "system".into(), content: "coding instructions".into() },
+            Message { role: "user".into(), content: "selected source".into() },
+            Message { role: "user".into(), content: "implement a feature".into() },
+        ];
+        assert!(validate_coding_chat_request(&valid, "llama3.2:1b").is_ok());
+        let missing_system = vec![Message { role: "user".into(), content: "task".into() }];
+        assert!(validate_coding_chat_request(&missing_system, "llama3.2:1b").is_err());
+        let wrong_last_role = vec![
+            Message { role: "system".into(), content: "instructions".into() },
+            Message { role: "assistant".into(), content: "not accepted".into() },
+        ];
+        assert!(validate_coding_chat_request(&wrong_last_role, "llama3.2:1b").is_err());
+    }
+
+    #[test]
+    fn coding_chat_rejects_excessive_system_and_total_context() {
+        let too_large_system = vec![
+            Message { role: "system".into(), content: "x".repeat(MAX_CODING_SYSTEM_MESSAGE_BYTES + 1) },
+            Message { role: "user".into(), content: "task".into() },
+        ];
+        assert!(validate_coding_chat_request(&too_large_system, "llama3.2:1b").is_err());
+        let too_large_total = vec![
+            Message { role: "system".into(), content: "instructions".into() },
+            Message { role: "user".into(), content: "x".repeat(MAX_CODING_TOTAL_MESSAGE_BYTES) },
+        ];
+        assert!(validate_coding_chat_request(&too_large_total, "llama3.2:1b").is_err());
     }
 
     #[test]
