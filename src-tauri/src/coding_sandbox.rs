@@ -2005,6 +2005,183 @@ fn unmount_guest_result_volume_from_private_directory(
 
 const SANDBOX_EXECUTABLE_FILE_NAME: &str = "WindowsSandbox.exe";
 
+const WINDOWS_SANDBOX_CLI_FILE_NAME: &str = "wsb.exe";
+const MAX_WINDOWS_SANDBOX_CLI_OUTPUT_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsSandboxCliCommand {
+    Start,
+    List,
+    Stop,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowsSandboxCliPlan {
+    executable_path: String,
+    sandbox_id: String,
+    arguments: Vec<String>,
+}
+
+fn valid_windows_sandbox_cli_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23].iter().all(|index| bytes[*index] == b'-')
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            [8, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit()
+        })
+}
+
+fn windows_sandbox_cli_id_from_run_id(run_id: &str) -> Result<String, String> {
+    if !valid_snapshot_id(run_id) {
+        return Err("The FRIDAY run identifier cannot be converted to a Windows Sandbox session identifier.".into());
+    }
+    let id = format!(
+        "{}-{}-{}-{}-{}",
+        &run_id[0..8], &run_id[8..12], &run_id[12..16], &run_id[16..20], &run_id[20..32],
+    ).to_ascii_lowercase();
+    if !valid_windows_sandbox_cli_id(&id) {
+        return Err("The generated Windows Sandbox session identifier is invalid.".into());
+    }
+    Ok(id)
+}
+
+fn build_windows_sandbox_cli_plan(
+    executable_path: &str,
+    run_id: &str,
+    command: WindowsSandboxCliCommand,
+    config: Option<&str>,
+) -> Result<WindowsSandboxCliPlan, String> {
+    if !valid_absolute_windows_drive_path(executable_path)
+        || !Path::new(executable_path).file_name().and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(WINDOWS_SANDBOX_CLI_FILE_NAME))
+    {
+        return Err("The Windows Sandbox CLI must resolve to an absolute wsb.exe path.".into());
+    }
+    let sandbox_id = windows_sandbox_cli_id_from_run_id(run_id)?;
+    let arguments = match command {
+        WindowsSandboxCliCommand::Start => {
+            let config = config.ok_or_else(|| "The Windows Sandbox CLI start plan requires FRIDAY's validated configuration.".to_string())?;
+            if config.is_empty()
+                || config.len() > MAX_SANDBOX_CONFIG_BYTES
+                || config.contains('\0')
+                || validate_sandbox_config_with_result_policy(config).is_err()
+            {
+                return Err("The Windows Sandbox CLI start configuration is empty, oversized, or violates FRIDAY's exact isolation policy.".into());
+            }
+            vec![
+                "start".into(), "--raw".into(), "--id".into(), sandbox_id.clone(),
+                "--config".into(), config.to_string(),
+            ]
+        }
+        WindowsSandboxCliCommand::List => {
+            if config.is_some() {
+                return Err("A Windows Sandbox CLI list plan cannot contain configuration text.".into());
+            }
+            vec!["list".into(), "--raw".into()]
+        }
+        WindowsSandboxCliCommand::Stop => {
+            if config.is_some() {
+                return Err("A Windows Sandbox CLI stop plan cannot contain configuration text.".into());
+            }
+            vec!["stop".into(), "--raw".into(), "--id".into(), sandbox_id.clone()]
+        }
+    };
+    Ok(WindowsSandboxCliPlan {
+        executable_path: executable_path.to_string(),
+        sandbox_id,
+        arguments,
+    })
+}
+
+fn validate_windows_sandbox_cli_plan(
+    plan: &WindowsSandboxCliPlan,
+    executable_path: &str,
+    run_id: &str,
+    command: WindowsSandboxCliCommand,
+    config: Option<&str>,
+) -> Result<(), String> {
+    let expected = build_windows_sandbox_cli_plan(executable_path, run_id, command, config)?;
+    if plan != &expected {
+        return Err("The Windows Sandbox CLI plan differs from FRIDAY's fixed command, session-ID, or configuration policy.".into());
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsSandboxCliSessionStatus {
+    Running,
+    Stopped,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowsSandboxCliSession {
+    id: String,
+    status: WindowsSandboxCliSessionStatus,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct WindowsSandboxCliListResponse {
+    windows_sandbox_environments: Vec<WindowsSandboxCliListEntry>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct WindowsSandboxCliListEntry {
+    #[serde(rename = "Id")]
+    id: String,
+    #[serde(rename = "Status", alias = "State")]
+    status: String,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+fn parse_windows_sandbox_cli_list(bytes: &[u8]) -> Result<Vec<WindowsSandboxCliSession>, String> {
+    if bytes.is_empty() || bytes.len() > MAX_WINDOWS_SANDBOX_CLI_OUTPUT_BYTES {
+        return Err("The Windows Sandbox CLI inventory is empty or exceeds its fixed output limit.".into());
+    }
+    let response: WindowsSandboxCliListResponse = serde_json::from_slice(bytes)
+        .map_err(|_| "The Windows Sandbox CLI inventory is malformed or has an unsupported schema.".to_string())?;
+    if !response.extra.is_empty() {
+        return Err("The Windows Sandbox CLI inventory contains unsupported top-level fields.".into());
+    }
+    let mut sessions = Vec::with_capacity(response.windows_sandbox_environments.len());
+    for entry in response.windows_sandbox_environments {
+        if !entry.extra.is_empty() || !valid_windows_sandbox_cli_id(&entry.id) {
+            return Err("The Windows Sandbox CLI inventory contains an invalid or unsupported session record.".into());
+        }
+        let status = if entry.status.eq_ignore_ascii_case("running") {
+            WindowsSandboxCliSessionStatus::Running
+        } else if entry.status.eq_ignore_ascii_case("stopped") {
+            WindowsSandboxCliSessionStatus::Stopped
+        } else {
+            return Err("The Windows Sandbox CLI inventory contains an unknown session status.".into());
+        };
+        sessions.push(WindowsSandboxCliSession { id: entry.id.to_ascii_lowercase(), status });
+    }
+    sessions.sort_by(|left, right| left.id.cmp(&right.id));
+    if sessions.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        return Err("The Windows Sandbox CLI inventory contains duplicate session identifiers.".into());
+    }
+    Ok(sessions)
+}
+
+fn verify_windows_sandbox_cli_session(
+    sessions: &[WindowsSandboxCliSession],
+    expected_id: &str,
+    expected_status: WindowsSandboxCliSessionStatus,
+) -> Result<(), String> {
+    if !valid_windows_sandbox_cli_id(expected_id) {
+        return Err("The expected Windows Sandbox session identifier is invalid.".into());
+    }
+    match sessions.iter().find(|session| session.id.eq_ignore_ascii_case(expected_id)) {
+        Some(session) if session.status == expected_status => Ok(()),
+        _ => Err("The Windows Sandbox CLI did not report FRIDAY's exact session in the required state.".into()),
+    }
+}
+
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WindowsSandboxLaunchPlan {
     executable_path: String,
@@ -5790,6 +5967,147 @@ mod tests {
         ).unwrap();
         plan.partition_unique_guid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA".into();
         assert!(validate_guest_result_partition_plan(&plan, run_id).is_err());
+    }
+
+
+    #[test]
+    fn windows_sandbox_cli_plan_uses_explicit_run_bound_session_and_fixed_verbs() {
+        let executable = r"C:\Program Files\Windows Sandbox\wsb.exe";
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let config = build_sandbox_config_with_result_paths(
+            Path::new(r"C:\FRIDAY\snapshot"),
+            Path::new(r"C:\FRIDAY\result-mount"),
+        );
+        // Exercise the exact production validator with a valid two-folder fixture.
+        let config = config.unwrap_or_else(|_| {
+            let snapshot = xml_escape(r"C:\FRIDAY\snapshot");
+            let result = xml_escape(r"C:\FRIDAY\result-mount");
+            format!(r#"<Configuration>
+  <VGpu>Disable</VGpu>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>{snapshot}</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>{result}</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#)
+        });
+        let start = build_windows_sandbox_cli_plan(
+            executable, run_id, WindowsSandboxCliCommand::Start, Some(&config),
+        ).unwrap();
+        assert_eq!(start.sandbox_id, "01234567-89ab-cdef-0123-456789abcdef");
+        assert_eq!(&start.arguments[..5], ["start", "--raw", "--id", start.sandbox_id.as_str(), "--config"]);
+        assert_eq!(start.arguments[5], config);
+        validate_windows_sandbox_cli_plan(
+            &start, executable, run_id, WindowsSandboxCliCommand::Start, Some(&config),
+        ).unwrap();
+
+        let list = build_windows_sandbox_cli_plan(
+            executable, run_id, WindowsSandboxCliCommand::List, None,
+        ).unwrap();
+        assert_eq!(list.arguments, vec!["list", "--raw"]);
+
+        let stop = build_windows_sandbox_cli_plan(
+            executable, run_id, WindowsSandboxCliCommand::Stop, None,
+        ).unwrap();
+        assert_eq!(stop.arguments, vec!["stop", "--raw", "--id", start.sandbox_id]);
+    }
+
+    #[test]
+    fn windows_sandbox_cli_plan_rejects_substitution_and_unvalidated_config() {
+        let executable = r"C:\WindowsApps\wsb.exe";
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let valid_config = r#"<Configuration>
+  <VGpu>Disable</VGpu>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\FRIDAY\snapshot</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>C:\FRIDAY\result-mount</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#;
+        assert!(build_windows_sandbox_cli_plan(
+            r"C:\WindowsApps\other.exe", run_id, WindowsSandboxCliCommand::List, None,
+        ).is_err());
+        assert!(build_windows_sandbox_cli_plan(
+            executable, "../0123456789abcdef0123456789abcdef", WindowsSandboxCliCommand::List, None,
+        ).is_err());
+        let mut plan = build_windows_sandbox_cli_plan(
+            executable, run_id, WindowsSandboxCliCommand::Start, Some(valid_config),
+        ).unwrap();
+        plan.arguments.push("--network".into());
+        assert!(validate_windows_sandbox_cli_plan(
+            &plan, executable, run_id, WindowsSandboxCliCommand::Start, Some(valid_config),
+        ).is_err());
+        assert!(build_windows_sandbox_cli_plan(
+            executable, run_id, WindowsSandboxCliCommand::Start, Some("<Configuration/>"),
+        ).is_err());
+    }
+
+    #[test]
+    fn windows_sandbox_cli_list_parser_accepts_exact_session_inventory() {
+        let bytes = br#"{"WindowsSandboxEnvironments":[{"Id":"01234567-89ab-cdef-0123-456789abcdef","Status":"Running"},{"Id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","State":"Stopped"}]}"#;
+        let sessions = parse_windows_sandbox_cli_list(bytes).unwrap();
+        assert_eq!(sessions.len(), 2);
+        verify_windows_sandbox_cli_session(
+            &sessions, "01234567-89ab-cdef-0123-456789abcdef",
+            WindowsSandboxCliSessionStatus::Running,
+        ).unwrap();
+        verify_windows_sandbox_cli_session(
+            &sessions, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            WindowsSandboxCliSessionStatus::Stopped,
+        ).unwrap();
+        assert!(verify_windows_sandbox_cli_session(
+            &sessions, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            WindowsSandboxCliSessionStatus::Running,
+        ).is_err());
+    }
+
+    #[test]
+    fn windows_sandbox_cli_list_parser_rejects_ambiguous_or_unsupported_inventory() {
+        assert!(parse_windows_sandbox_cli_list(b"").is_err());
+        assert!(parse_windows_sandbox_cli_list(b"not-json").is_err());
+        assert!(parse_windows_sandbox_cli_list(
+            br#"{"OtherSessions":[]}"#
+        ).is_err());
+        assert!(parse_windows_sandbox_cli_list(
+            br#"{"WindowsSandboxEnvironments":[{"Id":"not-a-guid","Status":"Running"}]}"#
+        ).is_err());
+        assert!(parse_windows_sandbox_cli_list(
+            br#"{"WindowsSandboxEnvironments":[{"Id":"01234567-89ab-cdef-0123-456789abcdef","Status":"Starting"}]}"#
+        ).is_err());
+        assert!(parse_windows_sandbox_cli_list(
+            br#"{"WindowsSandboxEnvironments":[{"Id":"01234567-89ab-cdef-0123-456789abcdef","Status":"Running","Command":"evil"}]}"#
+        ).is_err());
+        assert!(parse_windows_sandbox_cli_list(
+            br#"{"WindowsSandboxEnvironments":[{"Id":"01234567-89ab-cdef-0123-456789abcdef","Status":"Running"},{"Id":"01234567-89ab-cdef-0123-456789abcdef","Status":"Running"}]}"#
+        ).is_err());
     }
 
     #[test]
