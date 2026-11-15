@@ -1571,3 +1571,12 @@ on the same FRIDAY-owned raw disk handle. This asks Windows to refresh its
 cached partition properties after the direct GPT sector writes; the subsequent
 layout query is therefore not allowed to rely on a stale pre-initialization
 partition view. Failure to refresh remains fail-closed.
+
+
+The Windows GPT layout parser was corrected to validate the usable byte range
+against the exact GPT FirstUsableLBA and LastUsableLBA from FRIDAY's partition
+plan. Windows documents StartingUsableOffset as the byte offset of the first
+usable block and UsableLength as the size of usable blocks; these are not the
+same as simply subtracting the GPT header/table sectors from total disk size.
+The parser now requires the exact 128-entry partition capacity, validates both
+partition flags, and reports observed versus expected values on mismatch.
