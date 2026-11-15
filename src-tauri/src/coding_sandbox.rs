@@ -2173,11 +2173,17 @@ struct SandboxSessionJournal {
 fn validate_sandbox_session_journal(
     journal: &SandboxSessionJournal,
 ) -> Result<SandboxSessionState, String> {
-    if journal.schema_version != SANDBOX_SESSION_JOURNAL_SCHEMA
-        || !valid_snapshot_id(&journal.run_id)
-        || journal.entries.len() > MAX_SANDBOX_SESSION_JOURNAL_ENTRIES
-    {
-        return Err("The Sandbox session journal header or bounds are invalid.".into());
+    if journal.schema_version != SANDBOX_SESSION_JOURNAL_SCHEMA {
+        return Err("The Sandbox session journal schema version is invalid.".into());
+    }
+    if !valid_snapshot_id(&journal.run_id) {
+        return Err(format!(
+            "The Sandbox session journal run identifier is invalid ({} characters).",
+            journal.run_id.len(),
+        ));
+    }
+    if journal.entries.len() > MAX_SANDBOX_SESSION_JOURNAL_ENTRIES {
+        return Err("The Sandbox session journal exceeds its fixed transition limit.".into());
     }
     let mut state = SandboxSessionState::Planned;
     let mut recorded_identity: Option<SandboxProcessIdentity> = None;
