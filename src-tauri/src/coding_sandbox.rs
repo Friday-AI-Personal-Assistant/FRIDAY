@@ -3181,7 +3181,12 @@ fn validate_guest_result_ntfs_format_report(
         || !report.file_system.eq_ignore_ascii_case("NTFS")
         || report.file_system_label != GUEST_RESULT_FILESYSTEM_LABEL
         || !valid_windows_volume_guid_path(&report.volume_path)
-        || report.volume_size != expected_size
+        // NTFS reserves a small amount of partition space for filesystem metadata.
+        // Keep the reported volume strictly within the exact partition and bound
+        // that difference so a mismatched or unexpectedly smaller volume fails closed.
+        || report.volume_size == 0
+        || report.volume_size > expected_size
+        || expected_size.saturating_sub(report.volume_size) > 1024 * 1024
         || report.size_remaining > report.volume_size
         || report.drive_letter.as_ref().is_some_and(|value| !value.trim().is_empty())
     {
