@@ -1905,3 +1905,20 @@ by itself. The journal's prior identity and ownership checks remain necessary,
 and the future runtime must independently re-observe and verify the exact
 process identity immediately before any stop. No CLI stop command is executed;
 guest execution remains disabled.
+
+
+## Verify the Windows Sandbox CLI publisher signature — implemented as a preflight gate
+
+The Windows Sandbox CLI readiness probe now checks the resolved `wsb.exe`
+with Windows Authenticode verification. The executable is considered
+available only when the signature status is exactly `Valid` and the signing
+certificate's simple name is exactly `Microsoft Corporation`. The pure
+runtime policy repeats those requirements alongside the supported Windows
+build, absolute executable path, and numeric file-version checks. Missing,
+invalid, unsigned, or differently published binaries fail closed.
+
+This verifies the current file's Authenticode publisher evidence during
+preflight; it does not pin the executable's file identity across later use,
+verify the Windows Sandbox package identity, or remove the need to re-check
+the executable immediately before a future launch transaction. It does not
+launch Sandbox or enable guest execution.

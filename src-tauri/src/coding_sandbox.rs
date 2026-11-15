@@ -433,8 +433,18 @@ $active = [bool](Get-Process -Name WindowsSandbox -ErrorAction SilentlyContinue)
 $wsb = Get-Command wsb.exe -CommandType Application -ErrorAction SilentlyContinue
 $wsbPath = if ($wsb -and $wsb.Source) { [string]$wsb.Source } else { '' }
 $version = ''
+$signatureStatus = 'Unknown'
+$signerName = ''
 if ($wsbPath -and (Test-Path -LiteralPath $wsbPath -PathType Leaf)) {
   $version = [string](Get-Item -LiteralPath $wsbPath -ErrorAction SilentlyContinue).VersionInfo.FileVersion
+  $signature = Get-AuthenticodeSignature -LiteralPath $wsbPath -ErrorAction SilentlyContinue
+  if ($signature) {
+    $signatureStatus = [string]$signature.Status
+    if ($signature.SignerCertificate) {
+      $signerName = [string]$signature.SignerCertificate.GetNameInfo(
+        [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+    }
+  }
 }
 $privileges = (& whoami.exe /priv 2>$null | Out-String)
 $virtualDiskApi = Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32\virtdisk.dll')
@@ -454,7 +464,7 @@ $mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sand
   edition = [string]$cv.EditionID
   build = [string]$cv.CurrentBuildNumber
   feature = [string]$feature.State
-  wsbAvailable = [bool]($wsbPath -and (Test-Path -LiteralPath $wsbPath -PathType Leaf) -and ([IO.Path]::GetFileName($wsbPath) -ieq 'wsb.exe'))
+  wsbAvailable = [bool]($wsbPath -and (Test-Path -LiteralPath $wsbPath -PathType Leaf) -and ([IO.Path]::GetFileName($wsbPath) -ieq 'wsb.exe') -and $signatureStatus -eq 'Valid' -and $signerName -ceq 'Microsoft Corporation')
   wsbPath = [string]$wsbPath
   wsbVersion = [string]$version
   virtualizationFirmwareEnabled = if ($null -eq $cpu) { $null } else { [bool]$cpu }
@@ -2078,12 +2088,20 @@ fn valid_windows_sandbox_cli_executable_path(path: &str) -> bool {
             .is_some_and(|name| name.eq_ignore_ascii_case(WINDOWS_SANDBOX_CLI_FILE_NAME))
 }
 
-fn windows_sandbox_cli_runtime_supported(build: &str, executable_path: &str, version: &str) -> bool {
+fn windows_sandbox_cli_runtime_supported(
+    build: &str,
+    executable_path: &str,
+    version: &str,
+    signature_status: &str,
+    signer_name: &str,
+) -> bool {
     let Ok(build_number) = build.trim().parse::<u32>() else {
         return false;
     };
     if build_number < MIN_WINDOWS_SANDBOX_CLI_BUILD
         || !valid_windows_sandbox_cli_executable_path(executable_path)
+        || signature_status != "Valid"
+        || signer_name != "Microsoft Corporation"
     {
         return false;
     }
@@ -2872,7 +2890,11 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
         let edition_supported = ["Professional", "Enterprise", "Education"]
             .iter().any(|supported| edition.eq_ignore_ascii_case(supported));
         let cli_runtime_supported =
-            windows_sandbox_cli_runtime_supported(&build, &wsb_path, &wsb_version);
+            windows_sandbox_cli_runtime_supported(
+                &build, &wsb_path, &wsb_version,
+                if wsb_available { "Valid" } else { "Unknown" },
+                if wsb_available { "Microsoft Corporation" } else { "Unknown" },
+            );
         let runtime_ready = detected && edition_supported
             && feature.eq_ignore_ascii_case("Enabled") && cli_runtime_supported
             && virtualization == Some(true) && !active;
@@ -6136,18 +6158,31 @@ mod tests {
     fn windows_sandbox_cli_runtime_requires_supported_build_and_numeric_file_version() {
         let path = r"C:\Users\Friday\AppData\Local\Microsoft\WindowsApps\wsb.exe";
         assert!(valid_windows_sandbox_cli_executable_path(path));
-        assert!(windows_sandbox_cli_runtime_supported("26100", path, "10.0.26100.1"));
-        assert!(windows_sandbox_cli_runtime_supported("26200", path, "10.0.26200.100"));
-        assert!(!windows_sandbox_cli_runtime_supported("26099", path, "10.0.26100.1"));
-        assert!(!windows_sandbox_cli_runtime_supported("Unknown", path, "10.0.26100.1"));
-        assert!(!windows_sandbox_cli_runtime_supported("26100", "relative\\wsb.exe", "10.0.26100.1"));
-        assert!(!windows_sandbox_cli_runtime_supported("26100", r"C:\\Temp\\other.exe", "10.0.26100.1"));
-        assert!(!windows_sandbox_cli_runtime_supported("26100", path, ""));
-        assert!(!windows_sandbox_cli_runtime_supported("26100", path, "Unknown"));
-        assert!(!windows_sandbox_cli_runtime_supported("26100", path, "10.x.26100"));
-        assert!(!windows_sandbox_cli_runtime_supported("26100", path, "0.0.0.0"));
+        assert!(windows_sandbox_cli_runtime_supported(
+            "26100", path, "10.0.26100.1", "Valid", "Microsoft Corporation",
+        ));
+        assert!(windows_sandbox_cli_runtime_supported(
+            "26200", path, "10.0.26200.100", "Valid", "Microsoft Corporation",
+        ));
+        assert!(!windows_sandbox_cli_runtime_supported("26099", path, "10.0.26100.1", "Valid", "Microsoft Corporation"));
+        assert!(!windows_sandbox_cli_runtime_supported("Unknown", path, "10.0.26100.1", "Valid", "Microsoft Corporation"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", "relative\\wsb.exe", "10.0.26100.1", "Valid", "Microsoft Corporation"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", r"C:\\Temp\\other.exe", "10.0.26100.1", "Valid", "Microsoft Corporation"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", path, "", "Valid", "Microsoft Corporation"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", path, "Unknown", "Valid", "Microsoft Corporation"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", path, "10.x.26100", "Valid", "Microsoft Corporation"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", path, "0.0.0.0", "Valid", "Microsoft Corporation"));
     }
 
+        assert!(!windows_sandbox_cli_runtime_supported(
+            "26100", path, "10.0.26100.1", "NotSigned", "Microsoft Corporation",
+        ));
+        assert!(!windows_sandbox_cli_runtime_supported(
+            "26100", path, "10.0.26100.1", "Valid", "Unknown Publisher",
+        ));
+        assert!(!windows_sandbox_cli_runtime_supported(
+            "26100", path, "10.0.26100.1", "Unknown", "Microsoft Corporation",
+        ));
     #[test]
     fn windows_sandbox_cli_plan_uses_explicit_run_bound_session_and_fixed_verbs() {
         let executable = r"C:\Program Files\Windows Sandbox\wsb.exe";
