@@ -2606,6 +2606,39 @@ fn validate_sandbox_session_journal(
     Ok(state)
 }
 
+/// Prepare a stop command only when the validated durable journal records
+/// this run as Running, its recorded process identity carries the run-derived
+/// session ID, and the fresh CLI inventory contains only that exact Running
+/// session. This builds a plan; it does not execute the command.
+fn prepare_authorized_windows_sandbox_stop_plan(
+    executable_path: &str,
+    journal: &SandboxSessionJournal,
+    sessions: &[WindowsSandboxCliSession],
+) -> Result<WindowsSandboxCliPlan, String> {
+    if validate_sandbox_session_journal(journal)? != SandboxSessionState::Running {
+        return Err("The Sandbox journal does not authorize stopping from its current state.".into());
+    }
+    let expected_id = windows_sandbox_cli_id_from_run_id(&journal.run_id)?;
+    let recorded_identity = journal.entries.iter()
+        .rev()
+        .find(|entry| entry.event == SandboxSessionEvent::ObserveProcess)
+        .and_then(|entry| entry.observed_identity.as_ref())
+        .ok_or_else(|| "The Sandbox journal has no recorded process identity.".to_string())?;
+    if !recorded_identity.session_id.eq_ignore_ascii_case(&expected_id) {
+        return Err("The recorded Sandbox process identity does not match this FRIDAY run.".into());
+    }
+    require_exclusive_windows_sandbox_cli_session(
+        sessions, &expected_id, WindowsSandboxCliSessionStatus::Running,
+    )?;
+    let plan = build_windows_sandbox_cli_plan(
+        executable_path, &journal.run_id, WindowsSandboxCliCommand::Stop, None,
+    )?;
+    validate_windows_sandbox_cli_plan(
+        &plan, executable_path, &journal.run_id, WindowsSandboxCliCommand::Stop, None,
+    )?;
+    Ok(plan)
+}
+
 fn encode_sandbox_session_journal(
     journal: &SandboxSessionJournal,
 ) -> Result<Vec<u8>, String> {
@@ -6257,6 +6290,78 @@ mod tests {
         let output = read_bounded_command_output(&input[..], 0).unwrap();
         assert!(output.bytes.is_empty());
         assert!(output.truncated);
+    }
+
+    #[test]
+    fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_inventory() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let session_id = windows_sandbox_cli_id_from_run_id(run_id).unwrap();
+        let identity = SandboxProcessIdentity {
+            session_id: run_id.into(),
+            process_id: 4321,
+            process_creation_time: 987654,
+            image_path: r"C:\Windows\System32\WindowsSandbox.exe".into(),
+        };
+        let mut journal = SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: run_id.into(),
+            entries: Vec::new(),
+        };
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::RequestLaunch, None, false, false,
+        ).unwrap();
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::ObserveProcess, Some(&identity), false, false,
+        ).unwrap();
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::ConfirmSession, Some(&identity), true, false,
+        ).unwrap();
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::ConfirmRunning, Some(&identity), true, false,
+        ).unwrap();
+
+        let inventory = vec![WindowsSandboxCliSession {
+            id: session_id.clone(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        }];
+        let plan = prepare_authorized_windows_sandbox_stop_plan(
+            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &inventory,
+        ).unwrap();
+        assert_eq!(plan.arguments, vec![
+            "stop", "--raw", "--id", session_id.as_str(),
+        ]);
+
+        assert!(prepare_authorized_windows_sandbox_stop_plan(
+            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &[],
+        ).is_err());
+        let foreign = vec![
+            inventory[0].clone(),
+            WindowsSandboxCliSession {
+                id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+                status: WindowsSandboxCliSessionStatus::Running,
+            },
+        ];
+        assert!(prepare_authorized_windows_sandbox_stop_plan(
+            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &foreign,
+        ).is_err());
+        let stopped = vec![WindowsSandboxCliSession {
+            id: session_id,
+            status: WindowsSandboxCliSessionStatus::Stopped,
+        }];
+        assert!(prepare_authorized_windows_sandbox_stop_plan(
+            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &stopped,
+        ).is_err());
+
+        let mut not_running = journal.clone();
+        not_running.entries.pop();
+        assert!(prepare_authorized_windows_sandbox_stop_plan(
+            r"C:\Program Files\WindowsApps\wsb.exe", &not_running, &inventory,
+        ).is_err());
+        let mut mismatched = journal.clone();
+        mismatched.run_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
+        assert!(prepare_authorized_windows_sandbox_stop_plan(
+            r"C:\Program Files\WindowsApps\wsb.exe", &mismatched, &inventory,
+        ).is_err());
     }
 
     #[test]

@@ -1887,3 +1887,20 @@ does not launch or stop Sandbox, establish causal process ownership, or prove
 that a session belongs to FRIDAY. The future launch transaction must still
 obtain the inventory at the correct time and independently establish
 authoritative process/session ownership. Guest execution remains disabled.
+
+## Journal- and inventory-gated Sandbox stop planning — implemented, not executed
+
+FRIDAY now has a pure stop-plan preparation gate. It validates the complete
+session journal and requires its final state to be Running, requires the
+recorded process identity's session ID to match the session ID derived from
+that journal's run ID, and requires a fresh CLI inventory containing exactly
+that one session in Running state. Only then does it produce the fixed
+run-bound `wsb stop --raw --id` argument plan. Regression tests cover the
+valid case, absent or extra inventory entries, wrong status, non-Running
+journal state, and run/session mismatch.
+
+This is still not a stop operation and does not establish process ownership
+by itself. The journal's prior identity and ownership checks remain necessary,
+and the future runtime must independently re-observe and verify the exact
+process identity immediately before any stop. No CLI stop command is executed;
+guest execution remains disabled.
