@@ -1710,3 +1710,95 @@ The host now has a bounded append-only journal for the future FRIDAY-owned Windo
 Each generation is created exclusively in its own private directory, secured with FRIDAY's private-directory policy, flushed, and reopened through the bounded no-follow file reader for exact read-back verification. Existing or interrupted generations are preserved rather than overwritten. The journal is a recovery record, not proof that a process or Sandbox session is genuinely owned; future Windows process/session observation must independently establish that evidence before transitions are authorized.
 
 This batch does not launch or stop Windows Sandbox, does not adopt an existing session, and does not enable guest execution. Physical Windows validation of session discovery, CLI session identifiers, process creation-time identity, cancellation, and crash recovery remains required.
+
+
+## Windows Sandbox launch and ownership boundary — implementation contract
+
+The next implementation phase must connect the staged, verified `sandbox.wsb`
+file to a real Windows Sandbox session without weakening the existing
+fail-closed ownership rules. This section is an implementation contract, not
+a claim that Sandbox launch or guest execution is already available.
+
+### Preconditions
+
+Before any launch attempt, the host must independently revalidate all of the
+following in the same run:
+
+- The complete schema-2 project snapshot inventory and its pinned directory
+  identity.
+- The exact per-run result VHDX identity, attached-device identity, formatted
+  NTFS volume, private mount-point GUID mapping, and durable result journal
+  state.
+- The staged `sandbox.wsb` file's private parent directory, protected ACL,
+  ordinary-file identity, bounded size, exact read-back bytes, and strict
+  two-folder isolation policy.
+- Windows Sandbox feature/runtime readiness and the effective mapped-folder
+  and writable-mapping policies. Unknown or unreadable policy is not approval.
+- No pre-existing Sandbox process/session may be adopted, stopped, or treated
+  as FRIDAY-owned.
+
+### Launch transaction
+
+1. Persist `RequestLaunch` to the immutable session journal before invoking
+   the Windows Sandbox launcher.
+2. Invoke only the fixed, system-resolved Windows Sandbox executable with the
+   exact staged configuration path as its sole configuration argument.
+   Never use a shell, user/model-provided executable, extra argument, or
+   command string.
+3. Capture the launcher process identity and outcome separately from the
+   Sandbox session identity. The launcher may be a short-lived broker and its
+   exit is not evidence that the guest session stopped.
+4. Observe the resulting Sandbox process/session through a documented,
+   supported Windows interface. Record PID, process creation time, canonical
+   image path, and any authoritative Sandbox session identifier available
+   from that interface.
+5. Establish causal ownership from FRIDAY's launch transaction and the
+   authoritative session evidence. A process name, PID, timestamp window,
+   command line, or before/after process-list difference alone is insufficient.
+6. Persist observed identity, then independently re-query and compare the
+   exact identity before confirming the session. If the supported Windows
+   interface cannot establish unambiguous ownership, preserve the journal in
+   `RecoveryRequired`; do not guess, attach, or terminate anything.
+7. Only after ownership confirmation may the session enter `Running` and the
+   guest bootstrap be considered for a later, separately reviewed phase.
+
+### Stop, cancellation, and recovery
+
+- Stop requests must target only the exact session identity independently
+  re-observed from the supported Windows interface.
+- Do not use broad process-name termination, taskkill filters, or a guessed
+  PID. Do not terminate service, broker, host, or unrelated user processes.
+- A launcher exit, missing window, inaccessible process, or timeout is not
+  positive proof that the Sandbox guest has stopped.
+- The journal may enter `Stopped` only after the exact owned session is
+  positively observed stopped. If Windows cannot provide that evidence, keep
+  the result volume and run directory intact and require recovery.
+- Reboot recovery must reconcile the journal with live Windows session
+  evidence before any unmount, detach, deletion, or retry. Ambiguous state
+  blocks all automatic cleanup.
+- Share revocation, result-volume unmount, VHDX detach, and storage deletion
+  remain separately journaled and ordered operations.
+
+### Required implementation and acceptance tests
+
+- Fixed executable resolution and exact argument construction; reject a
+  substituted executable, configuration path, or additional argument.
+- A pre-existing Sandbox session is never adopted or stopped.
+- Process PID reuse and same-name foreign process substitution are rejected
+  using creation-time and authoritative session evidence.
+- Launcher exit is not mistaken for guest-session exit.
+- A concurrent unrelated Sandbox launch cannot be attributed to FRIDAY.
+- Every launch failure after `RequestLaunch` preserves recoverable evidence
+  and does not retry automatically.
+- Cancellation and timeout stop only the exact proven-owned session.
+- A crash at every journal boundary recovers conservatively without deleting
+  the result VHDX or project snapshot.
+- Windows CI tests for all available native seams, followed by physical
+  Windows acceptance on a supported Windows edition before guest execution
+  can be enabled.
+
+Until the authoritative session-observation and ownership mechanism is
+implemented and physically accepted, FRIDAY must continue to report guest
+execution as disabled. The staged configuration and durable journal are
+preparatory controls only; neither proves a live Sandbox session exists or
+belongs to FRIDAY.
