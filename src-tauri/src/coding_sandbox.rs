@@ -2680,7 +2680,7 @@ fn build_sandbox_config_for_mounted_result(
         expected_snapshot_id,
         (MAX_SNAPSHOT_DEPTH, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_FILE_BYTES, MAX_SNAPSHOT_TOTAL_BYTES),
     ).map_err(|_| "The project snapshot failed FRIDAY's ownership-inventory preflight and cannot be shared with Sandbox.".to_string())?;
-    if snapshot_path != verified_snapshot {
+    if snapshot_path != verified_snapshot.as_path() {
         return Err("The requested Sandbox project mapping does not match the verified FRIDAY snapshot.".into());
     }
     let identifier = verify_attached_guest_result_vhdx_identity(
