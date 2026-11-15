@@ -7291,7 +7291,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         ).is_err());
 
         assert!(issue_guest_run_execution_approval(
-            "{\\"schemaVersion\\":1,\\"unexpected\\":true}".to_string(),
+            r#"{"schemaVersion":1,"unexpected":true}"#.to_string(),
         ).is_err());
         assert!(revoke_guest_run_execution_approval("not-a-run-id".to_string()).is_err());
         assert!(revoke_guest_run_execution_approval(run_id).is_ok());
