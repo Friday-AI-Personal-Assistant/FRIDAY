@@ -1917,8 +1917,16 @@ runtime policy repeats those requirements alongside the supported Windows
 build, absolute executable path, and numeric file-version checks. Missing,
 invalid, unsigned, or differently published binaries fail closed.
 
-This verifies the current file's Authenticode publisher evidence during
-preflight; it does not pin the executable's file identity across later use,
-verify the Windows Sandbox package identity, or remove the need to re-check
-the executable immediately before a future launch transaction. It does not
-launch Sandbox or enable guest execution.
+The read-only CLI inventory path now repeats Authenticode verification
+against the exact resolved executable path immediately before creating the
+CLI process. The path is passed to a fixed PowerShell script through a
+dedicated environment value rather than interpolated into command text.
+Missing, malformed, changed, or non-Microsoft signature evidence blocks the
+inventory invocation. Regression tests cover exact publisher/status matching.
+
+This narrows the time-of-check/time-of-use window for the inventory command,
+but it is not an atomic file-handle-bound verification-and-execution
+transaction and does not pin the executable's file identity. A future start
+or stop transaction must perform its own immediate verification and stronger
+process/file identity checks. It does not launch Sandbox or enable guest
+execution.

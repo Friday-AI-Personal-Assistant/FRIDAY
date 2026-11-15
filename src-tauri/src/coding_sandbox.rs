@@ -2088,6 +2088,10 @@ fn valid_windows_sandbox_cli_executable_path(path: &str) -> bool {
             .is_some_and(|name| name.eq_ignore_ascii_case(WINDOWS_SANDBOX_CLI_FILE_NAME))
 }
 
+fn windows_sandbox_cli_signature_evidence_valid(signature_status: &str, signer_name: &str) -> bool {
+    signature_status == "Valid" && signer_name == "Microsoft Corporation"
+}
+
 fn windows_sandbox_cli_runtime_supported(
     build: &str,
     executable_path: &str,
@@ -2100,8 +2104,7 @@ fn windows_sandbox_cli_runtime_supported(
     };
     if build_number < MIN_WINDOWS_SANDBOX_CLI_BUILD
         || !valid_windows_sandbox_cli_executable_path(executable_path)
-        || signature_status != "Valid"
-        || signer_name != "Microsoft Corporation"
+        || !windows_sandbox_cli_signature_evidence_valid(signature_status, signer_name)
     {
         return false;
     }
@@ -2221,6 +2224,49 @@ struct WindowsSandboxCliListEntry {
 }
 
 #[cfg(windows)]
+fn verify_windows_sandbox_cli_authenticode(executable_path: &str) -> Result<(), String> {
+    if !valid_windows_sandbox_cli_executable_path(executable_path) {
+        return Err("The Windows Sandbox CLI path is invalid before invocation.".into());
+    }
+
+    // Re-check the exact path immediately before process creation. The path is
+    // passed as an environment value, never interpolated into PowerShell code.
+    let script = r#"$ErrorActionPreference = 'Stop'
+$target = $env:FRIDAY_WSB_VERIFY_PATH
+if (-not $target -or -not (Test-Path -LiteralPath $target -PathType Leaf)) { exit 2 }
+$signature = Get-AuthenticodeSignature -LiteralPath $target -ErrorAction Stop
+$signer = ''
+if ($signature.SignerCertificate) {
+  $signer = [string]$signature.SignerCertificate.GetNameInfo(
+    [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+}
+[pscustomobject]@{ status = [string]$signature.Status; signer = $signer } | ConvertTo-Json -Compress"#;
+
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("FRIDAY_WSB_VERIFY_PATH", executable_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (status, stdout) = run_bounded_probe(command)?;
+    if !status.success() {
+        return Err("The Windows Sandbox CLI signature could not be re-verified immediately before invocation.".into());
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SignatureEvidence {
+        status: String,
+        signer: String,
+    }
+    let evidence: SignatureEvidence = serde_json::from_slice(&stdout)
+        .map_err(|_| "The Windows Sandbox CLI signature evidence is malformed.".to_string())?;
+    if !windows_sandbox_cli_signature_evidence_valid(&evidence.status, &evidence.signer) {
+        return Err("The Windows Sandbox CLI signature or publisher changed; invocation was blocked.".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn query_windows_sandbox_cli_inventory(
     executable_path: &str,
 ) -> Result<Vec<WindowsSandboxCliSession>, String> {
@@ -2232,6 +2278,7 @@ fn query_windows_sandbox_cli_inventory(
     validate_windows_sandbox_cli_plan(
         &plan, executable_path, run_id, WindowsSandboxCliCommand::List, None,
     )?;
+    verify_windows_sandbox_cli_authenticode(&plan.executable_path)?;
 
     // Invoke the resolved executable directly with the fixed argument vector.
     // No shell, command string, user-provided arguments, or inherited stdin.
@@ -6153,6 +6200,16 @@ mod tests {
         assert!(validate_guest_result_partition_plan(&plan, run_id).is_err());
     }
 
+
+    #[test]
+    fn windows_sandbox_cli_signature_evidence_requires_exact_valid_microsoft_publisher() {
+        assert!(windows_sandbox_cli_signature_evidence_valid("Valid", "Microsoft Corporation"));
+        assert!(!windows_sandbox_cli_signature_evidence_valid("NotSigned", "Microsoft Corporation"));
+        assert!(!windows_sandbox_cli_signature_evidence_valid("UnknownError", "Microsoft Corporation"));
+        assert!(!windows_sandbox_cli_signature_evidence_valid("Valid", "Unknown Publisher"));
+        assert!(!windows_sandbox_cli_signature_evidence_valid("valid", "Microsoft Corporation"));
+        assert!(!windows_sandbox_cli_signature_evidence_valid("Valid", "Microsoft Corporation "));
+    }
 
     #[test]
     fn windows_sandbox_cli_runtime_requires_supported_build_and_numeric_file_version() {
