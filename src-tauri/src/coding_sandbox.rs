@@ -2003,6 +2003,89 @@ fn unmount_guest_result_volume_from_private_directory(
     Ok(())
 }
 
+const SANDBOX_EXECUTABLE_FILE_NAME: &str = "WindowsSandbox.exe";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowsSandboxLaunchPlan {
+    executable_path: String,
+    config_path: String,
+    arguments: Vec<String>,
+}
+
+fn valid_absolute_windows_drive_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 3
+        || !bytes[0].is_ascii_alphabetic()
+        || bytes[1] != b':'
+        || bytes[2] != b'\\'
+        || value.chars().any(|character| character.is_control() || character == '"' || character == '<' || character == '>' || character == '|')
+    {
+        return false;
+    }
+    let normalized = value.replace('/', "\\");
+    !normalized.split('\\').any(|component| component == "..")
+        && !normalized.ends_with("\\")
+}
+
+fn build_windows_sandbox_launch_plan(
+    system_root: &str,
+    run_directory: &str,
+) -> Result<WindowsSandboxLaunchPlan, String> {
+    if !valid_absolute_windows_drive_path(system_root)
+        || !valid_absolute_windows_drive_path(run_directory)
+    {
+        return Err("The Windows Sandbox executable root or private run directory is not a safe absolute Windows path.".into());
+    }
+    let normalized_root = system_root.replace('/', "\\").trim_end_matches('\\').to_string();
+    let normalized_run = run_directory.replace('/', "\\").trim_end_matches('\\').to_string();
+    let executable_path = format!("{normalized_root}\\System32\\{SANDBOX_EXECUTABLE_FILE_NAME}");
+    let config_path = format!("{normalized_run}\\{SANDBOX_CONFIG_FILE_NAME}");
+    let plan = WindowsSandboxLaunchPlan {
+        executable_path,
+        config_path: config_path.clone(),
+        arguments: vec![config_path],
+    };
+    validate_windows_sandbox_launch_plan(&plan, system_root, run_directory)?;
+    Ok(plan)
+}
+
+fn validate_windows_sandbox_launch_plan(
+    plan: &WindowsSandboxLaunchPlan,
+    system_root: &str,
+    run_directory: &str,
+) -> Result<(), String> {
+    if !valid_absolute_windows_drive_path(system_root)
+        || !valid_absolute_windows_drive_path(run_directory)
+    {
+        return Err("The trusted Windows Sandbox launch roots are invalid.".into());
+    }
+    let expected = build_windows_sandbox_launch_plan_unchecked(system_root, run_directory);
+    if plan != &expected
+        || !plan.executable_path.to_ascii_lowercase().ends_with("\\system32\\windowsandbox.exe")
+        || plan.arguments.len() != 1
+        || plan.arguments.first() != Some(&plan.config_path)
+        || !plan.config_path.to_ascii_lowercase().ends_with("\\sandbox.wsb")
+    {
+        return Err("The Windows Sandbox launch plan differs from FRIDAY's fixed executable and single-configuration-argument policy.".into());
+    }
+    Ok(())
+}
+
+fn build_windows_sandbox_launch_plan_unchecked(
+    system_root: &str,
+    run_directory: &str,
+) -> WindowsSandboxLaunchPlan {
+    let normalized_root = system_root.replace('/', "\\").trim_end_matches('\\').to_string();
+    let normalized_run = run_directory.replace('/', "\\").trim_end_matches('\\').to_string();
+    let executable_path = format!("{normalized_root}\\System32\\{SANDBOX_EXECUTABLE_FILE_NAME}");
+    let config_path = format!("{normalized_run}\\{SANDBOX_CONFIG_FILE_NAME}");
+    WindowsSandboxLaunchPlan {
+        executable_path,
+        config_path: config_path.clone(),
+        arguments: vec![config_path],
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SandboxSessionState {
@@ -5712,6 +5795,44 @@ mod tests {
         ).unwrap();
         plan.partition_unique_guid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA".into();
         assert!(validate_guest_result_partition_plan(&plan, run_id).is_err());
+    }
+
+    #[test]
+    fn sandbox_launch_plan_uses_only_fixed_executable_and_staged_config() {
+        let plan = build_windows_sandbox_launch_plan(
+            r"C:\\Windows",
+            r"C:\\Users\\Friday\\AppData\\Local\\FRIDAY\\run-123",
+        ).unwrap();
+        assert_eq!(plan.executable_path, r"C:\\Windows\\System32\\WindowsSandbox.exe");
+        assert_eq!(plan.config_path, r"C:\\Users\\Friday\\AppData\\Local\\FRIDAY\\run-123\\sandbox.wsb");
+        assert_eq!(plan.arguments, vec![plan.config_path.clone()]);
+        validate_windows_sandbox_launch_plan(
+            &plan, r"C:\\Windows", r"C:\\Users\\Friday\\AppData\\Local\\FRIDAY\\run-123",
+        ).unwrap();
+    }
+
+    #[test]
+    fn sandbox_launch_plan_rejects_argument_and_path_substitution() {
+        let system_root = r"C:\\Windows";
+        let run_directory = r"C:\\FRIDAY\\run";
+        let plan = build_windows_sandbox_launch_plan(system_root, run_directory).unwrap();
+        let mut changed = plan.clone();
+        changed.arguments.push("--network".into());
+        assert!(validate_windows_sandbox_launch_plan(&changed, system_root, run_directory).is_err());
+        changed = plan.clone();
+        changed.executable_path = r"C:\\Temp\\WindowsSandbox.exe".into();
+        assert!(validate_windows_sandbox_launch_plan(&changed, system_root, run_directory).is_err());
+        changed = plan.clone();
+        changed.config_path = r"C:\\FRIDAY\\other.wsb".into();
+        assert!(validate_windows_sandbox_launch_plan(&changed, system_root, run_directory).is_err());
+    }
+
+    #[test]
+    fn sandbox_launch_plan_rejects_relative_parent_and_injected_paths() {
+        for invalid in ["relative", r"C:\\FRIDAY\\..\\outside", "C:\\FRIDAY\\run\" --network"] {
+            assert!(build_windows_sandbox_launch_plan(invalid, r"C:\\FRIDAY\\run").is_err());
+            assert!(build_windows_sandbox_launch_plan(r"C:\\Windows", invalid).is_err());
+        }
     }
 
 }
