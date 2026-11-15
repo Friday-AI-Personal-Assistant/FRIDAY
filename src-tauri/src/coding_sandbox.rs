@@ -5800,38 +5800,38 @@ mod tests {
     #[test]
     fn sandbox_launch_plan_uses_only_fixed_executable_and_staged_config() {
         let plan = build_windows_sandbox_launch_plan(
-            r"C:\\Windows",
-            r"C:\\Users\\Friday\\AppData\\Local\\FRIDAY\\run-123",
+            r"C:\Windows",
+            r"C:\Users\Friday\AppData\Local\FRIDAY\run-123",
         ).unwrap();
         assert_eq!(plan.executable_path, r"C:\\Windows\\System32\\WindowsSandbox.exe");
         assert_eq!(plan.config_path, r"C:\\Users\\Friday\\AppData\\Local\\FRIDAY\\run-123\\sandbox.wsb");
         assert_eq!(plan.arguments, vec![plan.config_path.clone()]);
         validate_windows_sandbox_launch_plan(
-            &plan, r"C:\\Windows", r"C:\\Users\\Friday\\AppData\\Local\\FRIDAY\\run-123",
+            &plan, r"C:\Windows", r"C:\Users\Friday\AppData\Local\FRIDAY\run-123",
         ).unwrap();
     }
 
     #[test]
     fn sandbox_launch_plan_rejects_argument_and_path_substitution() {
-        let system_root = r"C:\\Windows";
-        let run_directory = r"C:\\FRIDAY\\run";
+        let system_root = r"C:\Windows";
+        let run_directory = r"C:\FRIDAY\run";
         let plan = build_windows_sandbox_launch_plan(system_root, run_directory).unwrap();
         let mut changed = plan.clone();
         changed.arguments.push("--network".into());
         assert!(validate_windows_sandbox_launch_plan(&changed, system_root, run_directory).is_err());
         changed = plan.clone();
-        changed.executable_path = r"C:\\Temp\\WindowsSandbox.exe".into();
+        changed.executable_path = r"C:\Temp\WindowsSandbox.exe".into();
         assert!(validate_windows_sandbox_launch_plan(&changed, system_root, run_directory).is_err());
         changed = plan.clone();
-        changed.config_path = r"C:\\FRIDAY\\other.wsb".into();
+        changed.config_path = r"C:\FRIDAY\other.wsb".into();
         assert!(validate_windows_sandbox_launch_plan(&changed, system_root, run_directory).is_err());
     }
 
     #[test]
     fn sandbox_launch_plan_rejects_relative_parent_and_injected_paths() {
-        for invalid in ["relative", r"C:\\FRIDAY\\..\\outside", "C:\\FRIDAY\\run\" --network"] {
-            assert!(build_windows_sandbox_launch_plan(invalid, r"C:\\FRIDAY\\run").is_err());
-            assert!(build_windows_sandbox_launch_plan(r"C:\\Windows", invalid).is_err());
+        for invalid in ["relative", r"C:\FRIDAY\..\outside", "C:\\FRIDAY\\run\" --network"] {
+            assert!(build_windows_sandbox_launch_plan(invalid, r"C:\FRIDAY\run").is_err());
+            assert!(build_windows_sandbox_launch_plan(r"C:\Windows", invalid).is_err());
         }
     }
 
