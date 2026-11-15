@@ -2743,8 +2743,18 @@ fn observe_windows_sandbox_process_identity(process_id: u32, run_id: &str) -> Re
 }
 
 fn windows_sandbox_image_path_in_system_directory(image_path: &str, system_directory: &str) -> bool {
-    let normalize = |value: &str| value.replace('/', "\\").trim_end_matches('\\').to_ascii_lowercase();
-    normalize(image_path) == format!("{}\\windowsandbox.exe", normalize(system_directory))
+    // Normalize separators and ASCII case character-by-character so the
+    // comparison is identical on Windows and non-Windows test hosts.
+    let normalize = |value: &str| {
+        value.chars()
+            .map(|character| {
+                if character == '/' { '\\\\' } else { character.to_ascii_lowercase() }
+            })
+            .collect::<String>()
+    };
+    let system_directory = system_directory.trim_end_matches(['\\\\', '/']);
+    let expected = format!("{}\\\\windowsandbox.exe", normalize(system_directory));
+    normalize(image_path) == expected
 }
 
 #[cfg(windows)]
