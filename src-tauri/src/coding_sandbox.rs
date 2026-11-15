@@ -6172,8 +6172,6 @@ mod tests {
         assert!(!windows_sandbox_cli_runtime_supported("26100", path, "Unknown", "Valid", "Microsoft Corporation"));
         assert!(!windows_sandbox_cli_runtime_supported("26100", path, "10.x.26100", "Valid", "Microsoft Corporation"));
         assert!(!windows_sandbox_cli_runtime_supported("26100", path, "0.0.0.0", "Valid", "Microsoft Corporation"));
-    }
-
         assert!(!windows_sandbox_cli_runtime_supported(
             "26100", path, "10.0.26100.1", "NotSigned", "Microsoft Corporation",
         ));
@@ -6183,6 +6181,8 @@ mod tests {
         assert!(!windows_sandbox_cli_runtime_supported(
             "26100", path, "10.0.26100.1", "Unknown", "Microsoft Corporation",
         ));
+    }
+
     #[test]
     fn windows_sandbox_cli_plan_uses_explicit_run_bound_session_and_fixed_verbs() {
         let executable = r"C:\Program Files\Windows Sandbox\wsb.exe";
