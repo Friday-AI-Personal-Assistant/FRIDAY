@@ -1959,3 +1959,12 @@ These tests exercise the public host command boundary, not a UI workflow or
 guest execution. Approval issuance remains a capability grant only: consuming
 it does not launch a process, start Windows Sandbox, or authorize any
 unreviewed command. No guest execution has been enabled.
+
+
+## Approval token failure regression — implemented, authorization only
+
+The public command-surface tests additionally verify that malformed and oversized
+approval-token submissions are terminal consume attempts. A failed token attempt
+removes the pending grant; retrying with the genuine token must also fail. This
+preserves the registry's fail-closed, no-probing, no-replay behavior. These tests
+do not launch Windows Sandbox or execute guest code.

@@ -7267,6 +7267,31 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
     }
 
     #[test]
+    fn guest_approval_command_bad_tokens_consume_the_pending_grant() {
+        let (_run_id, request_json) = unique_guest_run_request_json();
+        let receipt = issue_guest_run_execution_approval(request_json.clone()).unwrap();
+
+        // A malformed token is still a terminal consume attempt. It must not
+        // leave the real approval available for a later guess or retry.
+        assert!(consume_guest_run_execution_approval(
+            request_json.clone(), "not-a-hex-token".to_string(),
+        ).is_err());
+        assert!(consume_guest_run_execution_approval(
+            request_json.clone(), receipt.token.clone(),
+        ).is_err());
+
+        let (_second_run_id, second_request) = unique_guest_run_request_json();
+        let second_receipt = issue_guest_run_execution_approval(second_request.clone()).unwrap();
+        let oversized_token = "a".repeat(4096);
+        assert!(consume_guest_run_execution_approval(
+            second_request.clone(), oversized_token,
+        ).is_err());
+        assert!(consume_guest_run_execution_approval(
+            second_request, second_receipt.token,
+        ).is_err());
+    }
+
+    #[test]
     fn guest_approval_commands_reject_mismatch_revoke_and_malformed_requests() {
         let (run_id, request_json) = unique_guest_run_request_json();
         let receipt = issue_guest_run_execution_approval(request_json.clone()).unwrap();
