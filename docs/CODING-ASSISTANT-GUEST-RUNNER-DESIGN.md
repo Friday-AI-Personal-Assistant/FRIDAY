@@ -1930,3 +1930,10 @@ transaction and does not pin the executable's file identity. A future start
 or stop transaction must perform its own immediate verification and stronger
 process/file identity checks. It does not launch Sandbox or enable guest
 execution.
+
+
+## Exact process re-observation gate before Sandbox stop — implemented as a pure gate
+
+A new stop-precondition helper requires the durable journal to validate in the Running state, revalidates the freshly observed Windows Sandbox process identity, and compares the full identity tuple against FRIDAY's recorded observation: session ID, PID, process creation time, and image path. It also requires an explicit authoritative-ownership result from the future native observation layer. PID reuse, a replacement process, a different image path, a foreign session ID, missing ownership evidence, or a non-Running journal fails closed.
+
+Regression tests cover exact match, absent ownership proof, PID reuse, PID substitution, image substitution, session substitution, and invalid journal state. This is a pure authorization gate: it does not query Windows, execute wsb stop, or claim that authoritative process observation is implemented. The native observer and stop transaction must be separately implemented and physically accepted before guest execution can be enabled.

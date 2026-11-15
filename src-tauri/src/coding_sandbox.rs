@@ -2671,6 +2671,33 @@ fn validate_sandbox_session_journal(
     Ok(state)
 }
 
+/// Require a fresh native process observation to match the exact identity
+/// recorded by the running journal before a stop transaction can proceed.
+/// The caller must set ownership_verified only after an authoritative Windows
+/// observation (not a PID/name-only lookup) has established causal ownership.
+fn verify_reobserved_sandbox_process_for_stop(
+    journal: &SandboxSessionJournal,
+    observed_identity: &SandboxProcessIdentity,
+    ownership_verified: bool,
+) -> Result<(), String> {
+    if validate_sandbox_session_journal(journal)? != SandboxSessionState::Running {
+        return Err("The Sandbox journal is not in the Running state.".into());
+    }
+    validate_sandbox_process_identity(observed_identity)?;
+    let recorded_identity = journal.entries.iter()
+        .rev()
+        .find(|entry| entry.event == SandboxSessionEvent::ObserveProcess)
+        .and_then(|entry| entry.observed_identity.as_ref())
+        .ok_or_else(|| "The Sandbox journal has no recorded process identity.".to_string())?;
+    if !recorded_identity.session_id.eq_ignore_ascii_case(&journal.run_id)
+        || recorded_identity != observed_identity
+        || !ownership_verified
+    {
+        return Err("The current Sandbox process could not be proven to be the exact FRIDAY-owned session.".into());
+    }
+    Ok(())
+}
+
 /// Prepare a stop command only when the validated durable journal records
 /// this run as Running, its recorded process identity is bound to the
 /// journal's 32-character run ID, and the fresh CLI inventory contains only
@@ -6386,7 +6413,58 @@ mod tests {
     }
 
     #[test]
-    fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_inventory() {
+        #[test]
+    fn sandbox_stop_reobservation_requires_exact_identity_and_authoritative_ownership() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let identity = SandboxProcessIdentity {
+            session_id: run_id.into(),
+            process_id: 4321,
+            process_creation_time: 987654,
+            image_path: r"C:\Windows\System32\WindowsSandbox.exe".into(),
+        };
+        let mut journal = SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: run_id.into(),
+            entries: Vec::new(),
+        };
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::RequestLaunch, None, false, false,
+        ).unwrap();
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::ObserveProcess, Some(&identity), false, false,
+        ).unwrap();
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::ConfirmSession, Some(&identity), true, false,
+        ).unwrap();
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::ConfirmRunning, Some(&identity), true, false,
+        ).unwrap();
+
+        assert!(verify_reobserved_sandbox_process_for_stop(&journal, &identity, true).is_ok());
+        assert!(verify_reobserved_sandbox_process_for_stop(&journal, &identity, false).is_err());
+
+        let mut reused_pid = identity.clone();
+        reused_pid.process_creation_time += 1;
+        assert!(verify_reobserved_sandbox_process_for_stop(&journal, &reused_pid, true).is_err());
+
+        let mut substituted_pid = identity.clone();
+        substituted_pid.process_id += 1;
+        assert!(verify_reobserved_sandbox_process_for_stop(&journal, &substituted_pid, true).is_err());
+
+        let mut substituted_image = identity.clone();
+        substituted_image.image_path = r"C:\Temp\WindowsSandbox.exe".into();
+        assert!(verify_reobserved_sandbox_process_for_stop(&journal, &substituted_image, true).is_err());
+
+        let mut substituted_session = identity.clone();
+        substituted_session.session_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
+        assert!(verify_reobserved_sandbox_process_for_stop(&journal, &substituted_session, true).is_err());
+
+        let mut invalid_state = journal.clone();
+        invalid_state.entries.pop();
+        assert!(verify_reobserved_sandbox_process_for_stop(&invalid_state, &identity, true).is_err());
+    }
+
+fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_inventory() {
         let run_id = "0123456789abcdef0123456789abcdef";
         let session_id = windows_sandbox_cli_id_from_run_id(run_id).unwrap();
         let identity = SandboxProcessIdentity {
