@@ -3285,11 +3285,23 @@ if ($disk.Number -ne $diskNumber -or [uint64]$disk.Size -ne 67108864 -or [string
 $partitions = @(Get-Partition -DiskNumber $diskNumber -ErrorAction Stop)
 if ($partitions.Count -ne 1) { throw 'FRIDAY_PARTITION_CARDINALITY' }
 $partition = $partitions[0]
+$actualPartition = [pscustomobject]@{
+  number = [uint32]$partition.PartitionNumber
+  guid = [string]$partition.Guid
+  offset = [uint64]$partition.Offset
+  size = [uint64]$partition.Size
+  gptType = [string]$partition.GptType
+  isReadOnly = [bool]$partition.IsReadOnly
+  isOffline = [bool]$partition.IsOffline
+  driveLetter = [string]$partition.DriveLetter
+}
 if ($partition.PartitionNumber -ne 1 -or [guid]$partition.Guid -ne $expectedPartitionGuid -or
     [uint64]$partition.Offset -ne $expectedPartitionOffset -or [uint64]$partition.Size -ne $expectedPartitionSize -or
-    [string]$partition.GptType -ne 'EBD0A0A2-B9E5-4433-87C0-68B6B72699C7' -or
+    [guid]$partition.GptType -ne [guid]'EBD0A0A2-B9E5-4433-87C0-68B6B72699C7' -or
     [bool]$partition.IsReadOnly -or [bool]$partition.IsOffline -or
-    -not [string]::IsNullOrEmpty([string]$partition.DriveLetter)) { throw 'FRIDAY_PARTITION_IDENTITY_OR_STATE_MISMATCH' }
+    -not [string]::IsNullOrEmpty([string]$partition.DriveLetter)) {
+  throw ('FRIDAY_PARTITION_IDENTITY_OR_STATE_MISMATCH ' + ($actualPartition | ConvertTo-Json -Compress))
+}
 $formatted = @(Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel $expectedLabel -AllocationUnitSize 4096 -Force:$false -Confirm:$false -ErrorAction Stop)
 if ($formatted.Count -ne 1) { throw 'FRIDAY_FORMAT_RESULT_CARDINALITY' }
 $volume = Get-Volume -Partition $partition -ErrorAction Stop
@@ -4098,7 +4110,8 @@ mod tests {
         use GuestResultStorageEvent as E;
         use GuestResultStorageState as S;
         let mut state = S::Planned;
-        for event in [E::CreateVerified, E::AttachVerified, E::BeginGptInitialization, E::CompleteGptInitialization, E::MountVerified, E::GrantShare,
+        for event in [E::CreateVerified, E::AttachVerified, E::BeginGptInitialization, E::CompleteGptInitialization,
+            E::BeginNtfsFormat, E::CompleteNtfsFormat, E::MountVerified, E::GrantShare,
             E::ConfirmGuestStopped, E::RevokeShare, E::DetachVerified, E::DeleteVerified] {
             state = advance_guest_result_storage_state(state, event, true, event == E::ConfirmGuestStopped)
                 .expect("valid lifecycle transition should succeed");
