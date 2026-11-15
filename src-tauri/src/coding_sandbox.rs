@@ -845,8 +845,8 @@ fn build_guest_result_volume_plan(
     Ok(GuestResultVolumePlan {
         run_id: run_id.to_string(),
         storage_root: canonical_root,
-        run_directory,
         host_mount_directory: run_directory.join("result-mount"),
+        run_directory,
         vhdx_path,
         guest_mount_path: GUEST_RESULT_VOLUME_GUEST_MOUNT.to_string(),
         capacity_bytes: GUEST_RESULT_VOLUME_CAPACITY_BYTES,
@@ -4138,7 +4138,7 @@ mod tests {
             &root, &attached.run_id, &attached.vhdx_identifier,
         ).unwrap(), attached);
         assert!(append_and_persist_guest_result_storage_transition(
-            &root, &created, GuestResultStorageEvent::MountVerified, true, false,
+            &root, &created, GuestResultStorageEvent::BeginMount, true, false,
         ).is_err(), "a stale branch must not append over a newer persisted generation");
         assert!(append_and_persist_guest_result_storage_transition(
             &root, &attached, GuestResultStorageEvent::GrantShare, false, false,
