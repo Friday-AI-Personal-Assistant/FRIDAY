@@ -1870,3 +1870,20 @@ Regression coverage accepts exactly 64 entries and rejects 65. The existing
 
 This is defensive parsing only. It does not establish session ownership or
 enable Sandbox launch or guest execution.
+
+
+## Exclusive post-launch Sandbox inventory gate — implemented as a pure check
+
+A separate post-launch inventory gate now accepts only a fresh CLI inventory
+containing exactly one session: the session identifier deterministically
+derived from FRIDAY's run ID, in the exact expected state. An empty inventory,
+a missing or unexpected identifier, the wrong status, or any additional
+session fails closed. This prevents a future launch flow from treating a
+matching session as sufficient while silently ignoring a concurrent or
+unrelated Sandbox session.
+
+The gate is currently a pure validation function with regression tests. It
+does not launch or stop Sandbox, establish causal process ownership, or prove
+that a session belongs to FRIDAY. The future launch transaction must still
+obtain the inventory at the correct time and independently establish
+authoritative process/session ownership. Guest execution remains disabled.

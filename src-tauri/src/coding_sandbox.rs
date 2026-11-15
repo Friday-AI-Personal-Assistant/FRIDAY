@@ -2289,6 +2289,24 @@ fn require_empty_windows_sandbox_cli_inventory(
     }
 }
 
+/// After a launch request, accept only a fresh inventory containing exactly
+/// the run-derived session ID in the expected state. Extra sessions make the
+/// observation ambiguous and must never be silently ignored.
+fn require_exclusive_windows_sandbox_cli_session(
+    sessions: &[WindowsSandboxCliSession],
+    expected_id: &str,
+    expected_status: WindowsSandboxCliSessionStatus,
+) -> Result<(), String> {
+    if !valid_windows_sandbox_cli_id(expected_id) {
+        return Err("The expected Windows Sandbox session identifier is invalid.".into());
+    }
+    if sessions.len() != 1 {
+        return Err("The Windows Sandbox inventory is not exclusive to FRIDAY's expected session.".into());
+    }
+    verify_windows_sandbox_cli_session(sessions, expected_id, expected_status)
+        .map_err(|_| "The Windows Sandbox inventory does not contain FRIDAY's exact session in the required state.".into())
+}
+
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WindowsSandboxLaunchPlan {
@@ -6239,6 +6257,38 @@ mod tests {
         let output = read_bounded_command_output(&input[..], 0).unwrap();
         assert!(output.bytes.is_empty());
         assert!(output.truncated);
+    }
+
+    #[test]
+    fn windows_sandbox_cli_post_launch_inventory_requires_one_exact_session() {
+        let expected = WindowsSandboxCliSession {
+            id: "01234567-89ab-cdef-0123-456789abcdef".into(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        assert!(require_exclusive_windows_sandbox_cli_session(
+            &[expected.clone()], &expected.id, WindowsSandboxCliSessionStatus::Running,
+        ).is_ok());
+
+        assert!(require_exclusive_windows_sandbox_cli_session(
+            &[], &expected.id, WindowsSandboxCliSessionStatus::Running,
+        ).is_err());
+        assert!(require_exclusive_windows_sandbox_cli_session(
+            &[expected.clone()], &expected.id, WindowsSandboxCliSessionStatus::Stopped,
+        ).is_err());
+
+        let foreign = WindowsSandboxCliSession {
+            id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        assert!(require_exclusive_windows_sandbox_cli_session(
+            &[foreign.clone()], &expected.id, WindowsSandboxCliSessionStatus::Running,
+        ).is_err());
+        assert!(require_exclusive_windows_sandbox_cli_session(
+            &[expected.clone(), foreign], &expected.id, WindowsSandboxCliSessionStatus::Running,
+        ).is_err());
+        assert!(require_exclusive_windows_sandbox_cli_session(
+            &[expected.clone()], "not-a-session-id", WindowsSandboxCliSessionStatus::Running,
+        ).is_err());
     }
 
     #[test]
