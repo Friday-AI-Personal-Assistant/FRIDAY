@@ -2197,6 +2197,7 @@ fn validate_sandbox_session_journal(
             }
         } else if entry.event != SandboxSessionEvent::PreserveForRecovery
             && entry.event != SandboxSessionEvent::RemoveOwnershipRecord
+            && entry.event != SandboxSessionEvent::RequestLaunch
             && entry.observed_identity.is_none()
         {
             return Err("The Sandbox session transition is missing its observed process identity.".into());
