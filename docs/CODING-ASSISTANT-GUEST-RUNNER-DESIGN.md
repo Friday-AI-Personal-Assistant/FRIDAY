@@ -1637,3 +1637,23 @@ journaled production lifecycle or Sandbox folder mapping, and no guest process
 is launched. The current Windows CI test coverage must still exercise actual
 mount/unmount behavior and physical Windows acceptance remains mandatory.
 Guest execution remains disabled.
+
+
+## Journaled private result-volume mount lifecycle — 2026-11-15
+
+The native private-directory mount and unmount primitives now have journaled
+Windows gateways. Mounting is accepted only from the exact verified
+`Formatted` journal state and matching VHDX identifier. The gateway persists
+`MountInProgress` before calling the Windows mount API and records
+`Mounted` only after the volume GUID mapping is read back and verified.
+Failures attempt to persist `RecoveryRequired`; no automatic retry occurs.
+
+Unmounting is accepted only from `ShareRevoked`, after the caller has durably
+recorded guest stop and share revocation. The gateway persists
+`UnmountInProgress`, verifies the existing mapping is the expected volume,
+removes it, verifies the mapping is gone, and only then records `Unmounted`.
+The VHDX is not detached by these gateways.
+
+These gateways are Windows-only and are not yet connected to Sandbox sharing
+or guest execution. Native mount/unmount integration tests and physical
+Windows acceptance remain required. Guest execution remains disabled.

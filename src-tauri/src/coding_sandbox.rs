@@ -1904,6 +1904,68 @@ fn mount_guest_result_volume_at_private_directory(
     Ok(())
 }
 
+/// Journaled mount gateway. The journal enters MountInProgress before the OS
+/// mapping is changed and reaches Mounted only after volume-GUID read-back.
+#[cfg(windows)]
+fn mount_guest_result_volume_journaled(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    journal_root: &Path,
+    current_journal: &GuestResultStorageJournal,
+    volume_path: &str,
+) -> Result<GuestResultStorageJournal, String> {
+    let identifier = verify_guest_result_vhdx_identity(plan, trusted_storage_root)?;
+    if current_journal.run_id != plan.run_id
+        || current_journal.vhdx_identifier != identifier
+        || validate_guest_result_storage_journal(current_journal)? != GuestResultStorageState::Formatted {
+        return Err("The result-volume mount journal is not bound to this verified formatted FRIDAY volume.".into());
+    }
+    let in_progress = append_and_persist_guest_result_storage_transition(
+        journal_root, current_journal, GuestResultStorageEvent::BeginMount, true, false,
+    )?;
+    if let Err(error) = mount_guest_result_volume_at_private_directory(plan, trusted_storage_root, volume_path) {
+        let _ = append_and_persist_guest_result_storage_transition(
+            journal_root, &in_progress, GuestResultStorageEvent::PreserveForRecovery, false, false,
+        );
+        return Err(format!("{error} The result volume was preserved for recovery; no automatic retry will occur."));
+    }
+    append_and_persist_guest_result_storage_transition(
+        journal_root, &in_progress, GuestResultStorageEvent::CompleteMount, true, false,
+    )
+}
+
+/// Journaled unmount gateway. It is permitted only after guest stop and share
+/// revocation have already been durably recorded.
+#[cfg(windows)]
+fn unmount_guest_result_volume_journaled(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    journal_root: &Path,
+    current_journal: &GuestResultStorageJournal,
+    expected_volume_path: &str,
+) -> Result<GuestResultStorageJournal, String> {
+    let identifier = verify_guest_result_vhdx_identity(plan, trusted_storage_root)?;
+    if current_journal.run_id != plan.run_id
+        || current_journal.vhdx_identifier != identifier
+        || validate_guest_result_storage_journal(current_journal)? != GuestResultStorageState::ShareRevoked {
+        return Err("The result-volume unmount journal is not in the verified post-share-revocation state.".into());
+    }
+    let in_progress = append_and_persist_guest_result_storage_transition(
+        journal_root, current_journal, GuestResultStorageEvent::BeginUnmount, true, true,
+    )?;
+    if let Err(error) = unmount_guest_result_volume_from_private_directory(
+        plan, trusted_storage_root, expected_volume_path,
+    ) {
+        let _ = append_and_persist_guest_result_storage_transition(
+            journal_root, &in_progress, GuestResultStorageEvent::PreserveForRecovery, false, true,
+        );
+        return Err(format!("{error} The result volume was preserved for recovery; no automatic retry will occur."));
+    }
+    append_and_persist_guest_result_storage_transition(
+        journal_root, &in_progress, GuestResultStorageEvent::CompleteUnmount, true, true,
+    )
+}
+
 /// Removes only FRIDAY's exact private directory mount and confirms it is no longer mapped.
 #[cfg(windows)]
 fn unmount_guest_result_volume_from_private_directory(
