@@ -6023,7 +6023,7 @@ mod tests {
         let stop = build_windows_sandbox_cli_plan(
             executable, run_id, WindowsSandboxCliCommand::Stop, None,
         ).unwrap();
-        assert_eq!(stop.arguments, vec!["stop", "--raw", "--id", start.sandbox_id]);
+        assert_eq!(stop.arguments, vec!["stop".to_string(), "--raw".to_string(), "--id".to_string(), start.sandbox_id.clone()]);
     }
 
     #[test]
