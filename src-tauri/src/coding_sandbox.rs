@@ -2052,7 +2052,9 @@ fn build_windows_sandbox_cli_plan(
     config: Option<&str>,
 ) -> Result<WindowsSandboxCliPlan, String> {
     if !valid_absolute_windows_drive_path(executable_path)
-        || !Path::new(executable_path).file_name().and_then(OsStr::to_str)
+        || !executable_path
+            .rsplit(['\\\\', '/'])
+            .next()
             .is_some_and(|name| name.eq_ignore_ascii_case(WINDOWS_SANDBOX_CLI_FILE_NAME))
     {
         return Err("The Windows Sandbox CLI must resolve to an absolute wsb.exe path.".into());
