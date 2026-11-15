@@ -77,9 +77,9 @@ export default function CodingAssistant() {
     );
     if (!confirmed) { setMessage("Approval was not applied. The preview remains available until it expires."); return; }
     const result = await run("Approved change applied and backup saved.", () =>
-      invoke<ApplyResult>("apply_code_change", { previewId: preview.previewId, approvalToken: token }, value => {
+      invoke<ApplyResult>("apply_code_change", { previewId: preview.previewId, approvalToken: token }), value => {
         setLastApply(value); setPreview(null); setApproval(""); setProposed("");
-      }));
+      });
     if (result) {
       await run("Project file list refreshed.", () => invoke<Scan>("pick_project_folder_and_list_files"), value => {
         setScan(value); setSelected([]); setFiles([]); setAnalysis(null); setActiveFileId("");
