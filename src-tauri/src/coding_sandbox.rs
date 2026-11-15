@@ -4361,10 +4361,10 @@ mod tests {
         let snapshot = base.join("snapshot");
         fs::create_dir(&snapshot).unwrap();
         let canonical = fs::canonicalize(&snapshot).unwrap();
-        let result = base.join("run").join("result-mount");
-        assert!(build_sandbox_config_with_result_paths(&canonical, &result).is_err(),
+        let relative_result = PathBuf::from("relative-result-mount");
+        assert!(build_sandbox_config_with_result_paths(&canonical, &relative_result).is_err(),
             "result mapping must be an absolute path");
-        let result = PathBuf::from(r"C:\FRIDAY\Runs\abc\result-mount");
+        let result = base.join("run").join("result-mount");
         let config = build_sandbox_config_with_result_paths(&canonical, &result).unwrap();
         validate_sandbox_config_with_result_policy(&config).unwrap();
         assert!(config.contains("<ReadOnly>true</ReadOnly>"));
