@@ -7345,7 +7345,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         }).collect::<Vec<_>>();
 
         let successful_consumers = workers.into_iter()
-            .filter(|worker| worker.join().unwrap())
+            .map(|worker| worker.join().unwrap())
+            .filter(|succeeded| *succeeded)
             .count();
         assert_eq!(successful_consumers, 1);
         assert_eq!(store.lock().unwrap().pending_count(), 0);
