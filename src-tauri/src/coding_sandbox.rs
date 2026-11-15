@@ -2967,14 +2967,16 @@ fn verify_guest_result_windows_partition_layout_bytes(
     if data[8..24] != metadata.primary_header[56..72] {
         return Err("Windows reported a GPT disk identifier different from FRIDAY's recorded layout.".into());
     }
-    // Windows reports usable byte ranges from GPT's FirstUsableLBA and
-    // LastUsableLBA, not from the end of the GPT metadata alone.
-    let expected_usable_start = plan.first_lba
+    // DRIVE_LAYOUT_INFORMATION_GPT reports the disk-wide GPT usable
+    // interval (FirstUsableLBA=34 through LastUsableLBA=total-34), not the
+    // aligned start/end of FRIDAY's individual partition. The partition entry
+    // below is checked independently against the exact 1 MiB-aligned plan.
+    let total_sectors = plan.disk_capacity_bytes / GUEST_RESULT_GPT_SECTOR_BYTES;
+    let expected_usable_start = GUEST_RESULT_GPT_METADATA_SECTORS
         .checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
         .ok_or_else(|| "The GPT usable-range start overflowed.".to_string())?;
-    let expected_usable_length = plan.last_lba
-        .checked_sub(plan.first_lba)
-        .and_then(|sectors| sectors.checked_add(1))
+    let expected_usable_length = total_sectors
+        .checked_sub(GUEST_RESULT_GPT_METADATA_SECTORS * 2)
         .and_then(|sectors| sectors.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES))
         .ok_or_else(|| "The GPT usable-range length overflowed.".to_string())?;
     let observed_usable_start = read_u64(24)?;
@@ -3204,8 +3206,9 @@ mod tests {
         bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
         bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
         bytes[8..24].copy_from_slice(&metadata.primary_header[56..72]);
-        bytes[24..32].copy_from_slice(&(plan.first_lba * 512).to_le_bytes());
-        bytes[32..40].copy_from_slice(&((plan.last_lba - plan.first_lba + 1) * 512).to_le_bytes());
+        let total_sectors = plan.disk_capacity_bytes / GUEST_RESULT_GPT_SECTOR_BYTES;
+        bytes[24..32].copy_from_slice(&(GUEST_RESULT_GPT_METADATA_SECTORS * 512).to_le_bytes());
+        bytes[32..40].copy_from_slice(&((total_sectors - GUEST_RESULT_GPT_METADATA_SECTORS * 2) * 512).to_le_bytes());
         bytes[40..44].copy_from_slice(&128u32.to_le_bytes());
         let entry = FRIDAY_DRIVE_LAYOUT_EX_HEADER_BYTES;
         bytes[entry..entry + 4].copy_from_slice(&1u32.to_le_bytes());

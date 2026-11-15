@@ -1573,10 +1573,11 @@ layout query is therefore not allowed to rely on a stale pre-initialization
 partition view. Failure to refresh remains fail-closed.
 
 
-The Windows GPT layout parser was corrected to validate the usable byte range
-against the exact GPT FirstUsableLBA and LastUsableLBA from FRIDAY's partition
-plan. Windows documents StartingUsableOffset as the byte offset of the first
-usable block and UsableLength as the size of usable blocks; these are not the
-same as simply subtracting the GPT header/table sectors from total disk size.
-The parser now requires the exact 128-entry partition capacity, validates both
-partition flags, and reports observed versus expected values on mismatch.
+The Windows GPT layout parser distinguishes the disk-wide GPT usable
+interval reported by DRIVE_LAYOUT_INFORMATION_GPT from FRIDAY's aligned
+partition extent. Windows reports the GPT metadata boundary (FirstUsableLBA 34
+through LastUsableLBA total-sectors minus 34) in StartingUsableOffset and
+UsableLength; the partition entry is separately required to match FRIDAY's
+exact 1 MiB-aligned first LBA and planned last LBA. The parser requires the
+exact 128-entry partition capacity, validates both partition flags, and
+reports observed versus expected values on mismatch.
