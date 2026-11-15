@@ -2719,11 +2719,17 @@ fn write_new_sandbox_config_file(
     }
     let canonical_directory = fs::canonicalize(private_run_directory)
         .map_err(|_| "The private Sandbox run directory could not be verified.".to_string())?;
-    if canonical_directory.as_path() != private_run_directory
+    // Windows may return an equivalent extended/case-normalized spelling from
+    // canonicalize(); use that verified spelling rather than requiring textual
+    // equality with the caller's path. Reinspect the canonical target itself so
+    // a final-component reparse point is never accepted.
+    let canonical_metadata = fs::symlink_metadata(&canonical_directory)
+        .map_err(|_| "The canonical Sandbox run directory could not be inspected.".to_string())?;
+    if !canonical_metadata.is_dir() || is_reparse_or_symlink(&canonical_metadata)
         || !canonical_directory.is_absolute()
         || canonical_directory.components().any(|part| matches!(part, Component::ParentDir))
     {
-        return Err("The Sandbox configuration parent path changed or is not canonical.".into());
+        return Err("The canonical Sandbox configuration parent is not a safe ordinary directory.".into());
     }
 
     let config_path = canonical_directory.join(SANDBOX_CONFIG_FILE_NAME);
