@@ -388,17 +388,18 @@ fn run_bounded_probe(mut command: Command) -> Result<(ExitStatus, Vec<u8>), Stri
 }
 
 #[cfg(windows)]
-fn detect_windows_sandbox_capabilities() -> (String, String, String, bool, String, Option<bool>, bool, bool, bool, bool, String, String) {
+fn detect_windows_sandbox_capabilities() -> (String, String, String, bool, String, String, Option<bool>, bool, bool, bool, bool, String, String) {
     // Fixed, read-only PowerShell probes. No user or model supplied command text is accepted.
     let script = r#"$ErrorActionPreference = 'SilentlyContinue'
 $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
 $feature = Get-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM
 $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty VirtualizationFirmwareEnabled
 $active = [bool](Get-Process -Name WindowsSandbox -ErrorAction SilentlyContinue)
-$wsb = Get-Command wsb -ErrorAction SilentlyContinue
+$wsb = Get-Command wsb.exe -CommandType Application -ErrorAction SilentlyContinue
+$wsbPath = if ($wsb -and $wsb.Source) { [string]$wsb.Source } else { '' }
 $version = ''
-if ($wsb -and $wsb.Source) {
-  $version = [string](Get-Item -LiteralPath $wsb.Source -ErrorAction SilentlyContinue).VersionInfo.FileVersion
+if ($wsbPath -and (Test-Path -LiteralPath $wsbPath -PathType Leaf)) {
+  $version = [string](Get-Item -LiteralPath $wsbPath -ErrorAction SilentlyContinue).VersionInfo.FileVersion
 }
 $privileges = (& whoami.exe /priv 2>$null | Out-String)
 $virtualDiskApi = Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32\virtdisk.dll')
@@ -418,7 +419,8 @@ $mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sand
   edition = [string]$cv.EditionID
   build = [string]$cv.CurrentBuildNumber
   feature = [string]$feature.State
-  wsbAvailable = [bool]$wsb
+  wsbAvailable = [bool]($wsbPath -and (Test-Path -LiteralPath $wsbPath -PathType Leaf) -and ([IO.Path]::GetFileName($wsbPath) -ieq 'wsb.exe'))
+  wsbPath = [string]$wsbPath
   wsbVersion = [string]$version
   virtualizationFirmwareEnabled = if ($null -eq $cpu) { $null } else { [bool]$cpu }
   sandboxProcessDetected = $active
@@ -431,13 +433,13 @@ $mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sand
     let mut command = Command::new("powershell.exe");
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     let Ok((status, stdout)) = run_bounded_probe(command) else {
-        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false, "Unknown".into(), "Unknown".into());
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), "Unknown".into(), None, false, false, false, false, "Unknown".into(), "Unknown".into());
     };
     if !status.success() {
-        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false, "Unknown".into(), "Unknown".into());
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), "Unknown".into(), None, false, false, false, false, "Unknown".into(), "Unknown".into());
     }
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&stdout) else {
-        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), None, false, false, false, false, "Unknown".into(), "Unknown".into());
+        return ("Unknown".into(), "Unknown".into(), "Unknown".into(), false, "Unavailable".into(), "Unknown".into(), None, false, false, false, false, "Unknown".into(), "Unknown".into());
     };
     let string_field = |key: &str| value.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("Unknown").to_string();
     let firmware = value.get("virtualizationFirmwareEnabled").and_then(serde_json::Value::as_bool);
@@ -446,6 +448,7 @@ $mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sand
         string_field("build"),
         string_field("feature"),
         value.get("wsbAvailable").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        string_field("wsbPath"),
         string_field("wsbVersion"),
         firmware,
         value.get("sandboxProcessDetected").and_then(serde_json::Value::as_bool).unwrap_or(false),
@@ -2032,11 +2035,20 @@ fn valid_windows_sandbox_cli_id(value: &str) -> bool {
         })
 }
 
-fn windows_sandbox_cli_runtime_supported(build: &str, available: bool, version: &str) -> bool {
+fn valid_windows_sandbox_cli_executable_path(path: &str) -> bool {
+    valid_absolute_windows_drive_path(path)
+        && path.rsplit(|character| character == '\\' || character == '/')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(WINDOWS_SANDBOX_CLI_FILE_NAME))
+}
+
+fn windows_sandbox_cli_runtime_supported(build: &str, executable_path: &str, version: &str) -> bool {
     let Ok(build_number) = build.trim().parse::<u32>() else {
         return false;
     };
-    if build_number < MIN_WINDOWS_SANDBOX_CLI_BUILD || !available {
+    if build_number < MIN_WINDOWS_SANDBOX_CLI_BUILD
+        || !valid_windows_sandbox_cli_executable_path(executable_path)
+    {
         return false;
     }
 
@@ -2071,12 +2083,7 @@ fn build_windows_sandbox_cli_plan(
     command: WindowsSandboxCliCommand,
     config: Option<&str>,
 ) -> Result<WindowsSandboxCliPlan, String> {
-    if !valid_absolute_windows_drive_path(executable_path)
-        || !executable_path
-            .rsplit(|character| character == '\\' || character == '/')
-            .next()
-            .is_some_and(|name| name.eq_ignore_ascii_case(WINDOWS_SANDBOX_CLI_FILE_NAME))
-    {
+    if !valid_windows_sandbox_cli_executable_path(executable_path) {
         return Err("The Windows Sandbox CLI must resolve to an absolute wsb.exe path.".into());
     }
     let sandbox_id = windows_sandbox_cli_id_from_run_id(run_id)?;
@@ -2728,13 +2735,13 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
     #[cfg(windows)]
     {
         let detected = detect_windows_sandbox();
-        let (edition, build, feature, wsb_available, wsb_version, virtualization, active,
+        let (edition, build, feature, wsb_available, wsb_path, wsb_version, virtualization, active,
             virtual_disk_api, manage_volume_privilege, hyperv_cmdlets,
             mapped_folders_policy, mapped_folder_write_policy) = detect_windows_sandbox_capabilities();
         let edition_supported = ["Professional", "Enterprise", "Education"]
             .iter().any(|supported| edition.eq_ignore_ascii_case(supported));
         let cli_runtime_supported =
-            windows_sandbox_cli_runtime_supported(&build, wsb_available, &wsb_version);
+            windows_sandbox_cli_runtime_supported(&build, &wsb_path, &wsb_version);
         let runtime_ready = detected && edition_supported
             && feature.eq_ignore_ascii_case("Enabled") && cli_runtime_supported
             && virtualization == Some(true) && !active;
@@ -5996,15 +6003,18 @@ mod tests {
 
     #[test]
     fn windows_sandbox_cli_runtime_requires_supported_build_and_numeric_file_version() {
-        assert!(windows_sandbox_cli_runtime_supported("26100", true, "10.0.26100.1"));
-        assert!(windows_sandbox_cli_runtime_supported("26200", true, "10.0.26200.100"));
-        assert!(!windows_sandbox_cli_runtime_supported("26099", true, "10.0.26100.1"));
-        assert!(!windows_sandbox_cli_runtime_supported("Unknown", true, "10.0.26100.1"));
-        assert!(!windows_sandbox_cli_runtime_supported("26100", false, "10.0.26100.1"));
-        assert!(!windows_sandbox_cli_runtime_supported("26100", true, ""));
-        assert!(!windows_sandbox_cli_runtime_supported("26100", true, "Unknown"));
-        assert!(!windows_sandbox_cli_runtime_supported("26100", true, "10.x.26100"));
-        assert!(!windows_sandbox_cli_runtime_supported("26100", true, "0.0.0.0"));
+        let path = r"C:\Users\Friday\AppData\Local\Microsoft\WindowsApps\wsb.exe";
+        assert!(valid_windows_sandbox_cli_executable_path(path));
+        assert!(windows_sandbox_cli_runtime_supported("26100", path, "10.0.26100.1"));
+        assert!(windows_sandbox_cli_runtime_supported("26200", path, "10.0.26200.100"));
+        assert!(!windows_sandbox_cli_runtime_supported("26099", path, "10.0.26100.1"));
+        assert!(!windows_sandbox_cli_runtime_supported("Unknown", path, "10.0.26100.1"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", "relative\\wsb.exe", "10.0.26100.1"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", r"C:\\Temp\\other.exe", "10.0.26100.1"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", path, ""));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", path, "Unknown"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", path, "10.x.26100"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", path, "0.0.0.0"));
     }
 
     #[test]
