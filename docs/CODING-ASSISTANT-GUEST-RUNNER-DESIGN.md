@@ -1858,3 +1858,15 @@ Sandbox session. The returned inventory is not yet connected to the launch
 transaction or durable ownership journal. A later launch integration must
 obtain a fresh inventory immediately before requesting launch and apply the
 empty-inventory gate; guest execution remains disabled.
+
+
+## Bound Windows Sandbox CLI inventory cardinality — implemented
+
+The strict `wsb list --raw` parser now enforces a fixed maximum of 64 session
+records after JSON schema validation and before allocating the parsed session
+vector. Inventories above the limit fail closed; no partial inventory is used.
+Regression coverage accepts exactly 64 entries and rejects 65. The existing
+64 KiB byte ceiling remains in force as an earlier transport-level bound.
+
+This is defensive parsing only. It does not establish session ownership or
+enable Sandbox launch or guest execution.

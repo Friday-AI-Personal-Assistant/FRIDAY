@@ -2045,6 +2045,7 @@ const SANDBOX_EXECUTABLE_FILE_NAME: &str = "WindowsSandbox.exe";
 
 const WINDOWS_SANDBOX_CLI_FILE_NAME: &str = "wsb.exe";
 const MAX_WINDOWS_SANDBOX_CLI_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_WINDOWS_SANDBOX_CLI_SESSIONS: usize = 64;
 const MIN_WINDOWS_SANDBOX_CLI_BUILD: u32 = 26_100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2237,6 +2238,9 @@ fn parse_windows_sandbox_cli_list(bytes: &[u8]) -> Result<Vec<WindowsSandboxCliS
         .map_err(|_| "The Windows Sandbox CLI inventory is malformed or has an unsupported schema.".to_string())?;
     if !response.extra.is_empty() {
         return Err("The Windows Sandbox CLI inventory contains unsupported top-level fields.".into());
+    }
+    if response.windows_sandbox_environments.len() > MAX_WINDOWS_SANDBOX_CLI_SESSIONS {
+        return Err("The Windows Sandbox CLI inventory contains more sessions than FRIDAY's fixed safety limit.".into());
     }
     let mut sessions = Vec::with_capacity(response.windows_sandbox_environments.len());
     for entry in response.windows_sandbox_environments {
@@ -6255,6 +6259,36 @@ mod tests {
 
         let mixed = vec![running[0].clone(), stopped[0].clone()];
         assert!(require_empty_windows_sandbox_cli_inventory(&mixed).is_err());
+    }
+
+    #[test]
+    fn windows_sandbox_cli_inventory_enforces_fixed_session_count_boundary() {
+        let id = "01234567-89ab-cdef-0123-456789abcdef";
+        let accepted = format!(
+            r#"{{"WindowsSandboxEnvironments":[{}]}}"#,
+            (0..MAX_WINDOWS_SANDBOX_CLI_SESSIONS)
+                .map(|index| format!(
+                    r#"{{"Id":"{:08x}-89ab-cdef-0123-456789abcdef","Status":"Stopped"}}"#,
+                    index + 1
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let parsed = parse_windows_sandbox_cli_list(accepted.as_bytes()).unwrap();
+        assert_eq!(parsed.len(), MAX_WINDOWS_SANDBOX_CLI_SESSIONS);
+
+        let rejected = format!(
+            r#"{{"WindowsSandboxEnvironments":[{}]}}"#,
+            (0..=MAX_WINDOWS_SANDBOX_CLI_SESSIONS)
+                .map(|index| format!(
+                    r#"{{"Id":"{:08x}-89ab-cdef-0123-456789abcdef","Status":"Stopped"}}"#,
+                    index + 1
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(parse_windows_sandbox_cli_list(rejected.as_bytes()).is_err());
+        assert!(valid_windows_sandbox_cli_id(id));
     }
 
     #[test]
