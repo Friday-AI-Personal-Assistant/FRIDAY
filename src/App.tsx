@@ -2,8 +2,9 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Assistant from "./Assistant";
 import SkillsManager from "./SkillsManager";
+import CodingAssistant from "./CodingAssistant";
 
-type Page = "AI Chat" | "Overview" | "Modules" | "Privacy & Security" | "Settings";
+type Page = "AI Chat" | "Coding Assistant" | "Overview" | "Modules" | "Privacy & Security" | "Settings";
 
 const modules = [
   { name: "Email Assistant", detail: "Organise messages and prepare replies for your approval.", icon: "✉", status: "Planned" },
@@ -55,9 +56,9 @@ function App() {
         <div className="brand"><div className="brand-mark">F</div><div><strong>FRIDAY</strong><span>PERSONAL AI</span></div></div>
         <div className="side-label">WORKSPACE</div>
         <nav>
-          {(["AI Chat", "Overview", "Modules", "Privacy & Security", "Settings"] as Page[]).map(item => (
+          {(["AI Chat", "Coding Assistant", "Overview", "Modules", "Privacy & Security", "Settings"] as Page[]).map(item => (
             <button key={item} className={page === item ? "nav-item active" : "nav-item"} onClick={() => setPage(item)}>
-              <span className="nav-icon">{item === "AI Chat" ? "✦" : item === "Overview" ? "⌂" : item === "Modules" ? "▦" : item === "Privacy & Security" ? "◇" : "⚙"}</span>{item}
+              <span className="nav-icon">{item === "AI Chat" ? "✦" : item === "Coding Assistant" ? "⌘" : item === "Overview" ? "⌂" : item === "Modules" ? "▦" : item === "Privacy & Security" ? "◇" : "⚙"}</span>{item}
             </button>
           ))}
         </nav>
@@ -75,6 +76,7 @@ function App() {
         </header>
 
         {page === "AI Chat" && <Assistant />}
+        {page === "Coding Assistant" && <CodingAssistant />}
 
         {page === "Overview" && <section className="page">
           <div className="eyebrow"><span className="pulse" /> YOUR PERSONAL ASSISTANT</div>
