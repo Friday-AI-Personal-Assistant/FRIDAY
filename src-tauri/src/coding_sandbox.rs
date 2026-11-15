@@ -96,6 +96,33 @@ fn guest_operation_command(operation: GuestRunOperation) -> GuestOperationComman
     }
 }
 
+/// Immutable, policy-bounded description of one guest test run. It deliberately
+/// contains no executable path, working-directory path, environment, or
+/// caller-supplied arguments; those are resolved only by later trusted stages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestRunExecutionPlan {
+    run_id: String,
+    snapshot_id: String,
+    operation: GuestRunOperation,
+    command: GuestOperationCommand,
+    max_duration: Duration,
+    max_output_bytes: u64,
+}
+
+fn build_guest_run_execution_plan(
+    request: GuestRunRequest,
+) -> Result<GuestRunExecutionPlan, String> {
+    let request = validate_guest_run_request(request)?;
+    Ok(GuestRunExecutionPlan {
+        run_id: request.run_id,
+        snapshot_id: request.snapshot_id,
+        operation: request.operation,
+        command: guest_operation_command(request.operation),
+        max_duration: Duration::from_millis(request.max_duration_ms),
+        max_output_bytes: request.max_output_bytes,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum GuestRunStatus {
@@ -5002,6 +5029,44 @@ mod tests {
             let plan = guest_operation_command(operation);
             assert!(!plan.arguments.is_empty());
         }
+    }
+
+    #[test]
+    fn execution_plan_binds_validated_request_to_fixed_operation_command() {
+        let request = parse_guest_run_request(&valid_guest_request_json()).unwrap();
+        let plan = build_guest_run_execution_plan(request).unwrap();
+        assert_eq!(plan.run_id, "0123456789abcdef0123456789abcdef");
+        assert_eq!(plan.snapshot_id, "abcdef0123456789abcdef0123456789");
+        assert_eq!(plan.operation, GuestRunOperation::RustCargoTest);
+        assert_eq!(plan.command.program, "cargo");
+        assert_eq!(plan.command.arguments, &["test", "--locked", "--offline"]);
+        assert_eq!(plan.max_duration, Duration::from_millis(MAX_GUEST_REQUEST_DURATION_MS));
+        assert_eq!(plan.max_output_bytes, MAX_GUEST_REQUEST_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn execution_plan_revalidates_limits_before_creating_a_plan() {
+        let mut request: GuestRunRequest =
+            serde_json::from_slice(&valid_guest_request_json()).unwrap();
+        request.max_duration_ms = MAX_GUEST_REQUEST_DURATION_MS + 1;
+        assert!(build_guest_run_execution_plan(request).is_err());
+
+        let mut request: GuestRunRequest =
+            serde_json::from_slice(&valid_guest_request_json()).unwrap();
+        request.max_output_bytes = MAX_GUEST_REQUEST_OUTPUT_BYTES + 1;
+        assert!(build_guest_run_execution_plan(request).is_err());
+    }
+
+    #[test]
+    fn execution_plan_keeps_run_and_snapshot_identity_separate() {
+        let mut request: GuestRunRequest =
+            serde_json::from_slice(&valid_guest_request_json()).unwrap();
+        request.run_id = "11111111111111111111111111111111".into();
+        request.snapshot_id = "22222222222222222222222222222222".into();
+        let plan = build_guest_run_execution_plan(request).unwrap();
+        assert_eq!(plan.run_id, "11111111111111111111111111111111");
+        assert_eq!(plan.snapshot_id, "22222222222222222222222222222222");
+        assert_ne!(plan.run_id, plan.snapshot_id);
     }
 
     #[test]
