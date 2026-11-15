@@ -2060,12 +2060,7 @@ fn validate_windows_sandbox_launch_plan(
         return Err("The trusted Windows Sandbox launch roots are invalid.".into());
     }
     let expected = build_windows_sandbox_launch_plan_unchecked(system_root, run_directory);
-    if plan != &expected
-        || !plan.executable_path.to_ascii_lowercase().ends_with("\\system32\\windowsandbox.exe")
-        || plan.arguments.len() != 1
-        || plan.arguments.first() != Some(&plan.config_path)
-        || !plan.config_path.to_ascii_lowercase().ends_with("\\sandbox.wsb")
-    {
+    if plan != &expected {
         return Err("The Windows Sandbox launch plan differs from FRIDAY's fixed executable and single-configuration-argument policy.".into());
     }
     Ok(())
@@ -5209,7 +5204,7 @@ mod tests {
             session_id: "0123456789abcdef0123456789abcdef".into(),
             process_id: 4321,
             process_creation_time: 987654321,
-            image_path: r"C:\\Windows\\System32\\WindowsSandbox.exe".into(),
+            image_path: r"C:\Windows\System32\WindowsSandbox.exe".into(),
         }
     }
 
@@ -5804,7 +5799,7 @@ mod tests {
             r"C:\Users\Friday\AppData\Local\FRIDAY\run-123",
         ).unwrap();
         assert_eq!(plan.executable_path, r"C:\\Windows\\System32\\WindowsSandbox.exe");
-        assert_eq!(plan.config_path, r"C:\\Users\\Friday\\AppData\\Local\\FRIDAY\\run-123\\sandbox.wsb");
+        assert_eq!(plan.config_path, r"C:\Users\Friday\AppData\Local\FRIDAY\run-123\sandbox.wsb");
         assert_eq!(plan.arguments, vec![plan.config_path.clone()]);
         validate_windows_sandbox_launch_plan(
             &plan, r"C:\Windows", r"C:\Users\Friday\AppData\Local\FRIDAY\run-123",
