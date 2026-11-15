@@ -1475,6 +1475,20 @@ struct MultiFileProposalEnvelope { files: Vec<MultiFileProposalEntry> }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MultiFileProposalEntry { path: String, content: String }
 
+fn valid_multi_file_relative_path(path: &str) -> bool {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\\\')
+        || path.contains(':')
+        || path.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let components: Vec<&str> = path.split('/').collect();
+    !components.is_empty()
+        && components.iter().all(|part| !part.is_empty() && *part != "." && *part != "..")
+}
+
 fn validate_multi_file_proposal(proposal_json: &str, allowed_paths: &[String]) -> Result<Vec<MultiFileProposalEntry>, String> {
     if proposal_json.is_empty() || proposal_json.len() > MAX_MULTI_FILE_PROPOSAL_JSON_BYTES || allowed_paths.is_empty() || allowed_paths.len() > MAX_SELECTED_FILES {
         return Err("The multi-file proposal or inspected-file list is outside FRIDAY's safety limits.".into());
@@ -1482,7 +1496,7 @@ fn validate_multi_file_proposal(proposal_json: &str, allowed_paths: &[String]) -
     let mut allowed = BTreeSet::new();
     for path in allowed_paths {
         let parsed = Path::new(path);
-        if path.is_empty() || parsed.is_absolute() || parsed.components().any(|part| !matches!(part, std::path::Component::Normal(_))) || path.contains('\\') || !allowed.insert(path.to_ascii_lowercase()) {
+        if !valid_multi_file_relative_path(path) || parsed.is_absolute() || parsed.components().any(|part| !matches!(part, std::path::Component::Normal(_))) || !allowed.insert(path.to_ascii_lowercase()) {
             return Err("The inspected project-file list contains an invalid or duplicate path.".into());
         }
     }
@@ -1495,7 +1509,7 @@ fn validate_multi_file_proposal(proposal_json: &str, allowed_paths: &[String]) -
     for entry in &envelope.files {
         let parsed = Path::new(&entry.path);
         let normalized = entry.path.to_ascii_lowercase();
-        if entry.path.is_empty() || parsed.is_absolute() || parsed.components().any(|part| !matches!(part, std::path::Component::Normal(_))) || entry.path.contains('\\') || !allowed.contains(&normalized) || !seen.insert(normalized) {
+        if !valid_multi_file_relative_path(&entry.path) || parsed.is_absolute() || parsed.components().any(|part| !matches!(part, std::path::Component::Normal(_))) || !allowed.contains(&normalized) || !seen.insert(normalized) {
             return Err("The proposal contains an uninspected, unsafe, or duplicate project path. No files were changed.".into());
         }
         validate_proposed_content(&entry.content)?;
@@ -1615,6 +1629,32 @@ mod tests {
         assert!(validate_multi_file_proposal(&json.to_string(), &paths).is_err());
         let huge = serde_json::json!({"files":[{"path":"src/main.rs","content":"x".repeat(MAX_PROPOSED_FILE_BYTES + 1)}]});
         assert!(validate_multi_file_proposal(&huge.to_string(), &["src/main.rs".into()]).is_err());
+    }
+
+    #[test]
+    fn multi_file_proposal_rejects_windows_and_ambiguous_path_forms_on_every_host() {
+        for path in ["C:/outside.rs", "/absolute.rs", "src//main.rs", "src/./main.rs", "src/../outside.rs", "src\\\\main.rs", "src/file:name.rs"] {
+            let json = serde_json::json!({"files":[{"path":path,"content":"changed"}]});
+            assert!(validate_multi_file_proposal(&json.to_string(), &[path.into()]).is_err(), "accepted {path}");
+        }
+        for path in ["C:/outside.rs", "/absolute.rs", "src//main.rs", "src/./main.rs", "src/../outside.rs", "src\\\\main.rs", "src/file:name.rs"] {
+            assert!(validate_multi_file_proposal(
+                r#"{"files":[{"path":"src/main.rs","content":"changed"}]}"#,
+                &[path.into()],
+            ).is_err(), "accepted unsafe allowlist path {path}");
+        }
+    }
+
+    #[test]
+    fn multi_file_proposal_enforces_aggregate_content_limit() {
+        let paths = (0..5).map(|index| format!("src/{index}.rs")).collect::<Vec<_>>();
+        let files = paths.iter().map(|path| serde_json::json!({
+            "path": path,
+            "content": "x".repeat(110 * 1024)
+        })).collect::<Vec<_>>();
+        let json = serde_json::json!({"files":files}).to_string();
+        assert!(json.len() <= MAX_MULTI_FILE_PROPOSAL_JSON_BYTES);
+        assert!(validate_multi_file_proposal(&json, &paths).is_err());
     }
 
     #[test]

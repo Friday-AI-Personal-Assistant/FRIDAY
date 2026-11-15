@@ -137,6 +137,7 @@ export default function CodingAssistant() {
   function selectGeneratedProposal(path: string) {
     const proposal = generatedProposals.find(item => item.path === path); const target = files.find(file => file.relativePath === path);
     if (!proposal || !target) return;
+    if (appliedProposalPaths.includes(path)) { setMessage("This proposal has already been applied. Generate a fresh proposal before changing this file again."); return; }
     setActiveProposalPath(path); setActiveFileId(scan?.files.find(item => item.relativePath === path)?.id ?? "");
     setProposed(proposal.content); setPreview(null); setApproval(""); setLastApply(null);
   }
@@ -148,14 +149,17 @@ export default function CodingAssistant() {
   }
 
   async function makePreview() {
-    if (!activeFile || !activeFileId) return;
+    if (!activeFile || !activeFileId || (activeProposalPath && appliedProposalPaths.includes(activeProposalPath))) return;
     await run("Change preview created. Review the diff before approving.", () =>
       invoke<Preview>("preview_code_change", { fileId: activeFileId, proposedContent: proposed }), value => {
         setPreview(value); setApproval(""); setLastApply(null);
       });
   }
   async function approveAndApply() {
-    if (!preview) return;
+    if (!preview || (activeProposalPath && (appliedProposalPaths.includes(activeProposalPath) || preview.relativePath !== activeProposalPath))) {
+      setMessage("This proposal is already applied or no longer matches the selected file. Select an unapplied proposal or generate a fresh one.");
+      return;
+    }
     const token = await run("Approval issued for this exact preview.", () =>
       invoke<string>("issue_code_change_approval", { previewId: preview.previewId }));
     if (!token) return;
@@ -167,7 +171,7 @@ export default function CodingAssistant() {
     const result = await run("Approved change applied and backup saved.", () =>
       invoke<ApplyResult>("apply_code_change", { previewId: preview.previewId, approvalToken: token }), value => {
         setLastApply(value); setPreview(null); setApproval(""); setProposed("");
-      if (activeProposalPath) setAppliedProposalPaths(current => current.includes(activeProposalPath) ? current : [...current, activeProposalPath]);
+      if (activeProposalPath && preview.relativePath === activeProposalPath) setAppliedProposalPaths(current => current.includes(activeProposalPath) ? current : [...current, activeProposalPath]);
       });
     if (result) await run("Applied file verified. Remaining proposals are still available for individual review.", refreshInspectedFiles);
   }
@@ -217,7 +221,7 @@ export default function CodingAssistant() {
       <div className="coding-panel">
         <div className="section-heading"><div><span className="eyebrow">CONTROLLED FILE EDITING</span><h2>Prepare a change</h2></div></div>
         <label className="coding-field">File to change
-          <select value={activeFileId} onChange={event => { setActiveFileId(event.target.value); setPreview(null); setApproval(""); setProposed(""); }}>
+          <select value={activeFileId} onChange={event => { setActiveFileId(event.target.value); setActiveProposalPath(""); setPreview(null); setApproval(""); setProposed(""); }}>
             <option value="">Choose an inspected file</option>
             {scan?.files.filter(file => selected.includes(file.id)).map(file => <option key={file.id} value={file.id}>{file.relativePath}</option>)}
           </select>
@@ -228,7 +232,8 @@ export default function CodingAssistant() {
             <p className="panel-copy">Every proposed path was checked against the inspected-file allowlist. Each file still needs its own diff, approval, backup and apply action.</p>
             <label className="coding-field">Proposed file
               <select value={activeProposalPath} onChange={event => selectGeneratedProposal(event.target.value)}>
-                {generatedProposals.map(item => <option key={item.path} value={item.path}>{appliedProposalPaths.includes(item.path) ? "✓ " : ""}{item.path}</option>)}
+                <option value="">Choose an unapplied proposal</option>
+                {generatedProposals.map(item => <option key={item.path} value={item.path} disabled={appliedProposalPaths.includes(item.path)}>{appliedProposalPaths.includes(item.path) ? "✓ Applied · " : ""}{item.path}</option>)}
               </select>
             </label>
             <ul>{generatedProposals.map(item => <li key={item.path}>{item.path} — {appliedProposalPaths.includes(item.path) ? "applied" : "awaiting individual review"}</li>)}</ul>
@@ -237,21 +242,21 @@ export default function CodingAssistant() {
           <div className="coding-ai-generator">
             <div className="section-heading"><div><span className="eyebrow">LOCAL OLLAMA</span><h3>Describe what you want to build</h3></div><span className="muted-tag">ON-DEVICE MODEL</span></div>
             <label className="coding-field">Installed model
-              <select value={selectedModel} onChange={event => { setSelectedModel(event.target.value); setProposed(""); setPreview(null); setApproval(""); setLastApply(null); }}>
+              <select value={selectedModel} onChange={event => { setSelectedModel(event.target.value); setGeneratedProposals([]); setActiveProposalPath(""); setAppliedProposalPaths([]); setProposed(""); setPreview(null); setApproval(""); setLastApply(null); }}>
                 <option value="">No local model available</option>
                 {models.map(model => <option key={model} value={model}>{model}</option>)}
               </select>
             </label>
             <label className="coding-field">Your coding task
-              <textarea value={codingTask} onChange={event => { setCodingTask(event.target.value); setProposed(""); setPreview(null); setApproval(""); setLastApply(null); }} rows={4} maxLength={8000} placeholder="For example: Add input validation and clear error messages to this form. Keep the current design and existing behavior." />
+              <textarea value={codingTask} onChange={event => { setCodingTask(event.target.value); setGeneratedProposals([]); setActiveProposalPath(""); setAppliedProposalPaths([]); setProposed(""); setPreview(null); setApproval(""); setLastApply(null); }} rows={4} maxLength={8000} placeholder="For example: Add input validation and clear error messages to this form. Keep the current design and existing behavior." />
             </label>
             <button className="primary-button" disabled={busy || !selectedModel || !codingTask.trim()} onClick={generateProposal}>Generate proposal with local AI</button>
             <p className="security-footnote">Only the files you selected are sent to your local Ollama service. The model returns a strict multi-file JSON proposal that FRIDAY validates against the inspected paths. Every file must still pass its own diff, approval, hash-check and backup workflow.</p>
           </div>
           <label className="coding-field">Proposed complete file contents
-            <textarea value={proposed} onChange={event => { setProposed(event.target.value); setPreview(null); setApproval(""); }} rows={14} maxLength={131072} placeholder="Generate a proposal above, or paste/write the complete proposed file contents here…" />
+            <textarea value={proposed} onChange={event => { setProposed(event.target.value); setActiveProposalPath(""); setPreview(null); setApproval(""); }} rows={14} maxLength={131072} placeholder="Generate a proposal above, or paste/write the complete proposed file contents here…" />
           </label>
-          <button className="primary-button" disabled={busy || !proposed.trim()} onClick={makePreview}>Create reviewable diff</button>
+          <button className="primary-button" disabled={busy || !proposed.trim() || (activeProposalPath !== "" && appliedProposalPaths.includes(activeProposalPath))} onClick={makePreview}>Create reviewable diff</button>
         </>}
       </div>
     </>}
