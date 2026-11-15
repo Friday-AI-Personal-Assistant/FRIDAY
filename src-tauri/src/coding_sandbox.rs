@@ -458,7 +458,8 @@ $mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sand
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum GuestResultStorageState {
-    Planned, Created, Attached, GptWriteInProgress, Partitioned, Mounted, Shared, GuestStopped,
+    Planned, Created, Attached, GptWriteInProgress, Partitioned,
+    NtfsFormatInProgress, Formatted, Mounted, Shared, GuestStopped,
     ShareRevoked, Detached, Removed, RecoveryRequired,
 }
 
@@ -466,8 +467,8 @@ enum GuestResultStorageState {
 #[serde(rename_all = "snake_case")]
 enum GuestResultStorageEvent {
     CreateVerified, AttachVerified, BeginGptInitialization, CompleteGptInitialization,
-    MountVerified, GrantShare, ConfirmGuestStopped, RevokeShare, DetachVerified,
-    DeleteVerified, PreserveForRecovery,
+    BeginNtfsFormat, CompleteNtfsFormat, MountVerified, GrantShare,
+    ConfirmGuestStopped, RevokeShare, DetachVerified, DeleteVerified, PreserveForRecovery,
 }
 
 /// Pure lifecycle gate for a future fixed-capacity result volume.
@@ -497,7 +498,9 @@ fn advance_guest_result_storage_state(
         (GuestResultStorageState::Created, GuestResultStorageEvent::AttachVerified) => Ok(GuestResultStorageState::Attached),
         (GuestResultStorageState::Attached, GuestResultStorageEvent::BeginGptInitialization) => Ok(GuestResultStorageState::GptWriteInProgress),
         (GuestResultStorageState::GptWriteInProgress, GuestResultStorageEvent::CompleteGptInitialization) => Ok(GuestResultStorageState::Partitioned),
-        (GuestResultStorageState::Partitioned, GuestResultStorageEvent::MountVerified) => Ok(GuestResultStorageState::Mounted),
+        (GuestResultStorageState::Partitioned, GuestResultStorageEvent::BeginNtfsFormat) => Ok(GuestResultStorageState::NtfsFormatInProgress),
+        (GuestResultStorageState::NtfsFormatInProgress, GuestResultStorageEvent::CompleteNtfsFormat) => Ok(GuestResultStorageState::Formatted),
+        (GuestResultStorageState::Formatted, GuestResultStorageEvent::MountVerified) => Ok(GuestResultStorageState::Mounted),
         (GuestResultStorageState::Mounted, GuestResultStorageEvent::GrantShare) => Ok(GuestResultStorageState::Shared),
         (GuestResultStorageState::Shared, GuestResultStorageEvent::ConfirmGuestStopped) if guest_stopped => Ok(GuestResultStorageState::GuestStopped),
         (GuestResultStorageState::GuestStopped, GuestResultStorageEvent::RevokeShare) => Ok(GuestResultStorageState::ShareRevoked),
@@ -3133,6 +3136,222 @@ fn initialize_guest_result_gpt(
     )
 }
 
+
+/// Bounded report returned by the fixed Windows Storage-module formatting script.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestResultNtfsFormatReport {
+    disk_number: u32,
+    disk_guid: String,
+    partition_guid: String,
+    partition_offset: u64,
+    partition_size: u64,
+    file_system: String,
+    file_system_label: String,
+    volume_path: String,
+    volume_size: u64,
+    size_remaining: u64,
+    drive_letter: Option<String>,
+}
+
+fn valid_windows_volume_guid_path(path: &str) -> bool {
+    const PREFIX: &str = r"\\?\Volume{";
+    if !path.starts_with(PREFIX) || !path.ends_with(r"}\") {
+        return false;
+    }
+    parse_canonical_guid_bytes(&path[PREFIX.len()..path.len() - 2]).is_ok()
+}
+
+fn validate_guest_result_ntfs_format_report(
+    report: &GuestResultNtfsFormatReport,
+    expected_disk_number: u32,
+    metadata: &GuestResultGptMetadata,
+    partition_plan: &GuestResultPartitionPlan,
+) -> Result<(), String> {
+    let expected_offset = partition_plan.first_lba.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+        .ok_or_else(|| "The expected NTFS partition offset overflowed.".to_string())?;
+    let expected_size = (partition_plan.last_lba - partition_plan.first_lba + 1)
+        .checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+        .ok_or_else(|| "The expected NTFS partition size overflowed.".to_string())?;
+    if report.disk_number != expected_disk_number
+        || report.disk_guid.to_ascii_uppercase() != metadata.disk_guid.to_ascii_uppercase()
+        || report.partition_guid.to_ascii_uppercase() != partition_plan.partition_unique_guid.to_ascii_uppercase()
+        || report.partition_offset != expected_offset
+        || report.partition_size != expected_size
+        || !report.file_system.eq_ignore_ascii_case("NTFS")
+        || report.file_system_label != GUEST_RESULT_FILESYSTEM_LABEL
+        || !valid_windows_volume_guid_path(&report.volume_path)
+        || report.volume_size != expected_size
+        || report.size_remaining > report.volume_size
+        || report.drive_letter.as_ref().is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err("Windows' NTFS format report does not match the exact FRIDAY disk, partition, filesystem, label, capacity, or no-drive-letter policy.".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+const MAX_STORAGE_OPERATION_OUTPUT_BYTES: usize = 64 * 1024;
+#[cfg(windows)]
+const STORAGE_OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
+
+#[cfg(windows)]
+fn read_bounded_storage_output<R: Read>(mut reader: R) -> Vec<u8> {
+    let mut retained = Vec::new();
+    let mut buffer = [0u8; 4096];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                let remaining = MAX_STORAGE_OPERATION_OUTPUT_BYTES.saturating_sub(retained.len());
+                retained.extend_from_slice(&buffer[..count.min(remaining)]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    retained
+}
+
+#[cfg(windows)]
+fn run_bounded_storage_operation(mut command: Command) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), String> {
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null())
+        .spawn().map_err(|_| "The fixed Windows storage operation could not be started.".to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| "The Windows storage output pipe was unavailable.".to_string())?;
+    let stderr = child.stderr.take().ok_or_else(|| "The Windows storage diagnostic pipe was unavailable.".to_string())?;
+    let stdout_reader = thread::spawn(move || read_bounded_storage_output(stdout));
+    let stderr_reader = thread::spawn(move || read_bounded_storage_output(stderr));
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < STORAGE_OPERATION_TIMEOUT => thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                let _ = child.kill(); let _ = child.wait();
+                let _ = stdout_reader.join(); let _ = stderr_reader.join();
+                return Err("The NTFS format operation exceeded FRIDAY's fixed 120-second deadline; the result disk requires recovery.".into());
+            }
+            Err(_) => {
+                let _ = child.kill(); let _ = child.wait();
+                let _ = stdout_reader.join(); let _ = stderr_reader.join();
+                return Err("FRIDAY could not supervise the NTFS format operation; the result disk requires recovery.".into());
+            }
+        }
+    };
+    let stdout = stdout_reader.join().map_err(|_| "The NTFS format output could not be collected.".to_string())?;
+    let stderr = stderr_reader.join().map_err(|_| "The NTFS format diagnostics could not be collected.".to_string())?;
+    Ok((status, stdout, stderr))
+}
+
+#[cfg(windows)]
+fn format_guest_result_ntfs(
+    attached: &OwnedAttachedGuestVhdx,
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    journal_root: &Path,
+    current_journal: &GuestResultStorageJournal,
+) -> Result<GuestResultStorageJournal, String> {
+    validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
+    let partition_plan = build_guest_result_partition_plan(&plan.run_id, plan.capacity_bytes, GUEST_RESULT_GPT_SECTOR_BYTES as u32)?;
+    let metadata = build_guest_result_gpt_metadata(&partition_plan)?;
+    let identifier = verify_attached_guest_result_vhdx_identity(&attached.handle, &attached.physical_path, plan, trusted_storage_root)?;
+    if current_journal.run_id != plan.run_id || current_journal.vhdx_identifier != identifier
+        || validate_guest_result_storage_journal(current_journal)? != GuestResultStorageState::Partitioned {
+        return Err("The NTFS format journal is not bound to this verified partitioned FRIDAY result disk.".into());
+    }
+    const PHYSICAL_DRIVE_PREFIX: &str = r"\\.\PhysicalDrive";
+    let suffix = attached.physical_path.strip_prefix(PHYSICAL_DRIVE_PREFIX)
+        .ok_or_else(|| "The attached result disk path is outside the PhysicalDrive namespace.".to_string())?;
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("The attached result disk number is invalid.".into());
+    }
+    let disk_number: u32 = suffix.parse().map_err(|_| "The attached result disk number is outside the supported range.".to_string())?;
+    let in_progress = append_and_persist_guest_result_storage_transition(
+        journal_root, current_journal, GuestResultStorageEvent::BeginNtfsFormat, true, false,
+    )?;
+    let script = r#"$ErrorActionPreference = 'Stop'
+$diskNumber = [uint32]$env:FRIDAY_RESULT_DISK_NUMBER
+$expectedDiskGuid = [guid]$env:FRIDAY_RESULT_DISK_GUID
+$expectedPartitionGuid = [guid]$env:FRIDAY_RESULT_PARTITION_GUID
+$expectedPartitionOffset = [uint64]$env:FRIDAY_RESULT_PARTITION_OFFSET
+$expectedPartitionSize = [uint64]$env:FRIDAY_RESULT_PARTITION_SIZE
+$expectedLabel = 'FRIDAY_RESULTS'
+$disks = @(Get-Disk -Number $diskNumber -ErrorAction Stop)
+if ($disks.Count -ne 1) { throw 'FRIDAY_DISK_CARDINALITY' }
+$disk = $disks[0]
+if ($disk.Number -ne $diskNumber -or [uint64]$disk.Size -ne 67108864 -or [string]$disk.PartitionStyle -ne 'GPT' -or
+    [guid]$disk.Guid -ne $expectedDiskGuid -or [bool]$disk.IsBoot -or [bool]$disk.IsSystem -or
+    [bool]$disk.IsReadOnly -or [bool]$disk.IsOffline) { throw 'FRIDAY_DISK_IDENTITY_OR_STATE_MISMATCH' }
+$partitions = @(Get-Partition -DiskNumber $diskNumber -ErrorAction Stop)
+if ($partitions.Count -ne 1) { throw 'FRIDAY_PARTITION_CARDINALITY' }
+$partition = $partitions[0]
+if ($partition.PartitionNumber -ne 1 -or [guid]$partition.Guid -ne $expectedPartitionGuid -or
+    [uint64]$partition.Offset -ne $expectedPartitionOffset -or [uint64]$partition.Size -ne $expectedPartitionSize -or
+    [string]$partition.GptType -ne 'EBD0A0A2-B9E5-4433-87C0-68B6B72699C7' -or
+    [bool]$partition.IsReadOnly -or [bool]$partition.IsOffline -or
+    -not [string]::IsNullOrEmpty([string]$partition.DriveLetter)) { throw 'FRIDAY_PARTITION_IDENTITY_OR_STATE_MISMATCH' }
+$formatted = @(Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel $expectedLabel -AllocationUnitSize 4096 -Force:$false -Confirm:$false -ErrorAction Stop)
+if ($formatted.Count -ne 1) { throw 'FRIDAY_FORMAT_RESULT_CARDINALITY' }
+$volume = Get-Volume -Partition $partition -ErrorAction Stop
+if ($null -eq $volume) { throw 'FRIDAY_VOLUME_NOT_DISCOVERED' }
+$volumePath = [string]$volume.Path
+$driveLetter = if ([string]::IsNullOrEmpty([string]$volume.DriveLetter)) { $null } else { [string]$volume.DriveLetter }
+[pscustomobject]@{
+  diskNumber = [uint32]$disk.Number
+  diskGuid = ([guid]$disk.Guid).ToString('D')
+  partitionGuid = ([guid]$partition.Guid).ToString('D')
+  partitionOffset = [uint64]$partition.Offset
+  partitionSize = [uint64]$partition.Size
+  fileSystem = [string]$volume.FileSystem
+  fileSystemLabel = [string]$volume.FileSystemLabel
+  volumePath = $volumePath
+  volumeSize = [uint64]$volume.Size
+  sizeRemaining = [uint64]$volume.SizeRemaining
+  driveLetter = $driveLetter
+} | ConvertTo-Json -Compress"#;
+    let system_root = env::var_os("SystemRoot").ok_or_else(|| "The Windows system directory is unavailable for NTFS formatting.".to_string())?;
+    let powershell = PathBuf::from(system_root).join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe");
+    if !powershell.is_absolute() || !powershell.is_file() {
+        let _ = append_and_persist_guest_result_storage_transition(journal_root, &in_progress, GuestResultStorageEvent::PreserveForRecovery, false, false);
+        return Err("The fixed Windows PowerShell executable is unavailable; the result disk was preserved for recovery.".into());
+    }
+    let mut command = Command::new(powershell);
+    command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]);
+    command.env("FRIDAY_RESULT_DISK_NUMBER", disk_number.to_string());
+    command.env("FRIDAY_RESULT_DISK_GUID", &metadata.disk_guid);
+    command.env("FRIDAY_RESULT_PARTITION_GUID", &partition_plan.partition_unique_guid);
+    command.env("FRIDAY_RESULT_PARTITION_OFFSET", (partition_plan.first_lba * GUEST_RESULT_GPT_SECTOR_BYTES).to_string());
+    command.env("FRIDAY_RESULT_PARTITION_SIZE", ((partition_plan.last_lba - partition_plan.first_lba + 1) * GUEST_RESULT_GPT_SECTOR_BYTES).to_string());
+    let result = (|| -> Result<(), String> {
+        let (status, stdout, stderr) = run_bounded_storage_operation(command)?;
+        if !status.success() {
+            let diagnostic = String::from_utf8_lossy(&stderr).chars().take(1200).collect::<String>();
+            return Err(format!("Windows refused the fixed NTFS format operation (exit {}). {diagnostic}", status.code().unwrap_or(-1)));
+        }
+        if stdout.is_empty() || stdout.len() > MAX_STORAGE_OPERATION_OUTPUT_BYTES {
+            return Err("Windows returned an empty or oversized NTFS format report.".into());
+        }
+        let report: GuestResultNtfsFormatReport = serde_json::from_slice(&stdout)
+            .map_err(|_| "Windows returned malformed or unsupported NTFS format evidence.".to_string())?;
+        validate_guest_result_ntfs_format_report(&report, disk_number, &metadata, &partition_plan)?;
+        if guest_vhdx_physical_path(attached.handle.0)? != attached.physical_path
+            || verify_attached_guest_result_vhdx_identity(&attached.handle, &attached.physical_path, plan, trusted_storage_root)? != identifier {
+            return Err("The attached result disk identity changed during NTFS formatting.".into());
+        }
+        let raw_disk = OwnedRawGuestDisk::open_attached_device(attached)?;
+        raw_disk.verify_fixed_geometry()?;
+        raw_disk.verify_windows_partition_layout(&partition_plan, &metadata)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = append_and_persist_guest_result_storage_transition(journal_root, &in_progress, GuestResultStorageEvent::PreserveForRecovery, false, false);
+        return Err(format!("{error} The result disk has been preserved for recovery; no automatic retry will occur."));
+    }
+    append_and_persist_guest_result_storage_transition(
+        journal_root, &in_progress, GuestResultStorageEvent::CompleteNtfsFormat, true, false,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4222,6 +4441,13 @@ mod tests {
         assert_eq!(
             validate_guest_result_storage_journal(&partitioned_journal).unwrap(),
             GuestResultStorageState::Partitioned,
+        );
+        let formatted_journal = format_guest_result_ntfs(
+            &attached, &plan, &root, &journal_root, &partitioned_journal,
+        ).unwrap();
+        assert_eq!(
+            validate_guest_result_storage_journal(&formatted_journal).unwrap(),
+            GuestResultStorageState::Formatted,
         );
         attached.detach().unwrap();
 

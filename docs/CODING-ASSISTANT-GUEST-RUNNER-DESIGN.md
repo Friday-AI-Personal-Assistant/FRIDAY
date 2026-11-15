@@ -1583,3 +1583,33 @@ partition entry is separately required to match FRIDAY's exact 1 MiB-aligned
 first LBA and planned last LBA. The parser requires the exact 128-entry
 partition capacity, validates both partition flags, and reports observed
 versus expected values on mismatch.
+
+
+## Journaled NTFS formatting of the verified result partition — 2026-11-15
+
+The Windows host now has a narrowly scoped NTFS formatting operation for the
+single partition on the exact FRIDAY-owned attached VHDX. It derives the disk
+number only from the PhysicalDrive path returned by the owned virtual-disk
+handle, then uses a fixed Windows Storage-module script. Before formatting,
+the script requires exactly one disk and one partition and checks the disk
+number, 64 MiB size, GPT disk GUID, non-boot/non-system status, online and
+writable state, per-run partition GUID, Basic Data type, exact byte offset and
+length, and absence of a drive letter. It never accepts a drive letter, disk
+number, path, command, or script from a model or project file.
+
+The format policy is fixed to quick NTFS, the label FRIDAY_RESULTS, a 4 KiB
+allocation unit, no force override, no compression, and no drive-letter
+assignment. The format subprocess has a 120-second deadline, concurrent
+bounded stdout/stderr draining, and a bounded structured report. The host
+requires the returned volume GUID path, NTFS filesystem, exact label and
+capacity, exact disk/partition identity, and no drive letter. It then rechecks
+the attached VHDX identity, fixed disk geometry, and Windows' partition-layout
+report before journaling the formatted state. Formatting intent is persisted
+before the operation; any error preserves the result disk for recovery and
+blocks automatic retry.
+
+The native Windows integration test now exercises VHDX creation, attachment,
+GPT initialization, NTFS formatting, read-back verification, and detachment.
+This step does not create a host directory mount point, share the volume with
+Windows Sandbox, launch a Sandbox session, or execute guest code. Physical
+Windows acceptance remains required, and guest execution remains disabled.
