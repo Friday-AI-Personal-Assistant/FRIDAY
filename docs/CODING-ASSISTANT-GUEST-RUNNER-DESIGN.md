@@ -1892,8 +1892,9 @@ authoritative process/session ownership. Guest execution remains disabled.
 
 FRIDAY now has a pure stop-plan preparation gate. It validates the complete
 session journal and requires its final state to be Running, requires the
-recorded process identity's session ID to match the session ID derived from
-that journal's run ID, and requires a fresh CLI inventory containing exactly
+recorded process identity's session ID field to match the journal's
+32-character run ID, derives the separate CLI session ID from that run ID,
+and requires a fresh CLI inventory containing exactly
 that one session in Running state. Only then does it produce the fixed
 run-bound `wsb stop --raw --id` argument plan. Regression tests cover the
 valid case, absent or extra inventory entries, wrong status, non-Running

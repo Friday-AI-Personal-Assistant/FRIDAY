@@ -2607,9 +2607,10 @@ fn validate_sandbox_session_journal(
 }
 
 /// Prepare a stop command only when the validated durable journal records
-/// this run as Running, its recorded process identity carries the run-derived
-/// session ID, and the fresh CLI inventory contains only that exact Running
-/// session. This builds a plan; it does not execute the command.
+/// this run as Running, its recorded process identity is bound to the
+/// journal's 32-character run ID, and the fresh CLI inventory contains only
+/// the separately derived CLI session ID in Running state. This builds a
+/// plan; it does not execute the command.
 fn prepare_authorized_windows_sandbox_stop_plan(
     executable_path: &str,
     journal: &SandboxSessionJournal,
@@ -2624,7 +2625,7 @@ fn prepare_authorized_windows_sandbox_stop_plan(
         .find(|entry| entry.event == SandboxSessionEvent::ObserveProcess)
         .and_then(|entry| entry.observed_identity.as_ref())
         .ok_or_else(|| "The Sandbox journal has no recorded process identity.".to_string())?;
-    if !recorded_identity.session_id.eq_ignore_ascii_case(&expected_id) {
+    if !recorded_identity.session_id.eq_ignore_ascii_case(&journal.run_id) {
         return Err("The recorded Sandbox process identity does not match this FRIDAY run.".into());
     }
     require_exclusive_windows_sandbox_cli_session(

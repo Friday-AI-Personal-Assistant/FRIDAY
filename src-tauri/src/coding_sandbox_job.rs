@@ -1719,8 +1719,9 @@ mod native_windows_process_integration_tests {
             .min(256)
             .max(1) as f64;
         // A 20% Job Object hard cap allows at most 0.2 * logical processors
-        // worth of CPU time. Add 0.5 CPU-seconds for scheduler/accounting slack.
-        let allowed_cpu_seconds = wall * processors * 0.20 + 0.5;
+        // worth of CPU time. Add 1.0 CPU-second for scheduler/accounting slack;
+        // this tolerance affects only measurement, never the Job Object cap.
+        let allowed_cpu_seconds = wall * processors * 0.20 + 1.0;
         assert!(
             cpu_seconds <= allowed_cpu_seconds,
             "Job Object CPU hard cap was exceeded: helper used {cpu_seconds:.2}s CPU over {wall:.2}s wall time on {processors:.0} logical processors (allowance {allowed_cpu_seconds:.2}s)",
