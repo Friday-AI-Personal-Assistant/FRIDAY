@@ -8,6 +8,8 @@ const MAX_MODEL_NAME_BYTES: usize = 200;
 const MAX_MESSAGE_BYTES: usize = 20_000;
 const MAX_TOTAL_MESSAGE_BYTES: usize = 250_000;
 const MAX_MESSAGES: usize = 50;
+const MAX_CODING_RESPONSE_BODY_BYTES: usize = 256 * 1024;
+const MAX_CODING_OUTPUT_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Message {
@@ -431,6 +433,64 @@ pub fn cancel_ollama_chat(request_id: String) -> Result<bool, String> {
     }
 }
 
+fn parse_bounded_coding_response(body: &[u8]) -> Result<String, String> {
+    if body.is_empty() || body.len() > MAX_CODING_RESPONSE_BODY_BYTES {
+        return Err("Ollama's coding response was empty or exceeded FRIDAY's response-size limit.".into());
+    }
+    let parsed: Response = serde_json::from_slice(body)
+        .map_err(|_| "Ollama returned an unreadable coding response.".to_string())?;
+    if parsed.message.content.trim().is_empty() {
+        return Err("The local model returned an empty coding proposal.".into());
+    }
+    if parsed.message.content.len() > MAX_CODING_OUTPUT_BYTES {
+        return Err("The generated file exceeds FRIDAY's 128 KB coding proposal limit.".into());
+    }
+    Ok(parsed.message.content)
+}
+
+async fn read_bounded_ollama_body(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await
+        .map_err(|_| "The connection to Ollama was interrupted while receiving the coding response.".to_string())?
+    {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err("Ollama's response exceeded FRIDAY's fixed response-size limit.".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+#[tauri::command]
+pub async fn ollama_coding_chat(messages: Vec<Message>, model: String) -> Result<String, String> {
+    validate_chat_request(&messages, &model)?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(240))
+        .build()
+        .map_err(|e| format!("Could not prepare the local coding connection: {e}"))?;
+    let response = client
+        .post(format!("{OLLAMA}/api/chat"))
+        .json(&Request {
+            model: &model,
+            messages: &messages,
+            stream: false,
+            tools: None,
+        })
+        .send()
+        .await
+        .map_err(|_| "Cannot reach Ollama. Check that it is running, then try the coding task again.".to_string())?;
+    let status = response.status();
+    let body = read_bounded_ollama_body(response, MAX_CODING_RESPONSE_BODY_BYTES).await?;
+    if !status.is_success() {
+        return Err(upstream_error(status, String::from_utf8_lossy(&body).into_owned()));
+    }
+    parse_bounded_coding_response(&body)
+}
+
 #[tauri::command]
 pub async fn ollama_chat(messages: Vec<Message>, model: String) -> Result<String, String> {
     validate_chat_request(&messages, &model)?;
@@ -517,6 +577,29 @@ mod tests {
         }];
         assert!(validate_chat_request(&messages, "llama3.2:1b").is_err());
         assert!(validate_chat_request(&[], &"m".repeat(MAX_MODEL_NAME_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn bounded_coding_response_accepts_valid_content_at_the_limit() {
+        let content = "x".repeat(MAX_CODING_OUTPUT_BYTES);
+        let body = serde_json::json!({"message":{"role":"assistant","content":content}})
+            .to_string();
+        assert_eq!(parse_bounded_coding_response(body.as_bytes()).unwrap().len(), MAX_CODING_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn bounded_coding_response_rejects_oversized_content_and_body() {
+        let content = "x".repeat(MAX_CODING_OUTPUT_BYTES + 1);
+        let body = serde_json::json!({"message":{"role":"assistant","content":content}})
+            .to_string();
+        assert!(parse_bounded_coding_response(body.as_bytes()).is_err());
+        assert!(parse_bounded_coding_response(&vec![b' '; MAX_CODING_RESPONSE_BODY_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn bounded_coding_response_rejects_empty_or_malformed_content() {
+        assert!(parse_bounded_coding_response(br#"{"message":{"role":"assistant","content":""}}"#).is_err());
+        assert!(parse_bounded_coding_response(b"not-json").is_err());
     }
 
     #[test]

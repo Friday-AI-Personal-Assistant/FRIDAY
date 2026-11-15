@@ -36,6 +36,7 @@ pub fn run() {
             assistant::ollama_pull_model,
             assistant::ollama_delete_model,
             assistant::ollama_chat,
+            assistant::ollama_coding_chat,
             assistant::ollama_chat_stream,
             tools::list_tools,
             tools::execute_tool,
