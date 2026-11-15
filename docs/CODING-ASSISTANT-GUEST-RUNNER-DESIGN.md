@@ -1692,3 +1692,12 @@ The production two-folder configuration gateway now also requires the project sn
 The gateway still only constructs a validated configuration string. It does not write a .wsb file, launch Windows Sandbox, or enable guest execution. Windows physical acceptance and policy checks remain outstanding.
 
 
+
+
+## Exclusive Windows Sandbox configuration staging — 2026-11-15
+
+The Windows host now has a bounded staging path for the exact two-folder Sandbox configuration. After revalidating the FRIDAY-owned per-run result directory and reapplying its protected owner/SYSTEM/Administrators ACL, the staging gateway rebuilds the configuration only from the complete verified project snapshot, the attached VHDX identity, the `Mounted` journal state, and the exact volume-GUID mount-point read-back.
+
+The configuration is written to the fixed `sandbox.wsb` filename using exclusive create-new semantics, capped at 16 KiB, flushed, reopened without following a final-component link, read back byte-for-byte, and passed through the strict two-folder template validator again. Existing files, including partial/interrupted files, are preserved and never overwritten. The file is stored in the private per-run directory, not inside the guest-writable result mount.
+
+This stages and verifies configuration only. It does not invoke Windows Sandbox, launch a session, share any additional host path, or execute guest code. Native Windows staging tests run in CI; physical Windows acceptance of ACL inheritance, mapped-folder policy, guest access and lifecycle remains mandatory. Guest execution remains disabled.

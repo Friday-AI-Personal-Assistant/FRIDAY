@@ -22,6 +22,8 @@ const SNAPSHOT_OWNER_MARKER: &str = ".friday-snapshot-owner.json";
 const SNAPSHOT_OWNER_SCHEMA: u32 = 1;
 
 const MAX_GUEST_RESULT_BYTES: usize = 1024 * 1024;
+const MAX_SANDBOX_CONFIG_BYTES: usize = 16 * 1024;
+const SANDBOX_CONFIG_FILE_NAME: &str = "sandbox.wsb";
 const MAX_GUEST_RESULT_DURATION_MS: u64 = 120_000;
 
 const MAX_GUEST_REQUEST_DURATION_MS: u64 = 120_000;
@@ -2699,6 +2701,116 @@ fn build_sandbox_config_for_mounted_result(
     build_sandbox_config_with_result_paths(snapshot_path, &plan.host_mount_directory)
 }
 
+/// Persist one already-validated Sandbox configuration as an exclusive, bounded file.
+/// Existing or interrupted files are never overwritten; callers must preserve them
+/// for recovery rather than attempting an in-place repair.
+fn write_new_sandbox_config_file(
+    private_run_directory: &Path,
+    config: &str,
+) -> Result<PathBuf, String> {
+    if config.is_empty() || config.len() > MAX_SANDBOX_CONFIG_BYTES {
+        return Err("The Sandbox configuration is empty or exceeds FRIDAY's fixed size limit.".into());
+    }
+    validate_sandbox_config_with_result_policy(config)?;
+    let directory_metadata = fs::symlink_metadata(private_run_directory)
+        .map_err(|_| "The private Sandbox run directory is unavailable.".to_string())?;
+    if !directory_metadata.is_dir() || is_reparse_or_symlink(&directory_metadata) {
+        return Err("The Sandbox configuration parent is not an ordinary private directory.".into());
+    }
+    let canonical_directory = fs::canonicalize(private_run_directory)
+        .map_err(|_| "The private Sandbox run directory could not be verified.".to_string())?;
+    if canonical_directory.as_path() != private_run_directory
+        || !canonical_directory.is_absolute()
+        || canonical_directory.components().any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err("The Sandbox configuration parent path changed or is not canonical.".into());
+    }
+
+    let config_path = canonical_directory.join(SANDBOX_CONFIG_FILE_NAME);
+    match fs::symlink_metadata(&config_path) {
+        Ok(_) => return Err("A Sandbox configuration file already exists; reuse or overwrite is refused.".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("The existing Sandbox configuration path could not be safely inspected.".into()),
+    }
+
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&config_path)
+        .map_err(|_| "FRIDAY could not exclusively create its Sandbox configuration file.".to_string())?;
+    use std::io::Write;
+    output.write_all(config.as_bytes())
+        .map_err(|_| "FRIDAY could not completely write the Sandbox configuration; the partial file was preserved.".to_string())?;
+    output.sync_all()
+        .map_err(|_| "FRIDAY could not flush the Sandbox configuration; the file was preserved.".to_string())?;
+    drop(output);
+
+    let file_metadata = fs::symlink_metadata(&config_path)
+        .map_err(|_| "The staged Sandbox configuration could not be inspected.".to_string())?;
+    if !file_metadata.is_file() || is_reparse_or_symlink(&file_metadata)
+        || file_metadata.len() != config.len() as u64
+    {
+        return Err("The staged Sandbox configuration is not the expected bounded regular file.".into());
+    }
+    let mut input = open_source_file(&config_path)
+        .map_err(|_| "The staged Sandbox configuration could not be reopened without following links.".to_string())?;
+    let opened_metadata = input.metadata()
+        .map_err(|_| "The staged Sandbox configuration identity could not be verified.".to_string())?;
+    if !opened_metadata.is_file() || is_reparse_or_symlink(&opened_metadata)
+        || opened_metadata.len() != config.len() as u64
+    {
+        return Err("The staged Sandbox configuration changed before read-back verification.".into());
+    }
+    let mut read_back = Vec::with_capacity(config.len());
+    input.take((MAX_SANDBOX_CONFIG_BYTES + 1) as u64).read_to_end(&mut read_back)
+        .map_err(|_| "The staged Sandbox configuration could not be read back.".to_string())?;
+    if read_back.len() != config.len() || read_back.as_slice() != config.as_bytes() {
+        return Err("The staged Sandbox configuration failed exact read-back verification.".into());
+    }
+    let verified_text = std::str::from_utf8(&read_back)
+        .map_err(|_| "The staged Sandbox configuration is not valid UTF-8.".to_string())?;
+    validate_sandbox_config_with_result_policy(verified_text)?;
+    let final_parent = fs::canonicalize(config_path.parent().unwrap_or(Path::new("")))
+        .map_err(|_| "The staged Sandbox configuration parent could not be reverified.".to_string())?;
+    if final_parent != canonical_directory
+        || config_path.file_name() != Some(OsStr::new(SANDBOX_CONFIG_FILE_NAME))
+    {
+        return Err("The staged Sandbox configuration escaped its exact FRIDAY run directory.".into());
+    }
+    Ok(config_path)
+}
+
+/// Windows-only staging gateway. It revalidates the owned result run directory,
+/// reapplies its protected ACL, and obtains the exact mounted two-folder policy
+/// before creating sandbox.wsb. This does not launch Windows Sandbox.
+#[cfg(windows)]
+#[allow(dead_code)]
+fn stage_sandbox_config_for_mounted_result(
+    snapshot_path: &Path,
+    trusted_snapshot_workspace: &Path,
+    expected_snapshot_id: &str,
+    attached: &OwnedAttachedGuestVhdx,
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+    current_journal: &GuestResultStorageJournal,
+    expected_volume_path: &str,
+) -> Result<PathBuf, String> {
+    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    secure_private_workspace_directory(&plan.run_directory)?;
+    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    let config = build_sandbox_config_for_mounted_result(
+        snapshot_path,
+        trusted_snapshot_workspace,
+        expected_snapshot_id,
+        attached,
+        plan,
+        trusted_storage_root,
+        current_journal,
+        expected_volume_path,
+    )?;
+    write_new_sandbox_config_file(&plan.run_directory, &config)
+}
+
 /// Exact two-mapping template validator. Arbitrary XML and arbitrary writable
 /// host paths are not accepted; path text is decoded and round-trip checked.
 fn validate_sandbox_config_with_result_policy(config: &str) -> Result<(), String> {
@@ -4290,6 +4402,55 @@ mod tests {
         validate_sandbox_config_policy(&config).unwrap();
         assert!(config.contains(r"<SandboxFolder>C:\FRIDAY\Project</SandboxFolder>"));
         assert!(config.contains(canonical.to_str().unwrap()));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn sandbox_config_staging_writes_exclusive_bounded_file_and_verifies_exact_readback() {
+        let base = make_test_directory("wsb-config-stage");
+        let config = safe_sandbox_config_with_result_fixture(
+            r"C:\FRIDAY\Snapshots\abc",
+            r"C:\FRIDAY\Runs\abc\result-mount",
+        );
+        let path = write_new_sandbox_config_file(&base, &config).unwrap();
+        assert_eq!(path.file_name(), Some(OsStr::new(SANDBOX_CONFIG_FILE_NAME)));
+        assert_eq!(fs::read_to_string(&path).unwrap(), config);
+        assert!(validate_sandbox_config_with_result_policy(&fs::read_to_string(&path).unwrap()).is_ok());
+        assert!(write_new_sandbox_config_file(&base, &config).is_err(),
+            "a second staging attempt must never overwrite the first file");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn sandbox_config_staging_rejects_invalid_oversized_and_non_directory_targets() {
+        let base = make_test_directory("wsb-config-stage-invalid");
+        let safe = safe_sandbox_config_with_result_fixture(
+            r"C:\FRIDAY\Snapshots\abc",
+            r"C:\FRIDAY\Runs\abc\result-mount",
+        );
+        assert!(write_new_sandbox_config_file(&base, &safe.replace(
+            "<Networking>Disable</Networking>", "<Networking>Enable</Networking>",
+        )).is_err());
+        assert!(write_new_sandbox_config_file(&base, &"x".repeat(MAX_SANDBOX_CONFIG_BYTES + 1)).is_err());
+        let file = base.join("not-a-directory");
+        fs::write(&file, b"file").unwrap();
+        assert!(write_new_sandbox_config_file(&file, &safe).is_err());
+        assert!(!base.join(SANDBOX_CONFIG_FILE_NAME).exists(),
+            "invalid input must not leave a staged configuration");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn sandbox_config_staging_preserves_existing_or_interrupted_files() {
+        let base = make_test_directory("wsb-config-stage-preserve");
+        let path = base.join(SANDBOX_CONFIG_FILE_NAME);
+        fs::write(&path, b"<partial").unwrap();
+        let safe = safe_sandbox_config_with_result_fixture(
+            r"C:\FRIDAY\Snapshots\abc",
+            r"C:\FRIDAY\Runs\abc\result-mount",
+        );
+        assert!(write_new_sandbox_config_file(&base, &safe).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"<partial");
         fs::remove_dir_all(base).unwrap();
     }
 
