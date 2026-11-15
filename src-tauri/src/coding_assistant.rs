@@ -1462,6 +1462,55 @@ pub fn undo_code_change(app: AppHandle, undo_record_id: String) -> Result<String
     Ok(format!("Restored {relative} to its verified original contents. The original backup was retained at {backup_relative}."))
 }
 
+
+const MAX_MULTI_FILE_PROPOSAL_JSON_BYTES: usize = 600 * 1024;
+const MAX_MULTI_FILE_PROPOSALS: usize = 8;
+const MAX_MULTI_FILE_PROPOSAL_TOTAL_BYTES: usize = 512 * 1024;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MultiFileProposalEnvelope { files: Vec<MultiFileProposalEntry> }
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MultiFileProposalEntry { path: String, content: String }
+
+fn validate_multi_file_proposal(proposal_json: &str, allowed_paths: &[String]) -> Result<Vec<MultiFileProposalEntry>, String> {
+    if proposal_json.is_empty() || proposal_json.len() > MAX_MULTI_FILE_PROPOSAL_JSON_BYTES || allowed_paths.is_empty() || allowed_paths.len() > MAX_SELECTED_FILES {
+        return Err("The multi-file proposal or inspected-file list is outside FRIDAY's safety limits.".into());
+    }
+    let mut allowed = BTreeSet::new();
+    for path in allowed_paths {
+        let parsed = Path::new(path);
+        if path.is_empty() || parsed.is_absolute() || parsed.components().any(|part| !matches!(part, std::path::Component::Normal(_))) || path.contains('\\\\') || !allowed.insert(path.to_ascii_lowercase()) {
+            return Err("The inspected project-file list contains an invalid or duplicate path.".into());
+        }
+    }
+    let envelope: MultiFileProposalEnvelope = serde_json::from_str(proposal_json).map_err(|_| "The local model did not return the required strict JSON multi-file proposal.".to_string())?;
+    if envelope.files.is_empty() || envelope.files.len() > MAX_MULTI_FILE_PROPOSALS {
+        return Err("A multi-file proposal must contain between 1 and 8 changed files.".into());
+    }
+    let mut seen = BTreeSet::new();
+    let mut total = 0usize;
+    for entry in &envelope.files {
+        let parsed = Path::new(&entry.path);
+        let normalized = entry.path.to_ascii_lowercase();
+        if entry.path.is_empty() || parsed.is_absolute() || parsed.components().any(|part| !matches!(part, std::path::Component::Normal(_))) || entry.path.contains('\\\\') || !allowed.contains(&normalized) || !seen.insert(normalized) {
+            return Err("The proposal contains an uninspected, unsafe, or duplicate project path. No files were changed.".into());
+        }
+        validate_proposed_content(&entry.content)?;
+        total = total.saturating_add(entry.content.len());
+        if total > MAX_MULTI_FILE_PROPOSAL_TOTAL_BYTES { return Err("The combined multi-file proposal exceeds FRIDAY's 512 KB limit.".into()); }
+    }
+    Ok(envelope.files)
+}
+
+#[tauri::command]
+pub fn validate_multi_file_coding_proposal(proposal_json: String, allowed_paths: Vec<String>) -> Result<Vec<MultiFileProposalEntry>, String> {
+    ensure_skill_loaded()?;
+    validate_multi_file_proposal(&proposal_json, &allowed_paths)
+}
+
 fn validate_proposed_content(content: &str) -> Result<(), String> {
     if content.is_empty() || content.len() > MAX_PROPOSED_FILE_BYTES || content.as_bytes().contains(&0) {
         return Err("The approved proposal is empty, too large, or contains binary NUL bytes.".into());
@@ -1539,6 +1588,34 @@ pub async fn read_project_files(app: AppHandle, file_ids: Vec<String>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn multi_file_proposal_accepts_only_bounded_inspected_targets() {
+        let json = r#"{"files":[{"path":"src/main.rs","content":"fn main() {}"},{"path":"src/lib.rs","content":"pub fn ready() {}"}]}"#;
+        let result = validate_multi_file_proposal(json, &["src/main.rs".into(), "src/lib.rs".into()]).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn multi_file_proposal_rejects_uninspected_duplicate_and_unsafe_paths() {
+        let cases = [
+            r#"{"files":[{"path":"src/other.rs","content":"changed"}]}"#,
+            r#"{"files":[{"path":"src/main.rs","content":"one"},{"path":"src/main.rs","content":"two"}]}"#,
+            r#"{"files":[{"path":"../outside.rs","content":"changed"}]}"#,
+            r#"{"files":[{"path":"src/main.rs","content":"changed","extra":true}]}"#,
+        ];
+        for json in cases { assert!(validate_multi_file_proposal(json, &["src/main.rs".into()]).is_err()); }
+    }
+
+    #[test]
+    fn multi_file_proposal_enforces_count_and_content_limits() {
+        let json = serde_json::json!({"files": (0..9).map(|i| serde_json::json!({"path":format!("src/{i}.rs"),"content":"x"})).collect::<Vec<_>>()});
+        let paths = (0..9).map(|i| format!("src/{i}.rs")).collect::<Vec<_>>();
+        assert!(validate_multi_file_proposal(&json.to_string(), &paths).is_err());
+        let huge = serde_json::json!({"files":[{"path":"src/main.rs","content":"x".repeat(MAX_PROPOSED_FILE_BYTES + 1)}]});
+        assert!(validate_multi_file_proposal(&huge.to_string(), &["src/main.rs".into()]).is_err());
+    }
 
     #[test]
     fn project_file_allowlist_includes_common_languages_and_manifests() {

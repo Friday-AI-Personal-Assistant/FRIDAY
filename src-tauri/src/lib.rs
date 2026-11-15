@@ -56,6 +56,7 @@ pub fn run() {
             coding_assistant::pick_project_folder_and_list_files,
             coding_assistant::read_project_files,
             coding_assistant::preview_code_change,
+            coding_assistant::validate_multi_file_coding_proposal,
             coding_assistant::issue_code_change_approval,
             coding_assistant::cancel_code_change_preview,
             coding_assistant::apply_code_change,
