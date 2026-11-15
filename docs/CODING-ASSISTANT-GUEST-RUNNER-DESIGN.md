@@ -1830,3 +1830,16 @@ CLI invocation or the launch transaction, and it does not prove process
 ownership. The later launch integration must obtain a fresh bounded CLI
 inventory immediately before launch and fail closed if it is non-empty or
 unavailable. Guest execution remains disabled.
+
+
+## Bounded subprocess pipe draining — implemented
+
+The shared bounded command-output reader retains no more than the configured
+byte ceiling, marks truncation, and continues reading until EOF. The Windows
+Sandbox capability probe now uses it for both stdout and stderr and treats
+truncated output as an unverified probe rather than attempting to parse a
+partial response. This prevents output beyond the retention ceiling from
+leaving the child blocked on a full pipe.
+
+Tests cover exact-limit output, oversized output, and zero-capacity draining.
+This does not invoke the Windows Sandbox CLI or launch a guest process.

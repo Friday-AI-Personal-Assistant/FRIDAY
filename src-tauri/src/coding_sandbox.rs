@@ -4,7 +4,7 @@ use std::{
     env,
     ffi::OsStr,
     fs::{self, File, OpenOptions},
-    io::Read,
+    io::{self, Read},
     path::{Component, Path, PathBuf},
     sync::Mutex,
     process::{Command, ExitStatus, Stdio},
@@ -328,6 +328,39 @@ fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct BoundedCommandOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+/// Retains at most max_bytes while continuing to drain the pipe to EOF.
+/// This prevents a child from blocking forever when its output exceeds the
+/// amount FRIDAY is willing to keep in memory.
+fn read_bounded_command_output<R: Read>(
+    mut reader: R,
+    max_bytes: usize,
+) -> io::Result<BoundedCommandOutput> {
+    let mut retained = Vec::with_capacity(max_bytes.min(8 * 1024));
+    let mut buffer = [0u8; 8 * 1024];
+    let mut truncated = false;
+
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = max_bytes.saturating_sub(retained.len());
+        let keep = remaining.min(read);
+        retained.extend_from_slice(&buffer[..keep]);
+        if keep < read {
+            truncated = true;
+        }
+    }
+
+    Ok(BoundedCommandOutput { bytes: retained, truncated })
+}
+
 #[cfg(windows)]
 const WINDOWS_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(windows)]
@@ -347,14 +380,10 @@ fn run_bounded_probe(mut command: Command) -> Result<(ExitStatus, Vec<u8>), Stri
         .ok_or_else(|| "The Windows Sandbox capability probe diagnostics were unavailable.".to_string())?;
 
     let stdout_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stdout.take(MAX_PREFLIGHT_OUTPUT_BYTES).read_to_end(&mut bytes);
-        bytes
+        read_bounded_command_output(stdout, MAX_PREFLIGHT_OUTPUT_BYTES as usize)
     });
     let stderr_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stderr.take(MAX_PREFLIGHT_OUTPUT_BYTES).read_to_end(&mut bytes);
-        bytes
+        read_bounded_command_output(stderr, MAX_PREFLIGHT_OUTPUT_BYTES as usize)
     });
 
     let started = Instant::now();
@@ -382,9 +411,15 @@ fn run_bounded_probe(mut command: Command) -> Result<(ExitStatus, Vec<u8>), Stri
     };
 
     let stdout = stdout_reader.join()
-        .map_err(|_| "The Windows Sandbox capability probe output could not be collected.".to_string())?;
-    let _ = stderr_reader.join();
-    Ok((status, stdout))
+        .map_err(|_| "The Windows Sandbox capability probe output could not be collected.".to_string())?
+        .map_err(|_| "The Windows Sandbox capability probe output could not be read.".to_string())?;
+    let stderr = stderr_reader.join()
+        .map_err(|_| "The Windows Sandbox capability probe diagnostics could not be collected.".to_string())?
+        .map_err(|_| "The Windows Sandbox capability probe diagnostics could not be read.".to_string())?;
+    if stdout.truncated || stderr.truncated {
+        return Err("The Windows Sandbox capability probe exceeded its fixed output limit; readiness is unverified.".into());
+    }
+    Ok((status, stdout.bytes))
 }
 
 #[cfg(windows)]
@@ -6148,6 +6183,31 @@ mod tests {
         ).is_err());
     }
 
+
+    #[test]
+    fn bounded_command_output_retains_exact_limit_without_truncation() {
+        let input = b"12345678";
+        let output = read_bounded_command_output(&input[..], 8).unwrap();
+        assert_eq!(output.bytes, input);
+        assert!(!output.truncated);
+    }
+
+    #[test]
+    fn bounded_command_output_marks_truncation_and_still_drains_input() {
+        let input = vec![b'x'; 64 * 1024];
+        let output = read_bounded_command_output(&input[..], 1024).unwrap();
+        assert_eq!(output.bytes.len(), 1024);
+        assert!(output.truncated);
+        assert_eq!(output.bytes, vec![b'x'; 1024]);
+    }
+
+    #[test]
+    fn bounded_command_output_handles_zero_capacity_by_draining_all_input() {
+        let input = b"discard all";
+        let output = read_bounded_command_output(&input[..], 0).unwrap();
+        assert!(output.bytes.is_empty());
+        assert!(output.truncated);
+    }
 
     #[test]
     fn windows_sandbox_cli_launch_precondition_requires_an_empty_inventory() {
