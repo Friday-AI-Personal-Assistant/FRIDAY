@@ -264,7 +264,7 @@ fn guest_run_now_unix_seconds() -> Result<u64, String> {
 /// Called only after the user explicitly approves the exact guest-run review.
 /// The request is parsed again here; no command or path is accepted from the UI.
 #[tauri::command]
-fn issue_guest_run_execution_approval(request_json: String) -> Result<GuestRunApprovalReceipt, String> {
+pub fn issue_guest_run_execution_approval(request_json: String) -> Result<GuestRunApprovalReceipt, String> {
     let request = parse_guest_run_request(request_json.as_bytes())?;
     let plan = build_guest_run_execution_plan(request)?;
     let now = guest_run_now_unix_seconds()?;
@@ -280,7 +280,7 @@ fn issue_guest_run_execution_approval(request_json: String) -> Result<GuestRunAp
 
 /// Consumes the one-time approval for this exact request. This does not execute it.
 #[tauri::command]
-fn consume_guest_run_execution_approval(request_json: String, token: String) -> Result<(), String> {
+pub fn consume_guest_run_execution_approval(request_json: String, token: String) -> Result<(), String> {
     let request = parse_guest_run_request(request_json.as_bytes())?;
     let plan = build_guest_run_execution_plan(request)?;
     let now = guest_run_now_unix_seconds()?;
@@ -291,7 +291,7 @@ fn consume_guest_run_execution_approval(request_json: String, token: String) -> 
 
 /// Cancels a pending approval. Run IDs are fixed-width hexadecimal identifiers.
 #[tauri::command]
-fn revoke_guest_run_execution_approval(run_id: String) -> Result<bool, String> {
+pub fn revoke_guest_run_execution_approval(run_id: String) -> Result<bool, String> {
     if !valid_snapshot_id(&run_id) {
         return Err("The guest run identifier is invalid.".into());
     }
