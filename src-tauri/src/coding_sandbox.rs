@@ -1810,15 +1810,6 @@ fn verify_guest_result_volume_directory(
 }
 
 
-/// Validates the canonical Windows volume-GUID path returned by the storage stack.
-fn valid_windows_volume_guid_path(path: &str) -> bool {
-    const PREFIX: &str = r"\\?\Volume{";
-    if !path.starts_with(PREFIX) || !path.ends_with(r"}\") {
-        return false;
-    }
-    parse_canonical_guid_bytes(&path[PREFIX.len()..path.len() - 2]).is_ok()
-}
-
 #[cfg(windows)]
 fn windows_wide_null(value: &str) -> Result<Vec<u16>, String> {
     if value.is_empty() || value.contains('\0') {
