@@ -1861,15 +1861,11 @@ fn verify_guest_result_host_mount_directory_for_mount(
     {
         return Err("The result-volume mount path differs from FRIDAY's fixed per-run child.".into());
     }
-    let metadata = fs::symlink_metadata(&plan.host_mount_directory)
-        .map_err(|_| "The private result-volume mount directory is unavailable.".to_string())?;
-    // A mounted Windows volume intentionally makes its mount-point directory a
-    // reparse point. Do not canonicalize the mount-point itself: Windows resolves
-    // that path into the mounted volume root. The exact volume-GUID read-back
-    // below is the authority that proves which volume occupies this fixed child.
-    if !metadata.is_dir() || !is_reparse_or_symlink(&metadata) {
-        return Err("The result-volume mount point is not the expected mounted directory.".into());
-    }
+    // Do not classify the mount-point itself with std::fs metadata: on Windows
+    // mounted-volume directories are reparse points and Rust's generic directory
+    // flags do not reliably distinguish them from ordinary directories. The
+    // exact fixed child path plus GetVolumeNameForVolumeMountPointW read-back in
+    // verify_guest_result_volume_mount is the authoritative mount identity check.
     if fs::canonicalize(&plan.run_directory).map_err(|_| "The result-volume run directory could not be reverified.".to_string())?
         != canonical_run_directory
     {
