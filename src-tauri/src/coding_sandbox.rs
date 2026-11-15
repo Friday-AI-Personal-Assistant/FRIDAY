@@ -2964,9 +2964,9 @@ fn verify_guest_result_windows_partition_layout_bytes(
         || read_u64(entry + 16)? != (plan.last_lba - plan.first_lba + 1) * GUEST_RESULT_GPT_SECTOR_BYTES
         || read_u32(entry + 24)? != 1
         || data[entry + 28] != 0
-        || data[entry + 80..entry + 96] != metadata.primary_entries[0..16]
-        || data[entry + 96..entry + 112] != metadata.primary_entries[16..32]
-        || read_u64(entry + 112)? != 0
+        || data[entry + 32..entry + 48] != metadata.primary_entries[0..16]
+        || data[entry + 48..entry + 64] != metadata.primary_entries[16..32]
+        || read_u64(entry + 64)? != 0
     {
         return Err("Windows' partition entry differs from FRIDAY's exact partition type, identity, bounds, or attributes.".into());
     }
@@ -2974,7 +2974,7 @@ fn verify_guest_result_windows_partition_layout_bytes(
     for (index, unit) in "FRIDAY_RESULTS".encode_utf16().enumerate() {
         expected_name[index * 2..index * 2 + 2].copy_from_slice(&unit.to_le_bytes());
     }
-    if data[entry + 120..entry + 192] != expected_name {
+    if data[entry + 72..entry + 144] != expected_name {
         return Err("Windows reported an unexpected result-partition label.".into());
     }
     Ok(())
@@ -3180,10 +3180,10 @@ mod tests {
         bytes[entry + 8..entry + 16].copy_from_slice(&(plan.first_lba * 512).to_le_bytes());
         bytes[entry + 16..entry + 24].copy_from_slice(&((plan.last_lba - plan.first_lba + 1) * 512).to_le_bytes());
         bytes[entry + 24..entry + 28].copy_from_slice(&1u32.to_le_bytes());
-        bytes[entry + 80..entry + 96].copy_from_slice(&metadata.primary_entries[0..16]);
-        bytes[entry + 96..entry + 112].copy_from_slice(&metadata.primary_entries[16..32]);
+        bytes[entry + 32..entry + 48].copy_from_slice(&metadata.primary_entries[0..16]);
+        bytes[entry + 48..entry + 64].copy_from_slice(&metadata.primary_entries[16..32]);
         for (index, unit) in "FRIDAY_RESULTS".encode_utf16().enumerate() {
-            bytes[entry + 120 + index * 2..entry + 122 + index * 2].copy_from_slice(&unit.to_le_bytes());
+            bytes[entry + 72 + index * 2..entry + 74 + index * 2].copy_from_slice(&unit.to_le_bytes());
         }
         assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len(), &plan, &metadata).is_ok());
 
