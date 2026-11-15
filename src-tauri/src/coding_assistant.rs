@@ -1478,7 +1478,7 @@ pub struct MultiFileProposalEntry { path: String, content: String }
 fn valid_multi_file_relative_path(path: &str) -> bool {
     if path.is_empty()
         || path.starts_with('/')
-        || path.contains('\\\\')
+        || path.contains('\\')
         || path.contains(':')
         || path.chars().any(char::is_control)
     {
