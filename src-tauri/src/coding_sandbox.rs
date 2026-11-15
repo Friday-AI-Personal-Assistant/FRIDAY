@@ -2748,12 +2748,12 @@ fn windows_sandbox_image_path_in_system_directory(image_path: &str, system_direc
     let normalize = |value: &str| {
         value.chars()
             .map(|character| {
-                if character == '/' { '\\\\' } else { character.to_ascii_lowercase() }
+                if character == '\u{002f}' { '\u{005c}' } else { character.to_ascii_lowercase() }
             })
             .collect::<String>()
     };
-    let system_directory = system_directory.trim_end_matches(['\\\\', '/']);
-    let expected = format!("{}\\\\windowsandbox.exe", normalize(system_directory));
+    let system_directory = system_directory.trim_end_matches(['\u{005c}', '\u{002f}']);
+    let expected = format!("{}\u{005c}windowsandbox.exe", normalize(system_directory));
     normalize(image_path) == expected
 }
 
