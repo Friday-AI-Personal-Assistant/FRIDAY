@@ -5798,7 +5798,7 @@ mod tests {
             r"C:\Windows",
             r"C:\Users\Friday\AppData\Local\FRIDAY\run-123",
         ).unwrap();
-        assert_eq!(plan.executable_path, r"C:\\Windows\\System32\\WindowsSandbox.exe");
+        assert_eq!(plan.executable_path, r"C:\Windows\System32\WindowsSandbox.exe");
         assert_eq!(plan.config_path, r"C:\Users\Friday\AppData\Local\FRIDAY\run-123\sandbox.wsb");
         assert_eq!(plan.arguments, vec![plan.config_path.clone()]);
         validate_windows_sandbox_launch_plan(
