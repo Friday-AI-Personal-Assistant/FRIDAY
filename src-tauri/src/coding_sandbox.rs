@@ -2175,7 +2175,6 @@ fn validate_sandbox_session_journal(
 ) -> Result<SandboxSessionState, String> {
     if journal.schema_version != SANDBOX_SESSION_JOURNAL_SCHEMA
         || !valid_snapshot_id(&journal.run_id)
-        || journal.entries.is_empty()
         || journal.entries.len() > MAX_SANDBOX_SESSION_JOURNAL_ENTRIES
     {
         return Err("The Sandbox session journal header or bounds are invalid.".into());
@@ -2240,6 +2239,9 @@ fn parse_sandbox_session_journal(
     }
     let journal: SandboxSessionJournal = serde_json::from_slice(bytes)
         .map_err(|_| "The Sandbox session journal is malformed or contains unsupported fields.".to_string())?;
+    if journal.entries.is_empty() {
+        return Err("The persisted Sandbox session journal contains no recorded transitions.".into());
+    }
     validate_sandbox_session_journal(&journal)?;
     Ok(journal)
 }
