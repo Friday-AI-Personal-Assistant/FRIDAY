@@ -110,7 +110,7 @@ export default function CodingAssistant() {
       };
       messages.push({
         role: "user",
-        content: "BOUNDED STRUCTURAL ANALYSIS (heuristic hints, not authoritative; verify against source):\\n" + JSON.stringify(summary)
+        content: "BOUNDED STRUCTURAL ANALYSIS (heuristic hints, not authoritative; verify against source):\\n" + JSON.stringify(summary).slice(0, 12000)
       });
     }
     for (const file of files) {
