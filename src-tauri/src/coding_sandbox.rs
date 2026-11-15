@@ -2659,13 +2659,18 @@ fn build_guest_result_gpt_metadata(
     let entries_crc = gpt_crc32(&entries);
     let mut primary_header = vec![0u8; GUEST_RESULT_GPT_SECTOR_BYTES as usize];
     let mut backup_header = vec![0u8; GUEST_RESULT_GPT_SECTOR_BYTES as usize];
+    // The final 32 sectors before the backup header hold the 128-entry
+    // partition array. The last usable LBA is therefore total_sectors - 34.
+    let last_usable_lba = total_sectors
+        .checked_sub(GUEST_RESULT_GPT_METADATA_SECTORS)
+        .ok_or_else(|| "The GPT last usable LBA calculation underflowed.".to_string())?;
     write_gpt_header(
-        &mut primary_header, 1, backup_header_lba, 34, total_sectors - 34 - 1,
-        &disk_guid, 2, entries_crc,
+        &mut primary_header, 1, backup_header_lba, GUEST_RESULT_GPT_METADATA_SECTORS,
+        last_usable_lba, &disk_guid, 2, entries_crc,
     )?;
     write_gpt_header(
-        &mut backup_header, backup_header_lba, 1, 34, total_sectors - 34 - 1,
-        &disk_guid, backup_entries_lba, entries_crc,
+        &mut backup_header, backup_header_lba, 1, GUEST_RESULT_GPT_METADATA_SECTORS,
+        last_usable_lba, &disk_guid, backup_entries_lba, entries_crc,
     )?;
 
     let mut protective_mbr = vec![0u8; GUEST_RESULT_GPT_SECTOR_BYTES as usize];
@@ -2975,8 +2980,10 @@ fn verify_guest_result_windows_partition_layout_bytes(
     let expected_usable_start = GUEST_RESULT_GPT_METADATA_SECTORS
         .checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
         .ok_or_else(|| "The GPT usable-range start overflowed.".to_string())?;
+    // First usable LBA is 34; last usable LBA is total_sectors - 34.
+    // The inclusive count is total_sectors - 67.
     let expected_usable_length = total_sectors
-        .checked_sub(GUEST_RESULT_GPT_METADATA_SECTORS * 2)
+        .checked_sub(GUEST_RESULT_GPT_METADATA_SECTORS * 2 - 1)
         .and_then(|sectors| sectors.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES))
         .ok_or_else(|| "The GPT usable-range length overflowed.".to_string())?;
     let observed_usable_start = read_u64(24)?;
@@ -3208,7 +3215,7 @@ mod tests {
         bytes[8..24].copy_from_slice(&metadata.primary_header[56..72]);
         let total_sectors = plan.disk_capacity_bytes / GUEST_RESULT_GPT_SECTOR_BYTES;
         bytes[24..32].copy_from_slice(&(GUEST_RESULT_GPT_METADATA_SECTORS * 512).to_le_bytes());
-        bytes[32..40].copy_from_slice(&((total_sectors - GUEST_RESULT_GPT_METADATA_SECTORS * 2) * 512).to_le_bytes());
+        bytes[32..40].copy_from_slice(&((total_sectors - GUEST_RESULT_GPT_METADATA_SECTORS * 2 + 1) * 512).to_le_bytes());
         bytes[40..44].copy_from_slice(&128u32.to_le_bytes());
         let entry = FRIDAY_DRIVE_LAYOUT_EX_HEADER_BYTES;
         bytes[entry..entry + 4].copy_from_slice(&1u32.to_le_bytes());
@@ -3233,7 +3240,7 @@ mod tests {
         assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata).is_err());
         assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, 80, &plan, &metadata).is_err());
         let mut altered = bytes.clone();
-        altered[24..32].copy_from_slice(&(34u64 * 512).to_le_bytes());
+        altered[24..32].copy_from_slice(&(35u64 * 512).to_le_bytes());
         assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata).is_err());
         let mut altered = bytes.clone();
         altered[40..44].copy_from_slice(&64u32.to_le_bytes());

@@ -1575,9 +1575,11 @@ partition view. Failure to refresh remains fail-closed.
 
 The Windows GPT layout parser distinguishes the disk-wide GPT usable
 interval reported by DRIVE_LAYOUT_INFORMATION_GPT from FRIDAY's aligned
-partition extent. Windows reports the GPT metadata boundary (FirstUsableLBA 34
-through LastUsableLBA total-sectors minus 34) in StartingUsableOffset and
-UsableLength; the partition entry is separately required to match FRIDAY's
-exact 1 MiB-aligned first LBA and planned last LBA. The parser requires the
-exact 128-entry partition capacity, validates both partition flags, and
-reports observed versus expected values on mismatch.
+partition extent. The primary and backup GPT headers now consistently declare
+FirstUsableLBA 34 and LastUsableLBA total-sectors minus 34 (the sector directly
+before the backup partition-entry array). Windows' StartingUsableOffset and
+UsableLength are checked against that inclusive disk-wide interval; the
+partition entry is separately required to match FRIDAY's exact 1 MiB-aligned
+first LBA and planned last LBA. The parser requires the exact 128-entry
+partition capacity, validates both partition flags, and reports observed
+versus expected values on mismatch.
