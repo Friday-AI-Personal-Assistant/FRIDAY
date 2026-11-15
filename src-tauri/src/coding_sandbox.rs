@@ -1908,13 +1908,18 @@ fn mount_guest_result_volume_at_private_directory(
 /// mapping is changed and reaches Mounted only after volume-GUID read-back.
 #[cfg(windows)]
 fn mount_guest_result_volume_journaled(
+    attached: &OwnedAttachedGuestVhdx,
     plan: &GuestResultVolumePlan,
     trusted_storage_root: &Path,
     journal_root: &Path,
     current_journal: &GuestResultStorageJournal,
     volume_path: &str,
 ) -> Result<GuestResultStorageJournal, String> {
-    let identifier = verify_guest_result_vhdx_identity(plan, trusted_storage_root)?;
+    // Verify the attached backing disk through the exact handle FRIDAY owns;
+    // a second path-opened VHDX handle is not ownership evidence while mounted.
+    let identifier = verify_attached_guest_result_vhdx_identity(
+        &attached.handle, attached.physical_path(), plan, trusted_storage_root,
+    )?;
     if current_journal.run_id != plan.run_id
         || current_journal.vhdx_identifier != identifier
         || validate_guest_result_storage_journal(current_journal)? != GuestResultStorageState::Formatted {
@@ -1938,13 +1943,16 @@ fn mount_guest_result_volume_journaled(
 /// revocation have already been durably recorded.
 #[cfg(windows)]
 fn unmount_guest_result_volume_journaled(
+    attached: &OwnedAttachedGuestVhdx,
     plan: &GuestResultVolumePlan,
     trusted_storage_root: &Path,
     journal_root: &Path,
     current_journal: &GuestResultStorageJournal,
     expected_volume_path: &str,
 ) -> Result<GuestResultStorageJournal, String> {
-    let identifier = verify_guest_result_vhdx_identity(plan, trusted_storage_root)?;
+    let identifier = verify_attached_guest_result_vhdx_identity(
+        &attached.handle, attached.physical_path(), plan, trusted_storage_root,
+    )?;
     if current_journal.run_id != plan.run_id
         || current_journal.vhdx_identifier != identifier
         || validate_guest_result_storage_journal(current_journal)? != GuestResultStorageState::ShareRevoked {
@@ -4727,7 +4735,7 @@ mod tests {
 
         let mount_directory = reserve_guest_result_host_mount_directory(&plan, &root).unwrap();
         let mounted_journal = mount_guest_result_volume_journaled(
-            &plan, &root, &journal_root, &formatted_journal, &volume_path,
+            &attached, &plan, &root, &journal_root, &formatted_journal, &volume_path,
         ).unwrap();
         assert_eq!(
             validate_guest_result_storage_journal(&mounted_journal).unwrap(),

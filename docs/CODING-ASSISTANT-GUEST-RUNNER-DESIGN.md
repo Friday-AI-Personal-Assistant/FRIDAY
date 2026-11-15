@@ -1613,7 +1613,13 @@ GPT initialization, NTFS formatting, read-back verification, private host
 mount-point reservation, journaled volume mounting, exact volume-GUID mapping
 read-back, a bounded write/read/delete round trip on the mounted NTFS volume,
 explicit unmount verification, and detachment. The test does not share the
-volume with Windows Sandbox, launch a Sandbox session, or execute guest code. Physical
+volume with Windows Sandbox, launch a Sandbox session, or execute guest code.
+
+Journaled result-volume mount and unmount gates now verify VHDX ownership
+through FRIDAY's already-owned attached virtual-disk handle and its recorded
+physical-device path. They do not open a second path-based VHDX metadata handle
+while the disk is attached. This keeps mount lifecycle authorization tied to
+the same verified attachment used for GPT and NTFS operations. Physical
 Windows acceptance remains required, and guest execution remains disabled.
 
 
