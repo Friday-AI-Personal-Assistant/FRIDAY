@@ -3285,6 +3285,7 @@ if ($disk.Number -ne $diskNumber -or [uint64]$disk.Size -ne 67108864 -or [string
 $partitions = @(Get-Partition -DiskNumber $diskNumber -ErrorAction Stop)
 if ($partitions.Count -ne 1) { throw 'FRIDAY_PARTITION_CARDINALITY' }
 $partition = $partitions[0]
+$partitionDriveLetter = ([string]$partition.DriveLetter).Trim([char]0)
 $actualPartition = [pscustomobject]@{
   number = [uint32]$partition.PartitionNumber
   guid = [string]$partition.Guid
@@ -3293,13 +3294,13 @@ $actualPartition = [pscustomobject]@{
   gptType = [string]$partition.GptType
   isReadOnly = [bool]$partition.IsReadOnly
   isOffline = [bool]$partition.IsOffline
-  driveLetter = [string]$partition.DriveLetter
+  driveLetter = if ([string]::IsNullOrEmpty($partitionDriveLetter)) { $null } else { $partitionDriveLetter }
 }
 if ($partition.PartitionNumber -ne 1 -or [guid]$partition.Guid -ne $expectedPartitionGuid -or
     [uint64]$partition.Offset -ne $expectedPartitionOffset -or [uint64]$partition.Size -ne $expectedPartitionSize -or
     [guid]$partition.GptType -ne [guid]'EBD0A0A2-B9E5-4433-87C0-68B6B72699C7' -or
     [bool]$partition.IsReadOnly -or [bool]$partition.IsOffline -or
-    -not [string]::IsNullOrEmpty([string]$partition.DriveLetter)) {
+    -not [string]::IsNullOrEmpty($partitionDriveLetter)) {
   throw ('FRIDAY_PARTITION_IDENTITY_OR_STATE_MISMATCH ' + ($actualPartition | ConvertTo-Json -Compress))
 }
 $formatted = @(Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel $expectedLabel -AllocationUnitSize 4096 -Force:$false -Confirm:$false -ErrorAction Stop)
