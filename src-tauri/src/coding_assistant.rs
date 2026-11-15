@@ -1482,7 +1482,7 @@ fn validate_multi_file_proposal(proposal_json: &str, allowed_paths: &[String]) -
     let mut allowed = BTreeSet::new();
     for path in allowed_paths {
         let parsed = Path::new(path);
-        if path.is_empty() || parsed.is_absolute() || parsed.components().any(|part| !matches!(part, std::path::Component::Normal(_))) || path.contains('\\\\') || !allowed.insert(path.to_ascii_lowercase()) {
+        if path.is_empty() || parsed.is_absolute() || parsed.components().any(|part| !matches!(part, std::path::Component::Normal(_))) || path.contains('\\') || !allowed.insert(path.to_ascii_lowercase()) {
             return Err("The inspected project-file list contains an invalid or duplicate path.".into());
         }
     }
@@ -1495,7 +1495,7 @@ fn validate_multi_file_proposal(proposal_json: &str, allowed_paths: &[String]) -
     for entry in &envelope.files {
         let parsed = Path::new(&entry.path);
         let normalized = entry.path.to_ascii_lowercase();
-        if entry.path.is_empty() || parsed.is_absolute() || parsed.components().any(|part| !matches!(part, std::path::Component::Normal(_))) || entry.path.contains('\\\\') || !allowed.contains(&normalized) || !seen.insert(normalized) {
+        if entry.path.is_empty() || parsed.is_absolute() || parsed.components().any(|part| !matches!(part, std::path::Component::Normal(_))) || entry.path.contains('\\') || !allowed.contains(&normalized) || !seen.insert(normalized) {
             return Err("The proposal contains an uninspected, unsafe, or duplicate project path. No files were changed.".into());
         }
         validate_proposed_content(&entry.content)?;
