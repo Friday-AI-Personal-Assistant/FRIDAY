@@ -1814,3 +1814,19 @@ ready. This is only a preflight compatibility gate: it does not verify the
 publisher/signature of the resolved executable, launch a CLI command, prove
 session ownership, or enable guest execution. Those remain separate required
 implementation and acceptance steps.
+
+
+## Refuse pre-existing Windows Sandbox sessions — implemented as a pure gate
+
+The CLI inventory now has a separate launch precondition: it must be empty
+before a FRIDAY run may request a new Sandbox. Any reported session blocks
+the precondition, whether its status is Running or Stopped. FRIDAY therefore
+cannot adopt an already-open user Sandbox, stop an unrelated session, or
+reuse a stale session identifier. The gate is covered by tests for empty,
+running, stopped, and mixed inventories.
+
+This is a pure precondition and test seam only. It is not yet wired to a live
+CLI invocation or the launch transaction, and it does not prove process
+ownership. The later launch integration must obtain a fresh bounded CLI
+inventory immediately before launch and fail closed if it is non-empty or
+unavailable. Guest execution remains disabled.

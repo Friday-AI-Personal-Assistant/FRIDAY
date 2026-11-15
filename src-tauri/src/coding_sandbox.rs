@@ -2210,6 +2210,18 @@ fn verify_windows_sandbox_cli_session(
     }
 }
 
+/// A new FRIDAY run must never adopt, stop, or reuse a session that existed
+/// before its own launch transaction. The CLI inventory must be empty first.
+fn require_empty_windows_sandbox_cli_inventory(
+    sessions: &[WindowsSandboxCliSession],
+) -> Result<(), String> {
+    if sessions.is_empty() {
+        Ok(())
+    } else {
+        Err("A Windows Sandbox session already exists; FRIDAY will not adopt, stop, or reuse it.".into())
+    }
+}
+
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WindowsSandboxLaunchPlan {
@@ -6134,6 +6146,27 @@ mod tests {
             &sessions, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             WindowsSandboxCliSessionStatus::Running,
         ).is_err());
+    }
+
+
+    #[test]
+    fn windows_sandbox_cli_launch_precondition_requires_an_empty_inventory() {
+        assert!(require_empty_windows_sandbox_cli_inventory(&[]).is_ok());
+
+        let running = vec![WindowsSandboxCliSession {
+            id: "01234567-89ab-cdef-0123-456789abcdef".into(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        }];
+        assert!(require_empty_windows_sandbox_cli_inventory(&running).is_err());
+
+        let stopped = vec![WindowsSandboxCliSession {
+            id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            status: WindowsSandboxCliSessionStatus::Stopped,
+        }];
+        assert!(require_empty_windows_sandbox_cli_inventory(&stopped).is_err());
+
+        let mixed = vec![running[0].clone(), stopped[0].clone()];
+        assert!(require_empty_windows_sandbox_cli_inventory(&mixed).is_err());
     }
 
     #[test]
