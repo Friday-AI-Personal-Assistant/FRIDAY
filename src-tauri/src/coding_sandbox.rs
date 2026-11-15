@@ -2806,7 +2806,26 @@ impl OwnedRawGuestDisk {
         plan: &GuestResultPartitionPlan,
         metadata: &GuestResultGptMetadata,
     ) -> Result<(), String> {
+        const IOCTL_DISK_UPDATE_PROPERTIES: u32 = 0x0007_0140;
         const IOCTL_DISK_GET_DRIVE_LAYOUT_EX: u32 = 0x0007_0050;
+        // Raw GPT writes bypass the partition manager. Ask Windows to discard
+        // any cached layout before requesting its independent interpretation.
+        let mut update_returned = 0u32;
+        let refreshed = unsafe {
+            DeviceIoControl(
+                self.0,
+                IOCTL_DISK_UPDATE_PROPERTIES,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut update_returned,
+                std::ptr::null_mut(),
+            )
+        };
+        if refreshed == 0 {
+            return Err("Windows could not refresh the attached result disk's cached partition properties.".into());
+        }
         let mut output = vec![0u64; 8192];
         let mut returned = 0u32;
         let ok = unsafe {

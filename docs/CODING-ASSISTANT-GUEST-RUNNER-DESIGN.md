@@ -1564,3 +1564,10 @@ This is independent read-only verification; it does not format NTFS, assign a
 drive letter, mount a volume, expose a share, or launch guest code. Windows CI
 must validate the real storage-stack response, and physical Windows acceptance
 remains required before enabling guest execution.
+
+
+The native partition-layout query first issues `IOCTL_DISK_UPDATE_PROPERTIES`
+on the same FRIDAY-owned raw disk handle. This asks Windows to refresh its
+cached partition properties after the direct GPT sector writes; the subsequent
+layout query is therefore not allowed to rely on a stale pre-initialization
+partition view. Failure to refresh remains fail-closed.
