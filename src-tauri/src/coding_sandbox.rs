@@ -192,6 +192,62 @@ fn constant_time_approval_token_eq(expected: &str, supplied: &str) -> bool {
         .fold(0u8, |difference, (left, right)| difference | (left ^ right)) == 0
 }
 
+const MAX_PENDING_GUEST_RUN_APPROVALS: usize = 16;
+
+/// Host-memory approval registry. Entries are indexed by run ID, so issuing a
+/// replacement for the same run invalidates its previous token atomically.
+#[derive(Default)]
+struct GuestRunApprovalStore {
+    grants: BTreeMap<String, GuestRunApprovalGrant>,
+}
+
+impl GuestRunApprovalStore {
+    fn prune_expired(&mut self, now: u64) {
+        self.grants.retain(|_, grant| {
+            grant.expires_at > now
+                && grant.expires_at.saturating_sub(now) <= GUEST_RUN_APPROVAL_TTL_SECONDS
+                && !grant.consumed
+        });
+    }
+
+    fn issue(&mut self, plan: &GuestRunExecutionPlan, now: u64) -> Result<String, String> {
+        self.prune_expired(now);
+        if !self.grants.contains_key(&plan.run_id)
+            && self.grants.len() >= MAX_PENDING_GUEST_RUN_APPROVALS
+        {
+            return Err("FRIDAY already has the maximum number of pending guest approvals. Cancel or expire an existing run before approving another.".into());
+        }
+        let (token, grant) = issue_guest_run_approval(plan, now)?;
+        self.grants.insert(plan.run_id.clone(), grant);
+        Ok(token)
+    }
+
+    /// Removes the entry before checking it: every consume attempt is terminal,
+    /// including mismatches, so a token cannot be probed or replayed.
+    fn consume(
+        &mut self,
+        plan: &GuestRunExecutionPlan,
+        token: &str,
+        now: u64,
+    ) -> Result<(), String> {
+        let grant = self.grants.remove(&plan.run_id)
+            .ok_or("No pending approval exists for this guest run. Review and approve it again.")?;
+        let mut grant = grant;
+        consume_guest_run_approval(&mut grant, token, plan, now)
+    }
+
+    fn revoke(&mut self, run_id: &str) -> bool {
+        self.grants.remove(run_id).is_some()
+    }
+
+    fn pending_count(&self) -> usize {
+        self.grants.len()
+    }
+}
+
+static GUEST_RUN_APPROVALS: Mutex<GuestRunApprovalStore> =
+    Mutex::new(GuestRunApprovalStore { grants: BTreeMap::new() });
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum GuestRunStatus {
@@ -5202,6 +5258,75 @@ mod tests {
         invalid_plan.command.arguments = &["cmd.exe", "/c", "whoami"];
         assert!(issue_guest_run_approval(&invalid_plan, 1_000).is_err());
     }
+
+    #[test]
+    fn approval_store_replaces_prior_token_for_same_run() {
+        let plan = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let mut store = GuestRunApprovalStore::default();
+        let first = store.issue(&plan, 1_000).unwrap();
+        let second = store.issue(&plan, 1_001).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(store.pending_count(), 1);
+        assert!(store.consume(&plan, &first, 1_002).is_err());
+        assert_eq!(store.pending_count(), 0);
+        assert!(store.consume(&plan, &second, 1_002).is_err());
+    }
+
+    #[test]
+    fn approval_store_consumes_mismatches_and_prevents_replay() {
+        let plan = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let mut store = GuestRunApprovalStore::default();
+        let token = store.issue(&plan, 1_000).unwrap();
+        let mut changed = plan.clone();
+        changed.snapshot_id = "22222222222222222222222222222222".into();
+        assert!(store.consume(&changed, &token, 1_001).is_err());
+        assert_eq!(store.pending_count(), 0);
+        assert!(store.consume(&plan, &token, 1_002).is_err());
+
+        let token = store.issue(&plan, 2_000).unwrap();
+        assert!(store.consume(&plan, &token, 2_001).is_ok());
+        assert!(store.consume(&plan, &token, 2_002).is_err());
+    }
+
+    #[test]
+    fn approval_store_prunes_expired_entries_and_enforces_capacity() {
+        let plan = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let mut store = GuestRunApprovalStore::default();
+        for index in 0..MAX_PENDING_GUEST_RUN_APPROVALS {
+            let mut distinct = plan.clone();
+            distinct.run_id = format!("{index:032x}");
+            store.issue(&distinct, 1_000).unwrap();
+        }
+        assert_eq!(store.pending_count(), MAX_PENDING_GUEST_RUN_APPROVALS);
+        let mut extra = plan.clone();
+        extra.run_id = "ffffffffffffffffffffffffffffffff".into();
+        assert!(store.issue(&extra, 1_001).is_err());
+        assert!(store.issue(&extra, 1_000 + GUEST_RUN_APPROVAL_TTL_SECONDS).is_ok());
+        assert_eq!(store.pending_count(), 1);
+    }
+
+    #[test]
+    fn approval_store_revokes_only_the_requested_run() {
+        let plan = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let mut other = plan.clone();
+        other.run_id = "11111111111111111111111111111111".into();
+        let mut store = GuestRunApprovalStore::default();
+        store.issue(&plan, 1_000).unwrap();
+        store.issue(&other, 1_000).unwrap();
+        assert!(store.revoke(&plan.run_id));
+        assert!(!store.revoke(&plan.run_id));
+        assert_eq!(store.pending_count(), 1);
+        assert!(store.consume(&other, &store.issue(&other, 1_001).unwrap(), 1_002).is_err());
+    }
+
 
 
     #[test]
