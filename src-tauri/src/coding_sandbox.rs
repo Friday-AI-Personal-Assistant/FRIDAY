@@ -2007,6 +2007,7 @@ const SANDBOX_EXECUTABLE_FILE_NAME: &str = "WindowsSandbox.exe";
 
 const WINDOWS_SANDBOX_CLI_FILE_NAME: &str = "wsb.exe";
 const MAX_WINDOWS_SANDBOX_CLI_OUTPUT_BYTES: usize = 64 * 1024;
+const MIN_WINDOWS_SANDBOX_CLI_BUILD: u32 = 26_100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WindowsSandboxCliCommand {
@@ -2029,6 +2030,25 @@ fn valid_windows_sandbox_cli_id(value: &str) -> bool {
         && bytes.iter().enumerate().all(|(index, byte)| {
             [8, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit()
         })
+}
+
+fn windows_sandbox_cli_runtime_supported(build: &str, available: bool, version: &str) -> bool {
+    let Ok(build_number) = build.trim().parse::<u32>() else {
+        return false;
+    };
+    if build_number < MIN_WINDOWS_SANDBOX_CLI_BUILD || !available {
+        return false;
+    }
+
+    // FileVersionInfo may include a descriptive suffix. Only its leading
+    // dotted-numeric version is accepted as concrete runtime evidence.
+    let version = version.split_whitespace().next().unwrap_or("");
+    let components: Vec<&str> = version.split('.').collect();
+    (2..=4).contains(&components.len())
+        && components.iter().all(|component| {
+            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        && components.iter().any(|component| component.bytes().any(|byte| byte != b'0'))
 }
 
 fn windows_sandbox_cli_id_from_run_id(run_id: &str) -> Result<String, String> {
@@ -2713,8 +2733,10 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
             mapped_folders_policy, mapped_folder_write_policy) = detect_windows_sandbox_capabilities();
         let edition_supported = ["Professional", "Enterprise", "Education"]
             .iter().any(|supported| edition.eq_ignore_ascii_case(supported));
+        let cli_runtime_supported =
+            windows_sandbox_cli_runtime_supported(&build, wsb_available, &wsb_version);
         let runtime_ready = detected && edition_supported
-            && feature.eq_ignore_ascii_case("Enabled") && wsb_available
+            && feature.eq_ignore_ascii_case("Enabled") && cli_runtime_supported
             && virtualization == Some(true) && !active;
         let message = if active {
             "A Windows Sandbox process is already running. FRIDAY will not attach to or stop a session it did not create. Execution remains disabled.".to_string()
@@ -5971,6 +5993,19 @@ mod tests {
         assert!(validate_guest_result_partition_plan(&plan, run_id).is_err());
     }
 
+
+    #[test]
+    fn windows_sandbox_cli_runtime_requires_supported_build_and_numeric_file_version() {
+        assert!(windows_sandbox_cli_runtime_supported("26100", true, "10.0.26100.1"));
+        assert!(windows_sandbox_cli_runtime_supported("26200", true, "10.0.26200.100"));
+        assert!(!windows_sandbox_cli_runtime_supported("26099", true, "10.0.26100.1"));
+        assert!(!windows_sandbox_cli_runtime_supported("Unknown", true, "10.0.26100.1"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", false, "10.0.26100.1"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", true, ""));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", true, "Unknown"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", true, "10.x.26100"));
+        assert!(!windows_sandbox_cli_runtime_supported("26100", true, "0.0.0.0"));
+    }
 
     #[test]
     fn windows_sandbox_cli_plan_uses_explicit_run_bound_session_and_fixed_verbs() {

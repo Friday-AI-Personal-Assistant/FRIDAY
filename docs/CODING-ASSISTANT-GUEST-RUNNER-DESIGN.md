@@ -1802,3 +1802,15 @@ implemented and physically accepted, FRIDAY must continue to report guest
 execution as disabled. The staged configuration and durable journal are
 preparatory controls only; neither proves a live Sandbox session exists or
 belongs to FRIDAY.
+
+
+## Windows Sandbox CLI minimum runtime gate — 2026-11-15
+
+The Windows Sandbox CLI readiness check now fails closed unless the host build
+is Windows 11 24H2 or later (build 26100+), the CLI command is detected, and
+its file-version metadata is a non-empty dotted-numeric version. Unknown,
+malformed, absent, or pre-24H2 evidence cannot make the CLI runtime appear
+ready. This is only a preflight compatibility gate: it does not verify the
+publisher/signature of the resolved executable, launch a CLI command, prove
+session ownership, or enable guest execution. Those remain separate required
+implementation and acceptance steps.
