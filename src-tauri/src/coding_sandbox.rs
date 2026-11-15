@@ -459,16 +459,18 @@ $mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sand
 #[serde(rename_all = "snake_case")]
 enum GuestResultStorageState {
     Planned, Created, Attached, GptWriteInProgress, Partitioned,
-    NtfsFormatInProgress, Formatted, Mounted, Shared, GuestStopped,
-    ShareRevoked, Detached, Removed, RecoveryRequired,
+    NtfsFormatInProgress, Formatted, MountInProgress, Mounted, Shared,
+    GuestStopped, ShareRevoked, UnmountInProgress, Unmounted,
+    Detached, Removed, RecoveryRequired,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum GuestResultStorageEvent {
     CreateVerified, AttachVerified, BeginGptInitialization, CompleteGptInitialization,
-    BeginNtfsFormat, CompleteNtfsFormat, MountVerified, GrantShare,
-    ConfirmGuestStopped, RevokeShare, DetachVerified, DeleteVerified, PreserveForRecovery,
+    BeginNtfsFormat, CompleteNtfsFormat, BeginMount, CompleteMount, GrantShare,
+    ConfirmGuestStopped, RevokeShare, BeginUnmount, CompleteUnmount,
+    DetachVerified, DeleteVerified, PreserveForRecovery,
 }
 
 /// Pure lifecycle gate for a future fixed-capacity result volume.
@@ -500,11 +502,14 @@ fn advance_guest_result_storage_state(
         (GuestResultStorageState::GptWriteInProgress, GuestResultStorageEvent::CompleteGptInitialization) => Ok(GuestResultStorageState::Partitioned),
         (GuestResultStorageState::Partitioned, GuestResultStorageEvent::BeginNtfsFormat) => Ok(GuestResultStorageState::NtfsFormatInProgress),
         (GuestResultStorageState::NtfsFormatInProgress, GuestResultStorageEvent::CompleteNtfsFormat) => Ok(GuestResultStorageState::Formatted),
-        (GuestResultStorageState::Formatted, GuestResultStorageEvent::MountVerified) => Ok(GuestResultStorageState::Mounted),
+        (GuestResultStorageState::Formatted, GuestResultStorageEvent::BeginMount) => Ok(GuestResultStorageState::MountInProgress),
+        (GuestResultStorageState::MountInProgress, GuestResultStorageEvent::CompleteMount) => Ok(GuestResultStorageState::Mounted),
         (GuestResultStorageState::Mounted, GuestResultStorageEvent::GrantShare) => Ok(GuestResultStorageState::Shared),
         (GuestResultStorageState::Shared, GuestResultStorageEvent::ConfirmGuestStopped) if guest_stopped => Ok(GuestResultStorageState::GuestStopped),
         (GuestResultStorageState::GuestStopped, GuestResultStorageEvent::RevokeShare) => Ok(GuestResultStorageState::ShareRevoked),
-        (GuestResultStorageState::ShareRevoked, GuestResultStorageEvent::DetachVerified) => Ok(GuestResultStorageState::Detached),
+        (GuestResultStorageState::ShareRevoked, GuestResultStorageEvent::BeginUnmount) => Ok(GuestResultStorageState::UnmountInProgress),
+        (GuestResultStorageState::UnmountInProgress, GuestResultStorageEvent::CompleteUnmount) => Ok(GuestResultStorageState::Unmounted),
+        (GuestResultStorageState::Unmounted, GuestResultStorageEvent::DetachVerified) => Ok(GuestResultStorageState::Detached),
         (GuestResultStorageState::Detached, GuestResultStorageEvent::DeleteVerified) => Ok(GuestResultStorageState::Removed),
         _ => Err("The result-storage lifecycle transition is out of order or lacks required evidence.".into()),
     }
@@ -513,7 +518,7 @@ fn advance_guest_result_storage_state(
 
 const GUEST_RESULT_STORAGE_JOURNAL_SCHEMA: u32 = 1;
 const MAX_GUEST_RESULT_STORAGE_JOURNAL_BYTES: usize = 16 * 1024;
-const MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES: usize = 16;
+const MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES: usize = 20;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -793,6 +798,7 @@ struct GuestResultVolumePlan {
     storage_root: PathBuf,
     run_directory: PathBuf,
     vhdx_path: PathBuf,
+    host_mount_directory: PathBuf,
     guest_mount_path: String,
     capacity_bytes: u64,
     max_result_bytes: u64,
@@ -840,6 +846,7 @@ fn build_guest_result_volume_plan(
         run_id: run_id.to_string(),
         storage_root: canonical_root,
         run_directory,
+        host_mount_directory: run_directory.join("result-mount"),
         vhdx_path,
         guest_mount_path: GUEST_RESULT_VOLUME_GUEST_MOUNT.to_string(),
         capacity_bytes: GUEST_RESULT_VOLUME_CAPACITY_BYTES,
@@ -881,6 +888,7 @@ fn validate_guest_result_volume_plan(
         storage_root: canonical_root,
         run_directory: expected_run_directory.clone(),
         vhdx_path: expected_run_directory.join("result.vhdx"),
+        host_mount_directory: expected_run_directory.join("result-mount"),
         guest_mount_path: GUEST_RESULT_VOLUME_GUEST_MOUNT.to_string(),
         capacity_bytes: GUEST_RESULT_VOLUME_CAPACITY_BYTES,
         max_result_bytes: MAX_GUEST_RESULT_BYTES as u64,
@@ -891,6 +899,7 @@ fn validate_guest_result_volume_plan(
     if plan.capacity_bytes < plan.max_result_bytes
         || plan.max_result_bytes != MAX_GUEST_RESULT_BYTES as u64
         || plan.guest_mount_path != GUEST_RESULT_VOLUME_GUEST_MOUNT
+        || plan.host_mount_directory != plan.run_directory.join("result-mount")
     {
         return Err("The result-volume capacity or guest mount point violates FRIDAY's fixed policy.".into());
     }
@@ -1695,6 +1704,54 @@ fn reserve_guest_result_volume_directory(
     file.sync_all()
         .map_err(|_| "FRIDAY could not persist result-volume ownership metadata; the directory was preserved.".to_string())?;
     verify_guest_result_volume_directory(plan, trusted_storage_root)
+}
+
+/// Reserves FRIDAY's exact empty host mount-point directory under the private
+/// per-run storage folder. This does not mount a volume; native mount APIs must
+/// still verify the volume GUID and exact mount-point binding before use.
+fn reserve_guest_result_host_mount_directory(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<PathBuf, String> {
+    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    if plan.host_mount_directory != plan.run_directory.join("result-mount") {
+        return Err("The result-volume host mount directory differs from FRIDAY's fixed per-run path.".into());
+    }
+    match fs::symlink_metadata(&plan.host_mount_directory) {
+        Ok(_) => return Err("A result-volume host mount directory already exists; reuse is refused.".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("The result-volume host mount directory could not be inspected safely.".into()),
+    }
+    fs::create_dir(&plan.host_mount_directory)
+        .map_err(|_| "FRIDAY could not exclusively create its private host mount directory.".to_string())?;
+    secure_private_workspace_directory(&plan.host_mount_directory)
+        .map_err(|_| "FRIDAY could not secure the host mount directory; it was preserved for recovery.".to_string())?;
+    verify_guest_result_host_mount_directory(plan, trusted_storage_root)
+}
+
+fn verify_guest_result_host_mount_directory(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<PathBuf, String> {
+    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    let metadata = fs::symlink_metadata(&plan.host_mount_directory)
+        .map_err(|_| "The private result-volume host mount directory is unavailable.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("The result-volume host mount point is not an ordinary directory.".into());
+    }
+    let canonical = fs::canonicalize(&plan.host_mount_directory)
+        .map_err(|_| "The result-volume host mount directory could not be canonicalized.".to_string())?;
+    if canonical.parent() != Some(plan.run_directory.as_path())
+        || canonical.file_name() != Some(OsStr::new("result-mount"))
+    {
+        return Err("The result-volume host mount directory failed its exact-child ownership check.".into());
+    }
+    let mut entries = fs::read_dir(&canonical)
+        .map_err(|_| "The result-volume host mount directory could not be enumerated.".to_string())?;
+    if entries.next().is_some() {
+        return Err("The result-volume host mount directory is not empty; mounting was refused.".into());
+    }
+    Ok(canonical)
 }
 
 /// Verifies the exact per-run child directory and its no-follow ownership marker.
@@ -3503,7 +3560,9 @@ mod tests {
             advance_guest_result_storage_state(S::GptWriteInProgress, E::CompleteGptInitialization, true, false).unwrap(),
             S::Partitioned,
         );
-        assert!(advance_guest_result_storage_state(S::GptWriteInProgress, E::MountVerified, true, false).is_err());
+        assert!(advance_guest_result_storage_state(S::GptWriteInProgress, E::BeginMount, true, false).is_err());
+        assert!(advance_guest_result_storage_state(S::Formatted, E::CompleteMount, true, false).is_err());
+        assert!(advance_guest_result_storage_state(S::ShareRevoked, E::DetachVerified, true, false).is_err());
         assert_eq!(
             advance_guest_result_storage_state(S::GptWriteInProgress, E::PreserveForRecovery, false, false).unwrap(),
             S::RecoveryRequired,
@@ -4123,8 +4182,9 @@ mod tests {
         use GuestResultStorageState as S;
         let mut state = S::Planned;
         for event in [E::CreateVerified, E::AttachVerified, E::BeginGptInitialization, E::CompleteGptInitialization,
-            E::BeginNtfsFormat, E::CompleteNtfsFormat, E::MountVerified, E::GrantShare,
-            E::ConfirmGuestStopped, E::RevokeShare, E::DetachVerified, E::DeleteVerified] {
+            E::BeginNtfsFormat, E::CompleteNtfsFormat, E::BeginMount, E::CompleteMount,
+            E::GrantShare, E::ConfirmGuestStopped, E::RevokeShare, E::BeginUnmount,
+            E::CompleteUnmount, E::DetachVerified, E::DeleteVerified] {
             state = advance_guest_result_storage_state(state, event, true, event == E::ConfirmGuestStopped)
                 .expect("valid lifecycle transition should succeed");
         }
@@ -4137,6 +4197,8 @@ mod tests {
         use GuestResultStorageState as S;
         assert!(advance_guest_result_storage_state(S::Shared, E::RevokeShare, true, true).is_err());
         assert!(advance_guest_result_storage_state(S::Shared, E::DetachVerified, true, true).is_err());
+        assert!(advance_guest_result_storage_state(S::ShareRevoked, E::DetachVerified, true, true).is_err());
+        assert!(advance_guest_result_storage_state(S::UnmountInProgress, E::DetachVerified, true, true).is_err());
         assert!(advance_guest_result_storage_state(S::Mounted, E::DeleteVerified, true, true).is_err());
     }
 
@@ -4483,6 +4545,31 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+
+    #[test]
+    fn result_host_mount_directory_is_private_empty_and_exact() {
+        let root = make_test_directory("result-host-mount");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        reserve_guest_result_volume_directory(&plan, &root).unwrap();
+        let mount = reserve_guest_result_host_mount_directory(&plan, &root).unwrap();
+        assert_eq!(mount, plan.run_directory.join("result-mount"));
+        assert_eq!(verify_guest_result_host_mount_directory(&plan, &root).unwrap(), mount);
+        fs::write(mount.join("unexpected.txt"), b"not empty").unwrap();
+        assert!(verify_guest_result_host_mount_directory(&plan, &root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn result_host_mount_directory_refuses_preexisting_path() {
+        let root = make_test_directory("result-host-mount-existing");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        reserve_guest_result_volume_directory(&plan, &root).unwrap();
+        fs::create_dir(&plan.host_mount_directory).unwrap();
+        assert!(reserve_guest_result_host_mount_directory(&plan, &root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn result_vhdx_file_path_requires_exact_owned_regular_vhdx_file() {
