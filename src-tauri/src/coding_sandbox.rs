@@ -7293,7 +7293,7 @@ mod tests {
         // The ownership marker is part of the authenticated tree, not a hint.
         let marker_path = plan.staging_root.join(".friday-runtime-owner.json");
         let marker_bytes = fs::read(&marker_path).unwrap();
-        fs::write(&marker_path, b"{\\"owner\\":\\"not-friday\\"}").unwrap();
+        fs::write(&marker_path, b"invalid-owner-marker").unwrap();
         assert!(authorize_verified_guest_runtime_staging_cleanup(
             &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
         ).is_err(), "a modified ownership marker must invalidate cleanup authorization");
