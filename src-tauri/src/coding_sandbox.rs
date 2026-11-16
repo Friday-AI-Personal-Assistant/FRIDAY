@@ -10092,7 +10092,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let root_path = make_test_directory("published-runtime-owner-marker-integrity");
 
         for artifact in &manifest.artifacts {
-            let components = artifact.relative_path.split('\\\\').collect::<Vec<_>>();
+            let components = artifact.relative_path.split('\\').collect::<Vec<_>>();
             let file_name = components.last().unwrap();
             let mut file_path = root_path.clone();
             for component in &components[..components.len() - 1] {
@@ -10101,7 +10101,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             fs::create_dir_all(&file_path).unwrap();
             file_path.push(file_name);
             let bytes: &[u8] = match artifact.relative_path.as_str() {
-                "bin\\\\cargo.exe" => b"cargo-fixture",
+                "bin\\cargo.exe" => b"cargo-fixture",
                 _ => panic!("unexpected runtime fixture: {}", artifact.relative_path),
             };
             fs::write(file_path, bytes).unwrap();
