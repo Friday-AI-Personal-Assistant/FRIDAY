@@ -1271,6 +1271,23 @@ fn validate_authorized_guest_run_context(
     )
 }
 
+/// Windows reserves DOS device names even when they have an extension.
+/// Reject them in every path component so a trusted manifest has one stable
+/// interpretation on every supported host and inside Windows Sandbox.
+fn is_reserved_windows_runtime_component(component: &str) -> bool {
+    if component.ends_with('.') {
+        return true;
+    }
+
+    let stem = component.split('.').next().unwrap_or(component);
+    let upper = stem.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.as_bytes()[3].is_ascii_digit()
+            && (b'1'..=b'9').contains(&upper.as_bytes()[3]))
+}
+
 /// Validate an image-owned artifact manifest before any future file access.
 /// The manifest must come from FRIDAY's trusted, version-pinned provisioning
 /// metadata; guest, project, and model content must never supply it.
@@ -1304,6 +1321,7 @@ fn validate_guest_runtime_artifact_manifest(
                 part.is_empty()
                     || *part == "."
                     || *part == ".."
+                    || is_reserved_windows_runtime_component(part)
                     || !part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
             })
             || normalized_path == ".friday-runtime-owner.json"
@@ -7101,6 +7119,39 @@ mod tests {
         let mut manifest = test_runtime_manifest(operation);
         manifest.artifacts[0].relative_path = ".FRIDAY-RUNTIME-OWNER.JSON".into();
         assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_err());
+    }
+
+    #[test]
+    fn guest_runtime_artifact_manifest_rejects_windows_reserved_device_names_and_trailing_dots() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        for component in [
+            "CON", "con.txt", "PRN.log", "AUX", "NUL.bin",
+            "COM1.dll", "COM9", "LPT1.txt", "LPT9",
+            "CONIN$", "CONOUT$", "cache.",
+        ] {
+            let mut manifest = test_runtime_manifest(operation);
+            manifest.artifacts.push(test_runtime_artifact(
+                &format!(r"tools\\{component}"),
+                b"reserved",
+            ));
+            assert!(
+                validate_guest_runtime_artifact_manifest(operation, &manifest).is_err(),
+                "Windows-reserved component should be rejected: {component}",
+            );
+        }
+    }
+
+    #[test]
+    fn guest_runtime_artifact_manifest_allows_non_reserved_device_name_prefixes() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        let mut manifest = test_runtime_manifest(operation);
+        for component in ["COM0", "COM10", "LPT0", "LPT10", "CONSOLE", "cache.data"] {
+            manifest.artifacts.push(test_runtime_artifact(
+                &format!(r"tools\\{component}"),
+                b"ordinary",
+            ));
+        }
+        assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_ok());
     }
 
     #[test]
