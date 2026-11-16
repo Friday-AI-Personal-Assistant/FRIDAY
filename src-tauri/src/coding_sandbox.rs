@@ -5577,9 +5577,9 @@ mod tests {
     fn guest_result_rejects_inconsistent_status_exit_and_excessive_limits() {
         let run_id = "0123456789abcdef0123456789abcdef";
         let operation = GuestRunOperation::RustCargoTest;
-        assert!(validate_guest_result_json(&guest_result_json("passed", r#","exitCode":1"#), run_id, operation).is_err());
-        assert!(validate_guest_result_json(&guest_result_json("failed", r#","exitCode":0"#), run_id, operation).is_err());
-        assert!(validate_guest_result_json(&guest_result_json("timed_out", r#","exitCode":124"#), run_id, operation).is_err());
+        assert!(validate_guest_result_json(&guest_result_json("passed", r#","exitCode":1"#), run_id, "abcdef0123456789abcdef0123456789", operation).is_err());
+        assert!(validate_guest_result_json(&guest_result_json("failed", r#","exitCode":0"#), run_id, "abcdef0123456789abcdef0123456789", operation).is_err());
+        assert!(validate_guest_result_json(&guest_result_json("timed_out", r#","exitCode":124"#), run_id, "abcdef0123456789abcdef0123456789", operation).is_err());
         let long_output = "x".repeat(MAX_GUEST_RESULT_BYTES + 1);
         let oversized = serde_json::json!({
             "schemaVersion": 1, "runId": run_id, "snapshotId": "abcdef0123456789abcdef0123456789", "operation": "rust-cargo-test",
@@ -5587,7 +5587,7 @@ mod tests {
             "stderr": "", "truncated": true, "durationMs": 1
         });
         assert!(validate_guest_result_json(&serde_json::to_vec(&oversized).unwrap(), run_id, "abcdef0123456789abcdef0123456789", operation).is_err());
-        let long_duration = br#"{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","operation":"rust-cargo-test","status":"passed","exitCode":0,"truncated":false,"durationMs":120001}"#;
+        let long_duration = br#"{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","snapshotId":"abcdef0123456789abcdef0123456789","operation":"rust-cargo-test","status":"passed","exitCode":0,"truncated":false,"durationMs":120001}"#;
         assert!(validate_guest_result_json(long_duration, run_id, "abcdef0123456789abcdef0123456789", operation).is_err());
     }
 

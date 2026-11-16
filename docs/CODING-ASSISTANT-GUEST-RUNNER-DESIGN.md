@@ -2047,3 +2047,6 @@ but a different workspace snapshot.
 
 This is validation-only: no guest process is launched and no result volume is
 shared or mounted for execution.
+
+
+The snapshot-binding update carries the required snapshot field through all status/exit-code negative fixtures and the duration-limit fixture, so each test reaches its intended validation branch rather than failing early on a missing field.
