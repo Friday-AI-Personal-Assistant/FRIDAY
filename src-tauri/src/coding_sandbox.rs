@@ -522,6 +522,10 @@ fn verified_runtime_artifact_inventory_is_consistent(
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct VerifiedGuestRuntimeExecutionPlan {
     operation: GuestRunOperation,
+    /// The exact verified runtime root and stable filesystem identity are
+    /// carried forward so later gates cannot detach the plan from its proof.
+    root_path: PathBuf,
+    root_identity: (u64, u64),
     bundle_id: String,
     toolchain_version: String,
     manifest_sha256: String,
@@ -573,6 +577,8 @@ fn build_verified_guest_runtime_execution_plan(
 
     Ok(VerifiedGuestRuntimeExecutionPlan {
         operation: proof.operation,
+        root_path: proof.root_path.clone(),
+        root_identity: proof.root_identity,
         bundle_id: proof.bundle_id.clone(),
         toolchain_version: proof.toolchain_version.clone(),
         manifest_sha256: proof.manifest_sha256.to_ascii_lowercase(),
@@ -8888,6 +8894,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             let plan = build_verified_guest_runtime_execution_plan(&proof).unwrap();
             validate_verified_guest_runtime_execution_plan(&proof, &plan).unwrap();
             assert_eq!(plan.operation, operation);
+            assert_eq!(plan.root_path, proof.root_path);
+            assert_eq!(plan.root_identity, proof.root_identity);
             assert_eq!(plan.launch, build_guest_runtime_launch_plan(operation));
             assert_eq!(plan.environment, build_guest_runtime_environment_plan(operation));
             assert_eq!(
@@ -8901,6 +8909,24 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             assert_eq!(plan.toolchain_version, proof.toolchain_version);
             assert_eq!(plan.manifest_sha256, proof.manifest_sha256);
         }
+    }
+
+    #[test]
+    fn verified_runtime_execution_plan_rejects_substituted_root_identity_or_path() {
+        let proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+        let plan = build_verified_guest_runtime_execution_plan(&proof).unwrap();
+
+        let mut substituted = plan.clone();
+        substituted.root_identity = (9, 9);
+        assert!(validate_verified_guest_runtime_execution_plan(&proof, &substituted).is_err());
+
+        let mut substituted = plan.clone();
+        substituted.root_path = PathBuf::from(r"C:\FRIDAY\Toolchains\Other");
+        assert!(validate_verified_guest_runtime_execution_plan(&proof, &substituted).is_err());
+
+        let mut changed_proof = proof.clone();
+        changed_proof.root_identity = (9, 9);
+        assert!(validate_verified_guest_runtime_execution_plan(&changed_proof, &plan).is_err());
     }
 
     #[test]
