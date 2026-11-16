@@ -9775,4 +9775,156 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
     }
 
 
+    #[test]
+    fn runtime_publication_plan_binds_verified_staging_to_authenticated_provisioning() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let manifest = test_runtime_manifest(operation);
+            let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+            let provisioning = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
+            let staging = VerifiedGuestRuntimeStaging {
+                operation,
+                staging_root: provisioning.staging_root.clone(),
+                root_identity: (17, 29),
+                bundle_id: anchor.bundle_id.clone(),
+                manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+                artifact_count: manifest.artifacts.len(),
+            };
+
+            let publication = build_guest_runtime_publication_plan(
+                &staging, &manifest, &anchor, &provisioning,
+            ).unwrap();
+            validate_guest_runtime_publication_plan(
+                &staging, &manifest, &anchor, &provisioning, &publication,
+            ).unwrap();
+
+            assert_eq!(publication.operation, operation);
+            assert_eq!(publication.bundle_id, anchor.bundle_id);
+            assert_eq!(publication.manifest_sha256, anchor.manifest_sha256.to_ascii_lowercase());
+            assert_eq!(publication.artifact_count, manifest.artifacts.len());
+            assert_eq!(publication.staging_root, provisioning.staging_root);
+            assert_eq!(publication.staging_root_identity, (17, 29));
+            assert_eq!(publication.final_root, provisioning.final_root);
+            assert_ne!(publication.staging_root, publication.final_root);
+            assert_eq!(publication.staging_root.parent(), publication.final_root.parent());
+        }
+    }
+
+    #[test]
+    fn runtime_publication_plan_rejects_every_mutable_publication_field() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let provisioning = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
+        let staging = VerifiedGuestRuntimeStaging {
+            operation,
+            staging_root: provisioning.staging_root.clone(),
+            root_identity: (31, 47),
+            bundle_id: anchor.bundle_id.clone(),
+            manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+            artifact_count: manifest.artifacts.len(),
+        };
+        let publication = build_guest_runtime_publication_plan(
+            &staging, &manifest, &anchor, &provisioning,
+        ).unwrap();
+
+        let mut changed = publication.clone();
+        changed.operation = GuestRunOperation::PythonUnittest;
+        assert!(validate_guest_runtime_publication_plan(
+            &staging, &manifest, &anchor, &provisioning, &changed,
+        ).is_err());
+
+        changed = publication.clone();
+        changed.bundle_id.push_str("-substituted");
+        assert!(validate_guest_runtime_publication_plan(
+            &staging, &manifest, &anchor, &provisioning, &changed,
+        ).is_err());
+
+        changed = publication.clone();
+        changed.manifest_sha256 = "b".repeat(64);
+        assert!(validate_guest_runtime_publication_plan(
+            &staging, &manifest, &anchor, &provisioning, &changed,
+        ).is_err());
+
+        changed = publication.clone();
+        changed.artifact_count += 1;
+        assert!(validate_guest_runtime_publication_plan(
+            &staging, &manifest, &anchor, &provisioning, &changed,
+        ).is_err());
+
+        changed = publication.clone();
+        changed.staging_root.push("redirected");
+        assert!(validate_guest_runtime_publication_plan(
+            &staging, &manifest, &anchor, &provisioning, &changed,
+        ).is_err());
+
+        changed = publication.clone();
+        changed.staging_root_identity = (99, 101);
+        assert!(validate_guest_runtime_publication_plan(
+            &staging, &manifest, &anchor, &provisioning, &changed,
+        ).is_err());
+
+        changed = publication.clone();
+        changed.final_root.push("redirected");
+        assert!(validate_guest_runtime_publication_plan(
+            &staging, &manifest, &anchor, &provisioning, &changed,
+        ).is_err());
+    }
+
+    #[test]
+    fn runtime_publication_plan_rejects_staging_proof_substitution_and_invalid_identity() {
+        let operation = GuestRunOperation::PythonUnittest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let provisioning = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
+        let staging = VerifiedGuestRuntimeStaging {
+            operation,
+            staging_root: provisioning.staging_root.clone(),
+            root_identity: (53, 59),
+            bundle_id: anchor.bundle_id.clone(),
+            manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+            artifact_count: manifest.artifacts.len(),
+        };
+
+        let mut changed = staging.clone();
+        changed.operation = GuestRunOperation::RustCargoTest;
+        assert!(build_guest_runtime_publication_plan(
+            &changed, &manifest, &anchor, &provisioning,
+        ).is_err());
+
+        changed = staging.clone();
+        changed.staging_root.push("other");
+        assert!(build_guest_runtime_publication_plan(
+            &changed, &manifest, &anchor, &provisioning,
+        ).is_err());
+
+        changed = staging.clone();
+        changed.bundle_id.push_str("-other");
+        assert!(build_guest_runtime_publication_plan(
+            &changed, &manifest, &anchor, &provisioning,
+        ).is_err());
+
+        changed = staging.clone();
+        changed.manifest_sha256 = "c".repeat(64);
+        assert!(build_guest_runtime_publication_plan(
+            &changed, &manifest, &anchor, &provisioning,
+        ).is_err());
+
+        changed = staging.clone();
+        changed.artifact_count += 1;
+        assert!(build_guest_runtime_publication_plan(
+            &changed, &manifest, &anchor, &provisioning,
+        ).is_err());
+
+        changed = staging.clone();
+        changed.root_identity = (0, 0);
+        assert!(build_guest_runtime_publication_plan(
+            &changed, &manifest, &anchor, &provisioning,
+        ).is_err());
+    }
+
+
 }
