@@ -2170,3 +2170,27 @@ path. A trusted root handle still has to be obtained from authenticated,
 version-pinned provisioning metadata, and the complete dependency closure must
 be enumerated before any runtime can be declared ready. Guest execution remains
 disabled.
+
+
+## Build-time guest runtime manifest authentication — implemented as a trust primitive
+
+The host now has a separate manifest-authentication gate. It validates the
+operation-specific artifact manifest, canonicalizes its artifact ordering,
+serializes the complete manifest, and compares its SHA-256 digest with a
+separate trust anchor containing the operation, bundle identifier, exact
+toolchain version, Windows platform, x86_64 architecture, and pinned digest.
+The anchor is intended to be immutable metadata compiled into the signed FRIDAY
+application. A changed artifact path, file digest, size ceiling, operation,
+platform, architecture, or pinned digest is rejected. Tests cover all three
+operation types, ordering independence, artifact tampering, operation
+substitution, missing version pins, and platform substitution.
+
+This is an authentication primitive, not a production provisioning system.
+No actual Rust, Node.js, or Python release versions, signed runtime bundles,
+or production trust-anchor digests have been selected or embedded yet. The
+test anchors are generated only from test fixtures and must never be reused
+for real provisioning. A future reviewed release process must choose exact
+toolchain versions, enumerate each complete dependency closure, generate
+immutable build-time digests from reviewed bundles, and provision only those
+bundles. No files are downloaded, installed, or launched by this change;
+guest execution remains disabled.

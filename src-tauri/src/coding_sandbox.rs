@@ -258,11 +258,68 @@ struct GuestRuntimeArtifactSpec {
     max_bytes: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct GuestRuntimeArtifactManifest {
     schema_version: u32,
     operation: GuestRunOperation,
     artifacts: Vec<GuestRuntimeArtifactSpec>,
+}
+
+/// This trust anchor must be constructed only from immutable FRIDAY build
+/// metadata. In production its digest is compiled into the signed application;
+/// it must never be loaded from the guest, project, model, or mutable settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestRuntimeManifestTrustAnchor {
+    schema_version: u32,
+    operation: GuestRunOperation,
+    bundle_id: String,
+    toolchain_version: String,
+    platform: String,
+    architecture: String,
+    manifest_sha256: String,
+}
+
+/// Authenticate a manifest against its separately pinned build-time digest.
+/// Sorting entries before serialization makes the digest independent of the
+/// manifest's input ordering while retaining every path, limit, and file hash.
+/// This is a trust-boundary primitive only: no production trust anchors or
+/// runtime bundles are provisioned by this function.
+#[allow(dead_code)]
+fn authenticate_guest_runtime_manifest(
+    operation: GuestRunOperation,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+) -> Result<(), String> {
+    validate_guest_runtime_artifact_manifest(operation, manifest)?;
+    if anchor.schema_version != 1
+        || anchor.operation != operation
+        || anchor.bundle_id.is_empty()
+        || anchor.bundle_id.len() > 96
+        || !anchor.bundle_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        || anchor.toolchain_version.is_empty()
+        || anchor.toolchain_version.len() > 64
+        || !anchor.toolchain_version.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
+        || anchor.platform != "windows"
+        || anchor.architecture != "x86_64"
+        || anchor.manifest_sha256.len() != 64
+        || !anchor.manifest_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err("The guest runtime trust anchor is invalid or does not match this platform and operation.".into());
+    }
+
+    let mut canonical = manifest.clone();
+    canonical.artifacts.sort_by(|left, right| {
+        left.relative_path.to_ascii_lowercase().cmp(&right.relative_path.to_ascii_lowercase())
+    });
+    let encoded = serde_json::to_vec(&canonical)
+        .map_err(|_| "The trusted guest runtime manifest could not be encoded.".to_string())?;
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(&encoded);
+    let actual = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    if !actual.eq_ignore_ascii_case(&anchor.manifest_sha256) {
+        return Err("The guest runtime manifest does not match FRIDAY's pinned build-time digest.".into());
+    }
+    Ok(())
 }
 
 /// Validate an image-owned artifact manifest before any future file access.
@@ -5632,6 +5689,64 @@ mod tests {
         };
         artifacts.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
         GuestRuntimeArtifactManifest { schema_version: 1, operation, artifacts }
+    }
+
+    fn test_runtime_manifest_trust_anchor(
+        operation: GuestRunOperation,
+        manifest: &GuestRuntimeArtifactManifest,
+    ) -> GuestRuntimeManifestTrustAnchor {
+        let mut canonical = manifest.clone();
+        canonical.artifacts.sort_by(|left, right| {
+            left.relative_path.to_ascii_lowercase().cmp(&right.relative_path.to_ascii_lowercase())
+        });
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(serde_json::to_vec(&canonical).unwrap());
+        GuestRuntimeManifestTrustAnchor {
+            schema_version: 1,
+            operation,
+            bundle_id: "friday-test-runtime-bundle".into(),
+            toolchain_version: "1.0.0".into(),
+            platform: "windows".into(),
+            architecture: "x86_64".into(),
+            manifest_sha256: digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+        }
+    }
+
+    #[test]
+    fn guest_runtime_manifest_authentication_binds_metadata_and_all_artifacts() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let manifest = test_runtime_manifest(operation);
+            let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+            assert!(authenticate_guest_runtime_manifest(operation, &manifest, &anchor).is_ok());
+
+            let mut reordered = manifest.clone();
+            reordered.artifacts.reverse();
+            assert!(authenticate_guest_runtime_manifest(operation, &reordered, &anchor).is_ok());
+
+            let mut tampered = manifest.clone();
+            tampered.artifacts[0].sha256 = "a".repeat(64);
+            assert!(authenticate_guest_runtime_manifest(operation, &tampered, &anchor).is_err());
+
+            let mut wrong_operation = anchor.clone();
+            wrong_operation.operation = match operation {
+                GuestRunOperation::RustCargoTest => GuestRunOperation::NodeNpmTest,
+                GuestRunOperation::NodeNpmTest => GuestRunOperation::PythonUnittest,
+                GuestRunOperation::PythonUnittest => GuestRunOperation::RustCargoTest,
+            };
+            assert!(authenticate_guest_runtime_manifest(operation, &manifest, &wrong_operation).is_err());
+
+            let mut unpinned_version = anchor.clone();
+            unpinned_version.toolchain_version.clear();
+            assert!(authenticate_guest_runtime_manifest(operation, &manifest, &unpinned_version).is_err());
+
+            let mut wrong_platform = anchor.clone();
+            wrong_platform.platform = "linux".into();
+            assert!(authenticate_guest_runtime_manifest(operation, &manifest, &wrong_platform).is_err());
+        }
     }
 
     #[test]
