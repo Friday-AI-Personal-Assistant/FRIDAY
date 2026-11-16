@@ -2007,3 +2007,15 @@ entries cannot block a new approval indefinitely.
 These are host-memory authorization lifecycle tests only. They do not launch
 Windows Sandbox, invoke a guest runner, or enable guest execution.
 
+## Approval clock rollback, failed replacement, and scoped revocation — regression coverage
+
+Additional store-level tests verify that a backwards wall-clock observation
+cannot extend an approval beyond its fixed lifetime, and that the failed
+consume attempt remains terminal. A malformed replacement plan must not
+silently overwrite an existing valid grant; only a successfully issued
+replacement supersedes it. Revocation is idempotent and scoped to the exact
+run ID, leaving other pending approvals unaffected.
+
+These tests cover host-memory authorization state only. They do not start
+Windows Sandbox, execute a guest command, or enable guest execution.
+

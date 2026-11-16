@@ -7453,4 +7453,66 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert_eq!(store.pending_count(), 1);
     }
 
+
+
+    #[test]
+    fn approval_store_rejects_clock_rollback_without_leaving_a_grant() {
+        let plan = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let mut store = GuestRunApprovalStore::default();
+        let token = store.issue(&plan, 2_000).unwrap();
+
+        // A wall-clock rollback must not make a newly issued grant appear to
+        // have more than its fixed TTL remaining.
+        assert!(store.consume(&plan, &token, 1_999).is_err());
+        assert_eq!(store.pending_count(), 0);
+        assert!(store.consume(&plan, &token, 2_001).is_err());
+    }
+
+    #[test]
+    fn failed_replacement_issue_does_not_replace_an_existing_valid_grant() {
+        let original = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let mut store = GuestRunApprovalStore::default();
+        let original_token = store.issue(&original, 3_000).unwrap();
+
+        let mut invalid_replacement = original.clone();
+        invalid_replacement.command = GuestOperationCommand {
+            program: "cmd.exe",
+            arguments: &["/c", "whoami"],
+        };
+        assert!(store.issue(&invalid_replacement, 3_001).is_err());
+        assert_eq!(store.pending_count(), 1);
+
+        // Only a successfully issued replacement supersedes the old grant.
+        assert!(store.consume(&original, &original_token, 3_002).is_ok());
+        assert_eq!(store.pending_count(), 0);
+    }
+
+    #[test]
+    fn approval_store_revocation_is_idempotent_and_run_scoped() {
+        let base_plan = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let mut first_plan = base_plan.clone();
+        first_plan.run_id = "11111111111111111111111111111111".into();
+        let mut second_plan = base_plan;
+        second_plan.run_id = "22222222222222222222222222222222".into();
+
+        let mut store = GuestRunApprovalStore::default();
+        let first_token = store.issue(&first_plan, 4_000).unwrap();
+        let second_token = store.issue(&second_plan, 4_000).unwrap();
+        assert_eq!(store.pending_count(), 2);
+
+        assert!(store.revoke(&first_plan.run_id));
+        assert!(!store.revoke(&first_plan.run_id));
+        assert_eq!(store.pending_count(), 1);
+
+        assert!(store.consume(&second_plan, &second_token, 4_001).is_ok());
+        assert!(store.consume(&first_plan, &first_token, 4_001).is_err());
+        assert_eq!(store.pending_count(), 0);
+    }
+
 }
