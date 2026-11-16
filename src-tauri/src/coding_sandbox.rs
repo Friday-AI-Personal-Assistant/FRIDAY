@@ -137,6 +137,20 @@ fn build_guest_runtime_launch_plan(
     }
 }
 
+/// Revalidates a runtime launch plan against the single trusted profile for
+/// its typed operation. This rejects substituted executables, arguments, or
+/// working directories before a future process-creation boundary.
+#[allow(dead_code)]
+fn validate_guest_runtime_launch_plan(
+    operation: GuestRunOperation,
+    plan: &GuestRuntimeLaunchPlan,
+) -> Result<(), String> {
+    if plan != &build_guest_runtime_launch_plan(operation) {
+        return Err("The guest runtime launch plan differs from FRIDAY's pinned operation profile.".into());
+    }
+    Ok(())
+}
+
 /// Immutable, policy-bounded description of one guest test run. It deliberately
 /// contains no executable path, working-directory path, environment, or
 /// caller-supplied arguments; those are resolved only by later trusted stages.
@@ -5345,6 +5359,30 @@ mod tests {
             assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".cmd"));
             assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".bat"));
             assert!(plan.arguments.iter().all(|argument| argument.chars().all(|character| !matches!(character, '&' | '|' | ';' | '\n' | '\r'))));
+        }
+    }
+
+    #[test]
+    fn guest_runtime_launch_plan_validator_rejects_each_substituted_field() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let trusted = build_guest_runtime_launch_plan(operation);
+            assert!(validate_guest_runtime_launch_plan(operation, &trusted).is_ok());
+
+            let mut changed_program = trusted.clone();
+            changed_program.program = PathBuf::from(r"C:\\Windows\\System32\\cmd.exe");
+            assert!(validate_guest_runtime_launch_plan(operation, &changed_program).is_err());
+
+            let mut changed_arguments = trusted.clone();
+            changed_arguments.arguments.push("--unreviewed".into());
+            assert!(validate_guest_runtime_launch_plan(operation, &changed_arguments).is_err());
+
+            let mut changed_working_directory = trusted.clone();
+            changed_working_directory.working_directory = PathBuf::from(r"C:\\FRIDAY\\OtherWorkspace");
+            assert!(validate_guest_runtime_launch_plan(operation, &changed_working_directory).is_err());
         }
     }
 

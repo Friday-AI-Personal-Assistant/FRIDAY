@@ -2086,3 +2086,21 @@ version-pinned provisioning process, integrity verification, fixed minimal
 environment, read-only workspace mapping, and guest-side Job Object launch
 transaction are still required. The plans are not connected to process
 creation, and guest execution remains disabled.
+
+
+## Revalidate pinned runtime launch plans — implemented as a pure gate
+
+The host now has a separate launch-plan validator that compares the complete
+candidate plan against the trusted profile generated for its typed operation.
+The validator rejects any substituted executable, added/changed argument, or
+working-directory change, including command interpreters and alternate
+workspace paths. Regression coverage applies each mutation to all three
+supported operation profiles and confirms that only the exact trusted plan is
+accepted.
+
+This is a pure pre-process-creation gate. It does not verify that the pinned
+files exist or have trusted contents, provision toolchains, construct the
+final process environment, create a process, or launch Windows Sandbox.
+Integrity-pinned provisioning, environment policy, guest Job Object
+containment, and the complete ownership/approval transaction remain required;
+guest execution remains disabled.
