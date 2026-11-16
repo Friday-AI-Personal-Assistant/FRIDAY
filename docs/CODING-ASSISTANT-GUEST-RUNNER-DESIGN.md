@@ -2067,3 +2067,22 @@ boundary, one millisecond beyond it, and invalid expected limits.
 This is an additional consistency check, not a substitute for the host
 watchdog or authoritative elapsed-time measurement. Guest-reported duration
 remains untrusted metadata, and execution remains disabled.
+
+
+## Pinned guest runtime launch profiles — implemented as inert plans
+
+The host-side contract now maps each supported operation to a fixed absolute
+executable path beneath the future FRIDAY guest toolchain image and a fixed
+working directory at `C:\\FRIDAY\\Workspace`. The Node profile invokes
+the pinned `node.exe` directly with the pinned `npm-cli.js` entry point;
+it never launches `npm.cmd` or another command script. Rust and Python use
+their corresponding pinned executable paths and fixed argument vectors.
+No path, executable, argument, or working directory is accepted from the
+request or project.
+
+These are inert, testable launch descriptions only. The standard Windows
+Sandbox image does not thereby gain these toolchains: a separately reviewed,
+version-pinned provisioning process, integrity verification, fixed minimal
+environment, read-only workspace mapping, and guest-side Job Object launch
+transaction are still required. The plans are not connected to process
+creation, and guest execution remains disabled.

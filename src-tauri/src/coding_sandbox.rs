@@ -96,6 +96,47 @@ fn guest_operation_command(operation: GuestRunOperation) -> GuestOperationComman
     }
 }
 
+
+/// Fixed guest-side toolchain layout for a future runner. These paths are
+/// image-owned constants, never request or project inputs. The profiles are
+/// descriptive launch plans only; they do not prove the toolchains are
+/// provisioned or execute any process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestRuntimeLaunchPlan {
+    program: PathBuf,
+    arguments: Vec<String>,
+    working_directory: PathBuf,
+}
+
+const GUEST_WORKSPACE_ROOT: &str = r"C:\\FRIDAY\\Workspace";
+
+fn build_guest_runtime_launch_plan(
+    operation: GuestRunOperation,
+) -> GuestRuntimeLaunchPlan {
+    let working_directory = PathBuf::from(GUEST_WORKSPACE_ROOT);
+    match operation {
+        GuestRunOperation::RustCargoTest => GuestRuntimeLaunchPlan {
+            program: PathBuf::from(r"C:\\FRIDAY\\Toolchains\\Rust\\bin\\cargo.exe"),
+            arguments: vec!["test".into(), "--locked".into(), "--offline".into()],
+            working_directory,
+        },
+        GuestRunOperation::NodeNpmTest => GuestRuntimeLaunchPlan {
+            // Invoke node.exe directly; never resolve or execute npm.cmd.
+            program: PathBuf::from(r"C:\\FRIDAY\\Toolchains\\Node\\node.exe"),
+            arguments: vec![
+                r"C:\\FRIDAY\\Toolchains\\Node\\node_modules\\npm\\bin\\npm-cli.js".into(),
+                "test".into(),
+            ],
+            working_directory,
+        },
+        GuestRunOperation::PythonUnittest => GuestRuntimeLaunchPlan {
+            program: PathBuf::from(r"C:\\FRIDAY\\Toolchains\\Python\\python.exe"),
+            arguments: vec!["-m".into(), "unittest".into(), "discover".into(), "-v".into()],
+            working_directory,
+        },
+    }
+}
+
 /// Immutable, policy-bounded description of one guest test run. It deliberately
 /// contains no executable path, working-directory path, environment, or
 /// caller-supplied arguments; those are resolved only by later trusted stages.
@@ -5271,6 +5312,50 @@ mod tests {
                     || argument.contains('\r')
             }));
         }
+    }
+
+    #[test]
+    fn guest_runtime_launch_profiles_use_only_pinned_guest_paths_and_fixed_arguments() {
+        let cases = [
+            (
+                GuestRunOperation::RustCargoTest,
+                r"C:\\FRIDAY\\Toolchains\\Rust\\bin\\cargo.exe",
+                vec!["test", "--locked", "--offline"],
+            ),
+            (
+                GuestRunOperation::NodeNpmTest,
+                r"C:\\FRIDAY\\Toolchains\\Node\\node.exe",
+                vec![
+                    r"C:\\FRIDAY\\Toolchains\\Node\\node_modules\\npm\\bin\\npm-cli.js",
+                    "test",
+                ],
+            ),
+            (
+                GuestRunOperation::PythonUnittest,
+                r"C:\\FRIDAY\\Toolchains\\Python\\python.exe",
+                vec!["-m", "unittest", "discover", "-v"],
+            ),
+        ];
+        for (operation, expected_program, expected_arguments) in cases {
+            let plan = build_guest_runtime_launch_plan(operation);
+            assert_eq!(plan.program, PathBuf::from(expected_program));
+            assert_eq!(plan.arguments, expected_arguments.iter().map(|value| value.to_string()).collect::<Vec<_>>());
+            assert_eq!(plan.working_directory, PathBuf::from(GUEST_WORKSPACE_ROOT));
+            assert!(plan.program.is_absolute());
+            assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".cmd"));
+            assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".bat"));
+            assert!(plan.arguments.iter().all(|argument| !argument.contains(['&', '|', ';', '\\n', '\\r'])));
+        }
+    }
+
+    #[test]
+    fn node_runtime_profile_never_invokes_a_command_script() {
+        let plan = build_guest_runtime_launch_plan(GuestRunOperation::NodeNpmTest);
+        assert!(plan.program.ends_with("node.exe"));
+        assert_eq!(plan.arguments.len(), 2);
+        assert!(plan.arguments[0].ends_with(r"npm-cli.js"));
+        assert_eq!(plan.arguments[1], "test");
+        assert!(!plan.arguments.iter().any(|argument| argument.to_ascii_lowercase().ends_with(".cmd")));
     }
 
     #[test]
