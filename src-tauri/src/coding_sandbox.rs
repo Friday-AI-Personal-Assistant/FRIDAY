@@ -361,6 +361,16 @@ fn build_guest_runtime_provisioning_plan(
     manifest: &GuestRuntimeArtifactManifest,
     anchor: &GuestRuntimeManifestTrustAnchor,
 ) -> Result<GuestRuntimeProvisioningPlan, String> {
+    build_guest_runtime_provisioning_plan_with_final_root(
+        manifest, anchor, PathBuf::from(fixed_guest_runtime_root(anchor.operation)),
+    )
+}
+
+fn build_guest_runtime_provisioning_plan_with_final_root(
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    final_root: PathBuf,
+) -> Result<GuestRuntimeProvisioningPlan, String> {
     authenticate_guest_runtime_manifest(anchor.operation, manifest, anchor)?;
     let mut declared_max_bytes = 0u64;
     for artifact in &manifest.artifacts {
@@ -370,7 +380,6 @@ fn build_guest_runtime_provisioning_plan(
     if declared_max_bytes == 0 || declared_max_bytes > MAX_GUEST_RUNTIME_MANIFEST_BYTES {
         return Err("The runtime bundle exceeds FRIDAY's total provisioning size limit.".into());
     }
-    let final_root = PathBuf::from(fixed_guest_runtime_root(anchor.operation));
     let parent = final_root.parent()
         .ok_or("The fixed runtime installation root has no parent directory.")?;
     let staging_root = parent.join(format!(".friday-{}.staging", anchor.bundle_id));
@@ -399,7 +408,18 @@ fn validate_guest_runtime_provisioning_plan(
     anchor: &GuestRuntimeManifestTrustAnchor,
     plan: &GuestRuntimeProvisioningPlan,
 ) -> Result<(), String> {
-    if plan != &build_guest_runtime_provisioning_plan(manifest, anchor)? {
+    validate_guest_runtime_provisioning_plan_with_final_root(
+        manifest, anchor, plan, PathBuf::from(fixed_guest_runtime_root(anchor.operation)),
+    )
+}
+
+fn validate_guest_runtime_provisioning_plan_with_final_root(
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    plan: &GuestRuntimeProvisioningPlan,
+    final_root: PathBuf,
+) -> Result<(), String> {
+    if plan != &build_guest_runtime_provisioning_plan_with_final_root(manifest, anchor, final_root)? {
         return Err("The runtime provisioning plan differs from FRIDAY's authenticated bundle policy.".into());
     }
     Ok(())
@@ -451,7 +471,22 @@ fn verify_staged_guest_runtime_bundle(
     anchor: &GuestRuntimeManifestTrustAnchor,
     plan: &GuestRuntimeProvisioningPlan,
 ) -> Result<VerifiedGuestRuntimeStaging, String> {
-    validate_guest_runtime_provisioning_plan(manifest, anchor, plan)?;
+    verify_staged_guest_runtime_bundle_with_final_root(
+        staging_root_path, staging_root, manifest, anchor, plan,
+        PathBuf::from(fixed_guest_runtime_root(anchor.operation)),
+    )
+}
+
+#[cfg(test)]
+fn verify_staged_guest_runtime_bundle_with_final_root(
+    staging_root_path: &Path,
+    staging_root: &File,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    plan: &GuestRuntimeProvisioningPlan,
+    final_root: PathBuf,
+) -> Result<VerifiedGuestRuntimeStaging, String> {
+    validate_guest_runtime_provisioning_plan_with_final_root(manifest, anchor, plan, final_root)?;
     if staging_root_path != plan.staging_root {
         return Err("The staged runtime directory differs from the authenticated staging plan.".into());
     }
@@ -6390,10 +6425,13 @@ mod tests {
         let operation = GuestRunOperation::RustCargoTest;
         let manifest = test_runtime_manifest(operation);
         let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
-        let plan = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
-        let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
         let path = make_test_directory("staged-runtime-verify");
-        let stage_path = path.join(".friday-test-runtime-bundle.staging");
+        let test_final_root = path.join("published-runtime");
+        let plan = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, test_final_root.clone(),
+        ).unwrap();
+        let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
+        let stage_path = plan.staging_root.clone();
         let parent = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
         let files = manifest.artifacts.iter().map(|artifact| {
             let bytes = match artifact.relative_path.as_str() {
@@ -6409,7 +6447,9 @@ mod tests {
         let stage = crate::coding_sandbox_fs::open_child_directory_nofollow(
             &parent, std::ffi::OsStr::new(".friday-test-runtime-bundle.staging"),
         ).unwrap();
-        let proof = verify_staged_guest_runtime_bundle(&stage_path, &stage, &manifest, &anchor, &plan).unwrap();
+        let proof = verify_staged_guest_runtime_bundle_with_final_root(
+            &stage_path, &stage, &manifest, &anchor, &plan, test_final_root,
+        ).unwrap();
         assert_eq!(proof.bundle_id, anchor.bundle_id);
         assert_eq!(proof.artifact_count, manifest.artifacts.len());
         assert_ne!(proof.root_identity, (0, 0));
@@ -6423,9 +6463,12 @@ mod tests {
         let operation = GuestRunOperation::RustCargoTest;
         let manifest = test_runtime_manifest(operation);
         let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
-        let plan = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
         let path = make_test_directory("staged-runtime-reject");
-        let stage_path = path.join(".friday-test-runtime-bundle.staging");
+        let test_final_root = path.join("published-runtime");
+        let plan = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, test_final_root.clone(),
+        ).unwrap();
+        let stage_path = plan.staging_root.clone();
         let parent = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
         let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
         let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
@@ -6437,10 +6480,14 @@ mod tests {
             &parent, std::ffi::OsStr::new(".friday-test-runtime-bundle.staging"),
         ).unwrap();
         fs::write(stage_path.join(".friday-runtime-owner.json"), b"{\"schemaVersion\":1}").unwrap();
-        assert!(verify_staged_guest_runtime_bundle(&stage_path, &stage, &manifest, &anchor, &plan).is_err());
+        assert!(verify_staged_guest_runtime_bundle_with_final_root(
+            &stage_path, &stage, &manifest, &anchor, &plan, test_final_root.clone(),
+        ).is_err());
         fs::write(stage_path.join(".friday-runtime-owner.json"), &marker).unwrap();
         fs::write(stage_path.join("unexpected.dll"), b"untrusted").unwrap();
-        assert!(verify_staged_guest_runtime_bundle(&stage_path, &stage, &manifest, &anchor, &plan).is_err());
+        assert!(verify_staged_guest_runtime_bundle_with_final_root(
+            &stage_path, &stage, &manifest, &anchor, &plan, test_final_root,
+        ).is_err());
         drop(stage);
         drop(parent);
         fs::remove_dir_all(path).unwrap();
