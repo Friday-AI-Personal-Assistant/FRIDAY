@@ -8861,6 +8861,9 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         VerifiedGuestRuntimeBundle {
             operation,
             root_path: PathBuf::from(fixed_guest_runtime_root(operation)),
+            // Synthetic identity for pure launch-plan tests; these fixtures do
+            // not open a filesystem root or authorize real process execution.
+            root_identity: (1, 1),
             bundle_id: "friday-runtime-test".into(),
             toolchain_version: "1.2.3".into(),
             platform: "windows".into(),
