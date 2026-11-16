@@ -442,7 +442,7 @@ fn provision_authenticated_guest_runtime_bundle_from_bytes(
     plan: &GuestRuntimeProvisioningPlan,
     source_files: &[(PathBuf, Vec<u8>)],
 ) -> Result<VerifiedGuestRuntimeStaging, String> {
-    validate_guest_runtime_provisioning_plan(manifest, anchor, plan)?;
+    validate_guest_runtime_provisioning_plan_with_final_root(manifest, anchor, plan, plan.final_root.clone())?;
     if plan.staging_root.parent() != Some(parent_path)
         || source_files.len() != manifest.artifacts.len()
     {
@@ -499,8 +499,8 @@ fn provision_authenticated_guest_runtime_bundle_from_bytes(
 
     let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(parent_handle, staging_name)
         .map_err(|_| "The newly staged runtime directory could not be safely reopened.".to_string())?;
-    let proof = verify_staged_guest_runtime_bundle(
-        &plan.staging_root, &staging_handle, manifest, anchor, plan,
+    let proof = verify_staged_guest_runtime_bundle_with_final_root(
+        &plan.staging_root, &staging_handle, manifest, anchor, plan, plan.final_root.clone(),
     )?;
     let final_parent_identity = crate::coding_sandbox_fs::verified_directory_identity(parent_path, parent_handle)
         .map_err(|_| "The runtime staging parent identity changed during provisioning.".to_string())?;
