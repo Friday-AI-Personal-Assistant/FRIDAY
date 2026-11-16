@@ -7391,4 +7391,66 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         }
     }
 
+
+
+    #[test]
+    fn approval_store_enforces_expiry_at_the_exact_ttl_boundary() {
+        let plan = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+
+        let mut valid_store = GuestRunApprovalStore::default();
+        let valid_token = valid_store.issue(&plan, 1_000).unwrap();
+        assert!(valid_store.consume(&plan, &valid_token, 1_119).is_ok());
+        assert_eq!(valid_store.pending_count(), 0);
+
+        let mut expired_store = GuestRunApprovalStore::default();
+        let expired_token = expired_store.issue(&plan, 1_000).unwrap();
+        assert!(expired_store.consume(&plan, &expired_token, 1_120).is_err());
+        assert_eq!(expired_store.pending_count(), 0);
+        assert!(expired_store.consume(&plan, &expired_token, 1_121).is_err());
+    }
+
+    #[test]
+    fn approval_store_replacement_invalidates_the_previous_token() {
+        let plan = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let mut store = GuestRunApprovalStore::default();
+
+        let old_token = store.issue(&plan, 1_000).unwrap();
+        let replacement_token = store.issue(&plan, 1_001).unwrap();
+        assert_ne!(old_token, replacement_token);
+        assert_eq!(store.pending_count(), 1);
+
+        assert!(store.consume(&plan, &replacement_token, 1_002).is_ok());
+        assert!(store.consume(&plan, &old_token, 1_003).is_err());
+        assert_eq!(store.pending_count(), 0);
+    }
+
+    #[test]
+    fn approval_store_bounds_pending_grants_and_prunes_expired_entries() {
+        let base_plan = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let mut store = GuestRunApprovalStore::default();
+
+        for index in 0..MAX_PENDING_GUEST_RUN_APPROVALS {
+            let mut plan = base_plan.clone();
+            plan.run_id = format!("{:032x}", index + 1);
+            assert!(store.issue(&plan, 1_000).is_ok());
+        }
+        assert_eq!(store.pending_count(), MAX_PENDING_GUEST_RUN_APPROVALS);
+
+        let mut overflow_plan = base_plan.clone();
+        overflow_plan.run_id = format!("{:032x}", MAX_PENDING_GUEST_RUN_APPROVALS + 1);
+        assert!(store.issue(&overflow_plan, 1_001).is_err());
+        assert_eq!(store.pending_count(), MAX_PENDING_GUEST_RUN_APPROVALS);
+
+        // Every grant expires at 1,120. Issuing at that exact boundary must
+        // prune the stale entries before applying the pending-grant limit.
+        assert!(store.issue(&overflow_plan, 1_120).is_ok());
+        assert_eq!(store.pending_count(), 1);
+    }
+
 }

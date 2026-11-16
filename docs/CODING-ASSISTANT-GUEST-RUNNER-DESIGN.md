@@ -1994,3 +1994,16 @@ grant so that retrying with the original plan and token also fails.
 This supplements the existing run/snapshot mismatch tests and the concurrent
 single-consumer test. It remains authorization-only coverage: no Sandbox
 process is started and no guest command is executed.
+
+## Approval expiry, replacement, and capacity boundaries — regression coverage
+
+The approval-store regression suite now covers the exact 120-second expiry
+boundary (a grant is valid immediately before expiry and invalid at expiry),
+replacement of an approval for the same run ID (the previous token cannot
+consume the replacement), and the fixed maximum of pending grants. It also
+verifies that expired grants are pruned before the capacity check so stale
+entries cannot block a new approval indefinitely.
+
+These are host-memory authorization lifecycle tests only. They do not launch
+Windows Sandbox, invoke a guest runner, or enable guest execution.
+
