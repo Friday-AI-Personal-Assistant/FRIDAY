@@ -943,7 +943,10 @@ fn verify_authenticated_guest_runtime_bundle(
     authenticate_guest_runtime_manifest(operation, manifest, anchor)?;
     let root_identity = crate::coding_sandbox_fs::verified_directory_identity(root_path, root)
         .map_err(|_| "The guest runtime root identity could not be checked.".to_string())?;
-    verify_guest_runtime_artifact_tree(root, operation, manifest)?;
+    let expected_marker = build_guest_runtime_staging_owner_marker(manifest, anchor)?;
+    verify_guest_runtime_artifact_tree_with_owner_marker(
+        root, operation, manifest, Some(&expected_marker),
+    )?;
     // Recheck after the complete inventory and digest pass to detect path or
     // directory-identity replacement while verification was in progress.
     let final_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root_path, root)
@@ -1380,10 +1383,39 @@ fn verify_guest_runtime_artifact_tree(
     operation: GuestRunOperation,
     manifest: &GuestRuntimeArtifactManifest,
 ) -> Result<(), String> {
+    verify_guest_runtime_artifact_tree_with_owner_marker(root, operation, manifest, None)
+}
+
+fn verify_guest_runtime_artifact_tree_with_owner_marker(
+    root: &File,
+    operation: GuestRunOperation,
+    manifest: &GuestRuntimeArtifactManifest,
+    expected_owner_marker: Option<&[u8]>,
+) -> Result<(), String> {
     validate_guest_runtime_artifact_manifest(operation, manifest)?;
     let (mut actual_files, mut actual_directories) =
         crate::coding_sandbox_fs::collect_runtime_tree_inventory(root, 32, 1280)
             .map_err(|_| "The guest runtime directory contains unsafe, unexpected, or excessive entries.".to_string())?;
+    // Published bundles retain the staging ownership marker. It is not a
+    // runtime artifact, so authenticate its exact bytes and remove it from
+    // the payload inventory before enforcing manifest closure.
+    if let Some(expected_marker) = expected_owner_marker {
+        let marker_name = ".friday-runtime-owner.json";
+        let positions = actual_files.iter().enumerate()
+            .filter(|(_, path)| path.eq_ignore_ascii_case(marker_name))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if positions.len() != 1 {
+            return Err("The published runtime must contain exactly one ownership marker.".into());
+        }
+        actual_files.remove(positions[0]);
+        let marker = crate::coding_sandbox_fs::read_bounded_relative_file(
+            root, marker_name, 16 * 1024,
+        ).map_err(|_| "The published runtime ownership marker is missing or unsafe.".to_string())?;
+        if marker != expected_marker {
+            return Err("The published runtime ownership marker does not match its authenticated bundle.".into());
+        }
+    }
     // The inventory deliberately emits Windows-style relative separators
     // on every host. Keep the authenticated manifest in that same canonical
     // representation when comparing exact file and directory closure.
@@ -6879,6 +6911,8 @@ mod tests {
                 };
                 fs::write(file_path, bytes).unwrap();
             }
+            let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
+            fs::write(path.join(".friday-runtime-owner.json"), marker).unwrap();
             let root = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
             let proof = verify_authenticated_guest_runtime_bundle(&path, &root, operation, &manifest, &anchor).unwrap();
             assert_eq!(proof.operation, operation);
