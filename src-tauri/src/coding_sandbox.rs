@@ -463,6 +463,35 @@ fn guest_runtime_root_matches_fixed_profile(
     supplied.eq_ignore_ascii_case(fixed_guest_runtime_root(operation))
 }
 
+/// Reject inconsistent or non-canonical path inventories even if a proof is
+/// accidentally corrupted inside trusted host code. The authenticated verifier
+/// emits lowercase, normalized Windows-relative paths and an exact count.
+fn verified_runtime_artifact_inventory_is_consistent(
+    proof: &VerifiedGuestRuntimeBundle,
+) -> bool {
+    if proof.artifact_count == 0
+        || proof.artifact_count > MAX_GUEST_RUNTIME_MANIFEST_ENTRIES
+        || proof.artifact_paths.len() != proof.artifact_count
+    {
+        return false;
+    }
+    proof.artifact_paths.iter().all(|path| {
+        !path.is_empty()
+            && path == &path.to_ascii_lowercase()
+            && !path.starts_with('\\\\')
+            && !path.contains('/')
+            && !path.contains(':')
+            && path.split('\\\\').all(|component| {
+                !component.is_empty()
+                    && component != "."
+                    && component != ".."
+                    && component.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                    })
+            })
+    })
+}
+
 /// A fully derived, but deliberately non-executable, authorization plan.
 /// Every field is derived from the private verification proof and fixed policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -496,8 +525,7 @@ fn build_verified_guest_runtime_execution_plan(
         || !proof.toolchain_version.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
         || proof.manifest_sha256.len() != 64
         || !proof.manifest_sha256.bytes().all(|b| b.is_ascii_hexdigit())
-        || proof.artifact_count == 0
-        || proof.artifact_count > MAX_GUEST_RUNTIME_MANIFEST_ENTRIES
+        || !verified_runtime_artifact_inventory_is_consistent(proof)
     {
         return Err("The verified runtime proof does not match the fixed operation, platform, or installation profile.".into());
     }
@@ -8883,6 +8911,34 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
     }
 
     #[test]
+    fn verified_runtime_execution_plan_rejects_inconsistent_or_unsafe_artifact_inventory() {
+        let mut proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+
+        proof.artifact_count += 1;
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+
+        proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+        proof.artifact_paths.insert("../outside.exe".into());
+        proof.artifact_count += 1;
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+
+        proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+        proof.artifact_paths.insert("bin/other.exe".into());
+        proof.artifact_count += 1;
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+
+        proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+        proof.artifact_paths.insert("c:\\\\outside.exe".into());
+        proof.artifact_count += 1;
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+
+        proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+        proof.artifact_paths.insert("BIN\\\\CARGO.EXE".into());
+        proof.artifact_count += 1;
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+    }
+
+    #[test]
     fn verified_runtime_execution_plan_requires_exact_manifest_entrypoints() {
         for operation in [
             GuestRunOperation::RustCargoTest,
@@ -8899,6 +8955,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             }
 
             proof.artifact_paths.insert("untrusted\\replacement.exe".into());
+            proof.artifact_count += 1;
+            assert!(build_verified_guest_runtime_execution_plan(&proof).is_ok());
             assert!(build_verified_guest_runtime_execution_plan(&proof).is_ok());
         }
     }
