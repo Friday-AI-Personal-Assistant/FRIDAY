@@ -7131,7 +7131,7 @@ mod tests {
         ] {
             let mut manifest = test_runtime_manifest(operation);
             manifest.artifacts.push(test_runtime_artifact(
-                &format!(r"tools\\{component}"),
+                &format!(r"tools\{component}"),
                 b"reserved",
             ));
             assert!(
@@ -7147,7 +7147,7 @@ mod tests {
         let mut manifest = test_runtime_manifest(operation);
         for component in ["COM0", "COM10", "LPT0", "LPT10", "CONSOLE", "cache.data"] {
             manifest.artifacts.push(test_runtime_artifact(
-                &format!(r"tools\\{component}"),
+                &format!(r"tools\{component}"),
                 b"ordinary",
             ));
         }
