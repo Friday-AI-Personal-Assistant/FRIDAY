@@ -629,6 +629,7 @@ fn validate_verified_guest_runtime_execution_context(
 #[derive(Debug)]
 struct AuthorizedVerifiedGuestRun {
     run: GuestRunExecutionPlan,
+    proof: VerifiedGuestRuntimeBundle,
     runtime: VerifiedGuestRuntimeExecutionPlan,
     request_bytes: Vec<u8>,
 }
@@ -658,9 +659,47 @@ fn authorize_verified_guest_runtime_execution(
     approvals.consume(&run, token, now)?;
     Ok(AuthorizedVerifiedGuestRun {
         run,
+        proof: proof.clone(),
         runtime: runtime_plan.clone(),
         request_bytes,
     })
+}
+
+/// Validate the immutable contents of an authorization package before it is
+/// handed to any later trusted stage. This checks the exact request bytes,
+/// typed operation, private verification proof, and complete derived runtime
+/// plan. It performs no filesystem access and cannot execute a process.
+#[allow(dead_code)]
+fn validate_authorized_guest_run_payload(
+    authorized: &AuthorizedVerifiedGuestRun,
+) -> Result<(), String> {
+    validate_guest_run_execution_plan(&authorized.run)?;
+    if authorized.run.operation != authorized.proof.operation
+        || authorized.runtime.operation != authorized.run.operation
+    {
+        return Err("The authorized run and verified runtime operations do not match.".into());
+    }
+    validate_verified_guest_runtime_execution_plan(&authorized.proof, &authorized.runtime)?;
+    let expected_request = serialize_guest_run_execution_request(&authorized.run)?;
+    if authorized.request_bytes != expected_request {
+        return Err("The authorized guest request bytes differ from the exact approved run.".into());
+    }
+    Ok(())
+}
+
+/// Final handoff validation for an already-approved package. It rechecks the
+/// immutable package and then the same held runtime root identity immediately
+/// before a future consumer. This remains authorization only, not execution.
+#[allow(dead_code)]
+fn validate_authorized_guest_run_context(
+    authorized: &AuthorizedVerifiedGuestRun,
+    root_path: &Path,
+    root: &File,
+) -> Result<(), String> {
+    validate_authorized_guest_run_payload(authorized)?;
+    validate_verified_guest_runtime_execution_context(
+        &authorized.proof, &authorized.runtime, root_path, root,
+    )
 }
 
 /// Validate an image-owned artifact manifest before any future file access.
@@ -8920,6 +8959,57 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert_eq!(store.pending_count(), 0);
     }
 
+
+    #[test]
+    fn authorized_guest_run_payload_binds_exact_request_proof_and_runtime_plan() {
+        let request = parse_guest_run_request(&valid_guest_request_json()).unwrap();
+        let run = build_guest_run_execution_plan(request).unwrap();
+        let proof = runtime_proof_fixture(run.operation);
+        let runtime = build_verified_guest_runtime_execution_plan(&proof).unwrap();
+        let request_bytes = serialize_guest_run_execution_request(&run).unwrap();
+        let authorized = AuthorizedVerifiedGuestRun {
+            run: run.clone(),
+            proof: proof.clone(),
+            runtime: runtime.clone(),
+            request_bytes: request_bytes.clone(),
+        };
+        assert!(validate_authorized_guest_run_payload(&authorized).is_ok());
+
+        let mut changed = AuthorizedVerifiedGuestRun {
+            run: run.clone(), proof: proof.clone(), runtime: runtime.clone(),
+            request_bytes: request_bytes.clone(),
+        };
+        changed.request_bytes.push(b' ');
+        assert!(validate_authorized_guest_run_payload(&changed).is_err());
+
+        changed = AuthorizedVerifiedGuestRun {
+            run: run.clone(), proof: proof.clone(), runtime: runtime.clone(),
+            request_bytes: request_bytes.clone(),
+        };
+        changed.run.max_output_bytes -= 1;
+        assert!(validate_authorized_guest_run_payload(&changed).is_err());
+
+        changed = AuthorizedVerifiedGuestRun {
+            run: run.clone(), proof: proof.clone(), runtime: runtime.clone(),
+            request_bytes: request_bytes.clone(),
+        };
+        changed.proof.root_identity = (9, 9);
+        assert!(validate_authorized_guest_run_payload(&changed).is_err());
+
+        changed = AuthorizedVerifiedGuestRun {
+            run: run.clone(), proof: proof.clone(), runtime: runtime.clone(),
+            request_bytes: request_bytes.clone(),
+        };
+        changed.runtime.launch.arguments.push("extra".into());
+        assert!(validate_authorized_guest_run_payload(&changed).is_err());
+
+        changed = AuthorizedVerifiedGuestRun {
+            run: run.clone(), proof: proof.clone(), runtime: runtime.clone(),
+            request_bytes,
+        };
+        changed.runtime.operation = GuestRunOperation::PythonUnittest;
+        assert!(validate_authorized_guest_run_payload(&changed).is_err());
+    }
 
     #[test]
     fn final_runtime_authorization_rejects_operation_mismatch_without_consuming_approval() {
