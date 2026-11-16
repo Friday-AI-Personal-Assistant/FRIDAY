@@ -29,6 +29,76 @@ pub(crate) fn collect_regular_file_paths(
     Ok(files)
 }
 
+/// Enumerate a runtime bundle through a held root handle. Unlike the older
+/// snapshot candidate walker, this rejects links, reparse points, special files,
+/// excessive depth, and excessive entry counts instead of silently skipping them.
+/// Returned paths are descriptive only; file reads must still use the bounded
+/// handle-relative reader.
+pub(crate) fn collect_runtime_tree_inventory(
+    root: &File,
+    max_depth: usize,
+    max_entries: usize,
+) -> io::Result<(Vec<String>, Vec<String>)> {
+    if max_depth == 0 || max_entries == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime inventory limits must be non-zero"));
+    }
+    let metadata = root.metadata()?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime inventory root is not an ordinary directory"));
+    }
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    let mut count = 0usize;
+    collect_runtime_tree_directory(root, Path::new(""), 0, max_depth, max_entries, &mut count, &mut files, &mut directories)?;
+    Ok((files, directories))
+}
+
+fn collect_runtime_tree_directory(
+    parent: &File,
+    relative_directory: &Path,
+    depth: usize,
+    max_depth: usize,
+    max_entries: usize,
+    count: &mut usize,
+    files: &mut Vec<String>,
+    directories: &mut Vec<String>,
+) -> io::Result<()> {
+    for entry in read_dir(parent, Path::new("."))? {
+        *count = count.checked_add(1).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "runtime inventory entry count overflowed"))?;
+        if *count > max_entries {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle contains too many entries"));
+        }
+        let entry = entry?;
+        let name = entry.file_name();
+        if !is_single_normal_component(&name) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle contains an invalid entry name"));
+        }
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle contains a symbolic link or reparse point"));
+        }
+        let relative = relative_directory.join(&name);
+        let relative_text = relative.to_string_lossy().replace('/', "\\");
+        if kind.is_dir() {
+            if depth >= max_depth {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle exceeds its directory depth limit"));
+            }
+            let child = open_dir_nofollow(parent, Path::new(&name))?;
+            let child_metadata = child.metadata()?;
+            if !child_metadata.is_dir() || is_reparse_or_symlink(&child_metadata) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle directory changed type or is a reparse point"));
+            }
+            directories.push(relative_text);
+            collect_runtime_tree_directory(&child, &relative, depth + 1, max_depth, max_entries, count, files, directories)?;
+        } else if kind.is_file() {
+            files.push(relative_text);
+        } else {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle contains a special or unsupported entry"));
+        }
+    }
+    Ok(())
+}
+
 /// Open one regular file relative to an already-open directory handle on Windows.
 ///
 /// This is deliberately test-only. NtCreateFile's RootDirectory pins the

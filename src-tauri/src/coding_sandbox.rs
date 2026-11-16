@@ -424,6 +424,46 @@ fn verify_guest_runtime_artifact_from_root(
     verify_guest_runtime_artifact_bytes(artifact, &bytes)
 }
 
+/// Verify the complete runtime directory against its authenticated manifest.
+/// Both file and directory inventories must match exactly, so unlisted payloads,
+/// empty/injected directories, links, and missing files fail closed. Each listed
+/// file is then reopened relative to the held root and checked against its digest.
+#[allow(dead_code)]
+fn verify_guest_runtime_artifact_tree(
+    root: &File,
+    operation: GuestRunOperation,
+    manifest: &GuestRuntimeArtifactManifest,
+) -> Result<(), String> {
+    validate_guest_runtime_artifact_manifest(operation, manifest)?;
+    let (mut actual_files, mut actual_directories) =
+        crate::coding_sandbox_fs::collect_runtime_tree_inventory(root, 32, 1280)
+            .map_err(|_| "The guest runtime directory contains unsafe, unexpected, or excessive entries.".to_string())?;
+    let mut expected_files = manifest.artifacts.iter()
+        .map(|artifact| artifact.relative_path.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let mut expected_directories = std::collections::BTreeSet::new();
+    for artifact in &manifest.artifacts {
+        let components = artifact.relative_path.split('\\').collect::<Vec<_>>();
+        for depth in 1..components.len() {
+            expected_directories.insert(components[..depth].join("\\").to_ascii_lowercase());
+        }
+    }
+    actual_files.iter_mut().for_each(|path| *path = path.to_ascii_lowercase());
+    actual_directories.iter_mut().for_each(|path| *path = path.to_ascii_lowercase());
+    expected_files.sort();
+    actual_files.sort();
+    let mut expected_directories = expected_directories.into_iter().collect::<Vec<_>>();
+    expected_directories.sort();
+    actual_directories.sort();
+    if actual_files != expected_files || actual_directories != expected_directories {
+        return Err("The guest runtime directory does not exactly match its authenticated artifact manifest.".into());
+    }
+    for artifact in &manifest.artifacts {
+        verify_guest_runtime_artifact_from_root(root, artifact)?;
+    }
+    Ok(())
+}
+
 /// Immutable, policy-bounded description of one guest test run. It deliberately
 /// contains no executable path, working-directory path, environment, or
 /// caller-supplied arguments; those are resolved only by later trusted stages.
@@ -5447,6 +5487,85 @@ mod tests {
 
     fn valid_guest_request_json() -> Vec<u8> {
         br#"{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","snapshotId":"abcdef0123456789abcdef0123456789","operation":"rust-cargo-test","maxDurationMs":120000,"maxOutputBytes":1048576}"#.to_vec()
+    }
+
+    fn runtime_fixture_digest(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    #[test]
+    fn runtime_tree_verification_requires_exact_manifest_file_and_directory_closure() {
+        let path = make_test_directory("runtime-tree-exact");
+        fs::create_dir_all(path.join("bin")).unwrap();
+        let cargo = b"trusted cargo executable";
+        let support = b"trusted runtime dependency";
+        fs::write(path.join("bin").join("cargo.exe"), cargo).unwrap();
+        fs::write(path.join("bin").join("support.dll"), support).unwrap();
+        let root = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
+        let manifest = GuestRuntimeArtifactManifest {
+            schema_version: 1,
+            operation: GuestRunOperation::RustCargoTest,
+            artifacts: vec![
+                GuestRuntimeArtifactSpec { relative_path: "bin\\cargo.exe".into(), sha256: runtime_fixture_digest(cargo), max_bytes: 128 },
+                GuestRuntimeArtifactSpec { relative_path: "bin\\support.dll".into(), sha256: runtime_fixture_digest(support), max_bytes: 128 },
+            ],
+        };
+        verify_guest_runtime_artifact_tree(&root, GuestRunOperation::RustCargoTest, &manifest).unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn runtime_tree_verification_rejects_unlisted_missing_and_tampered_files() {
+        let path = make_test_directory("runtime-tree-mismatch");
+        fs::create_dir_all(path.join("bin")).unwrap();
+        let cargo = b"trusted cargo executable";
+        fs::write(path.join("bin").join("cargo.exe"), cargo).unwrap();
+        let root = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
+        let manifest = GuestRuntimeArtifactManifest {
+            schema_version: 1,
+            operation: GuestRunOperation::RustCargoTest,
+            artifacts: vec![GuestRuntimeArtifactSpec {
+                relative_path: "bin\\cargo.exe".into(),
+                sha256: runtime_fixture_digest(cargo),
+                max_bytes: 128,
+            }],
+        };
+        verify_guest_runtime_artifact_tree(&root, GuestRunOperation::RustCargoTest, &manifest).unwrap();
+        fs::write(path.join("bin").join("extra.dll"), b"unlisted").unwrap();
+        assert!(verify_guest_runtime_artifact_tree(&root, GuestRunOperation::RustCargoTest, &manifest).is_err());
+        fs::remove_file(path.join("bin").join("extra.dll")).unwrap();
+        fs::write(path.join("bin").join("cargo.exe"), b"tampered").unwrap();
+        assert!(verify_guest_runtime_artifact_tree(&root, GuestRunOperation::RustCargoTest, &manifest).is_err());
+        fs::remove_file(path.join("bin").join("cargo.exe")).unwrap();
+        assert!(verify_guest_runtime_artifact_tree(&root, GuestRunOperation::RustCargoTest, &manifest).is_err());
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_tree_verification_rejects_unlisted_symlinks() {
+        use std::os::unix::fs::symlink;
+        let path = make_test_directory("runtime-tree-symlink");
+        fs::create_dir_all(path.join("bin")).unwrap();
+        let cargo = b"trusted cargo executable";
+        fs::write(path.join("bin").join("cargo.exe"), cargo).unwrap();
+        symlink(path.join("bin").join("cargo.exe"), path.join("bin").join("alias.exe")).unwrap();
+        let root = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
+        let manifest = GuestRuntimeArtifactManifest {
+            schema_version: 1,
+            operation: GuestRunOperation::RustCargoTest,
+            artifacts: vec![GuestRuntimeArtifactSpec {
+                relative_path: "bin\\cargo.exe".into(),
+                sha256: runtime_fixture_digest(cargo),
+                max_bytes: 128,
+            }],
+        };
+        assert!(verify_guest_runtime_artifact_tree(&root, GuestRunOperation::RustCargoTest, &manifest).is_err());
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
