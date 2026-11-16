@@ -792,7 +792,10 @@ fn build_guest_runtime_staging_cleanup_plan(
     let mut directories = std::collections::BTreeSet::new();
     let mut seen = std::collections::BTreeSet::new();
     for artifact in &manifest.artifacts {
-        validate_guest_runtime_relative_path(&artifact.relative_path)?;
+        let canonical_path = normalize_guest_runtime_source_path(Path::new(&artifact.relative_path))?;
+        if canonical_path != artifact.relative_path.to_ascii_lowercase() {
+            return Err("Runtime cleanup manifest path is not in canonical form.".into());
+        }
         let normalized = artifact.relative_path.to_ascii_lowercase();
         if !seen.insert(normalized) {
             return Err("Runtime cleanup manifest contains colliding artifact paths.".into());
@@ -7410,8 +7413,22 @@ mod tests {
 
     #[test]
     fn runtime_staging_cleanup_plan_is_exact_ordered_and_marker_last() {
-        let (root, parent, manifest, anchor, plan, staging, staging_handle) =
-            runtime_cleanup_test_fixture("cleanup-plan-order");
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-cleanup-plan-order");
+        let final_root = root.join("published-runtime");
+        let plan = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, final_root,
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
+        let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &plan, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, plan.staging_root.file_name().unwrap(),
+        ).unwrap();
         let authorization = authorize_verified_guest_runtime_staging_cleanup(
             &staging, &root, &parent, &plan.staging_root, &staging_handle,
             &manifest, &anchor, &plan,
