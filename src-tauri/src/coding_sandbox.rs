@@ -10122,7 +10122,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         // must not silently treat ownership metadata as a runtime artifact.
         assert!(verify_guest_runtime_artifact_tree(&root, operation, &manifest).is_err());
 
-        fs::write(&marker_path, b"{\\"tampered\\":true}").unwrap();
+        fs::write(&marker_path, br#"{"tampered":true}"#).unwrap();
         assert!(verify_authenticated_guest_runtime_bundle(
             &root_path, &root, operation, &manifest, &anchor,
         ).is_err());
