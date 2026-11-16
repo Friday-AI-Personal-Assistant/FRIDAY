@@ -355,6 +355,9 @@ struct VerifiedGuestRuntimeBundle {
     architecture: String,
     manifest_sha256: String,
     artifact_count: usize,
+    /// Complete authenticated relative-path inventory, normalized for Windows.
+    /// The proof retains this so launch planning can require exact entrypoints.
+    artifact_paths: std::collections::BTreeSet<String>,
 }
 
 /// Combine trust-anchor authentication and complete filesystem verification
@@ -391,9 +394,53 @@ fn verify_authenticated_guest_runtime_bundle(
         architecture: anchor.architecture.clone(),
         manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
         artifact_count: manifest.artifacts.len(),
+        artifact_paths: manifest.artifacts.iter()
+            .map(|artifact| artifact.relative_path.to_ascii_lowercase())
+            .collect(),
     })
 }
 
+
+/// Files that must be present in the authenticated bundle before a
+/// particular fixed profile can be authorized.
+fn required_guest_runtime_artifact_paths(
+    operation: GuestRunOperation,
+) -> std::collections::BTreeSet<String> {
+    let paths: &[&str] = match operation {
+        GuestRunOperation::RustCargoTest => &["bin\\cargo.exe"],
+        GuestRunOperation::NodeNpmTest => &[
+            "node.exe",
+            "node_modules\\npm\\bin\\npm-cli.js",
+        ],
+        GuestRunOperation::PythonUnittest => &["python.exe"],
+    };
+    paths.iter().map(|path| path.to_ascii_lowercase()).collect()
+}
+
+/// Ensure every absolute executable/script path in the fixed launch profile
+/// resolves to an exact relative path in the authenticated manifest inventory.
+fn guest_runtime_launch_paths_are_manifested(
+    operation: GuestRunOperation,
+    root_path: &Path,
+    launch: &GuestRuntimeLaunchPlan,
+    artifact_paths: &std::collections::BTreeSet<String>,
+) -> bool {
+    let root = root_path.to_string_lossy().trim_end_matches(['\\', '/']).to_ascii_lowercase();
+    let to_relative = |absolute: &Path| -> Option<String> {
+        let full = absolute.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+        let prefix = format!("{root}\\");
+        full.strip_prefix(&prefix).map(str::to_string)
+    };
+    let mut required = Vec::new();
+    let Some(program) = to_relative(&launch.program) else { return false; };
+    required.push(program);
+    if operation == GuestRunOperation::NodeNpmTest {
+        let Some(script) = launch.arguments.first() else { return false; };
+        let Some(script) = to_relative(Path::new(script)) else { return false; };
+        required.push(script);
+    }
+    required.into_iter().all(|path| artifact_paths.contains(&path))
+}
 
 /// Returns the one permitted installation root for each operation. These
 /// paths are image-owned policy, not values supplied by the request or proof.
@@ -425,6 +472,7 @@ struct VerifiedGuestRuntimeExecutionPlan {
     toolchain_version: String,
     manifest_sha256: String,
     artifact_count: usize,
+    required_artifact_paths: std::collections::BTreeSet<String>,
     launch: GuestRuntimeLaunchPlan,
     environment: GuestRuntimeEnvironmentPlan,
     environment_block: Vec<u16>,
@@ -454,8 +502,17 @@ fn build_verified_guest_runtime_execution_plan(
         return Err("The verified runtime proof does not match the fixed operation, platform, or installation profile.".into());
     }
 
+    let required_artifact_paths = required_guest_runtime_artifact_paths(proof.operation);
+    if !required_artifact_paths.is_subset(&proof.artifact_paths) {
+        return Err("The authenticated runtime bundle is missing one or more fixed executable entrypoints.".into());
+    }
     let launch = build_guest_runtime_launch_plan(proof.operation);
     validate_guest_runtime_launch_plan(proof.operation, &launch)?;
+    if !guest_runtime_launch_paths_are_manifested(
+        proof.operation, &proof.root_path, &launch, &proof.artifact_paths,
+    ) {
+        return Err("The fixed launch executable or script is not present in the authenticated runtime manifest.".into());
+    }
     let environment = build_guest_runtime_environment_plan(proof.operation);
     validate_guest_runtime_environment_plan(proof.operation, &environment)?;
     let environment_block =
@@ -467,6 +524,7 @@ fn build_verified_guest_runtime_execution_plan(
         toolchain_version: proof.toolchain_version.clone(),
         manifest_sha256: proof.manifest_sha256.to_ascii_lowercase(),
         artifact_count: proof.artifact_count,
+        required_artifact_paths,
         launch,
         environment,
         environment_block,
@@ -8752,6 +8810,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
                 GuestRunOperation::NodeNpmTest => 2,
                 _ => 1,
             },
+            artifact_paths: required_guest_runtime_artifact_paths(operation),
         }
     }
 
@@ -8821,6 +8880,55 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         proof = runtime_proof_fixture(GuestRunOperation::PythonUnittest);
         proof.artifact_count = MAX_GUEST_RUNTIME_MANIFEST_ENTRIES + 1;
         assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+    }
+
+    #[test]
+    fn verified_runtime_execution_plan_requires_exact_manifest_entrypoints() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let mut proof = runtime_proof_fixture(operation);
+            assert!(build_verified_guest_runtime_execution_plan(&proof).is_ok());
+
+            for required in required_guest_runtime_artifact_paths(operation) {
+                let mut missing = proof.clone();
+                missing.artifact_paths.remove(&required);
+                assert!(build_verified_guest_runtime_execution_plan(&missing).is_err());
+            }
+
+            proof.artifact_paths.insert("untrusted\\replacement.exe".into());
+            assert!(build_verified_guest_runtime_execution_plan(&proof).is_ok());
+        }
+    }
+
+    #[test]
+    fn runtime_launch_artifact_mapping_rejects_path_and_script_substitution() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        let root = PathBuf::from(fixed_guest_runtime_root(operation));
+        let launch = build_guest_runtime_launch_plan(operation);
+        let paths = required_guest_runtime_artifact_paths(operation);
+        assert!(guest_runtime_launch_paths_are_manifested(operation, &root, &launch, &paths));
+
+        let mut wrong_paths = paths.clone();
+        wrong_paths.remove("node.exe");
+        assert!(!guest_runtime_launch_paths_are_manifested(operation, &root, &launch, &wrong_paths));
+
+        let mut wrong_launch = launch.clone();
+        wrong_launch.program = PathBuf::from(r"C:\FRIDAY\Toolchains\Node\other.exe");
+        assert!(!guest_runtime_launch_paths_are_manifested(operation, &root, &wrong_launch, &paths));
+
+        wrong_launch = launch.clone();
+        wrong_launch.arguments[0] = r"C:\FRIDAY\Toolchains\Node\node_modules\npm\bin\other.js".into();
+        assert!(!guest_runtime_launch_paths_are_manifested(operation, &root, &wrong_launch, &paths));
+
+        assert!(!guest_runtime_launch_paths_are_manifested(
+            operation,
+            &PathBuf::from(r"C:\FRIDAY\Toolchains\Rust"),
+            &launch,
+            &paths,
+        ));
     }
 
     #[test]
