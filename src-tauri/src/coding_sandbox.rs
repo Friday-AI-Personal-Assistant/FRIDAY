@@ -7089,6 +7089,70 @@ mod tests {
     }
 
     #[test]
+    fn staged_runtime_verification_rejects_payload_tampering_and_missing_artifacts() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+
+        // A payload changed after staging must fail the manifest digest check.
+        let tampered_root = make_test_directory("staged-runtime-payload-tampered");
+        let tampered_final = tampered_root.join("published-runtime");
+        let tampered_plan = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, tampered_final.clone(),
+        ).unwrap();
+        let tampered_parent =
+            crate::coding_sandbox_fs::open_verified_root_directory(&tampered_root).unwrap();
+        let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
+        let staging_name = tampered_plan.staging_root.file_name().unwrap();
+        let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
+        crate::coding_sandbox_fs::create_bounded_runtime_destination(
+            &tampered_parent, staging_name, &files, &marker, 8, 1024, 4096, 8,
+        ).unwrap();
+        let tampered_stage =
+            crate::coding_sandbox_fs::open_child_directory_nofollow(&tampered_parent, staging_name)
+                .unwrap();
+        fs::write(tampered_plan.staging_root.join("bin/cargo.exe"), b"changed-after-staging")
+            .unwrap();
+        assert!(
+            verify_staged_guest_runtime_bundle_with_final_root(
+                &tampered_plan.staging_root, &tampered_stage, &manifest, &anchor,
+                &tampered_plan, tampered_final,
+            ).is_err(),
+            "staged payload bytes changed after creation must invalidate verification"
+        );
+        drop(tampered_stage);
+        drop(tampered_parent);
+        fs::remove_dir_all(tampered_root).unwrap();
+
+        // Removing an authenticated artifact must also invalidate exact-tree closure.
+        let missing_root = make_test_directory("staged-runtime-artifact-missing");
+        let missing_final = missing_root.join("published-runtime");
+        let missing_plan = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, missing_final.clone(),
+        ).unwrap();
+        let missing_parent =
+            crate::coding_sandbox_fs::open_verified_root_directory(&missing_root).unwrap();
+        let missing_name = missing_plan.staging_root.file_name().unwrap();
+        crate::coding_sandbox_fs::create_bounded_runtime_destination(
+            &missing_parent, missing_name, &files, &marker, 8, 1024, 4096, 8,
+        ).unwrap();
+        let missing_stage =
+            crate::coding_sandbox_fs::open_child_directory_nofollow(&missing_parent, missing_name)
+                .unwrap();
+        fs::remove_file(missing_plan.staging_root.join("bin/cargo.exe")).unwrap();
+        assert!(
+            verify_staged_guest_runtime_bundle_with_final_root(
+                &missing_plan.staging_root, &missing_stage, &manifest, &anchor,
+                &missing_plan, missing_final,
+            ).is_err(),
+            "a missing authenticated artifact must invalidate verification"
+        );
+        drop(missing_stage);
+        drop(missing_parent);
+        fs::remove_dir_all(missing_root).unwrap();
+    }
+
+    #[test]
     fn authenticated_runtime_bundle_proof_requires_manifest_and_disk_to_match() {
         for operation in [
             GuestRunOperation::RustCargoTest,
