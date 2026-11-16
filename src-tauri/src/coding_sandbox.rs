@@ -10057,11 +10057,12 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
         let parent = crate::coding_sandbox_fs::open_verified_root_directory(&base).unwrap();
         let files = manifest.artifacts.iter().map(|artifact| {
-            let bytes = match artifact.relative_path.as_str() {
-                "bin\\\\cargo.exe" => b"cargo-fixture".to_vec(),
-                _ => panic!("unexpected runtime fixture"),
+            let normalized_path = artifact.relative_path.replace('\\', "/");
+            let bytes = match normalized_path.as_str() {
+                "bin/cargo.exe" => b"cargo-fixture".to_vec(),
+                _ => panic!("unexpected runtime fixture: {normalized_path}"),
             };
-            (PathBuf::from(artifact.relative_path.replace('\\', "/")), bytes)
+            (PathBuf::from(normalized_path), bytes)
         }).collect::<Vec<_>>();
         crate::coding_sandbox_fs::create_bounded_runtime_destination(
             &parent, provisioning.staging_root.file_name().unwrap(),
