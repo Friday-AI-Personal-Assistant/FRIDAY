@@ -7164,26 +7164,26 @@ mod tests {
 
         let mut oversized_component = test_runtime_manifest(operation);
         oversized_component.artifacts.push(test_runtime_artifact(
-            &format!(r"tools\\{}", "a".repeat(MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES + 1)),
+            &format!(r"tools\{}", "a".repeat(MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES + 1)),
             b"oversized component",
         ));
         assert!(validate_guest_runtime_artifact_manifest(operation, &oversized_component).is_err());
 
         let mut maximum_component = test_runtime_manifest(operation);
         maximum_component.artifacts.push(test_runtime_artifact(
-            &format!(r"tools\\{}", "a".repeat(MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES)),
+            &format!(r"tools\{}", "a".repeat(MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES)),
             b"maximum component",
         ));
         assert!(validate_guest_runtime_artifact_manifest(operation, &maximum_component).is_ok());
 
         let mut oversized_path = test_runtime_manifest(operation);
-        let long_path = vec!["a".repeat(205); 5].join(r"\\");
+        let long_path = vec!["a".repeat(205); 5].join(r"\");
         assert!(long_path.len() > MAX_GUEST_RUNTIME_ARTIFACT_PATH_BYTES);
         oversized_path.artifacts.push(test_runtime_artifact(&long_path, b"oversized path"));
         assert!(validate_guest_runtime_artifact_manifest(operation, &oversized_path).is_err());
 
         let mut maximum_path = test_runtime_manifest(operation);
-        let bounded_path = vec!["a".repeat(255); 4].join(r"\\");
+        let bounded_path = vec!["a".repeat(255); 4].join(r"\");
         assert!(bounded_path.len() <= MAX_GUEST_RUNTIME_ARTIFACT_PATH_BYTES);
         maximum_path.artifacts.push(test_runtime_artifact(&bounded_path, b"bounded path"));
         assert!(validate_guest_runtime_artifact_manifest(operation, &maximum_path).is_ok());
