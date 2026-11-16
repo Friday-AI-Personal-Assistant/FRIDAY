@@ -547,6 +547,56 @@ fn same_handle_identity(left: &File, right: &File) -> io::Result<bool> {
     Ok(handle_identity(left)? == handle_identity(right)?)
 }
 
+/// Read one bounded file beneath an already-open runtime root. Every directory
+/// is opened relative to its held parent handle without following reparse points;
+/// the final file is opened relative to its held parent with no-follow semantics.
+/// The returned bytes are the exact bounded content that the caller must digest.
+pub(crate) fn read_bounded_relative_file(
+    root: &File,
+    relative_path: &str,
+    max_bytes: u64,
+) -> io::Result<Vec<u8>> {
+    if max_bytes == 0 || relative_path.is_empty() || relative_path.len() > 1024 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime artifact path or size limit is invalid"));
+    }
+    let components = relative_path.split('\\').collect::<Vec<_>>();
+    if components.is_empty() || components.len() > 32 || components.iter().any(|part| {
+        part.is_empty() || *part == "." || *part == ".."
+            || !part.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    }) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime artifact path is not normalized"));
+    }
+
+    let mut parent = root.try_clone()?;
+    for component in &components[..components.len() - 1] {
+        let child = open_dir_nofollow(&parent, Path::new(component))?;
+        let metadata = child.metadata()?;
+        if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime artifact parent is not an ordinary directory"));
+        }
+        parent = child;
+    }
+
+    let file_name = OsStr::new(components[components.len() - 1]);
+    let mut file = open_file_nofollow(&parent, file_name)?;
+    let before = file.metadata()?;
+    if !before.is_file() || is_reparse_or_symlink(&before) || before.len() == 0 || before.len() > max_bytes {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime artifact is empty, non-regular, or oversized"));
+    }
+    let expected_length = before.len();
+    let capacity = usize::try_from(expected_length)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "runtime artifact size cannot be represented"))?;
+    let mut contents = Vec::with_capacity(capacity);
+    file.by_ref().take(max_bytes.saturating_add(1)).read_to_end(&mut contents)?;
+    let after = file.metadata()?;
+    if contents.is_empty() || contents.len() as u64 > max_bytes
+        || contents.len() as u64 != expected_length || after.len() != expected_length
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime artifact changed or exceeded its limit while being read"));
+    }
+    Ok(contents)
+}
+
 /// Read exactly one bounded regular file from a directory whose identity is
 /// pinned by a verified handle. Enumeration and opening are relative to that
 /// held handle; no ambient child path is used for the file read.
@@ -2142,6 +2192,38 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn bounded_relative_runtime_reader_opens_nested_files_from_held_handles() {
+        let root_path = make_test_directory("runtime-relative-read");
+        fs::create_dir_all(root_path.join("node_modules").join("npm").join("bin")).unwrap();
+        fs::write(root_path.join("node_modules").join("npm").join("bin").join("npm-cli.js"), b"trusted npm cli").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let bytes = read_bounded_relative_file(&root, "node_modules\\npm\\bin\\npm-cli.js", 64).unwrap();
+        assert_eq!(bytes, b"trusted npm cli");
+        assert!(read_bounded_relative_file(&root, "node_modules\\npm\\bin\\npm-cli.js", 4).is_err());
+        for invalid in ["", "..\\secret", "node_modules/evil", "node_modules\\..\\secret", "\\rooted", "C:\\outside"] {
+            assert!(read_bounded_relative_file(&root, invalid, 64).is_err(), "accepted {invalid:?}");
+        }
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_relative_runtime_reader_rejects_symlinked_parent_and_file() {
+        use std::os::unix::fs::symlink;
+        let root_path = make_test_directory("runtime-relative-links");
+        let outside = make_test_directory("runtime-relative-outside");
+        fs::write(outside.join("tool.bin"), b"outside bytes").unwrap();
+        fs::create_dir(root_path.join("linked-parent")).unwrap();
+        symlink(&outside, root_path.join("linked-parent").join("nested")).unwrap();
+        symlink(outside.join("tool.bin"), root_path.join("linked-file")).unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+        assert!(read_bounded_relative_file(&root, "linked-parent\\nested\\tool.bin", 64).is_err());
+        assert!(read_bounded_relative_file(&root, "linked-file", 64).is_err());
+        fs::remove_dir_all(root_path).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
     fn bounded_single_file_reader_accepts_only_the_exact_regular_file() {
         let directory = make_test_directory("bounded-result-reader");
         fs::write(directory.join("result.json"), br#"{"status":"ok"}"#).unwrap();

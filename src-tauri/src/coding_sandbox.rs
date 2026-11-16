@@ -352,6 +352,21 @@ fn verify_guest_runtime_artifact_bytes(
     Ok(())
 }
 
+/// Read a manifest-listed runtime artifact through no-follow, handle-relative
+/// filesystem operations, then verify the exact bytes against its trusted digest.
+/// The root handle must itself have been acquired from an authenticated,
+/// version-pinned provisioning location by a future trusted provisioner.
+#[allow(dead_code)]
+fn verify_guest_runtime_artifact_from_root(
+    root: &File,
+    artifact: &GuestRuntimeArtifactSpec,
+) -> Result<(), String> {
+    let bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
+        root, &artifact.relative_path, artifact.max_bytes,
+    ).map_err(|_| "A guest runtime artifact could not be safely opened and read.".to_string())?;
+    verify_guest_runtime_artifact_bytes(artifact, &bytes)
+}
+
 /// Immutable, policy-bounded description of one guest test run. It deliberately
 /// contains no executable path, working-directory path, environment, or
 /// caller-supplied arguments; those are resolved only by later trusted stages.
@@ -5677,6 +5692,19 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn guest_runtime_artifact_root_verifier_checks_nested_file_bytes() {
+        let directory = make_test_directory("runtime-artifact-root");
+        fs::create_dir_all(directory.join("bin")).unwrap();
+        fs::write(directory.join("bin").join("cargo.exe"), b"trusted cargo fixture").unwrap();
+        let root = crate::coding_sandbox_fs::open_verified_root_directory(&directory).unwrap();
+        let artifact = test_runtime_artifact("bin\\cargo.exe", b"trusted cargo fixture");
+        assert!(verify_guest_runtime_artifact_from_root(&root, &artifact).is_ok());
+        let changed = test_runtime_artifact("bin\\cargo.exe", b"different trusted bytes");
+        assert!(verify_guest_runtime_artifact_from_root(&root, &changed).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     fn guest_runtime_environment_block_is_sorted_and_double_nul_terminated() {
         for operation in [
             GuestRunOperation::RustCargoTest,

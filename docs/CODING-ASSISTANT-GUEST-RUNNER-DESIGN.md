@@ -2153,3 +2153,20 @@ handle-relative no-follow reads before the runtime can be considered ready.
 The current entrypoint checks are not a claim that the complete toolchain has
 been enumerated or verified; guest execution remains disabled.
 
+## Handle-relative runtime artifact reads — implemented as an inert verifier
+
+The filesystem layer now supports reading one manifest-listed runtime artifact
+beneath an already-open root directory handle. Each intermediate directory is
+opened relative to its held parent without following reparse points, and the
+final regular file is opened with the platform no-follow primitive. The reader
+rejects non-normalized paths, excessive depth, empty or oversized files, and
+length changes during the read. The Coding Assistant layer then hashes the
+exact bytes returned by that reader and compares them with the manifest digest.
+
+Regression coverage exercises nested Node-style paths, path traversal and
+separator rejection, symlinked parents/files on Unix, byte limits, and digest
+mismatch. This verifier is not yet called by a provisioner or runtime-readiness
+path. A trusted root handle still has to be obtained from authenticated,
+version-pinned provisioning metadata, and the complete dependency closure must
+be enumerated before any runtime can be declared ready. Guest execution remains
+disabled.
