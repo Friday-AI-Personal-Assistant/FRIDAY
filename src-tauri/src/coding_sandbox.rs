@@ -394,6 +394,100 @@ fn verify_authenticated_guest_runtime_bundle(
     })
 }
 
+
+/// Returns the one permitted installation root for each operation. These
+/// paths are image-owned policy, not values supplied by the request or proof.
+fn fixed_guest_runtime_root(operation: GuestRunOperation) -> &'static str {
+    match operation {
+        GuestRunOperation::RustCargoTest => r"C:\FRIDAY\Toolchains\Rust",
+        GuestRunOperation::NodeNpmTest => r"C:\FRIDAY\Toolchains\Node",
+        GuestRunOperation::PythonUnittest => r"C:\FRIDAY\Toolchains\Python",
+    }
+}
+
+/// Compare a proof's recorded root with the exact operation-specific Windows
+/// root. Slash normalization is only for representation; no path resolution or
+/// filesystem access occurs here.
+fn guest_runtime_root_matches_fixed_profile(
+    operation: GuestRunOperation,
+    root_path: &Path,
+) -> bool {
+    let supplied = root_path.to_string_lossy().replace('/', "\\");
+    supplied.eq_ignore_ascii_case(fixed_guest_runtime_root(operation))
+}
+
+/// A fully derived, but deliberately non-executable, authorization plan.
+/// Every field is derived from the private verification proof and fixed policy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifiedGuestRuntimeExecutionPlan {
+    operation: GuestRunOperation,
+    bundle_id: String,
+    toolchain_version: String,
+    manifest_sha256: String,
+    artifact_count: usize,
+    launch: GuestRuntimeLaunchPlan,
+    environment: GuestRuntimeEnvironmentPlan,
+    environment_block: Vec<u16>,
+}
+
+/// Convert verified bundle evidence into the only launch/environment profile
+/// allowed for that operation. This does not create a process, start Sandbox,
+/// or imply that a production bundle has been provisioned.
+#[allow(dead_code)]
+fn build_verified_guest_runtime_execution_plan(
+    proof: &VerifiedGuestRuntimeBundle,
+) -> Result<VerifiedGuestRuntimeExecutionPlan, String> {
+    if !guest_runtime_root_matches_fixed_profile(proof.operation, &proof.root_path)
+        || proof.platform != "windows"
+        || proof.architecture != "x86_64"
+        || proof.bundle_id.is_empty()
+        || proof.bundle_id.len() > 96
+        || !proof.bundle_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        || proof.toolchain_version.is_empty()
+        || proof.toolchain_version.len() > 64
+        || !proof.toolchain_version.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
+        || proof.manifest_sha256.len() != 64
+        || !proof.manifest_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+        || proof.artifact_count == 0
+        || proof.artifact_count > MAX_GUEST_RUNTIME_MANIFEST_ENTRIES
+    {
+        return Err("The verified runtime proof does not match the fixed operation, platform, or installation profile.".into());
+    }
+
+    let launch = build_guest_runtime_launch_plan(proof.operation);
+    validate_guest_runtime_launch_plan(proof.operation, &launch)?;
+    let environment = build_guest_runtime_environment_plan(proof.operation);
+    validate_guest_runtime_environment_plan(proof.operation, &environment)?;
+    let environment_block =
+        serialize_guest_runtime_environment_block(proof.operation, &environment)?;
+
+    Ok(VerifiedGuestRuntimeExecutionPlan {
+        operation: proof.operation,
+        bundle_id: proof.bundle_id.clone(),
+        toolchain_version: proof.toolchain_version.clone(),
+        manifest_sha256: proof.manifest_sha256.to_ascii_lowercase(),
+        artifact_count: proof.artifact_count,
+        launch,
+        environment,
+        environment_block,
+    })
+}
+
+/// Rebuild the entire derived plan from the authenticated proof and compare it
+/// byte-for-byte/field-for-field. A caller cannot substitute command, paths,
+/// environment values, or serialized environment data.
+#[allow(dead_code)]
+fn validate_verified_guest_runtime_execution_plan(
+    proof: &VerifiedGuestRuntimeBundle,
+    plan: &VerifiedGuestRuntimeExecutionPlan,
+) -> Result<(), String> {
+    let expected = build_verified_guest_runtime_execution_plan(proof)?;
+    if plan != &expected {
+        return Err("The verified runtime execution plan differs from the proof-bound fixed profile.".into());
+    }
+    Ok(())
+}
+
 /// Validate an image-owned artifact manifest before any future file access.
 /// The manifest must come from FRIDAY's trusted, version-pinned provisioning
 /// metadata; guest, project, and model content must never supply it.
@@ -8643,5 +8737,121 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert!(store.consume(&first_plan, &first_token, 4_001).is_err());
         assert_eq!(store.pending_count(), 0);
     }
+
+
+    fn runtime_proof_fixture(operation: GuestRunOperation) -> VerifiedGuestRuntimeBundle {
+        VerifiedGuestRuntimeBundle {
+            operation,
+            root_path: PathBuf::from(fixed_guest_runtime_root(operation)),
+            bundle_id: "friday-runtime-test".into(),
+            toolchain_version: "1.2.3".into(),
+            platform: "windows".into(),
+            architecture: "x86_64".into(),
+            manifest_sha256: "a".repeat(64),
+            artifact_count: match operation {
+                GuestRunOperation::NodeNpmTest => 2,
+                _ => 1,
+            },
+        }
+    }
+
+    #[test]
+    fn verified_runtime_execution_plan_binds_each_operation_to_its_fixed_profile() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let proof = runtime_proof_fixture(operation);
+            let plan = build_verified_guest_runtime_execution_plan(&proof).unwrap();
+            validate_verified_guest_runtime_execution_plan(&proof, &plan).unwrap();
+            assert_eq!(plan.operation, operation);
+            assert_eq!(plan.launch, build_guest_runtime_launch_plan(operation));
+            assert_eq!(plan.environment, build_guest_runtime_environment_plan(operation));
+            assert_eq!(
+                plan.environment_block,
+                serialize_guest_runtime_environment_block(
+                    operation,
+                    &build_guest_runtime_environment_plan(operation),
+                ).unwrap(),
+            );
+            assert_eq!(plan.bundle_id, proof.bundle_id);
+            assert_eq!(plan.toolchain_version, proof.toolchain_version);
+            assert_eq!(plan.manifest_sha256, proof.manifest_sha256);
+        }
+    }
+
+    #[test]
+    fn verified_runtime_execution_plan_rejects_wrong_root_operation_and_platform() {
+        let mut proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+        proof.root_path = PathBuf::from(r"C:\FRIDAY\Toolchains\Node");
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+
+        proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+        proof.root_path = PathBuf::from(r"C:\FRIDAY\Toolchains\Rust\..\Node");
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+
+        proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+        proof.platform = "linux".into();
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+
+        proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+        proof.architecture = "arm64".into();
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+
+        proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+        proof.operation = GuestRunOperation::PythonUnittest;
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+    }
+
+    #[test]
+    fn verified_runtime_execution_plan_rejects_invalid_attestation_metadata() {
+        let mut proof = runtime_proof_fixture(GuestRunOperation::PythonUnittest);
+        proof.manifest_sha256 = "not-a-digest".into();
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+
+        proof = runtime_proof_fixture(GuestRunOperation::PythonUnittest);
+        proof.bundle_id = "../untrusted".into();
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+
+        proof = runtime_proof_fixture(GuestRunOperation::PythonUnittest);
+        proof.toolchain_version.clear();
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+
+        proof = runtime_proof_fixture(GuestRunOperation::PythonUnittest);
+        proof.artifact_count = MAX_GUEST_RUNTIME_MANIFEST_ENTRIES + 1;
+        assert!(build_verified_guest_runtime_execution_plan(&proof).is_err());
+    }
+
+    #[test]
+    fn verified_runtime_execution_plan_rejects_every_derived_plan_substitution() {
+        let proof = runtime_proof_fixture(GuestRunOperation::NodeNpmTest);
+        let original = build_verified_guest_runtime_execution_plan(&proof).unwrap();
+
+        let mut changed = original.clone();
+        changed.launch.program = PathBuf::from(r"C:\Windows\System32\cmd.exe");
+        assert!(validate_verified_guest_runtime_execution_plan(&proof, &changed).is_err());
+
+        changed = original.clone();
+        changed.launch.arguments.push("/c".into());
+        assert!(validate_verified_guest_runtime_execution_plan(&proof, &changed).is_err());
+
+        changed = original.clone();
+        changed.launch.working_directory = PathBuf::from(r"C:\");
+        assert!(validate_verified_guest_runtime_execution_plan(&proof, &changed).is_err());
+
+        changed = original.clone();
+        changed.environment.variables.insert("COMSPEC".into(), r"C:\Windows\System32\cmd.exe".into());
+        assert!(validate_verified_guest_runtime_execution_plan(&proof, &changed).is_err());
+
+        changed = original.clone();
+        changed.environment_block.push(0x0041);
+        assert!(validate_verified_guest_runtime_execution_plan(&proof, &changed).is_err());
+
+        changed = original.clone();
+        changed.bundle_id = "substituted".into();
+        assert!(validate_verified_guest_runtime_execution_plan(&proof, &changed).is_err());
+    }
+
 
 }
