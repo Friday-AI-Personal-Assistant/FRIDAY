@@ -2379,7 +2379,7 @@ pub(crate) fn rename_directory_noreplace(
             NtOpenFile(
                 &mut source_handle, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                 &attributes, &mut status_block,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
                 FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
             )
         };

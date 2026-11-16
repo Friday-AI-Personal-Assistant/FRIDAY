@@ -756,7 +756,7 @@ struct PublishedGuestRuntimeBundle {
 fn publish_guest_runtime_bundle_atomically(
     preflight: &GuestRuntimePublicationPreflight,
     parent_handle: &File,
-    staging_handle: &File,
+    staging_handle: File,
 ) -> Result<PublishedGuestRuntimeBundle, String> {
     let expected_parent = preflight.final_root.parent()
         .ok_or("The runtime publication destination has no parent directory.")?;
@@ -801,9 +801,15 @@ fn publish_guest_runtime_bundle_atomically(
         .ok_or("The runtime staging directory name is missing.")?;
     let destination_name = preflight.final_root.file_name()
         .ok_or("The runtime destination directory name is missing.")?;
+    // Consume the staging handle before rename. On Windows the ordinary
+    // no-follow directory handle intentionally denies delete sharing, which
+    // prevents rename while it remains open. The filesystem helper reopens
+    // the source by name relative to the pinned parent, verifies its identity,
+    // then renames that exact opened object by handle.
+    drop(staging_handle);
     crate::coding_sandbox_fs::rename_directory_noreplace(
         parent_handle, source_name, destination_name, parent_before, staging_before,
-    ).map_err(|_| "FRIDAY could not atomically publish the verified runtime without replacing an existing destination.".to_string())?;
+    ).map_err(|error| format!("FRIDAY could not atomically publish the verified runtime without replacing an existing destination: {error}"))?;
 
     let published_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
         parent_handle, destination_name,
@@ -10262,7 +10268,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             &root, &parent, &stage, final_root.clone(),
         ).unwrap();
 
-        let published = publish_guest_runtime_bundle_atomically(&preflight, &parent, &stage).unwrap();
+        let published = publish_guest_runtime_bundle_atomically(&preflight, &parent, stage).unwrap();
         assert_eq!(published.operation, operation);
         assert_eq!(published.root_path, final_root);
         assert_eq!(published.root_identity, identity);
@@ -10315,11 +10321,10 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         // not the earlier absence check, must be the final no-overwrite gate.
         fs::create_dir(&final_root).unwrap();
         fs::write(final_root.join("do-not-touch.txt"), b"preserve").unwrap();
-        assert!(publish_guest_runtime_bundle_atomically(&preflight, &parent, &stage).is_err());
+        assert!(publish_guest_runtime_bundle_atomically(&preflight, &parent, stage).is_err());
         assert_eq!(fs::read(final_root.join("do-not-touch.txt")).unwrap(), b"preserve");
         assert_eq!(fs::read(provisioning.staging_root.join("staged.bin")).unwrap(), b"keep-stage");
 
-        drop(stage);
         drop(parent);
         fs::remove_dir_all(root).unwrap();
     }
