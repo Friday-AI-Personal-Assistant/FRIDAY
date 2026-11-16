@@ -7055,24 +7055,30 @@ mod tests {
         let operation = GuestRunOperation::NodeNpmTest;
 
         let mut file_then_child = test_runtime_manifest(operation);
-        file_then_child.artifacts = vec![
+        file_then_child.artifacts.push(
             test_runtime_artifact(r"tools\runtime.exe", b"file"),
+        );
+        file_then_child.artifacts.push(
             test_runtime_artifact(r"tools\runtime.exe\child.dll", b"child"),
-        ];
+        );
         assert!(validate_guest_runtime_artifact_manifest(operation, &file_then_child).is_err());
 
         let mut child_then_file = test_runtime_manifest(operation);
-        child_then_file.artifacts = vec![
+        child_then_file.artifacts.push(
             test_runtime_artifact(r"tools\runtime.exe\child.dll", b"child"),
+        );
+        child_then_file.artifacts.push(
             test_runtime_artifact(r"tools\runtime.exe", b"file"),
-        ];
+        );
         assert!(validate_guest_runtime_artifact_manifest(operation, &child_then_file).is_err());
 
         let mut case_variant_collision = test_runtime_manifest(operation);
-        case_variant_collision.artifacts = vec![
+        case_variant_collision.artifacts.push(
             test_runtime_artifact(r"Tools\Runtime.exe\child.dll", b"child"),
+        );
+        case_variant_collision.artifacts.push(
             test_runtime_artifact(r"tools\runtime.EXE", b"file"),
-        ];
+        );
         assert!(validate_guest_runtime_artifact_manifest(operation, &case_variant_collision).is_err());
     }
 
@@ -7080,10 +7086,12 @@ mod tests {
     fn guest_runtime_artifact_manifest_allows_distinct_sibling_prefix_names() {
         let operation = GuestRunOperation::NodeNpmTest;
         let mut manifest = test_runtime_manifest(operation);
-        manifest.artifacts = vec![
+        manifest.artifacts.push(
             test_runtime_artifact(r"tools\runtime.exe", b"file"),
-            test_runtime_artifact("tools\runtime.exe.extra", b"sibling"),
-        ];
+        );
+        manifest.artifacts.push(
+            test_runtime_artifact(r"tools\runtime.exe.extra", b"sibling"),
+        );
         assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_ok());
     }
 
