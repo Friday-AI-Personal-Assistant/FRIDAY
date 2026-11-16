@@ -5617,6 +5617,103 @@ mod tests {
     }
 
     #[test]
+    fn guest_result_accepts_each_terminal_status_only_with_its_matching_exit_contract() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let snapshot_id = "abcdef0123456789abcdef0123456789";
+        let operation = GuestRunOperation::RustCargoTest;
+        let cases = [
+            (GuestRunStatus::Passed, "passed", Some(0)),
+            (GuestRunStatus::Failed, "failed", Some(1)),
+            (GuestRunStatus::TimedOut, "timed_out", None),
+            (GuestRunStatus::Cancelled, "cancelled", None),
+            (GuestRunStatus::Unsupported, "unsupported", None),
+            (GuestRunStatus::RunnerError, "runner_error", None),
+        ];
+
+        for (expected_status, status, exit_code) in cases {
+            let value = serde_json::json!({
+                "schemaVersion": 1,
+                "runId": run_id,
+                "snapshotId": snapshot_id,
+                "operation": "rust-cargo-test",
+                "status": status,
+                "exitCode": exit_code,
+                "stdout": null,
+                "stderr": null,
+                "truncated": true,
+                "durationMs": MAX_GUEST_RESULT_DURATION_MS
+            });
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let result = validate_guest_result_json(
+                &bytes, run_id, snapshot_id, operation,
+            ).unwrap();
+            assert_eq!(result.status, expected_status);
+            assert_eq!(result.exit_code, exit_code);
+            assert_eq!(result.run_id, run_id);
+            assert_eq!(result.snapshot_id, snapshot_id);
+            assert!(result.truncated);
+            assert_eq!(result.duration_ms, MAX_GUEST_RESULT_DURATION_MS);
+        }
+    }
+
+    #[test]
+    fn guest_result_output_budget_counts_utf8_bytes_not_characters() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let snapshot_id = "abcdef0123456789abcdef0123456789";
+        let value = serde_json::json!({
+            "schemaVersion": 1,
+            "runId": run_id,
+            "snapshotId": snapshot_id,
+            "operation": "rust-cargo-test",
+            "status": "passed",
+            "exitCode": 0,
+            "stdout": "é",
+            "stderr": "",
+            "truncated": false,
+            "durationMs": 1
+        });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(validate_guest_result_json_with_limit(
+            &bytes, run_id, snapshot_id, GuestRunOperation::RustCargoTest, 1,
+        ).is_err());
+        assert!(validate_guest_result_json_with_limit(
+            &bytes, run_id, snapshot_id, GuestRunOperation::RustCargoTest, 2,
+        ).is_ok());
+    }
+
+    #[test]
+    fn guest_result_rejects_unknown_status_and_invalid_terminal_combinations() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let snapshot_id = "abcdef0123456789abcdef0123456789";
+        let operation = GuestRunOperation::RustCargoTest;
+        for (status, exit_code) in [
+            ("complete", Some(0)),
+            ("passed", None),
+            ("failed", Some(0)),
+            ("timed_out", Some(124)),
+            ("cancelled", Some(130)),
+            ("unsupported", Some(1)),
+            ("runner_error", Some(1)),
+        ] {
+            let value = serde_json::json!({
+                "schemaVersion": 1,
+                "runId": run_id,
+                "snapshotId": snapshot_id,
+                "operation": "rust-cargo-test",
+                "status": status,
+                "exitCode": exit_code,
+                "truncated": false,
+                "durationMs": 1
+            });
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert!(
+                validate_guest_result_json(&bytes, run_id, snapshot_id, operation).is_err(),
+                "status {status} with exit code {exit_code:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn guest_result_rejects_oversized_or_invalid_expected_identifiers() {
         let bytes = guest_result_json("passed", r#","exitCode":0"#);
         assert!(validate_guest_result_json(&vec![b'x'; MAX_GUEST_RESULT_BYTES + 1], "0123456789abcdef0123456789abcdef", "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest).is_err());
