@@ -5692,7 +5692,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn guest_runtime_artifact_root_verifier_checks_nested_file_bytes() {
         let directory = make_test_directory("runtime-artifact-root");
         fs::create_dir_all(directory.join("bin")).unwrap();
@@ -5702,9 +5701,11 @@ mod tests {
         assert!(verify_guest_runtime_artifact_from_root(&root, &artifact).is_ok());
         let changed = test_runtime_artifact("bin\\cargo.exe", b"different trusted bytes");
         assert!(verify_guest_runtime_artifact_from_root(&root, &changed).is_err());
+        drop(root);
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
     fn guest_runtime_environment_block_is_sorted_and_double_nul_terminated() {
         for operation in [
             GuestRunOperation::RustCargoTest,

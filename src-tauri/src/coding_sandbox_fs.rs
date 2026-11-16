@@ -2192,7 +2192,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn bounded_relative_runtime_reader_opens_nested_files_from_held_handles() {
         let root_path = make_test_directory("runtime-relative-read");
         fs::create_dir_all(root_path.join("node_modules").join("npm").join("bin")).unwrap();
@@ -2204,6 +2203,7 @@ mod tests {
         for invalid in ["", "..\\secret", "node_modules/evil", "node_modules\\..\\secret", "\\rooted", "C:\\outside"] {
             assert!(read_bounded_relative_file(&root, invalid, 64).is_err(), "accepted {invalid:?}");
         }
+        drop(root);
         fs::remove_dir_all(root_path).unwrap();
     }
 
