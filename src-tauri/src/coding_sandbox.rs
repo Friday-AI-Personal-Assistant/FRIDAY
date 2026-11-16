@@ -427,6 +427,89 @@ fn validate_guest_runtime_provisioning_plan_with_final_root(
     Ok(())
 }
 
+
+/// Materialize a complete runtime bundle only from bytes whose exact paths and
+/// SHA-256 digests are authenticated by FRIDAY's immutable manifest anchor.
+/// The staging marker is written last by the filesystem helper; the returned
+/// proof is issued only after reopening and verifying the complete staged tree.
+/// This function does not publish or execute the runtime.
+#[allow(dead_code)]
+fn provision_authenticated_guest_runtime_bundle_from_bytes(
+    parent_path: &Path,
+    parent_handle: &File,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    plan: &GuestRuntimeProvisioningPlan,
+    source_files: &[(PathBuf, Vec<u8>)],
+) -> Result<VerifiedGuestRuntimeStaging, String> {
+    validate_guest_runtime_provisioning_plan(manifest, anchor, plan)?;
+    if plan.staging_root.parent() != Some(parent_path)
+        || source_files.len() != manifest.artifacts.len()
+    {
+        return Err("The runtime source set or staging parent differs from the authenticated provisioning plan.".into());
+    }
+    let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(parent_path, parent_handle)
+        .map_err(|_| "The runtime staging parent identity could not be verified.".to_string())?;
+
+    let mut supplied = std::collections::BTreeMap::<String, &Vec<u8>>::new();
+    for (path, bytes) in source_files {
+        let portable = path.to_string_lossy().replace('/', "\\\\").to_ascii_lowercase();
+        if path.is_absolute()
+            || path.components().any(|component| !matches!(component, Component::Normal(_)))
+            || supplied.insert(portable, bytes).is_some()
+        {
+            return Err("The runtime source set contains an unsafe or duplicate artifact path.".into());
+        }
+    }
+
+    let mut materialized = Vec::with_capacity(manifest.artifacts.len());
+    let mut actual_total = 0u64;
+    for artifact in &manifest.artifacts {
+        let key = artifact.relative_path.to_ascii_lowercase();
+        let bytes = supplied.get(&key)
+            .ok_or("A required authenticated runtime artifact is missing from the source set.")?;
+        verify_guest_runtime_artifact_bytes(artifact, bytes)?;
+        actual_total = actual_total.checked_add(bytes.len() as u64)
+            .ok_or("The runtime source byte count overflowed.")?;
+        if actual_total > plan.declared_max_bytes {
+            return Err("The runtime source set exceeds its authenticated aggregate size bound.".into());
+        }
+        materialized.push((
+            PathBuf::from(artifact.relative_path.replace('\\\\', "/")),
+            (*bytes).clone(),
+        ));
+    }
+    if supplied.len() != materialized.len() {
+        return Err("The runtime source set contains unlisted artifacts.".into());
+    }
+
+    let marker = build_guest_runtime_staging_owner_marker(manifest, anchor)?;
+    let staging_name = plan.staging_root.file_name()
+        .ok_or("The authenticated runtime staging path has no final component.")?;
+    crate::coding_sandbox_fs::create_bounded_runtime_destination(
+        parent_handle,
+        staging_name,
+        &materialized,
+        &marker,
+        MAX_GUEST_RUNTIME_MANIFEST_ENTRIES,
+        MAX_GUEST_RUNTIME_ARTIFACT_BYTES,
+        MAX_GUEST_RUNTIME_MANIFEST_BYTES,
+        32,
+    ).map_err(|_| "FRIDAY could not safely create the authenticated runtime staging directory.".to_string())?;
+
+    let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(parent_handle, staging_name)
+        .map_err(|_| "The newly staged runtime directory could not be safely reopened.".to_string())?;
+    let proof = verify_staged_guest_runtime_bundle(
+        &plan.staging_root, &staging_handle, manifest, anchor, plan,
+    )?;
+    let final_parent_identity = crate::coding_sandbox_fs::verified_directory_identity(parent_path, parent_handle)
+        .map_err(|_| "The runtime staging parent identity changed during provisioning.".to_string())?;
+    if final_parent_identity != parent_identity {
+        return Err("The runtime staging parent identity changed during provisioning.".into());
+    }
+    Ok(proof)
+}
+
 /// Ownership metadata is deterministic and bound to the authenticated bundle.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -6835,6 +6918,68 @@ mod tests {
         };
         anchor.manifest_sha256 = canonical_guest_runtime_bundle_sha256(manifest, &anchor).unwrap();
         anchor
+    }
+
+
+    #[test]
+    fn authenticated_runtime_provisioner_stages_only_exact_digest_verified_sources() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-provision-from-bytes");
+        let final_root = root.join("published-runtime");
+        let plan = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, final_root,
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![(
+            PathBuf::from("bin/cargo.exe"),
+            b"cargo-fixture".to_vec(),
+        )];
+        let proof = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &plan, &files,
+        ).unwrap();
+        assert_eq!(proof.bundle_id, anchor.bundle_id);
+        assert_eq!(proof.manifest_sha256, anchor.manifest_sha256);
+        assert_eq!(proof.artifact_count, manifest.artifacts.len());
+        assert!(plan.staging_root.join("bin/cargo.exe").is_file());
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authenticated_runtime_provisioner_rejects_tampered_missing_and_unlisted_sources_before_staging() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-provision-reject");
+        let plan = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, root.join("published-runtime"),
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+
+        let tampered = vec![(PathBuf::from("bin/cargo.exe"), b"tampered".to_vec())];
+        assert!(provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &plan, &tampered,
+        ).is_err());
+        assert!(!plan.staging_root.exists());
+
+        let missing = Vec::new();
+        assert!(provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &plan, &missing,
+        ).is_err());
+        assert!(!plan.staging_root.exists());
+
+        let unlisted = vec![
+            (PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec()),
+            (PathBuf::from("unexpected.dll"), b"extra".to_vec()),
+        ];
+        assert!(provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &plan, &unlisted,
+        ).is_err());
+        assert!(!plan.staging_root.exists());
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
