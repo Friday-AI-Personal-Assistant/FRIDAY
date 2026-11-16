@@ -5319,20 +5319,20 @@ mod tests {
         let cases = [
             (
                 GuestRunOperation::RustCargoTest,
-                r"C:\\FRIDAY\\Toolchains\\Rust\\bin\\cargo.exe",
+                r"C:\FRIDAY\Toolchains\Rust\bin\cargo.exe",
                 vec!["test", "--locked", "--offline"],
             ),
             (
                 GuestRunOperation::NodeNpmTest,
-                r"C:\\FRIDAY\\Toolchains\\Node\\node.exe",
+                r"C:\FRIDAY\Toolchains\Node\node.exe",
                 vec![
-                    r"C:\\FRIDAY\\Toolchains\\Node\\node_modules\\npm\\bin\\npm-cli.js",
+                    r"C:\FRIDAY\Toolchains\Node\node_modules\npm\bin\npm-cli.js",
                     "test",
                 ],
             ),
             (
                 GuestRunOperation::PythonUnittest,
-                r"C:\\FRIDAY\\Toolchains\\Python\\python.exe",
+                r"C:\FRIDAY\Toolchains\Python\python.exe",
                 vec!["-m", "unittest", "discover", "-v"],
             ),
         ];
@@ -5341,10 +5341,10 @@ mod tests {
             assert_eq!(plan.program, PathBuf::from(expected_program));
             assert_eq!(plan.arguments, expected_arguments.iter().map(|value| value.to_string()).collect::<Vec<_>>());
             assert_eq!(plan.working_directory, PathBuf::from(GUEST_WORKSPACE_ROOT));
-            assert!(plan.program.to_string_lossy().starts_with("C:\\FRIDAY\\"));
+            assert!(plan.program.to_string_lossy().starts_with("C:\FRIDAY\"));
             assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".cmd"));
             assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".bat"));
-            assert!(plan.arguments.iter().all(|argument| argument.chars().all(|character| !matches!(character, '&' | '|' | ';' | '\\n' | '\\r'))));
+            assert!(plan.arguments.iter().all(|argument| argument.chars().all(|character| !matches!(character, '&' | '|' | ';' | '\n' | '\r'))));
         }
     }
 
