@@ -10061,7 +10061,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
                 "bin\\\\cargo.exe" => b"cargo-fixture".to_vec(),
                 _ => panic!("unexpected runtime fixture"),
             };
-            (PathBuf::from(artifact.relative_path.replace('\\\\', "/")), bytes)
+            (PathBuf::from(artifact.relative_path.replace('\\', "/")), bytes)
         }).collect::<Vec<_>>();
         crate::coding_sandbox_fs::create_bounded_runtime_destination(
             &parent, provisioning.staging_root.file_name().unwrap(),
