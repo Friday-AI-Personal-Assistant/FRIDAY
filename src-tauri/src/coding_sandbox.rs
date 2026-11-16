@@ -1287,7 +1287,7 @@ fn validate_guest_runtime_artifact_manifest(
         return Err("The guest runtime artifact manifest is invalid or outside FRIDAY's fixed policy.".into());
     }
 
-    let mut paths = std::collections::BTreeSet::new();
+    let mut paths = std::collections::BTreeSet::<String>::new();
     let mut total_limit = 0u64;
     for artifact in &manifest.artifacts {
         let path = artifact.relative_path.as_str();
