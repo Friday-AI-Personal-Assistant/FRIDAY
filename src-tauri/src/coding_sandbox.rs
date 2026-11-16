@@ -279,7 +279,7 @@ struct GuestRuntimeManifestTrustAnchor {
     manifest_sha256: String,
 }
 
-/// Authenticate a manifest against its separately pinned build-time digest.
+/// Authenticate a complete runtime attestation against its separately pinned build-time digest.
 /// Sorting entries before serialization makes the digest independent of the
 /// manifest's input ordering while retaining every path, limit, and file hash.
 /// This is a trust-boundary primitive only: no production trust anchors or
@@ -307,24 +307,35 @@ fn authenticate_guest_runtime_manifest(
         return Err("The guest runtime trust anchor is invalid or does not match this platform and operation.".into());
     }
 
-    let actual = canonical_guest_runtime_manifest_sha256(manifest)?;
+    let actual = canonical_guest_runtime_bundle_sha256(manifest, anchor)?;
     if !actual.eq_ignore_ascii_case(&anchor.manifest_sha256) {
-        return Err("The guest runtime manifest does not match FRIDAY's pinned build-time digest.".into());
+        return Err("The guest runtime bundle metadata and manifest do not match FRIDAY's pinned build-time digest.".into());
     }
     Ok(())
 }
 
-/// Canonical SHA-256 for the complete manifest. Artifact ordering is normalized
-/// case-insensitively so equivalent manifests have one stable representation.
-fn canonical_guest_runtime_manifest_sha256(
+/// Canonical SHA-256 for the complete runtime attestation. Artifact ordering is
+/// normalized case-insensitively; bundle identity, toolchain version, platform,
+/// architecture, operation, schema, and every artifact record are all covered.
+fn canonical_guest_runtime_bundle_sha256(
     manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
 ) -> Result<String, String> {
     let mut canonical = manifest.clone();
     canonical.artifacts.sort_by(|left, right| {
         left.relative_path.to_ascii_lowercase().cmp(&right.relative_path.to_ascii_lowercase())
     });
-    let encoded = serde_json::to_vec(&canonical)
-        .map_err(|_| "The trusted guest runtime manifest could not be encoded.".to_string())?;
+    let attestation = (
+        anchor.schema_version,
+        anchor.operation,
+        &anchor.bundle_id,
+        &anchor.toolchain_version,
+        &anchor.platform,
+        &anchor.architecture,
+        canonical,
+    );
+    let encoded = serde_json::to_vec(&attestation)
+        .map_err(|_| "The trusted guest runtime attestation could not be encoded.".to_string())?;
     use sha2::{Digest, Sha256};
     Ok(Sha256::digest(&encoded).iter().map(|byte| format!("{byte:02x}")).collect())
 }
@@ -5858,21 +5869,17 @@ mod tests {
         operation: GuestRunOperation,
         manifest: &GuestRuntimeArtifactManifest,
     ) -> GuestRuntimeManifestTrustAnchor {
-        let mut canonical = manifest.clone();
-        canonical.artifacts.sort_by(|left, right| {
-            left.relative_path.to_ascii_lowercase().cmp(&right.relative_path.to_ascii_lowercase())
-        });
-        use sha2::{Digest, Sha256};
-        let digest = Sha256::digest(serde_json::to_vec(&canonical).unwrap());
-        GuestRuntimeManifestTrustAnchor {
+        let mut anchor = GuestRuntimeManifestTrustAnchor {
             schema_version: 1,
             operation,
             bundle_id: "friday-test-runtime-bundle".into(),
             toolchain_version: "1.0.0".into(),
             platform: "windows".into(),
             architecture: "x86_64".into(),
-            manifest_sha256: digest.iter().map(|byte| format!("{byte:02x}")).collect(),
-        }
+            manifest_sha256: String::new(),
+        };
+        anchor.manifest_sha256 = canonical_guest_runtime_bundle_sha256(manifest, &anchor).unwrap();
+        anchor
     }
 
     #[test]
