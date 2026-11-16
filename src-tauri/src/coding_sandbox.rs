@@ -247,6 +247,111 @@ fn serialize_guest_runtime_environment_block(
     Ok(block)
 }
 
+const MAX_GUEST_RUNTIME_MANIFEST_ENTRIES: usize = 256;
+const MAX_GUEST_RUNTIME_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_GUEST_RUNTIME_MANIFEST_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestRuntimeArtifactSpec {
+    relative_path: String,
+    sha256: String,
+    max_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestRuntimeArtifactManifest {
+    schema_version: u32,
+    operation: GuestRunOperation,
+    artifacts: Vec<GuestRuntimeArtifactSpec>,
+}
+
+/// Validate an image-owned artifact manifest before any future file access.
+/// The manifest must come from FRIDAY's trusted, version-pinned provisioning
+/// metadata; guest, project, and model content must never supply it.
+#[allow(dead_code)]
+fn validate_guest_runtime_artifact_manifest(
+    operation: GuestRunOperation,
+    manifest: &GuestRuntimeArtifactManifest,
+) -> Result<(), String> {
+    if manifest.schema_version != 1
+        || manifest.operation != operation
+        || manifest.artifacts.is_empty()
+        || manifest.artifacts.len() > MAX_GUEST_RUNTIME_MANIFEST_ENTRIES
+    {
+        return Err("The guest runtime artifact manifest is invalid or outside FRIDAY's fixed policy.".into());
+    }
+
+    let mut paths = std::collections::BTreeSet::new();
+    let mut total_limit = 0u64;
+    for artifact in &manifest.artifacts {
+        let path = artifact.relative_path.as_str();
+        let components = path.split('\\').collect::<Vec<_>>();
+        if path.is_empty()
+            || path.starts_with('\\')
+            || path.contains('/')
+            || path.contains(':')
+            || components.iter().any(|part| {
+                part.is_empty()
+                    || *part == "."
+                    || *part == ".."
+                    || !part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            })
+            || !paths.insert(path.to_ascii_lowercase())
+            || artifact.sha256.len() != 64
+            || !artifact.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || artifact.max_bytes == 0
+            || artifact.max_bytes > MAX_GUEST_RUNTIME_ARTIFACT_BYTES
+        {
+            return Err("The guest runtime artifact manifest contains an unsafe path, duplicate, digest, or size limit.".into());
+        }
+        total_limit = total_limit.checked_add(artifact.max_bytes)
+            .ok_or("The guest runtime artifact manifest size limit overflowed.")?;
+        if total_limit > MAX_GUEST_RUNTIME_MANIFEST_BYTES {
+            return Err("The guest runtime artifact manifest exceeds FRIDAY's aggregate size limit.".into());
+        }
+    }
+
+    let required_entrypoint = match operation {
+        GuestRunOperation::RustCargoTest => "bin\\cargo.exe",
+        GuestRunOperation::NodeNpmTest => "node.exe",
+        GuestRunOperation::PythonUnittest => "python.exe",
+    };
+    if !paths.contains(&required_entrypoint.to_ascii_lowercase()) {
+        return Err("The guest runtime artifact manifest omits its fixed operation entrypoint.".into());
+    }
+    if operation == GuestRunOperation::NodeNpmTest
+        && !paths.contains("node_modules\\npm\\bin\\npm-cli.js")
+    {
+        return Err("The Node runtime manifest omits the pinned npm entrypoint.".into());
+    }
+    Ok(())
+}
+
+/// Compare bounded artifact bytes with the SHA-256 value from the trusted
+/// manifest. This pure verifier performs no path lookup or provisioning.
+#[allow(dead_code)]
+fn verify_guest_runtime_artifact_bytes(
+    artifact: &GuestRuntimeArtifactSpec,
+    bytes: &[u8],
+) -> Result<(), String> {
+    if artifact.max_bytes == 0
+        || artifact.max_bytes > MAX_GUEST_RUNTIME_ARTIFACT_BYTES
+        || bytes.is_empty()
+        || bytes.len() as u64 > artifact.max_bytes
+        || artifact.sha256.len() != 64
+        || !artifact.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("The guest runtime artifact is empty, oversized, or has an invalid expected digest.".into());
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let actual = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    if !actual.eq_ignore_ascii_case(&artifact.sha256) {
+        return Err("A guest runtime artifact does not match its trusted SHA-256 digest.".into());
+    }
+    Ok(())
+}
+
 /// Immutable, policy-bounded description of one guest test run. It deliberately
 /// contains no executable path, working-directory path, environment, or
 /// caller-supplied arguments; those are resolved only by later trusted stages.
@@ -5480,6 +5585,95 @@ mod tests {
         assert!(build_guest_runtime_environment_plan(GuestRunOperation::RustCargoTest).variables.contains_key("RUSTUP_HOME"));
         assert!(build_guest_runtime_environment_plan(GuestRunOperation::NodeNpmTest).variables.contains_key("npm_config_cache"));
         assert!(build_guest_runtime_environment_plan(GuestRunOperation::PythonUnittest).variables.contains_key("PYTHONHOME"));
+    }
+
+    fn test_runtime_artifact(
+        relative_path: &str,
+        bytes: &[u8],
+    ) -> GuestRuntimeArtifactSpec {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(bytes);
+        GuestRuntimeArtifactSpec {
+            relative_path: relative_path.into(),
+            sha256: digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+            max_bytes: bytes.len() as u64,
+        }
+    }
+
+    fn test_runtime_manifest(
+        operation: GuestRunOperation,
+    ) -> GuestRuntimeArtifactManifest {
+        let mut artifacts = match operation {
+            GuestRunOperation::RustCargoTest => vec![
+                test_runtime_artifact("bin\\cargo.exe", b"cargo-fixture"),
+            ],
+            GuestRunOperation::NodeNpmTest => vec![
+                test_runtime_artifact("node.exe", b"node-fixture"),
+                test_runtime_artifact("node_modules\\npm\\bin\\npm-cli.js", b"npm-fixture"),
+            ],
+            GuestRunOperation::PythonUnittest => vec![
+                test_runtime_artifact("python.exe", b"python-fixture"),
+            ],
+        };
+        artifacts.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        GuestRuntimeArtifactManifest { schema_version: 1, operation, artifacts }
+    }
+
+    #[test]
+    fn guest_runtime_artifact_manifests_validate_for_each_operation() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let manifest = test_runtime_manifest(operation);
+            assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_ok());
+            for artifact in &manifest.artifacts {
+                let bytes = match artifact.relative_path.as_str() {
+                    "bin\\cargo.exe" => b"cargo-fixture".as_slice(),
+                    "node.exe" => b"node-fixture".as_slice(),
+                    "node_modules\\npm\\bin\\npm-cli.js" => b"npm-fixture".as_slice(),
+                    "python.exe" => b"python-fixture".as_slice(),
+                    _ => panic!("unexpected test artifact"),
+                };
+                assert!(verify_guest_runtime_artifact_bytes(artifact, bytes).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn guest_runtime_artifact_manifests_reject_unsafe_or_incomplete_entries() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        let mut manifest = test_runtime_manifest(operation);
+        manifest.artifacts[0].relative_path = "..\\node.exe".into();
+        assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_err());
+
+        let mut manifest = test_runtime_manifest(operation);
+        manifest.artifacts[1].relative_path = "NODE.EXE".into();
+        assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_err());
+
+        let mut manifest = test_runtime_manifest(operation);
+        manifest.artifacts.pop();
+        assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_err());
+
+        let mut manifest = test_runtime_manifest(operation);
+        manifest.artifacts[0].sha256 = "z".repeat(64);
+        assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_err());
+
+        let mut manifest = test_runtime_manifest(operation);
+        manifest.artifacts[0].max_bytes = MAX_GUEST_RUNTIME_ARTIFACT_BYTES + 1;
+        assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_err());
+    }
+
+    #[test]
+    fn guest_runtime_artifact_digest_verification_rejects_tampering_and_size_overrun() {
+        let artifact = test_runtime_artifact("python.exe", b"trusted-fixture");
+        assert!(verify_guest_runtime_artifact_bytes(&artifact, b"trusted-fixture").is_ok());
+        assert!(verify_guest_runtime_artifact_bytes(&artifact, b"tampered-fixture").is_err());
+
+        let mut too_small = artifact.clone();
+        too_small.max_bytes = 2;
+        assert!(verify_guest_runtime_artifact_bytes(&too_small, b"trusted-fixture").is_err());
     }
 
     #[test]
