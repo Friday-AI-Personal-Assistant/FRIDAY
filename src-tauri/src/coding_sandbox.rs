@@ -10277,7 +10277,6 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert_eq!(fs::read(published.root_path.join("runtime.bin")).unwrap(), b"verified-runtime");
         assert!(!provisioning.staging_root.exists());
 
-        drop(stage);
         drop(parent);
         fs::remove_dir_all(root).unwrap();
     }
