@@ -10086,60 +10086,105 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
 
     #[test]
     fn published_runtime_requires_exact_owner_marker_and_payload_closure() {
-        let operation = GuestRunOperation::RustCargoTest;
-        let manifest = test_runtime_manifest(operation);
-        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
-        let root_path = make_test_directory("published-runtime-owner-marker-integrity");
+        for (operation, label) in [
+            (GuestRunOperation::RustCargoTest, "rust"),
+            (GuestRunOperation::NodeNpmTest, "node"),
+            (GuestRunOperation::PythonUnittest, "python"),
+        ] {
+            let manifest = test_runtime_manifest(operation);
+            let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+            let root_path = make_test_directory(&format!(
+                "published-runtime-owner-marker-integrity-{label}"
+            ));
 
-        for artifact in &manifest.artifacts {
-            let components = artifact.relative_path.split('\\').collect::<Vec<_>>();
-            let file_name = components.last().unwrap();
-            let mut file_path = root_path.clone();
-            for component in &components[..components.len() - 1] {
-                file_path.push(component);
+            for artifact in &manifest.artifacts {
+                let components = artifact.relative_path.split('\\').collect::<Vec<_>>();
+                let file_name = components.last().unwrap();
+                let mut file_path = root_path.clone();
+                for component in &components[..components.len() - 1] {
+                    file_path.push(component);
+                }
+                fs::create_dir_all(&file_path).unwrap();
+                file_path.push(file_name);
+                let bytes: &[u8] = match artifact.relative_path.as_str() {
+                    "bin\\cargo.exe" => b"cargo-fixture",
+                    "node.exe" => b"node-fixture",
+                    "node_modules\\npm\\bin\\npm-cli.js" => b"npm-fixture",
+                    "python.exe" => b"python-fixture",
+                    _ => panic!("unexpected runtime fixture: {}", artifact.relative_path),
+                };
+                fs::write(file_path, bytes).unwrap();
             }
-            fs::create_dir_all(&file_path).unwrap();
-            file_path.push(file_name);
-            let bytes: &[u8] = match artifact.relative_path.as_str() {
-                "bin\\cargo.exe" => b"cargo-fixture",
-                _ => panic!("unexpected runtime fixture: {}", artifact.relative_path),
-            };
-            fs::write(file_path, bytes).unwrap();
+
+            let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
+            let marker_path = root_path.join(".friday-runtime-owner.json");
+            fs::write(&marker_path, &marker).unwrap();
+            let root = crate::coding_sandbox_fs::open_verified_root_directory(&root_path).unwrap();
+
+            // Only the authenticated published-runtime path may accept the
+            // exact ownership marker paired with this trusted manifest.
+            assert!(verify_authenticated_guest_runtime_bundle(
+                &root_path, &root, operation, &manifest, &anchor,
+            ).is_ok());
+
+            // The standalone payload verifier must not silently ignore metadata.
+            assert!(verify_guest_runtime_artifact_tree(&root, operation, &manifest).is_err());
+
+            // Any content substitution, even valid-looking JSON, is rejected.
+            fs::write(&marker_path, br#"{"tampered":true}"#).unwrap();
+            assert!(verify_authenticated_guest_runtime_bundle(
+                &root_path, &root, operation, &manifest, &anchor,
+            ).is_err());
+
+            // A missing marker is never treated as an ordinary payload bundle.
+            fs::remove_file(&marker_path).unwrap();
+            assert!(verify_authenticated_guest_runtime_bundle(
+                &root_path, &root, operation, &manifest, &anchor,
+            ).is_err());
+
+            // The marker is bounded independently of the overall tree limit.
+            fs::write(&marker_path, vec![b'x'; 16 * 1024 + 1]).unwrap();
+            assert!(verify_authenticated_guest_runtime_bundle(
+                &root_path, &root, operation, &manifest, &anchor,
+            ).is_err());
+
+            // Case-variant duplicate ownership metadata must not be ambiguous.
+            #[cfg(unix)]
+            {
+                fs::write(&marker_path, &marker).unwrap();
+                let duplicate_path = root_path.join(".FRIDAY-RUNTIME-OWNER.JSON");
+                fs::write(&duplicate_path, &marker).unwrap();
+                assert!(verify_authenticated_guest_runtime_bundle(
+                    &root_path, &root, operation, &manifest, &anchor,
+                ).is_err());
+                fs::remove_file(&duplicate_path).unwrap();
+            }
+
+            // A link in place of the marker is not ownership evidence.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+                let external_marker_path = root_path.with_extension("external-marker");
+                fs::write(&external_marker_path, &marker).unwrap();
+                fs::remove_file(&marker_path).unwrap();
+                symlink(&external_marker_path, &marker_path).unwrap();
+                assert!(verify_authenticated_guest_runtime_bundle(
+                    &root_path, &root, operation, &manifest, &anchor,
+                ).is_err());
+                fs::remove_file(&marker_path).unwrap();
+                fs::remove_file(&external_marker_path).unwrap();
+            }
+
+            // Exact marker content still cannot excuse an unlisted payload.
+            fs::write(&marker_path, &marker).unwrap();
+            fs::write(root_path.join("unexpected.dll"), b"unlisted").unwrap();
+            assert!(verify_authenticated_guest_runtime_bundle(
+                &root_path, &root, operation, &manifest, &anchor,
+            ).is_err());
+
+            drop(root);
+            fs::remove_dir_all(root_path).unwrap();
         }
-
-        let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
-        let marker_path = root_path.join(".friday-runtime-owner.json");
-        fs::write(&marker_path, &marker).unwrap();
-        let root = crate::coding_sandbox_fs::open_verified_root_directory(&root_path).unwrap();
-
-        // The authenticated published-runtime path accepts only the exact
-        // ownership marker paired with the trusted manifest.
-        assert!(verify_authenticated_guest_runtime_bundle(
-            &root_path, &root, operation, &manifest, &anchor,
-        ).is_ok());
-
-        // The standalone payload verifier remains intentionally strict: it
-        // must not silently treat ownership metadata as a runtime artifact.
-        assert!(verify_guest_runtime_artifact_tree(&root, operation, &manifest).is_err());
-
-        fs::write(&marker_path, br#"{"tampered":true}"#).unwrap();
-        assert!(verify_authenticated_guest_runtime_bundle(
-            &root_path, &root, operation, &manifest, &anchor,
-        ).is_err());
-
-        fs::remove_file(&marker_path).unwrap();
-        assert!(verify_authenticated_guest_runtime_bundle(
-            &root_path, &root, operation, &manifest, &anchor,
-        ).is_err());
-
-        fs::write(&marker_path, &marker).unwrap();
-        fs::write(root_path.join("unexpected.dll"), b"unlisted").unwrap();
-        assert!(verify_authenticated_guest_runtime_bundle(
-            &root_path, &root, operation, &manifest, &anchor,
-        ).is_err());
-
-        drop(root);
-        fs::remove_dir_all(root_path).unwrap();
     }
 
     #[test]
