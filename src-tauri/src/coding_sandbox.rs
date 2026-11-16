@@ -340,6 +340,71 @@ fn canonical_guest_runtime_bundle_sha256(
     Ok(Sha256::digest(&encoded).iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+/// A deterministic, immutable description of where one authenticated runtime
+/// bundle may be staged and eventually published. This is planning only:
+/// it does not download, write, replace, or execute runtime files.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestRuntimeProvisioningPlan {
+    operation: GuestRunOperation,
+    bundle_id: String,
+    toolchain_version: String,
+    platform: String,
+    architecture: String,
+    manifest_sha256: String,
+    artifact_count: usize,
+    declared_max_bytes: u64,
+    staging_root: PathBuf,
+    final_root: PathBuf,
+}
+
+fn build_guest_runtime_provisioning_plan(
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+) -> Result<GuestRuntimeProvisioningPlan, String> {
+    authenticate_guest_runtime_manifest(anchor.operation, manifest, anchor)?;
+    let mut declared_max_bytes = 0u64;
+    for artifact in &manifest.artifacts {
+        declared_max_bytes = declared_max_bytes.checked_add(artifact.max_bytes)
+            .ok_or("The runtime bundle's declared size overflowed.")?;
+    }
+    if declared_max_bytes == 0 || declared_max_bytes > MAX_GUEST_RUNTIME_MANIFEST_BYTES {
+        return Err("The runtime bundle exceeds FRIDAY's total provisioning size limit.".into());
+    }
+    let final_root = PathBuf::from(fixed_guest_runtime_root(anchor.operation));
+    let parent = final_root.parent()
+        .ok_or("The fixed runtime installation root has no parent directory.")?;
+    let staging_root = parent.join(format!(".friday-{}.staging", anchor.bundle_id));
+    if staging_root == final_root || staging_root.file_name().is_none() {
+        return Err("The runtime staging location is invalid.".into());
+    }
+    Ok(GuestRuntimeProvisioningPlan {
+        operation: anchor.operation,
+        bundle_id: anchor.bundle_id.clone(),
+        toolchain_version: anchor.toolchain_version.clone(),
+        platform: anchor.platform.clone(),
+        architecture: anchor.architecture.clone(),
+        manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+        artifact_count: manifest.artifacts.len(),
+        declared_max_bytes,
+        staging_root,
+        final_root,
+    })
+}
+
+/// Rebuild the provisioning plan from authenticated inputs and require exact
+/// equality. Callers cannot redirect staging/publication or loosen size bounds.
+#[allow(dead_code)]
+fn validate_guest_runtime_provisioning_plan(
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    plan: &GuestRuntimeProvisioningPlan,
+) -> Result<(), String> {
+    if plan != &build_guest_runtime_provisioning_plan(manifest, anchor)? {
+        return Err("The runtime provisioning plan differs from FRIDAY's authenticated bundle policy.".into());
+    }
+    Ok(())
+}
+
 /// Evidence that a specific build-pinned runtime manifest authenticated and
 /// its entire on-disk bundle matched. Private fields prevent callers from
 /// manufacturing this proof from UI, project, model, or guest data.
@@ -9104,6 +9169,61 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
 
         drop(handle);
         fs::remove_dir_all(unrelated_path).unwrap();
+    }
+
+    #[test]
+    fn runtime_provisioning_plan_binds_authenticated_bundle_to_fixed_roots() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let (manifest, anchor) = runtime_manifest_fixture(operation);
+            let plan = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
+            validate_guest_runtime_provisioning_plan(&manifest, &anchor, &plan).unwrap();
+            assert_eq!(plan.operation, operation);
+            assert_eq!(plan.final_root, PathBuf::from(fixed_guest_runtime_root(operation)));
+            assert_eq!(plan.staging_root.parent(), plan.final_root.parent());
+            assert_ne!(plan.staging_root, plan.final_root);
+            assert_eq!(plan.manifest_sha256, anchor.manifest_sha256.to_ascii_lowercase());
+            assert_eq!(plan.artifact_count, manifest.artifacts.len());
+            assert_eq!(plan.declared_max_bytes,
+                manifest.artifacts.iter().map(|artifact| artifact.max_bytes).sum::<u64>());
+        }
+    }
+
+    #[test]
+    fn runtime_provisioning_plan_rejects_redirected_paths_and_changed_limits() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        let (manifest, anchor) = runtime_manifest_fixture(operation);
+        let plan = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
+
+        let mut changed = plan.clone();
+        changed.staging_root = PathBuf::from(r"C:\\FRIDAY\\Untrusted\\stage");
+        assert!(validate_guest_runtime_provisioning_plan(&manifest, &anchor, &changed).is_err());
+
+        let mut changed = plan.clone();
+        changed.final_root = PathBuf::from(r"C:\\FRIDAY\\Toolchains\\Other");
+        assert!(validate_guest_runtime_provisioning_plan(&manifest, &anchor, &changed).is_err());
+
+        let mut changed = plan.clone();
+        changed.declared_max_bytes -= 1;
+        assert!(validate_guest_runtime_provisioning_plan(&manifest, &anchor, &changed).is_err());
+    }
+
+    #[test]
+    fn runtime_provisioning_plan_rejects_manifest_or_anchor_tampering() {
+        let operation = GuestRunOperation::PythonUnittest;
+        let (manifest, anchor) = runtime_manifest_fixture(operation);
+        let plan = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
+
+        let mut changed_manifest = manifest.clone();
+        changed_manifest.artifacts[0].sha256 = "b".repeat(64);
+        assert!(validate_guest_runtime_provisioning_plan(&changed_manifest, &anchor, &plan).is_err());
+
+        let mut changed_anchor = anchor.clone();
+        changed_anchor.toolchain_version.push_str("-other");
+        assert!(validate_guest_runtime_provisioning_plan(&manifest, &changed_anchor, &plan).is_err());
     }
 
     fn runtime_proof_fixture(operation: GuestRunOperation) -> VerifiedGuestRuntimeBundle {
