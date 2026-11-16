@@ -405,6 +405,119 @@ fn validate_guest_runtime_provisioning_plan(
     Ok(())
 }
 
+/// Ownership metadata is deterministic and bound to the authenticated bundle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestRuntimeStagingOwnerMarker {
+    schema_version: u32,
+    operation: GuestRunOperation,
+    bundle_id: String,
+    manifest_sha256: String,
+    artifact_count: usize,
+}
+
+fn build_guest_runtime_staging_owner_marker(
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+) -> Result<Vec<u8>, String> {
+    authenticate_guest_runtime_manifest(anchor.operation, manifest, anchor)?;
+    let marker = GuestRuntimeStagingOwnerMarker {
+        schema_version: 1,
+        operation: anchor.operation,
+        bundle_id: anchor.bundle_id.clone(),
+        manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+        artifact_count: manifest.artifacts.len(),
+    };
+    serde_json::to_vec(&marker)
+        .map_err(|_| "The runtime staging ownership marker could not be encoded.".to_string())
+}
+
+/// A staging verification result is deliberately distinct from the final
+/// executable-bundle proof. It cannot authorize a runtime launch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifiedGuestRuntimeStaging {
+    staging_root: PathBuf,
+    root_identity: (u64, u64),
+    bundle_id: String,
+    manifest_sha256: String,
+    artifact_count: usize,
+}
+
+#[allow(dead_code)]
+fn verify_staged_guest_runtime_bundle(
+    staging_root_path: &Path,
+    staging_root: &File,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    plan: &GuestRuntimeProvisioningPlan,
+) -> Result<VerifiedGuestRuntimeStaging, String> {
+    validate_guest_runtime_provisioning_plan(manifest, anchor, plan)?;
+    if staging_root_path != plan.staging_root {
+        return Err("The staged runtime directory differs from the authenticated staging plan.".into());
+    }
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(staging_root_path, staging_root)
+        .map_err(|_| "The runtime staging directory identity could not be checked.".to_string())?;
+
+    let expected_marker = build_guest_runtime_staging_owner_marker(manifest, anchor)?;
+    let actual_marker = crate::coding_sandbox_fs::read_bounded_relative_file(
+        staging_root, ".friday-runtime-owner.json", 16 * 1024,
+    ).map_err(|_| "The runtime staging ownership marker is missing or unsafe.".to_string())?;
+    if actual_marker != expected_marker {
+        return Err("The runtime staging ownership marker does not match the authenticated bundle.".into());
+    }
+
+    validate_guest_runtime_artifact_manifest(anchor.operation, manifest)?;
+    let (mut actual_files, mut actual_directories) =
+        crate::coding_sandbox_fs::collect_runtime_tree_inventory(staging_root, 32, 1281)
+            .map_err(|_| "The staged runtime contains unsafe, unexpected, or excessive entries.".to_string())?;
+    let marker_name = ".friday-runtime-owner.json";
+    let marker_positions = actual_files.iter().enumerate()
+        .filter(|(_, path)| path.eq_ignore_ascii_case(marker_name))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if marker_positions.len() != 1 {
+        return Err("The staged runtime must contain exactly one ownership marker.".into());
+    }
+    actual_files.remove(marker_positions[0]);
+
+    let mut expected_files = manifest.artifacts.iter()
+        .map(|artifact| artifact.relative_path.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let mut expected_directories = std::collections::BTreeSet::new();
+    for artifact in &manifest.artifacts {
+        let components = artifact.relative_path.split('\\').collect::<Vec<_>>();
+        for depth in 1..components.len() {
+            expected_directories.insert(components[..depth].join("\\").to_ascii_lowercase());
+        }
+    }
+    actual_files.iter_mut().for_each(|path| *path = path.to_ascii_lowercase());
+    actual_directories.iter_mut().for_each(|path| *path = path.to_ascii_lowercase());
+    expected_files.sort();
+    actual_files.sort();
+    let mut expected_directories = expected_directories.into_iter().collect::<Vec<_>>();
+    expected_directories.sort();
+    actual_directories.sort();
+    if actual_files != expected_files || actual_directories != expected_directories {
+        return Err("The staged runtime does not exactly match the authenticated artifact inventory.".into());
+    }
+    for artifact in &manifest.artifacts {
+        verify_guest_runtime_artifact_from_root(staging_root, artifact)?;
+    }
+    let final_identity = crate::coding_sandbox_fs::verified_directory_identity(staging_root_path, staging_root)
+        .map_err(|_| "The runtime staging directory identity could not be rechecked.".to_string())?;
+    if final_identity != root_identity {
+        return Err("The runtime staging directory identity changed during verification.".into());
+    }
+
+    Ok(VerifiedGuestRuntimeStaging {
+        staging_root: staging_root_path.to_path_buf(),
+        root_identity,
+        bundle_id: anchor.bundle_id.clone(),
+        manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+        artifact_count: manifest.artifacts.len(),
+    })
+}
+
 /// Evidence that a specific build-pinned runtime manifest authenticated and
 /// its entire on-disk bundle matched. Private fields prevent callers from
 /// manufacturing this proof from UI, project, model, or guest data.
@@ -6270,6 +6383,67 @@ mod tests {
         };
         anchor.manifest_sha256 = canonical_guest_runtime_bundle_sha256(manifest, &anchor).unwrap();
         anchor
+    }
+
+    #[test]
+    fn staged_runtime_verification_binds_marker_exact_tree_and_hashes() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let plan = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
+        let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
+        let path = make_test_directory("staged-runtime-verify");
+        let stage_path = path.join(".friday-test-runtime-bundle.staging");
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
+        let files = manifest.artifacts.iter().map(|artifact| {
+            let bytes = match artifact.relative_path.as_str() {
+                "bin\\cargo.exe" => b"cargo-fixture".to_vec(),
+                _ => panic!("unexpected runtime fixture"),
+            };
+            (PathBuf::from(artifact.relative_path.replace('\\', "/")), bytes)
+        }).collect::<Vec<_>>();
+        crate::coding_sandbox_fs::create_bounded_runtime_destination(
+            &parent, std::ffi::OsStr::new(".friday-test-runtime-bundle.staging"),
+            &files, &marker, 8, 1024, 4096, 8,
+        ).unwrap();
+        let stage = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, std::ffi::OsStr::new(".friday-test-runtime-bundle.staging"),
+        ).unwrap();
+        let proof = verify_staged_guest_runtime_bundle(&stage_path, &stage, &manifest, &anchor, &plan).unwrap();
+        assert_eq!(proof.bundle_id, anchor.bundle_id);
+        assert_eq!(proof.artifact_count, manifest.artifacts.len());
+        assert_ne!(proof.root_identity, (0, 0));
+        drop(stage);
+        drop(parent);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn staged_runtime_verification_rejects_tampered_marker_and_unlisted_files() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let plan = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
+        let path = make_test_directory("staged-runtime-reject");
+        let stage_path = path.join(".friday-test-runtime-bundle.staging");
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
+        let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
+        let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
+        crate::coding_sandbox_fs::create_bounded_runtime_destination(
+            &parent, std::ffi::OsStr::new(".friday-test-runtime-bundle.staging"),
+            &files, &marker, 8, 1024, 4096, 8,
+        ).unwrap();
+        let stage = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, std::ffi::OsStr::new(".friday-test-runtime-bundle.staging"),
+        ).unwrap();
+        fs::write(stage_path.join(".friday-runtime-owner.json"), b"{\"schemaVersion\":1}").unwrap();
+        assert!(verify_staged_guest_runtime_bundle(&stage_path, &stage, &manifest, &anchor, &plan).is_err());
+        fs::write(stage_path.join(".friday-runtime-owner.json"), &marker).unwrap();
+        fs::write(stage_path.join("unexpected.dll"), b"untrusted").unwrap();
+        assert!(verify_staged_guest_runtime_bundle(&stage_path, &stage, &manifest, &anchor, &plan).is_err());
+        drop(stage);
+        drop(parent);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

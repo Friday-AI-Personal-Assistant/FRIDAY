@@ -2217,6 +2217,20 @@ pub(crate) fn create_bounded_runtime_destination(
     Ok(())
 }
 
+/// Open one ordinary child directory relative to a held parent without following links.
+#[allow(dead_code)]
+pub(crate) fn open_child_directory_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
+    if !is_single_normal_component(name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "child directory name must be one normal component"));
+    }
+    let child = open_dir_nofollow(parent, Path::new(name))?;
+    let metadata = child.metadata()?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "child directory is not an ordinary directory"));
+    }
+    Ok(child)
+}
+
 /// Materialize bounded in-memory source bytes below a held private workspace.
 /// The ownership marker is written last, so interrupted creation is never
 /// falsely advertised as a complete, cleanup-authorized snapshot.
