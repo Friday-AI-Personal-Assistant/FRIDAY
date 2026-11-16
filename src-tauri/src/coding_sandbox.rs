@@ -680,6 +680,8 @@ fn verify_staged_guest_runtime_bundle_with_final_root(
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct GuestRuntimeStagingCleanupAuthorization {
     operation: GuestRunOperation,
+    parent_path: PathBuf,
+    parent_identity: (u64, u64),
     staging_root: PathBuf,
     root_identity: (u64, u64),
     bundle_id: String,
@@ -689,13 +691,18 @@ struct GuestRuntimeStagingCleanupAuthorization {
 
 fn authorize_verified_guest_runtime_staging_cleanup(
     staging: &VerifiedGuestRuntimeStaging,
+    parent_path: &Path,
+    parent_handle: &File,
     staging_root_path: &Path,
     staging_root: &File,
     manifest: &GuestRuntimeArtifactManifest,
     anchor: &GuestRuntimeManifestTrustAnchor,
     plan: &GuestRuntimeProvisioningPlan,
 ) -> Result<GuestRuntimeStagingCleanupAuthorization, String> {
-    if staging_root_path != plan.staging_root
+    if staging_root_path.parent() != Some(parent_path)
+        || plan.staging_root.parent() != Some(parent_path)
+        || staging_root_path.file_name() != plan.staging_root.file_name()
+        || staging_root_path != plan.staging_root
         || staging.staging_root != plan.staging_root
         || staging.operation != anchor.operation
         || staging.bundle_id != anchor.bundle_id
@@ -706,6 +713,9 @@ fn authorize_verified_guest_runtime_staging_cleanup(
         return Err("Runtime staging cleanup lacks a matching authenticated proof and plan.".into());
     }
 
+    let parent_identity =
+        crate::coding_sandbox_fs::verified_directory_identity(parent_path, parent_handle)
+            .map_err(|_| "Runtime staging cleanup could not verify its parent directory identity.".to_string())?;
     let current_identity =
         crate::coding_sandbox_fs::verified_directory_identity(staging_root_path, staging_root)
             .map_err(|_| "Runtime staging cleanup could not verify the directory identity.".to_string())?;
@@ -729,6 +739,8 @@ fn authorize_verified_guest_runtime_staging_cleanup(
 
     Ok(GuestRuntimeStagingCleanupAuthorization {
         operation: staging.operation,
+        parent_path: parent_path.to_path_buf(),
+        parent_identity,
         staging_root: staging.staging_root.clone(),
         root_identity: staging.root_identity,
         bundle_id: staging.bundle_id.clone(),
@@ -7236,9 +7248,11 @@ mod tests {
         ).unwrap();
 
         let authorization = authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+            &staging, &root, &parent, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
         ).unwrap();
         assert_eq!(authorization.operation, operation);
+        assert_eq!(authorization.parent_path, root);
+        assert_eq!(authorization.parent_identity, crate::coding_sandbox_fs::verified_directory_identity(&root, &parent).unwrap());
         assert_eq!(authorization.staging_root, plan.staging_root);
         assert_eq!(authorization.root_identity, staging.root_identity);
         assert_eq!(authorization.bundle_id, anchor.bundle_id);
@@ -7246,47 +7260,57 @@ mod tests {
         assert_eq!(authorization.artifact_count, manifest.artifacts.len());
         assert!(plan.staging_root.exists(), "authorization must not itself delete data");
 
+        let unrelated_parent_path = root.join("unrelated-parent");
+        fs::create_dir(&unrelated_parent_path).unwrap();
+        let unrelated_parent = crate::coding_sandbox_fs::open_verified_root_directory(&unrelated_parent_path).unwrap();
+        assert!(authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &unrelated_parent_path, &unrelated_parent, &plan.staging_root,
+            &staging_handle, &manifest, &anchor, &plan,
+        ).is_err(), "a substituted parent handle and path must invalidate cleanup authorization");
+        drop(unrelated_parent);
+        fs::remove_dir(&unrelated_parent_path).unwrap();
+
         let mut substituted = staging.clone();
         substituted.root_identity.1 ^= 1;
         assert!(authorize_verified_guest_runtime_staging_cleanup(
-            &substituted, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+            &substituted, &root, &parent, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
         ).is_err());
 
         assert!(authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &root.join("other-staging"), &staging_handle, &manifest, &anchor, &plan,
+            &staging, &root, &parent, &root.join("other-staging"), &staging_handle, &manifest, &anchor, &plan,
         ).is_err());
 
         // A valid staging proof is not transferable to altered authenticated inputs.
         let mut altered_manifest = manifest.clone();
         altered_manifest.artifacts[0].sha256 = "0".repeat(64);
         assert!(authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &plan.staging_root, &staging_handle, &altered_manifest, &anchor, &plan,
+            &staging, &root, &parent, &plan.staging_root, &staging_handle, &altered_manifest, &anchor, &plan,
         ).is_err(), "a changed artifact digest must invalidate cleanup authorization");
 
         let mut altered_anchor = anchor.clone();
         altered_anchor.bundle_id.push_str("-substituted");
         assert!(authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &plan.staging_root, &staging_handle, &manifest, &altered_anchor, &plan,
+            &staging, &root, &parent, &plan.staging_root, &staging_handle, &manifest, &altered_anchor, &plan,
         ).is_err(), "a substituted trust anchor must invalidate cleanup authorization");
 
         let mut altered_plan = plan.clone();
         altered_plan.staging_root = root.join("different-staging");
         assert!(authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &altered_plan,
+            &staging, &root, &parent, &plan.staging_root, &staging_handle, &manifest, &anchor, &altered_plan,
         ).is_err(), "a substituted provisioning plan must invalidate cleanup authorization");
 
         // Exact-tree verification must reject even harmless-looking additions.
         let unexpected_file = plan.staging_root.join("unexpected.txt");
         fs::write(&unexpected_file, b"unlisted").unwrap();
         assert!(authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+            &staging, &root, &parent, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
         ).is_err(), "an unmanifested file must invalidate cleanup authorization");
         fs::remove_file(&unexpected_file).unwrap();
 
         let unexpected_directory = plan.staging_root.join("unexpected-directory");
         fs::create_dir(&unexpected_directory).unwrap();
         assert!(authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+            &staging, &root, &parent, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
         ).is_err(), "an unmanifested directory must invalidate cleanup authorization");
         fs::remove_dir(&unexpected_directory).unwrap();
 
@@ -7295,13 +7319,13 @@ mod tests {
         let marker_bytes = fs::read(&marker_path).unwrap();
         fs::write(&marker_path, b"invalid-owner-marker").unwrap();
         assert!(authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+            &staging, &root, &parent, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
         ).is_err(), "a modified ownership marker must invalidate cleanup authorization");
         fs::write(&marker_path, marker_bytes).unwrap();
 
         fs::write(plan.staging_root.join("bin/cargo.exe"), b"tampered-after-proof").unwrap();
         assert!(authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+            &staging, &root, &parent, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
         ).is_err(), "changed payload must not receive cleanup authorization");
 
         drop(staging_handle);
