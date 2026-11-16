@@ -2073,7 +2073,7 @@ remains untrusted metadata, and execution remains disabled.
 
 The host-side contract now maps each supported operation to a fixed absolute
 executable path beneath the future FRIDAY guest toolchain image and a fixed
-working directory at `C:\\FRIDAY\\Workspace`. The Node profile invokes
+working directory at `C:\FRIDAY\Workspace`. The Node profile invokes
 the pinned `node.exe` directly with the pinned `npm-cli.js` entry point;
 it never launches `npm.cmd` or another command script. Rust and Python use
 their corresponding pinned executable paths and fixed argument vectors.

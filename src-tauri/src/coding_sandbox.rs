@@ -108,7 +108,7 @@ struct GuestRuntimeLaunchPlan {
     working_directory: PathBuf,
 }
 
-const GUEST_WORKSPACE_ROOT: &str = r"C:\\FRIDAY\\Workspace";
+const GUEST_WORKSPACE_ROOT: &str = r"C:\FRIDAY\Workspace";
 
 fn build_guest_runtime_launch_plan(
     operation: GuestRunOperation,
@@ -116,21 +116,21 @@ fn build_guest_runtime_launch_plan(
     let working_directory = PathBuf::from(GUEST_WORKSPACE_ROOT);
     match operation {
         GuestRunOperation::RustCargoTest => GuestRuntimeLaunchPlan {
-            program: PathBuf::from(r"C:\\FRIDAY\\Toolchains\\Rust\\bin\\cargo.exe"),
+            program: PathBuf::from(r"C:\FRIDAY\Toolchains\Rust\bin\cargo.exe"),
             arguments: vec!["test".into(), "--locked".into(), "--offline".into()],
             working_directory,
         },
         GuestRunOperation::NodeNpmTest => GuestRuntimeLaunchPlan {
             // Invoke node.exe directly; never resolve or execute npm.cmd.
-            program: PathBuf::from(r"C:\\FRIDAY\\Toolchains\\Node\\node.exe"),
+            program: PathBuf::from(r"C:\FRIDAY\Toolchains\Node\node.exe"),
             arguments: vec![
-                r"C:\\FRIDAY\\Toolchains\\Node\\node_modules\\npm\\bin\\npm-cli.js".into(),
+                r"C:\FRIDAY\Toolchains\Node\node_modules\npm\bin\npm-cli.js".into(),
                 "test".into(),
             ],
             working_directory,
         },
         GuestRunOperation::PythonUnittest => GuestRuntimeLaunchPlan {
-            program: PathBuf::from(r"C:\\FRIDAY\\Toolchains\\Python\\python.exe"),
+            program: PathBuf::from(r"C:\FRIDAY\Toolchains\Python\python.exe"),
             arguments: vec!["-m".into(), "unittest".into(), "discover".into(), "-v".into()],
             working_directory,
         },
@@ -5341,10 +5341,10 @@ mod tests {
             assert_eq!(plan.program, PathBuf::from(expected_program));
             assert_eq!(plan.arguments, expected_arguments.iter().map(|value| value.to_string()).collect::<Vec<_>>());
             assert_eq!(plan.working_directory, PathBuf::from(GUEST_WORKSPACE_ROOT));
-            assert!(plan.program.is_absolute());
+            assert!(plan.program.to_string_lossy().starts_with("C:\\FRIDAY\\"));
             assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".cmd"));
             assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".bat"));
-            assert!(plan.arguments.iter().all(|argument| !argument.contains(['&', '|', ';', '\\n', '\\r'])));
+            assert!(plan.arguments.iter().all(|argument| argument.chars().all(|character| !matches!(character, '&' | '|' | ';' | '\\n' | '\\r'))));
         }
     }
 
