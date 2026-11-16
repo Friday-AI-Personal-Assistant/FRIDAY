@@ -251,7 +251,7 @@ const MAX_GUEST_RUNTIME_MANIFEST_ENTRIES: usize = 256;
 const MAX_GUEST_RUNTIME_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_GUEST_RUNTIME_MANIFEST_BYTES: u64 = 512 * 1024 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct GuestRuntimeArtifactSpec {
     relative_path: String,
     sha256: String,
