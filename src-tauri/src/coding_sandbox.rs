@@ -10045,6 +10045,90 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
 
 
     #[test]
+    fn authenticated_runtime_publication_rehashes_the_final_published_tree() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let base = make_test_directory("authenticated-runtime-publication");
+        let final_root = base.join("published-runtime");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, final_root.clone(),
+        ).unwrap();
+        let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&base).unwrap();
+        let files = manifest.artifacts.iter().map(|artifact| {
+            let bytes = match artifact.relative_path.as_str() {
+                "bin\\\\cargo.exe" => b"cargo-fixture".to_vec(),
+                _ => panic!("unexpected runtime fixture"),
+            };
+            (PathBuf::from(artifact.relative_path.replace('\\\\', "/")), bytes)
+        }).collect::<Vec<_>>();
+        crate::coding_sandbox_fs::create_bounded_runtime_destination(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+            &files, &marker, 8, 1024, 4096, 8,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let staging = verify_staged_guest_runtime_bundle_with_final_root(
+            &provisioning.staging_root, &staging_handle, &manifest, &anchor,
+            &provisioning, final_root.clone(),
+        ).unwrap();
+
+        let verified = publish_authenticated_guest_runtime_bundle_with_final_root(
+            &staging, &manifest, &anchor, &provisioning, &base, &parent,
+            staging_handle, final_root.clone(),
+        ).unwrap();
+        assert_eq!(verified.root_path, final_root);
+        assert_eq!(verified.bundle_id, anchor.bundle_id);
+        assert_eq!(verified.manifest_sha256, anchor.manifest_sha256);
+        assert_eq!(verified.artifact_count, manifest.artifacts.len());
+        assert_eq!(
+            fs::read(final_root.join("bin").join("cargo.exe")).unwrap(),
+            b"cargo-fixture",
+        );
+        drop(parent);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn authenticated_runtime_publication_never_replaces_existing_destination() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let base = make_test_directory("authenticated-runtime-no-replace");
+        let final_root = base.join("published-runtime");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, final_root.clone(),
+        ).unwrap();
+        let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&base).unwrap();
+        let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
+        crate::coding_sandbox_fs::create_bounded_runtime_destination(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+            &files, &marker, 8, 1024, 4096, 8,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let staging = verify_staged_guest_runtime_bundle_with_final_root(
+            &provisioning.staging_root, &staging_handle, &manifest, &anchor,
+            &provisioning, final_root.clone(),
+        ).unwrap();
+        fs::create_dir(&final_root).unwrap();
+        fs::write(final_root.join("keep.txt"), b"preserve").unwrap();
+
+        assert!(publish_authenticated_guest_runtime_bundle_with_final_root(
+            &staging, &manifest, &anchor, &provisioning, &base, &parent,
+            staging_handle, final_root.clone(),
+        ).is_err());
+        assert_eq!(fs::read(final_root.join("keep.txt")).unwrap(), b"preserve");
+        assert!(provisioning.staging_root.exists());
+        drop(parent);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn runtime_publication_plan_binds_verified_staging_to_authenticated_provisioning() {
         for operation in [
             GuestRunOperation::RustCargoTest,
