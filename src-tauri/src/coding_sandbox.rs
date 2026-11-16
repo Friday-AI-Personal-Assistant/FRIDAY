@@ -774,7 +774,7 @@ fn publish_guest_runtime_bundle_atomically(
         &preflight.parent_path, parent_handle,
     ).map_err(|_| "The runtime publication parent handle could not be revalidated.".to_string())?;
     let staging_before = crate::coding_sandbox_fs::verified_directory_identity(
-        &preflight.staging_root, staging_handle,
+        &preflight.staging_root, &staging_handle,
     ).map_err(|_| "The runtime staging handle could not be revalidated.".to_string())?;
     if parent_before != preflight.parent_identity
         || staging_before != preflight.staging_root_identity
@@ -791,7 +791,7 @@ fn publish_guest_runtime_bundle_atomically(
         &preflight.parent_path, parent_handle,
     ).map_err(|_| "The runtime publication parent changed immediately before rename.".to_string())?;
     let staging_after = crate::coding_sandbox_fs::verified_directory_identity(
-        &preflight.staging_root, staging_handle,
+        &preflight.staging_root, &staging_handle,
     ).map_err(|_| "The runtime staging directory changed immediately before rename.".to_string())?;
     if parent_after != parent_before || staging_after != staging_before {
         return Err("A runtime publication directory identity changed immediately before rename.".into());
