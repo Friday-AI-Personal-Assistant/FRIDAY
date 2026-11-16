@@ -29,7 +29,7 @@ const MAX_GUEST_RESULT_DURATION_MS: u64 = 120_000;
 const MAX_GUEST_REQUEST_DURATION_MS: u64 = 120_000;
 const MAX_GUEST_REQUEST_OUTPUT_BYTES: u64 = 1024 * 1024;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GuestRunRequest {
     schema_version: u32,
@@ -63,7 +63,7 @@ fn parse_guest_run_request(bytes: &[u8]) -> Result<GuestRunRequest, String> {
     validate_guest_run_request(request)
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum GuestRunOperation {
     RustCargoTest,
@@ -121,6 +121,40 @@ fn build_guest_run_execution_plan(
         max_duration: Duration::from_millis(request.max_duration_ms),
         max_output_bytes: request.max_output_bytes,
     })
+}
+
+/// Produces the exact bounded protocol document represented by an approved
+/// immutable plan. This is a serialization boundary only: it does not stage,
+/// mount, or transmit the request to a guest.
+#[allow(dead_code)]
+fn serialize_guest_run_execution_request(
+    plan: &GuestRunExecutionPlan,
+) -> Result<Vec<u8>, String> {
+    validate_guest_run_execution_plan(plan)?;
+    let request = GuestRunRequest {
+        schema_version: 1,
+        run_id: plan.run_id.clone(),
+        snapshot_id: plan.snapshot_id.clone(),
+        operation: plan.operation,
+        max_duration_ms: u64::try_from(plan.max_duration.as_millis())
+            .map_err(|_| "The approved guest duration cannot be represented safely.")?,
+        max_output_bytes: plan.max_output_bytes,
+    };
+    let bytes = serde_json::to_vec(&request)
+        .map_err(|_| "FRIDAY could not serialize the approved guest request.")?;
+    if bytes.is_empty() || bytes.len() > 4096 {
+        return Err("The approved guest request exceeds the protocol size limit.".into());
+    }
+    let parsed = parse_guest_run_request(&bytes)?;
+    if parsed.run_id != plan.run_id
+        || parsed.snapshot_id != plan.snapshot_id
+        || parsed.operation != plan.operation
+        || parsed.max_duration_ms != plan.max_duration.as_millis() as u64
+        || parsed.max_output_bytes != plan.max_output_bytes
+    {
+        return Err("The serialized guest request does not match the approved execution plan.".into());
+    }
+    Ok(bytes)
 }
 
 const GUEST_RUN_APPROVAL_TTL_SECONDS: u64 = 120;
@@ -5262,6 +5296,38 @@ mod tests {
         assert_eq!(plan.command.arguments, &["test", "--locked", "--offline"]);
         assert_eq!(plan.max_duration, Duration::from_millis(MAX_GUEST_REQUEST_DURATION_MS));
         assert_eq!(plan.max_output_bytes, MAX_GUEST_REQUEST_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn approved_execution_plan_serializes_to_exact_bounded_guest_request() {
+        let request = parse_guest_run_request(&valid_guest_request_json()).unwrap();
+        let plan = build_guest_run_execution_plan(request).unwrap();
+        let bytes = serialize_guest_run_execution_request(&plan).unwrap();
+        assert!(bytes.len() <= 4096);
+        let parsed = parse_guest_run_request(&bytes).unwrap();
+        assert_eq!(parsed.run_id, plan.run_id);
+        assert_eq!(parsed.snapshot_id, plan.snapshot_id);
+        assert_eq!(parsed.operation, plan.operation);
+        assert_eq!(parsed.max_duration_ms, plan.max_duration.as_millis() as u64);
+        assert_eq!(parsed.max_output_bytes, plan.max_output_bytes);
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json.as_object().unwrap().len(), 6);
+        assert!(json.get("command").is_none());
+        assert!(json.get("executable").is_none());
+        assert!(json.get("arguments").is_none());
+        assert!(json.get("workingDirectory").is_none());
+        assert!(json.get("environment").is_none());
+    }
+
+    #[test]
+    fn approved_execution_plan_serialization_rejects_mutated_or_oversized_policy() {
+        let request = parse_guest_run_request(&valid_guest_request_json()).unwrap();
+        let mut plan = build_guest_run_execution_plan(request).unwrap();
+        plan.command = GuestOperationCommand { program: "cmd.exe", arguments: &["/c", "whoami"] };
+        assert!(serialize_guest_run_execution_request(&plan).is_err());
+        plan.command = guest_operation_command(GuestRunOperation::RustCargoTest);
+        plan.max_duration = Duration::ZERO;
+        assert!(serialize_guest_run_execution_request(&plan).is_err());
     }
 
     #[test]
