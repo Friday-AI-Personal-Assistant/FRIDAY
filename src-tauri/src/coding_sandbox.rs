@@ -307,6 +307,18 @@ fn authenticate_guest_runtime_manifest(
         return Err("The guest runtime trust anchor is invalid or does not match this platform and operation.".into());
     }
 
+    let actual = canonical_guest_runtime_manifest_sha256(manifest)?;
+    if !actual.eq_ignore_ascii_case(&anchor.manifest_sha256) {
+        return Err("The guest runtime manifest does not match FRIDAY's pinned build-time digest.".into());
+    }
+    Ok(())
+}
+
+/// Canonical SHA-256 for the complete manifest. Artifact ordering is normalized
+/// case-insensitively so equivalent manifests have one stable representation.
+fn canonical_guest_runtime_manifest_sha256(
+    manifest: &GuestRuntimeArtifactManifest,
+) -> Result<String, String> {
     let mut canonical = manifest.clone();
     canonical.artifacts.sort_by(|left, right| {
         left.relative_path.to_ascii_lowercase().cmp(&right.relative_path.to_ascii_lowercase())
@@ -314,12 +326,44 @@ fn authenticate_guest_runtime_manifest(
     let encoded = serde_json::to_vec(&canonical)
         .map_err(|_| "The trusted guest runtime manifest could not be encoded.".to_string())?;
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(&encoded);
-    let actual = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-    if !actual.eq_ignore_ascii_case(&anchor.manifest_sha256) {
-        return Err("The guest runtime manifest does not match FRIDAY's pinned build-time digest.".into());
-    }
-    Ok(())
+    Ok(Sha256::digest(&encoded).iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Evidence that a specific build-pinned runtime manifest authenticated and
+/// its entire on-disk bundle matched. Private fields prevent callers from
+/// manufacturing this proof from UI, project, model, or guest data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifiedGuestRuntimeBundle {
+    operation: GuestRunOperation,
+    bundle_id: String,
+    toolchain_version: String,
+    platform: String,
+    architecture: String,
+    manifest_sha256: String,
+    artifact_count: usize,
+}
+
+/// Combine trust-anchor authentication and complete filesystem verification
+/// into one gate. Later launch planning can require this proof rather than
+/// accepting an independently supplied path or an unverified manifest.
+#[allow(dead_code)]
+fn verify_authenticated_guest_runtime_bundle(
+    root: &File,
+    operation: GuestRunOperation,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+) -> Result<VerifiedGuestRuntimeBundle, String> {
+    authenticate_guest_runtime_manifest(operation, manifest, anchor)?;
+    verify_guest_runtime_artifact_tree(root, operation, manifest)?;
+    Ok(VerifiedGuestRuntimeBundle {
+        operation,
+        bundle_id: anchor.bundle_id.clone(),
+        toolchain_version: anchor.toolchain_version.clone(),
+        platform: anchor.platform.clone(),
+        architecture: anchor.architecture.clone(),
+        manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+        artifact_count: manifest.artifacts.len(),
+    })
 }
 
 /// Validate an image-owned artifact manifest before any future file access.
@@ -5828,6 +5872,57 @@ mod tests {
             platform: "windows".into(),
             architecture: "x86_64".into(),
             manifest_sha256: digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+        }
+    }
+
+    #[test]
+    fn authenticated_runtime_bundle_proof_requires_manifest_and_disk_to_match() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let manifest = test_runtime_manifest(operation);
+            let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+            let path = make_test_directory("authenticated-runtime-proof");
+            for artifact in &manifest.artifacts {
+                let components = artifact.relative_path.split('\\').collect::<Vec<_>>();
+                let file_name = components.last().unwrap();
+                let mut file_path = path.clone();
+                for component in &components[..components.len() - 1] {
+                    file_path.push(component);
+                }
+                fs::create_dir_all(&file_path).unwrap();
+                file_path.push(file_name);
+                let bytes: &[u8] = match artifact.relative_path.as_str() {
+                    "bin\\cargo.exe" => b"cargo-fixture",
+                    "node.exe" => b"node-fixture",
+                    "node_modules\\npm\\bin\\npm-cli.js" => b"npm-fixture",
+                    "python.exe" => b"python-fixture",
+                    _ => panic!("unexpected runtime fixture"),
+                };
+                fs::write(file_path, bytes).unwrap();
+            }
+            let root = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
+            let proof = verify_authenticated_guest_runtime_bundle(&root, operation, &manifest, &anchor).unwrap();
+            assert_eq!(proof.operation, operation);
+            assert_eq!(proof.bundle_id, anchor.bundle_id);
+            assert_eq!(proof.toolchain_version, anchor.toolchain_version);
+            assert_eq!(proof.platform, "windows");
+            assert_eq!(proof.architecture, "x86_64");
+            assert_eq!(proof.manifest_sha256, anchor.manifest_sha256);
+            assert_eq!(proof.artifact_count, manifest.artifacts.len());
+
+            let mut wrong_anchor = anchor.clone();
+            wrong_anchor.bundle_id = "different-bundle".into();
+            assert!(verify_authenticated_guest_runtime_bundle(&root, operation, &manifest, &wrong_anchor).is_err());
+
+            let mut wrong_version = anchor.clone();
+            wrong_version.toolchain_version = "9.9.9".into();
+            assert!(verify_authenticated_guest_runtime_bundle(&root, operation, &manifest, &wrong_version).is_err());
+
+            drop(root);
+            fs::remove_dir_all(path).unwrap();
         }
     }
 
