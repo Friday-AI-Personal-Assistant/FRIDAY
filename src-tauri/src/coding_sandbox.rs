@@ -1292,6 +1292,10 @@ fn validate_guest_runtime_artifact_manifest(
     for artifact in &manifest.artifacts {
         let path = artifact.relative_path.as_str();
         let components = path.split('\\').collect::<Vec<_>>();
+        let normalized_path = path.to_ascii_lowercase();
+        let has_file_directory_collision = components.iter().enumerate().skip(1).any(|(index, _)| {
+            paths.contains(&components[..index].join("\\").to_ascii_lowercase())
+        }) || paths.iter().any(|existing| existing.starts_with(&(normalized_path.clone() + "\\")));
         if path.is_empty()
             || path.starts_with('\\')
             || path.contains('/')
@@ -1302,14 +1306,17 @@ fn validate_guest_runtime_artifact_manifest(
                     || *part == ".."
                     || !part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
             })
-            || !paths.insert(path.to_ascii_lowercase())
+            || normalized_path == ".friday-runtime-owner.json"
+            || paths.contains(&normalized_path)
+            || has_file_directory_collision
             || artifact.sha256.len() != 64
             || !artifact.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
             || artifact.max_bytes == 0
             || artifact.max_bytes > MAX_GUEST_RUNTIME_ARTIFACT_BYTES
         {
-            return Err("The guest runtime artifact manifest contains an unsafe path, duplicate, digest, or size limit.".into());
+            return Err("The guest runtime artifact manifest contains an unsafe path, reserved marker, collision, digest, or size limit.".into());
         }
+        paths.insert(normalized_path);
         total_limit = total_limit.checked_add(artifact.max_bytes)
             .ok_or("The guest runtime artifact manifest size limit overflowed.")?;
         if total_limit > MAX_GUEST_RUNTIME_MANIFEST_BYTES {
@@ -7016,6 +7023,18 @@ mod tests {
 
         let mut manifest = test_runtime_manifest(operation);
         manifest.artifacts[1].relative_path = "NODE.EXE".into();
+        assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_err());
+
+        let mut manifest = test_runtime_manifest(operation);
+        manifest.artifacts.push(test_runtime_artifact(".friday-runtime-owner.json", b"spoofed-marker"));
+        assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_err());
+
+        let mut manifest = test_runtime_manifest(operation);
+        manifest.artifacts.push(test_runtime_artifact("node.exe\\child.dll", b"nested"));
+        assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_err());
+
+        let mut manifest = test_runtime_manifest(operation);
+        manifest.artifacts.push(test_runtime_artifact("node_modules\\npm\\bin\\npm-cli.js\\child", b"nested"));
         assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_err());
 
         let mut manifest = test_runtime_manifest(operation);
