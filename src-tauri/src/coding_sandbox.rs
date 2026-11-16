@@ -515,14 +515,16 @@ fn verify_staged_guest_runtime_bundle_with_final_root(
     }
     actual_files.remove(marker_positions[0]);
 
+    // Filesystem inventory paths use '/' on every host. Normalize the
+    // authenticated Windows-relative manifest paths before comparing them.
     let mut expected_files = manifest.artifacts.iter()
-        .map(|artifact| artifact.relative_path.to_ascii_lowercase())
+        .map(|artifact| artifact.relative_path.replace('\\', "/").to_ascii_lowercase())
         .collect::<Vec<_>>();
     let mut expected_directories = std::collections::BTreeSet::new();
     for artifact in &manifest.artifacts {
         let components = artifact.relative_path.split('\\').collect::<Vec<_>>();
         for depth in 1..components.len() {
-            expected_directories.insert(components[..depth].join("\\").to_ascii_lowercase());
+            expected_directories.insert(components[..depth].join("/").to_ascii_lowercase());
         }
     }
     actual_files.iter_mut().for_each(|path| *path = path.to_ascii_lowercase());
@@ -1381,14 +1383,16 @@ fn verify_guest_runtime_artifact_tree(
     let (mut actual_files, mut actual_directories) =
         crate::coding_sandbox_fs::collect_runtime_tree_inventory(root, 32, 1280)
             .map_err(|_| "The guest runtime directory contains unsafe, unexpected, or excessive entries.".to_string())?;
+    // Filesystem inventory paths use '/' on every host. Normalize the
+    // authenticated Windows-relative manifest paths before comparing them.
     let mut expected_files = manifest.artifacts.iter()
-        .map(|artifact| artifact.relative_path.to_ascii_lowercase())
+        .map(|artifact| artifact.relative_path.replace('\\', "/").to_ascii_lowercase())
         .collect::<Vec<_>>();
     let mut expected_directories = std::collections::BTreeSet::new();
     for artifact in &manifest.artifacts {
         let components = artifact.relative_path.split('\\').collect::<Vec<_>>();
         for depth in 1..components.len() {
-            expected_directories.insert(components[..depth].join("\\").to_ascii_lowercase());
+            expected_directories.insert(components[..depth].join("/").to_ascii_lowercase());
         }
     }
     actual_files.iter_mut().for_each(|path| *path = path.to_ascii_lowercase());
