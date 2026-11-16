@@ -5558,6 +5558,7 @@ mod tests {
             "abcdef0123456789abcdef0123456789",
             GuestRunOperation::RustCargoTest,
             MAX_GUEST_RESULT_BYTES as u64,
+            MAX_GUEST_RESULT_DURATION_MS,
         ).is_err());
         fs::remove_file(linked_directory).unwrap();
         fs::remove_dir_all(parent).unwrap();
