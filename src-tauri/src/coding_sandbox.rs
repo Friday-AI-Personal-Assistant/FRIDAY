@@ -649,6 +649,7 @@ struct GuestRuntimePublicationPreflight {
     final_root: PathBuf,
     bundle_id: String,
     manifest_sha256: String,
+    artifact_count: usize,
 }
 
 #[allow(dead_code)]
@@ -735,6 +736,92 @@ fn authorize_guest_runtime_publication_preflight_with_final_root(
         final_root,
         bundle_id: publication.bundle_id.clone(),
         manifest_sha256: publication.manifest_sha256.clone(),
+        artifact_count: publication.artifact_count,
+    })
+}
+
+/// Evidence that an authenticated runtime staging directory was atomically
+/// published at its fixed destination without replacing an existing entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PublishedGuestRuntimeBundle {
+    operation: GuestRunOperation,
+    root_path: PathBuf,
+    root_identity: (u64, u64),
+    bundle_id: String,
+    manifest_sha256: String,
+    artifact_count: usize,
+}
+
+#[allow(dead_code)]
+fn publish_guest_runtime_bundle_atomically(
+    preflight: &GuestRuntimePublicationPreflight,
+    parent_handle: &File,
+    staging_handle: &File,
+) -> Result<PublishedGuestRuntimeBundle, String> {
+    let expected_parent = preflight.final_root.parent()
+        .ok_or("The runtime publication destination has no parent directory.")?;
+    if preflight.parent_path != expected_parent
+        || preflight.staging_root.parent() != Some(expected_parent)
+        || preflight.staging_root.file_name().is_none()
+        || preflight.final_root.file_name().is_none()
+        || preflight.bundle_id.is_empty()
+        || preflight.manifest_sha256.len() != 64
+    {
+        return Err("The runtime publication preflight no longer describes an exact sibling destination.".into());
+    }
+
+    let parent_before = crate::coding_sandbox_fs::verified_directory_identity(
+        &preflight.parent_path, parent_handle,
+    ).map_err(|_| "The runtime publication parent handle could not be revalidated.".to_string())?;
+    let staging_before = crate::coding_sandbox_fs::verified_directory_identity(
+        &preflight.staging_root, staging_handle,
+    ).map_err(|_| "The runtime staging handle could not be revalidated.".to_string())?;
+    if parent_before != preflight.parent_identity
+        || staging_before != preflight.staging_root_identity
+        || parent_before.0 != staging_before.0
+    {
+        return Err("The runtime publication parent or staging identity changed after preflight.".into());
+    }
+    match fs::symlink_metadata(&preflight.final_root) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Ok(_) => return Err("The runtime publication destination already exists; FRIDAY will not overwrite it.".into()),
+        Err(_) => return Err("The runtime publication destination could not be safely inspected.".into()),
+    }
+    let parent_after = crate::coding_sandbox_fs::verified_directory_identity(
+        &preflight.parent_path, parent_handle,
+    ).map_err(|_| "The runtime publication parent changed immediately before rename.".to_string())?;
+    let staging_after = crate::coding_sandbox_fs::verified_directory_identity(
+        &preflight.staging_root, staging_handle,
+    ).map_err(|_| "The runtime staging directory changed immediately before rename.".to_string())?;
+    if parent_after != parent_before || staging_after != staging_before {
+        return Err("A runtime publication directory identity changed immediately before rename.".into());
+    }
+
+    let source_name = preflight.staging_root.file_name()
+        .ok_or("The runtime staging directory name is missing.")?;
+    let destination_name = preflight.final_root.file_name()
+        .ok_or("The runtime destination directory name is missing.")?;
+    crate::coding_sandbox_fs::rename_directory_noreplace(
+        parent_handle, source_name, destination_name, parent_before, staging_before,
+    ).map_err(|_| "FRIDAY could not atomically publish the verified runtime without replacing an existing destination.".to_string())?;
+
+    let published_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+        parent_handle, destination_name,
+    ).map_err(|_| "The runtime was moved but its published directory could not be safely reopened.".to_string())?;
+    let published_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &preflight.final_root, &published_handle,
+    ).map_err(|_| "The published runtime path no longer identifies its verified directory handle.".to_string())?;
+    if published_identity != preflight.staging_root_identity {
+        return Err("The published runtime directory identity differs from the verified staging identity.".into());
+    }
+
+    Ok(PublishedGuestRuntimeBundle {
+        operation: preflight.operation,
+        root_path: preflight.final_root.clone(),
+        root_identity: published_identity,
+        bundle_id: preflight.bundle_id.clone(),
+        manifest_sha256: preflight.manifest_sha256.clone(),
+        artifact_count: preflight.artifact_count,
     })
 }
 
@@ -10134,6 +10221,104 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         ).is_err());
 
         drop(unrelated_handle);
+        drop(stage);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+
+    #[test]
+    fn runtime_publication_atomically_moves_verified_directory_without_replacement() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-publication-atomic-success");
+        let final_root = root.join("published-runtime");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, final_root.clone(),
+        ).unwrap();
+        fs::create_dir(&provisioning.staging_root).unwrap();
+        fs::write(provisioning.staging_root.join("runtime.bin"), b"verified-runtime").unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let stage = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let identity = crate::coding_sandbox_fs::verified_directory_identity(
+            &provisioning.staging_root, &stage,
+        ).unwrap();
+        let staging = VerifiedGuestRuntimeStaging {
+            operation,
+            staging_root: provisioning.staging_root.clone(),
+            root_identity: identity,
+            bundle_id: anchor.bundle_id.clone(),
+            manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+            artifact_count: manifest.artifacts.len(),
+        };
+        let publication = build_guest_runtime_publication_plan_with_final_root(
+            &staging, &manifest, &anchor, &provisioning, final_root.clone(),
+        ).unwrap();
+        let preflight = authorize_guest_runtime_publication_preflight_with_final_root(
+            &staging, &manifest, &anchor, &provisioning, &publication,
+            &root, &parent, &stage, final_root.clone(),
+        ).unwrap();
+
+        let published = publish_guest_runtime_bundle_atomically(&preflight, &parent, &stage).unwrap();
+        assert_eq!(published.operation, operation);
+        assert_eq!(published.root_path, final_root);
+        assert_eq!(published.root_identity, identity);
+        assert_eq!(published.bundle_id, anchor.bundle_id);
+        assert_eq!(published.artifact_count, manifest.artifacts.len());
+        assert_eq!(fs::read(published.root_path.join("runtime.bin")).unwrap(), b"verified-runtime");
+        assert!(!provisioning.staging_root.exists());
+
+        drop(stage);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_publication_never_replaces_a_raced_in_destination() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-publication-atomic-no-replace");
+        let final_root = root.join("published-runtime");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, final_root.clone(),
+        ).unwrap();
+        fs::create_dir(&provisioning.staging_root).unwrap();
+        fs::write(provisioning.staging_root.join("staged.bin"), b"keep-stage").unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let stage = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let identity = crate::coding_sandbox_fs::verified_directory_identity(
+            &provisioning.staging_root, &stage,
+        ).unwrap();
+        let staging = VerifiedGuestRuntimeStaging {
+            operation,
+            staging_root: provisioning.staging_root.clone(),
+            root_identity: identity,
+            bundle_id: anchor.bundle_id.clone(),
+            manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+            artifact_count: manifest.artifacts.len(),
+        };
+        let publication = build_guest_runtime_publication_plan_with_final_root(
+            &staging, &manifest, &anchor, &provisioning, final_root.clone(),
+        ).unwrap();
+        let preflight = authorize_guest_runtime_publication_preflight_with_final_root(
+            &staging, &manifest, &anchor, &provisioning, &publication,
+            &root, &parent, &stage, final_root.clone(),
+        ).unwrap();
+
+        // Simulate a competing creator after preflight. The atomic primitive,
+        // not the earlier absence check, must be the final no-overwrite gate.
+        fs::create_dir(&final_root).unwrap();
+        fs::write(final_root.join("do-not-touch.txt"), b"preserve").unwrap();
+        assert!(publish_guest_runtime_bundle_atomically(&preflight, &parent, &stage).is_err());
+        assert_eq!(fs::read(final_root.join("do-not-touch.txt")).unwrap(), b"preserve");
+        assert_eq!(fs::read(provisioning.staging_root.join("staged.bin")).unwrap(), b"keep-stage");
+
         drop(stage);
         drop(parent);
         fs::remove_dir_all(root).unwrap();

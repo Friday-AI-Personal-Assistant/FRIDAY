@@ -2219,6 +2219,227 @@ pub(crate) fn create_bounded_runtime_destination(
 
 /// Open one ordinary child directory relative to a held parent without following links.
 #[allow(dead_code)]
+/// Atomically rename one verified child directory to another name below the
+/// same held parent, refusing to replace any existing destination. The source
+/// is reopened relative to the parent without following links and its identity
+/// is compared before the native rename. No ambient source/destination path is
+/// used by the rename itself.
+pub(crate) fn rename_directory_noreplace(
+    parent: &File,
+    source_name: &OsStr,
+    destination_name: &OsStr,
+    expected_parent_identity: (u64, u64),
+    expected_source_identity: (u64, u64),
+) -> io::Result<()> {
+    if !is_single_normal_component(source_name)
+        || !is_single_normal_component(destination_name)
+        || source_name == destination_name
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime publication names must be distinct normal components"));
+    }
+    let parent_metadata = parent.metadata()?;
+    if !parent_metadata.is_dir() || is_reparse_or_symlink(&parent_metadata)
+        || handle_identity(parent)? != expected_parent_identity
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime publication parent identity changed"));
+    }
+    let source = open_child_directory_nofollow(parent, source_name)?;
+    let source_metadata = source.metadata()?;
+    if !source_metadata.is_dir() || is_reparse_or_symlink(&source_metadata)
+        || handle_identity(&source)? != expected_source_identity
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime staging source identity changed"));
+    }
+    drop(source);
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::{ffi::OsStrExt, io::AsRawFd};
+        let source_c = std::ffi::CString::new(source_name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source name contains NUL"))?;
+        let destination_c = std::ffi::CString::new(destination_name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination name contains NUL"))?;
+        // RENAME_NOREPLACE is an atomic kernel-enforced no-overwrite guarantee.
+        const RENAME_NOREPLACE: u32 = 1;
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                parent.as_raw_fd(),
+                source_c.as_ptr(),
+                parent.as_raw_fd(),
+                destination_c.as_ptr(),
+                RENAME_NOREPLACE,
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::{ffi::OsStrExt, io::AsRawFd};
+        let source_c = std::ffi::CString::new(source_name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source name contains NUL"))?;
+        let destination_c = std::ffi::CString::new(destination_name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination name contains NUL"))?;
+        const RENAME_EXCL: u32 = 0x0000_0004;
+        extern "C" {
+            fn renameatx_np(from_fd: i32, from: *const std::ffi::c_char, to_fd: i32, to: *const std::ffi::c_char, flags: u32) -> i32;
+        }
+        let result = unsafe {
+            renameatx_np(parent.as_raw_fd(), source_c.as_ptr(), parent.as_raw_fd(), destination_c.as_ptr(), RENAME_EXCL)
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use std::{
+            mem,
+            os::windows::{ffi::OsStrExt, io::{AsRawHandle, FromRawHandle}},
+            ptr,
+        };
+        let wide_source: Vec<u16> = source_name.encode_wide().collect();
+        let wide_destination: Vec<u16> = destination_name.encode_wide().collect();
+        if wide_source.is_empty() || wide_destination.is_empty()
+            || wide_source.contains(&0) || wide_destination.contains(&0)
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime publication name is invalid"));
+        }
+        let byte_len = wide_source.len().checked_mul(2)
+            .and_then(|length| u16::try_from(length).ok())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "runtime source name is too long"))?;
+        #[repr(C)]
+        struct UnicodeString { length: u16, maximum_length: u16, buffer: *mut u16 }
+        #[repr(C)]
+        struct ObjectAttributes {
+            length: u32, root_directory: *mut std::ffi::c_void,
+            object_name: *mut UnicodeString, attributes: u32,
+            security_descriptor: *mut std::ffi::c_void,
+            security_quality_of_service: *mut std::ffi::c_void,
+        }
+        #[repr(C)]
+        union IoStatusValue { status: i32, pointer: *mut std::ffi::c_void }
+        #[repr(C)]
+        struct IoStatusBlock { status: IoStatusValue, information: usize }
+        #[repr(C)]
+        struct FileRenameInformation {
+            replace_if_exists: u8,
+            root_directory: *mut std::ffi::c_void,
+            file_name_length: u32,
+            file_name: [u16; 1],
+        }
+        const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+        const OBJ_DONT_REPARSE: u32 = 0x1000;
+        const DELETE: u32 = 0x0001_0000;
+        const FILE_READ_ATTRIBUTES: u32 = 0x80;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        const FILE_SHARE_READ: u32 = 1;
+        const FILE_SHARE_WRITE: u32 = 2;
+        const FILE_SHARE_DELETE: u32 = 4;
+        const FILE_OPEN: u32 = 1;
+        const FILE_DIRECTORY_FILE: u32 = 1;
+        const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
+        const FILE_RENAME_INFORMATION_CLASS: u32 = 10;
+        #[link(name = "ntdll")]
+        extern "system" {
+            fn NtOpenFile(
+                file_handle: *mut *mut std::ffi::c_void, desired_access: u32,
+                object_attributes: *const ObjectAttributes, io_status_block: *mut IoStatusBlock,
+                share_access: u32, open_options: u32,
+            ) -> i32;
+            fn NtSetInformationFile(
+                file_handle: *mut std::ffi::c_void, io_status_block: *mut IoStatusBlock,
+                file_information: *mut std::ffi::c_void, length: u32, class: u32,
+            ) -> i32;
+        }
+        let mut source_name = UnicodeString {
+            length: byte_len, maximum_length: byte_len, buffer: wide_source.as_ptr() as *mut u16,
+        };
+        let attributes = ObjectAttributes {
+            length: mem::size_of::<ObjectAttributes>() as u32,
+            root_directory: parent.as_raw_handle(),
+            object_name: &mut source_name,
+            attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+            security_descriptor: ptr::null_mut(),
+            security_quality_of_service: ptr::null_mut(),
+        };
+        let mut status_block = IoStatusBlock { status: IoStatusValue { status: 0 }, information: 0 };
+        let mut source_handle = ptr::null_mut();
+        let status = unsafe {
+            NtOpenFile(
+                &mut source_handle, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                &attributes, &mut status_block,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            )
+        };
+        if status < 0 || source_handle.is_null() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("handle-relative runtime source open failed (NTSTATUS 0x{:08X})", status as u32)));
+        }
+        let source = unsafe { File::from_raw_handle(source_handle) };
+        if handle_identity(&source)? != expected_source_identity {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime staging source changed before atomic publication"));
+        }
+
+        let name_bytes = wide_destination.len().checked_mul(2)
+            .and_then(|length| u32::try_from(length).ok())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "runtime destination name is too long"))?;
+        let name_offset = mem::offset_of!(FileRenameInformation, file_name);
+        let total_bytes = name_offset.checked_add(name_bytes as usize)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "runtime rename information size overflow"))?;
+        let word_count = total_bytes.checked_add(7)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "runtime rename buffer size overflow"))? / 8;
+        let mut storage = vec![0u64; word_count];
+        let info = storage.as_mut_ptr() as *mut FileRenameInformation;
+        unsafe {
+            ptr::write(ptr::addr_of_mut!((*info).replace_if_exists), 0);
+            ptr::write(ptr::addr_of_mut!((*info).root_directory), parent.as_raw_handle());
+            ptr::write(ptr::addr_of_mut!((*info).file_name_length), name_bytes);
+            ptr::copy_nonoverlapping(
+                wide_destination.as_ptr(),
+                ptr::addr_of_mut!((*info).file_name) as *mut u16,
+                wide_destination.len(),
+            );
+        }
+        let mut rename_status = IoStatusBlock { status: IoStatusValue { status: 0 }, information: 0 };
+        let rename_result = unsafe {
+            NtSetInformationFile(
+                source.as_raw_handle(), &mut rename_status, info as *mut std::ffi::c_void,
+                u32::try_from(total_bytes).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "runtime rename buffer exceeds native limits"))?,
+                FILE_RENAME_INFORMATION_CLASS,
+            )
+        };
+        if rename_result < 0 {
+            return Err(io::Error::new(io::ErrorKind::Other, format!("atomic no-replace runtime rename failed (NTSTATUS 0x{:08X})", rename_result as u32)));
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        return Err(io::Error::new(io::ErrorKind::Unsupported, "atomic no-replace directory publication is unsupported on this platform"));
+    }
+
+    // Verify the kernel-visible result through the same pinned parent handle.
+    let published = open_child_directory_nofollow(parent, destination_name)?;
+    if handle_identity(&published)? != expected_source_identity {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "published runtime directory identity does not match the verified staging directory"));
+    }
+    match open_child_directory_nofollow(parent, source_name) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Ok(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime staging name still exists after publication")),
+        Err(error) => return Err(error),
+    }
+    if handle_identity(parent)? != expected_parent_identity {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime publication parent identity changed during rename"));
+    }
+    Ok(())
+}
+
 pub(crate) fn open_child_directory_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
     if !is_single_normal_component(name) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "child directory name must be one normal component"));
