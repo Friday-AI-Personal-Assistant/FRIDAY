@@ -349,6 +349,9 @@ struct VerifiedGuestRuntimeBundle {
     /// Exact directory path whose held handle was inventoried and hashed.
     /// Later launch planning must compare this with the operation's fixed root.
     root_path: PathBuf,
+    /// Stable volume/device and file ID/inode captured before and after hashing.
+    /// The final pre-launch gate must compare a freshly held handle to this value.
+    root_identity: (u64, u64),
     bundle_id: String,
     toolchain_version: String,
     platform: String,
@@ -372,22 +375,20 @@ fn verify_authenticated_guest_runtime_bundle(
     anchor: &GuestRuntimeManifestTrustAnchor,
 ) -> Result<VerifiedGuestRuntimeBundle, String> {
     authenticate_guest_runtime_manifest(operation, manifest, anchor)?;
-    if !crate::coding_sandbox_fs::verified_directory_handle_matches_path(root_path, root)
-        .map_err(|_| "The guest runtime root identity could not be checked.".to_string())?
-    {
-        return Err("The held guest runtime directory does not match its authorized path.".into());
-    }
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(root_path, root)
+        .map_err(|_| "The guest runtime root identity could not be checked.".to_string())?;
     verify_guest_runtime_artifact_tree(root, operation, manifest)?;
-    // Recheck after the complete inventory and digest pass to detect path
-    // replacement while verification was in progress.
-    if !crate::coding_sandbox_fs::verified_directory_handle_matches_path(root_path, root)
-        .map_err(|_| "The guest runtime root identity could not be rechecked.".to_string())?
-    {
-        return Err("The guest runtime root path changed during verification.".into());
+    // Recheck after the complete inventory and digest pass to detect path or
+    // directory-identity replacement while verification was in progress.
+    let final_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root_path, root)
+        .map_err(|_| "The guest runtime root identity could not be rechecked.".to_string())?;
+    if final_root_identity != root_identity {
+        return Err("The guest runtime root identity changed during verification.".into());
     }
     Ok(VerifiedGuestRuntimeBundle {
         operation,
         root_path: root_path.to_path_buf(),
+        root_identity,
         bundle_id: anchor.bundle_id.clone(),
         toolchain_version: anchor.toolchain_version.clone(),
         platform: anchor.platform.clone(),
@@ -400,6 +401,30 @@ fn verify_authenticated_guest_runtime_bundle(
     })
 }
 
+
+
+/// Revalidate the proof against a newly held directory handle immediately
+/// before any future use. This closes the gap between an earlier successful
+/// hash pass and a later path lookup: the same fixed path must still name the
+/// exact volume/file identity recorded by the proof.
+#[allow(dead_code)]
+fn validate_verified_guest_runtime_bundle_root(
+    proof: &VerifiedGuestRuntimeBundle,
+    root_path: &Path,
+    root: &File,
+) -> Result<(), String> {
+    if root_path != proof.root_path
+        || !guest_runtime_root_matches_fixed_profile(proof.operation, root_path)
+    {
+        return Err("The runtime root path differs from the authenticated proof or fixed operation profile.".into());
+    }
+    let current_identity = crate::coding_sandbox_fs::verified_directory_identity(root_path, root)
+        .map_err(|_| "The runtime root handle could not be revalidated.".to_string())?;
+    if current_identity != proof.root_identity {
+        return Err("The runtime root directory identity differs from the authenticated proof.".into());
+    }
+    Ok(())
+}
 
 /// Files that must be present in the authenticated bundle before a
 /// particular fixed profile can be authorized.
@@ -6111,7 +6136,14 @@ mod tests {
             let proof = verify_authenticated_guest_runtime_bundle(&path, &root, operation, &manifest, &anchor).unwrap();
             assert_eq!(proof.operation, operation);
             assert_eq!(proof.root_path, path);
+            assert!(validate_verified_guest_runtime_bundle_root(&proof, &path, &root).is_err(),
+                "temporary test roots are not the fixed production installation path");
+            assert_ne!(proof.root_identity, (0, 0));
             assert_eq!(proof.bundle_id, anchor.bundle_id);
+            let mut substituted_identity = proof.clone();
+            substituted_identity.root_identity.1 ^= 1;
+            assert!(validate_verified_guest_runtime_bundle_root(&substituted_identity, &path, &root).is_err(),
+                "a proof with a substituted directory identity must be rejected");
             assert_eq!(proof.toolchain_version, anchor.toolchain_version);
             assert_eq!(proof.platform, "windows");
             assert_eq!(proof.architecture, "x86_64");

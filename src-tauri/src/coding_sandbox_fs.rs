@@ -635,6 +635,45 @@ pub(crate) fn verified_directory_handle_matches_path(
     same_path_handle_identity(path, handle)
 }
 
+/// Return the stable filesystem identity of a verified directory path and its
+/// held handle. The pair is volume/device plus file ID/inode, normalized across
+/// Windows and Unix. A mismatch is an error rather than a weak path-only proof.
+pub(crate) fn verified_directory_identity(
+    path: &Path,
+    handle: &File,
+) -> io::Result<(u64, u64)> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "directory path must be absolute"));
+    }
+    let path_metadata = std::fs::symlink_metadata(path)?;
+    let handle_metadata = handle.metadata()?;
+    if !path_metadata.is_dir()
+        || is_reparse_or_symlink(&path_metadata)
+        || !handle_metadata.is_dir()
+        || is_reparse_or_symlink(&handle_metadata)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "directory path or handle is not an ordinary directory"));
+    }
+    #[cfg(unix)]
+    {
+        let path_id = path_identity(path)?;
+        let handle_id = handle_identity(handle)?;
+        if path_id != handle_id {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "directory path no longer identifies the held handle"));
+        }
+        Ok(path_id)
+    }
+    #[cfg(windows)]
+    {
+        let path_id = path_identity(path)?;
+        let handle_id = handle_identity(handle)?;
+        if path_id != handle_id {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "directory path no longer identifies the held handle"));
+        }
+        Ok((path_id.0 as u64, path_id.1))
+    }
+}
+
 fn same_handle_identity(left: &File, right: &File) -> io::Result<bool> {
     Ok(handle_identity(left)? == handle_identity(right)?)
 }
