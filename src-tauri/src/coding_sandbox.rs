@@ -740,6 +740,78 @@ fn authorize_guest_runtime_publication_preflight_with_final_root(
     })
 }
 
+/// Complete the authenticated staging-to-publication transaction. The staged
+/// proof is re-bound to the provisioning plan, the destination is atomically
+/// published without replacement, and the final tree is hashed again at its
+/// fixed destination before a launch-capable proof is returned. This still
+/// does not launch a process or start Windows Sandbox.
+#[allow(dead_code)]
+fn publish_authenticated_guest_runtime_bundle(
+    staging: &VerifiedGuestRuntimeStaging,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+    parent_path: &Path,
+    parent_handle: &File,
+    staging_handle: File,
+) -> Result<VerifiedGuestRuntimeBundle, String> {
+    publish_authenticated_guest_runtime_bundle_with_final_root(
+        staging, manifest, anchor, provisioning, parent_path, parent_handle,
+        staging_handle, PathBuf::from(fixed_guest_runtime_root(anchor.operation)),
+    )
+}
+
+fn publish_authenticated_guest_runtime_bundle_with_final_root(
+    staging: &VerifiedGuestRuntimeStaging,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+    parent_path: &Path,
+    parent_handle: &File,
+    staging_handle: File,
+    final_root: PathBuf,
+) -> Result<VerifiedGuestRuntimeBundle, String> {
+    validate_guest_runtime_provisioning_plan_with_final_root(
+        manifest, anchor, provisioning, final_root.clone(),
+    )?;
+    let publication = build_guest_runtime_publication_plan_with_final_root(
+        staging, manifest, anchor, provisioning, final_root.clone(),
+    )?;
+    let preflight = authorize_guest_runtime_publication_preflight_with_final_root(
+        staging, manifest, anchor, provisioning, &publication,
+        parent_path, parent_handle, &staging_handle, final_root.clone(),
+    )?;
+    let published = publish_guest_runtime_bundle_atomically(
+        &preflight, parent_handle, staging_handle,
+    )?;
+    if published.operation != anchor.operation
+        || published.root_path != final_root
+        || published.bundle_id != anchor.bundle_id
+        || published.manifest_sha256 != anchor.manifest_sha256.to_ascii_lowercase()
+        || published.artifact_count != manifest.artifacts.len()
+    {
+        return Err("The atomically published runtime evidence differs from its authenticated manifest.".into());
+    }
+
+    let destination_name = final_root.file_name()
+        .ok_or("The published runtime destination name is missing.")?;
+    let final_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+        parent_handle, destination_name,
+    ).map_err(|_| "The published runtime directory could not be reopened without following links.".to_string())?;
+    let verified = verify_authenticated_guest_runtime_bundle(
+        &final_root, &final_handle, anchor.operation, manifest, anchor,
+    )?;
+    if verified.root_identity != published.root_identity
+        || verified.root_identity != staging.root_identity
+        || verified.bundle_id != published.bundle_id
+        || verified.manifest_sha256 != published.manifest_sha256
+        || verified.artifact_count != published.artifact_count
+    {
+        return Err("The final runtime tree does not match the atomically published staging identity and manifest.".into());
+    }
+    Ok(verified)
+}
+
 /// Evidence that an authenticated runtime staging directory was atomically
 /// published at its fixed destination without replacing an existing entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
