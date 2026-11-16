@@ -437,7 +437,7 @@ fn normalize_guest_runtime_source_path(path: &Path) -> Result<String, String> {
     if raw.contains('/') && raw.contains('\\') {
         return Err("A runtime source path mixes separator styles.".into());
     }
-    let portable = raw.replace('/', "\\\\");
+    let portable = raw.replace('/', "\\");
     if portable.is_empty()
         || portable.len() > MAX_GUEST_RUNTIME_ARTIFACT_PATH_BYTES
         || portable.starts_with('\\')
