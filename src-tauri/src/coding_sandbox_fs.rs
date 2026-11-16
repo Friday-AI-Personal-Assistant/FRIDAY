@@ -2112,6 +2112,111 @@ fn inspect_snapshot_cleanup_progress_directory(
     Ok(())
 }
 
+/// Materialize a complete, bounded runtime bundle beneath a held parent handle.
+///
+/// The destination is created exclusively and every directory/file is created
+/// relative to an already-held handle. The owner marker is written last; a
+/// partial or interrupted staging directory therefore never carries cleanup
+/// authority. This helper does not publish or execute the staged bundle.
+#[allow(dead_code)]
+pub(crate) fn create_bounded_runtime_destination(
+    parent: &File,
+    staging_name: &OsStr,
+    files: &[(PathBuf, Vec<u8>)],
+    owner_marker: &[u8],
+    max_files: usize,
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+    max_depth: usize,
+) -> io::Result<()> {
+    use std::io::Write;
+
+    let parent_metadata = parent.metadata()?;
+    if !parent_metadata.is_dir() || is_reparse_or_symlink(&parent_metadata) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime staging parent is not an ordinary directory"));
+    }
+    if !is_single_normal_component(staging_name)
+        || files.is_empty()
+        || max_files == 0
+        || max_file_bytes == 0
+        || max_total_bytes == 0
+        || max_depth == 0
+        || files.len() > max_files
+        || owner_marker.is_empty()
+        || owner_marker.len() > 16 * 1024
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime staging request is empty or outside fixed limits"));
+    }
+
+    let mut total = 0u64;
+    let mut seen = std::collections::BTreeSet::new();
+    for (relative_path, contents) in files {
+        let components: Vec<&OsStr> = relative_path.components().filter_map(|component| {
+            if let Component::Normal(name) = component { Some(name) } else { None }
+        }).collect();
+        if relative_path.as_os_str().is_empty()
+            || components.len() != relative_path.components().count()
+            || components.is_empty()
+            || components.len().saturating_sub(1) > max_depth
+            || components.iter().any(|component| !is_single_normal_component(component))
+            || relative_path == Path::new(".friday-runtime-owner.json")
+            || contents.len() as u64 > max_file_bytes
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime staging contains an unsafe path or oversized artifact"));
+        }
+        let key = components.iter()
+            .map(|component| component.to_string_lossy().to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("\\");
+        if !seen.insert(key) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime staging contains duplicate case-insensitive paths"));
+        }
+        total = total.checked_add(contents.len() as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "runtime staging byte count overflowed"))?;
+        if total > max_total_bytes {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime staging exceeds its aggregate size limit"));
+        }
+    }
+
+    // Exclusive creation means an existing or attacker-planted destination
+    // is never adopted, merged with, or overwritten.
+    let staging_root = create_destination_entry(parent, staging_name, true)?;
+    for (relative_path, contents) in files {
+        let components: Vec<&OsStr> = relative_path.components().filter_map(|component| {
+            if let Component::Normal(name) = component { Some(name) } else { None }
+        }).collect();
+        let mut destination_parent = staging_root.try_clone()?;
+        for component in &components[..components.len() - 1] {
+            let next = match open_dir_nofollow(&destination_parent, Path::new(component)) {
+                Ok(directory) => directory,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    create_destination_entry(&destination_parent, component, true)?
+                }
+                Err(error) => return Err(error),
+            };
+            destination_parent = next;
+        }
+        let mut output = create_destination_entry(
+            &destination_parent,
+            components[components.len() - 1],
+            false,
+        )?;
+        output.write_all(contents)?;
+        output.sync_all()?;
+    }
+
+    // This marker is the final write. Its presence attests only that bounded
+    // staging completed; callers must still authenticate and hash every file.
+    let mut marker = create_destination_entry(
+        &staging_root,
+        OsStr::new(".friday-runtime-owner.json"),
+        false,
+    )?;
+    marker.write_all(owner_marker)?;
+    marker.sync_all()?;
+    Ok(())
+}
+
 /// Materialize bounded in-memory source bytes below a held private workspace.
 /// The ownership marker is written last, so interrupted creation is never
 /// falsely advertised as a complete, cleanup-authorized snapshot.
@@ -3763,6 +3868,99 @@ mod tests {
         assert!(result.is_err());
         assert!(fs::read_dir(&workspace_path).unwrap().next().is_none());
         fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn runtime_staging_materializes_exact_nested_tree_and_writes_marker_last() {
+        let root_path = make_test_directory("runtime-stage-success");
+        let parent = open_verified_root_directory(&root_path).unwrap();
+        let files = vec![
+            (PathBuf::from("bin/cargo.exe"), b"cargo-bytes".to_vec()),
+            (PathBuf::from("lib/rustlib/manifest"), b"rustlib".to_vec()),
+        ];
+        let marker = br#"{"schemaVersion":1,"bundleId":"fixture"}"#;
+        create_bounded_runtime_destination(
+            &parent, OsStr::new(".friday-fixture.staging"), &files, marker,
+            8, 1024, 4096, 8,
+        ).unwrap();
+
+        let stage_path = root_path.join(".friday-fixture.staging");
+        let stage = open_verified_root_directory(&stage_path).unwrap();
+        let (actual_files, actual_dirs) =
+            collect_runtime_tree_inventory(&stage, 8, 16).unwrap();
+        assert_eq!(actual_files.len(), 3);
+        assert!(actual_files.iter().any(|path| path == "bin\\cargo.exe"));
+        assert!(actual_files.iter().any(|path| path == "lib\\rustlib\\manifest"));
+        assert!(actual_files.iter().any(|path| path == ".friday-runtime-owner.json"));
+        assert!(actual_dirs.iter().any(|path| path == "lib\\rustlib"));
+        assert_eq!(
+            read_bounded_relative_file(&stage, ".friday-runtime-owner.json", 1024).unwrap(),
+            marker,
+        );
+        assert_eq!(
+            read_bounded_relative_file(&stage, "bin\\cargo.exe", 1024).unwrap(),
+            b"cargo-bytes",
+        );
+        drop(stage);
+        drop(parent);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn runtime_staging_rejects_traversal_duplicates_and_existing_destinations() {
+        let root_path = make_test_directory("runtime-stage-rejections");
+        let parent = open_verified_root_directory(&root_path);
+        let marker = b"owner";
+        let traversal = vec![(PathBuf::from("../escape.bin"), b"bad".to_vec())];
+        assert!(create_bounded_runtime_destination(
+            &parent.as_ref().unwrap(), OsStr::new(".friday-bad.staging"), &traversal,
+            marker, 8, 1024, 4096, 8,
+        ).is_err());
+        assert!(!root_path.join(".friday-bad.staging").exists());
+        assert!(!root_path.join("escape.bin").exists());
+
+        let duplicates = vec![
+            (PathBuf::from("Bin/tool.exe"), b"one".to_vec()),
+            (PathBuf::from("bin/TOOL.exe"), b"two".to_vec()),
+        ];
+        assert!(create_bounded_runtime_destination(
+            &parent.as_ref().unwrap(), OsStr::new(".friday-duplicate.staging"), &duplicates,
+            marker, 8, 1024, 4096, 8,
+        ).is_err());
+        assert!(!root_path.join(".friday-duplicate.staging").exists());
+
+        fs::create_dir(root_path.join(".friday-existing.staging")).unwrap();
+        fs::write(root_path.join(".friday-existing.staging").join("keep"), b"preserve").unwrap();
+        let one = vec![(PathBuf::from("tool.exe"), b"new".to_vec())];
+        assert!(create_bounded_runtime_destination(
+            &parent.as_ref().unwrap(), OsStr::new(".friday-existing.staging"), &one,
+            marker, 8, 1024, 4096, 8,
+        ).is_err());
+        assert_eq!(
+            fs::read(root_path.join(".friday-existing.staging").join("keep")).unwrap(),
+            b"preserve",
+        );
+        drop(parent);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn runtime_staging_rejects_size_and_marker_limits_before_creation() {
+        let root_path = make_test_directory("runtime-stage-limits");
+        let parent = open_verified_root_directory(&root_path).unwrap();
+        let files = vec![(PathBuf::from("tool.exe"), b"12345".to_vec())];
+        assert!(create_bounded_runtime_destination(
+            &parent, OsStr::new(".friday-too-large.staging"), &files,
+            b"owner", 8, 4, 4096, 8,
+        ).is_err());
+        assert!(create_bounded_runtime_destination(
+            &parent, OsStr::new(".friday-marker-too-large.staging"), &files,
+            &vec![b'x'; 16 * 1024 + 1], 8, 1024, 4096, 8,
+        ).is_err());
+        assert!(!root_path.join(".friday-too-large.staging").exists());
+        assert!(!root_path.join(".friday-marker-too-large.staging").exists());
+        drop(parent);
+        fs::remove_dir_all(root_path).unwrap();
     }
 
 }
