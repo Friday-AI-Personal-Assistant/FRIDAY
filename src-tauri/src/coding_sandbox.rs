@@ -350,14 +350,16 @@ fn read_verified_guest_result_file(
     expected_snapshot_id: &str,
     expected_operation: GuestRunOperation,
     max_output_bytes: u64,
+    max_duration_ms: u64,
 ) -> Result<GuestRunResult, String> {
     let bytes = crate::coding_sandbox_fs::read_single_bounded_file_from_directory(
         result_directory,
         OsStr::new(GUEST_RESULT_FILE_NAME),
         MAX_GUEST_RESULT_BYTES as u64,
     ).map_err(|_| "The guest result directory or file could not be safely verified and read.".to_string())?;
-    validate_guest_result_json_with_limit(
-        &bytes, expected_run_id, expected_snapshot_id, expected_operation, max_output_bytes,
+    validate_guest_result_json_with_limits(
+        &bytes, expected_run_id, expected_snapshot_id, expected_operation,
+        max_output_bytes, max_duration_ms,
     )
 }
 
@@ -368,8 +370,25 @@ fn validate_guest_result_json_with_limit(
     expected_operation: GuestRunOperation,
     max_output_bytes: u64,
 ) -> Result<GuestRunResult, String> {
+    validate_guest_result_json_with_limits(
+        bytes, expected_run_id, expected_snapshot_id, expected_operation,
+        max_output_bytes, MAX_GUEST_RESULT_DURATION_MS,
+    )
+}
+
+fn validate_guest_result_json_with_limits(
+    bytes: &[u8],
+    expected_run_id: &str,
+    expected_snapshot_id: &str,
+    expected_operation: GuestRunOperation,
+    max_output_bytes: u64,
+    max_duration_ms: u64,
+) -> Result<GuestRunResult, String> {
     if max_output_bytes == 0 || max_output_bytes > MAX_GUEST_REQUEST_OUTPUT_BYTES {
         return Err("The expected guest output limit is outside FRIDAY's policy.".into());
+    }
+    if max_duration_ms == 0 || max_duration_ms > MAX_GUEST_RESULT_DURATION_MS {
+        return Err("The expected guest duration limit is outside FRIDAY's policy.".into());
     }
     if bytes.is_empty() || bytes.len() > MAX_GUEST_RESULT_BYTES {
         return Err("The guest result is empty or exceeds FRIDAY's size limit.".into());
@@ -383,7 +402,7 @@ fn validate_guest_result_json_with_limit(
         || result.run_id != expected_run_id
         || result.snapshot_id != expected_snapshot_id
         || result.operation != expected_operation
-        || result.duration_ms > MAX_GUEST_RESULT_DURATION_MS
+        || result.duration_ms > max_duration_ms
     {
         return Err("The guest result does not match FRIDAY's run contract.".into());
     }
@@ -5471,7 +5490,7 @@ mod tests {
         let run_id = "0123456789abcdef0123456789abcdef";
         fs::write(directory.join(GUEST_RESULT_FILE_NAME), guest_result_json("passed", r#","exitCode":0"#)).unwrap();
         let result = read_verified_guest_result_file(
-            &directory, run_id, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64,
+            &directory, run_id, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64, MAX_GUEST_RESULT_DURATION_MS,
         ).unwrap();
         assert_eq!(result.status, GuestRunStatus::Passed);
         fs::remove_dir_all(directory).unwrap();
@@ -5482,17 +5501,17 @@ mod tests {
         let run_id = "0123456789abcdef0123456789abcdef";
         let directory = make_test_directory("guest-result-invalid");
         assert!(read_verified_guest_result_file(
-            &directory, run_id, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64,
+            &directory, run_id, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64, MAX_GUEST_RESULT_DURATION_MS,
         ).is_err());
         fs::write(directory.join(GUEST_RESULT_FILE_NAME), guest_result_json("passed", r#","exitCode":0"#)).unwrap();
         fs::write(directory.join("unexpected.txt"), b"extra").unwrap();
         assert!(read_verified_guest_result_file(
-            &directory, run_id, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64,
+            &directory, run_id, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64, MAX_GUEST_RESULT_DURATION_MS,
         ).is_err());
         fs::remove_file(directory.join("unexpected.txt")).unwrap();
         fs::write(directory.join(GUEST_RESULT_FILE_NAME), vec![b'x'; MAX_GUEST_RESULT_BYTES + 1]).unwrap();
         assert!(read_verified_guest_result_file(
-            &directory, run_id, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64,
+            &directory, run_id, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64, MAX_GUEST_RESULT_DURATION_MS,
         ).is_err());
         fs::remove_file(directory.join(GUEST_RESULT_FILE_NAME)).unwrap();
         #[cfg(unix)]
@@ -5501,7 +5520,7 @@ mod tests {
             fs::write(&outside, guest_result_json("passed", r#","exitCode":0"#)).unwrap();
             std::os::unix::fs::symlink(&outside, directory.join(GUEST_RESULT_FILE_NAME)).unwrap();
             assert!(read_verified_guest_result_file(
-                &directory, run_id, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64,
+                &directory, run_id, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64, MAX_GUEST_RESULT_DURATION_MS,
             ).is_err());
         }
         fs::remove_dir_all(directory).unwrap();
@@ -5520,7 +5539,7 @@ mod tests {
             "0123456789abcdef0123456789abcdef",
             "abcdef0123456789abcdef0123456789",
             GuestRunOperation::RustCargoTest,
-            MAX_GUEST_RESULT_BYTES as u64,
+            MAX_GUEST_RESULT_BYTES as u64, MAX_GUEST_RESULT_DURATION_MS,
         ).is_err());
         fs::remove_dir_all(directory).unwrap();
     }
@@ -5613,6 +5632,41 @@ mod tests {
         assert!(validate_guest_result_json_with_limit(&bytes, run_id, "abcdef0123456789abcdef0123456789", operation, 0).is_err());
         assert!(validate_guest_result_json_with_limit(
             &bytes, run_id, "abcdef0123456789abcdef0123456789", operation, MAX_GUEST_REQUEST_OUTPUT_BYTES + 1
+        ).is_err());
+    }
+
+    #[test]
+    fn guest_result_enforces_the_exact_per_run_duration_budget() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let snapshot_id = "abcdef0123456789abcdef0123456789";
+        let mut value = serde_json::json!({
+            "schemaVersion": 1,
+            "runId": run_id,
+            "snapshotId": snapshot_id,
+            "operation": "rust-cargo-test",
+            "status": "passed",
+            "exitCode": 0,
+            "stdout": "",
+            "stderr": "",
+            "truncated": false,
+            "durationMs": 250
+        });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(validate_guest_result_json_with_limits(
+            &bytes, run_id, snapshot_id, GuestRunOperation::RustCargoTest, 1024, 250,
+        ).is_ok());
+        assert!(validate_guest_result_json_with_limits(
+            &bytes, run_id, snapshot_id, GuestRunOperation::RustCargoTest, 1024, 249,
+        ).is_err());
+
+        value["durationMs"] = serde_json::json!(1);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(validate_guest_result_json_with_limits(
+            &bytes, run_id, snapshot_id, GuestRunOperation::RustCargoTest, 1024, 0,
+        ).is_err());
+        assert!(validate_guest_result_json_with_limits(
+            &bytes, run_id, snapshot_id, GuestRunOperation::RustCargoTest, 1024,
+            MAX_GUEST_RESULT_DURATION_MS + 1,
         ).is_err());
     }
 

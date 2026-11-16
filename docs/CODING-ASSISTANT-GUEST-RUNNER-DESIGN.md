@@ -2051,3 +2051,19 @@ shared or mounted for execution.
 
 
 The snapshot-binding update carries the required snapshot field through all status/exit-code negative fixtures and the duration-limit fixture, so each test reaches its intended validation branch rather than failing early on a missing field.
+
+
+## Enforce the approved per-run duration in result validation
+
+The host result validator now receives both the approved output-byte budget and
+the approved duration budget from the trusted run context. In addition to the
+global 120-second ceiling, it rejects a guest result whose reported
+`durationMs` exceeds the exact `maxDurationMs` approved for that run. Zero
+or out-of-policy expected duration limits are rejected before parsing can
+authorize a result. The bounded result-file reader carries both per-run limits
+through to the validator. Regression coverage checks the exact duration
+boundary, one millisecond beyond it, and invalid expected limits.
+
+This is an additional consistency check, not a substitute for the host
+watchdog or authoritative elapsed-time measurement. Guest-reported duration
+remains untrusted metadata, and execution remains disabled.
