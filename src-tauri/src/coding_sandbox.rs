@@ -10914,17 +10914,17 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
 
     #[test]
     fn runtime_source_path_normalization_rejects_ambiguous_and_unsafe_names() {
-        assert_eq!(normalize_guest_runtime_source_path(Path::new("bin/cargo.exe")).unwrap(), "bin\\\\cargo.exe");
-        assert_eq!(normalize_guest_runtime_source_path(Path::new("BIN/CARGO.EXE")).unwrap(), "bin\\\\cargo.exe");
+        assert_eq!(normalize_guest_runtime_source_path(Path::new("bin/cargo.exe")).unwrap(), "bin\cargo.exe");
+        assert_eq!(normalize_guest_runtime_source_path(Path::new("BIN/CARGO.EXE")).unwrap(), "bin\cargo.exe");
         for path in [
             "../cargo.exe",
             "bin/../cargo.exe",
             "bin//cargo.exe",
             "/bin/cargo.exe",
             "C:/bin/cargo.exe",
-            "bin\\\\NUL.exe",
+            "bin\\NUL.exe",
             "bin/cargo.exe/",
-            "bin/cargo\\\\other.exe",
+            "bin/cargo\\other.exe",
             "bin/é.exe",
         ] {
             assert!(normalize_guest_runtime_source_path(Path::new(path)).is_err(), "accepted unsafe source path: {path}");
@@ -10937,7 +10937,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert!(normalize_guest_runtime_source_path(Path::new(&component)).is_ok());
         let oversized_component = format!("{}.bin", "a".repeat(MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES));
         assert!(normalize_guest_runtime_source_path(Path::new(&oversized_component)).is_err());
-        let oversized_path = format!("{}\\\\{}", "a".repeat(510), "b".repeat(510));
+        let oversized_path = format!("{}\\{}", "a".repeat(510), "b".repeat(510));
         assert!(normalize_guest_runtime_source_path(Path::new(&oversized_path)).is_err());
     }
 
