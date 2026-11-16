@@ -6432,6 +6432,7 @@ mod tests {
         ).unwrap();
         let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
         let stage_path = plan.staging_root.clone();
+        let staging_name = stage_path.file_name().unwrap();
         let parent = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
         let files = manifest.artifacts.iter().map(|artifact| {
             let bytes = match artifact.relative_path.as_str() {
@@ -6441,11 +6442,11 @@ mod tests {
             (PathBuf::from(artifact.relative_path.replace('\\', "/")), bytes)
         }).collect::<Vec<_>>();
         crate::coding_sandbox_fs::create_bounded_runtime_destination(
-            &parent, std::ffi::OsStr::new(".friday-test-runtime-bundle.staging"),
+            &parent, staging_name,
             &files, &marker, 8, 1024, 4096, 8,
         ).unwrap();
         let stage = crate::coding_sandbox_fs::open_child_directory_nofollow(
-            &parent, std::ffi::OsStr::new(".friday-test-runtime-bundle.staging"),
+            &parent, staging_name,
         ).unwrap();
         let proof = verify_staged_guest_runtime_bundle_with_final_root(
             &stage_path, &stage, &manifest, &anchor, &plan, test_final_root,
@@ -6469,15 +6470,16 @@ mod tests {
             &manifest, &anchor, test_final_root.clone(),
         ).unwrap();
         let stage_path = plan.staging_root.clone();
+        let staging_name = stage_path.file_name().unwrap();
         let parent = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
         let marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
         let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
         crate::coding_sandbox_fs::create_bounded_runtime_destination(
-            &parent, std::ffi::OsStr::new(".friday-test-runtime-bundle.staging"),
+            &parent, staging_name,
             &files, &marker, 8, 1024, 4096, 8,
         ).unwrap();
         let stage = crate::coding_sandbox_fs::open_child_directory_nofollow(
-            &parent, std::ffi::OsStr::new(".friday-test-runtime-bundle.staging"),
+            &parent, staging_name,
         ).unwrap();
         fs::write(stage_path.join(".friday-runtime-owner.json"), b"{\"schemaVersion\":1}").unwrap();
         assert!(verify_staged_guest_runtime_bundle_with_final_root(
