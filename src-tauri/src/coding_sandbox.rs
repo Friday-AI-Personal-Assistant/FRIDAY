@@ -477,7 +477,6 @@ fn verify_staged_guest_runtime_bundle(
     )
 }
 
-#[cfg(test)]
 fn verify_staged_guest_runtime_bundle_with_final_root(
     staging_root_path: &Path,
     staging_root: &File,
