@@ -2033,3 +2033,17 @@ paths, extra arguments, shell fragments, or environment values.
 
 This is a command-contract correction only. The guest runner is not wired,
 and no Sandbox or project test command is launched.
+
+
+## Guest result binds both run and snapshot identity
+
+The version-1 guest result contract now requires `snapshotId` in addition to
+`runId` and the operation. The host-side result reader receives the expected
+snapshot identifier from its trusted execution context and rejects a result
+whose run, snapshot, or operation differs. Regression coverage includes a
+valid matching result and a mismatched snapshot result. This closes an identity
+gap where a result could otherwise be associated with the right run identifier
+but a different workspace snapshot.
+
+This is validation-only: no guest process is launched and no result volume is
+shared or mounted for execution.
