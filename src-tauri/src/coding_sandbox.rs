@@ -241,7 +241,7 @@ fn serialize_guest_runtime_environment_block(
         block.push(0);
     }
     block.push(0);
-    if block.len() < 2 || block.len() > 32_767 || block.iter().any(|unit| *unit == 0 && block.last() != Some(unit)) {
+    if block.len() < 2 || block.len() > 32_767 {
         return Err("The serialized guest environment block is empty or exceeds Windows limits.".into());
     }
     Ok(block)
@@ -5483,7 +5483,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn guest_runtime_environment_block_is_sorted_and_double_nul_terminated() {
         for operation in [
             GuestRunOperation::RustCargoTest,
@@ -5518,6 +5517,7 @@ mod tests {
         assert!(serialize_guest_runtime_environment_block(operation, &plan).is_err());
     }
 
+    #[test]
     fn guest_runtime_environment_validator_rejects_mutations_and_injected_variables() {
         for operation in [
             GuestRunOperation::RustCargoTest,
