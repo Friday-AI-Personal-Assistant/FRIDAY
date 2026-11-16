@@ -151,6 +151,70 @@ fn validate_guest_runtime_launch_plan(
     Ok(())
 }
 
+/// Explicit guest process environment. This is built from fixed image-owned
+/// values only; it must never be merged with the host or project environment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestRuntimeEnvironmentPlan {
+    variables: BTreeMap<String, String>,
+}
+
+const GUEST_WINDOWS_ROOT: &str = r"C:\Windows";
+const GUEST_TEMP_ROOT: &str = r"C:\FRIDAY\Temp";
+const GUEST_RUST_HOME: &str = r"C:\FRIDAY\Toolchains\Rust\CargoHome";
+const GUEST_RUSTUP_HOME: &str = r"C:\FRIDAY\Toolchains\Rust\RustupHome";
+const GUEST_NODE_CACHE: &str = r"C:\FRIDAY\Toolchains\Node\NpmCache";
+const GUEST_PYTHON_HOME: &str = r"C:\FRIDAY\Toolchains\Python";
+
+fn build_guest_runtime_environment_plan(
+    operation: GuestRunOperation,
+) -> GuestRuntimeEnvironmentPlan {
+    let mut variables = BTreeMap::from([
+        ("SystemRoot".into(), GUEST_WINDOWS_ROOT.into()),
+        ("WINDIR".into(), GUEST_WINDOWS_ROOT.into()),
+        ("TEMP".into(), GUEST_TEMP_ROOT.into()),
+        ("TMP".into(), GUEST_TEMP_ROOT.into()),
+        (
+            "PATH".into(),
+            format!(
+                r"C:\FRIDAY\Toolchains\Rust\bin;C:\FRIDAY\Toolchains\Node;C:\FRIDAY\Toolchains\Python;{}\System32",
+                GUEST_WINDOWS_ROOT
+            ),
+        ),
+    ]);
+    match operation {
+        GuestRunOperation::RustCargoTest => {
+            variables.insert("CARGO_HOME".into(), GUEST_RUST_HOME.into());
+            variables.insert("RUSTUP_HOME".into(), GUEST_RUSTUP_HOME.into());
+        }
+        GuestRunOperation::NodeNpmTest => {
+            variables.insert("npm_config_cache".into(), GUEST_NODE_CACHE.into());
+        }
+        GuestRunOperation::PythonUnittest => {
+            variables.insert("PYTHONHOME".into(), GUEST_PYTHON_HOME.into());
+            variables.insert("PYTHONDONTWRITEBYTECODE".into(), "1".into());
+        }
+    }
+    GuestRuntimeEnvironmentPlan { variables }
+}
+
+/// Accepts only the complete fixed environment for this operation. A caller
+/// cannot add variables, alter paths, or smuggle inherited host values in.
+#[allow(dead_code)]
+fn validate_guest_runtime_environment_plan(
+    operation: GuestRunOperation,
+    plan: &GuestRuntimeEnvironmentPlan,
+) -> Result<(), String> {
+    if plan != &build_guest_runtime_environment_plan(operation) {
+        return Err("The guest runtime environment differs from FRIDAY's fixed per-operation policy.".into());
+    }
+    if plan.variables.keys().any(|key| {
+        key.is_empty() || !key.chars().all(|character| character.is_ascii_alphanumeric() || character == '_')
+    }) || plan.variables.values().any(|value| value.contains('\0') || value.contains('\n') || value.contains('\r')) {
+        return Err("The guest runtime environment contains an invalid variable name or value.".into());
+    }
+    Ok(())
+}
+
 /// Immutable, policy-bounded description of one guest test run. It deliberately
 /// contains no executable path, working-directory path, environment, or
 /// caller-supplied arguments; those are resolved only by later trusted stages.
@@ -5359,6 +5423,52 @@ mod tests {
             assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".cmd"));
             assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".bat"));
             assert!(plan.arguments.iter().all(|argument| argument.chars().all(|character| !matches!(character, '&' | '|' | ';' | '\n' | '\r'))));
+        }
+    }
+
+    #[test]
+    fn guest_runtime_environment_is_operation_specific_and_explicit() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let plan = build_guest_runtime_environment_plan(operation);
+            assert!(validate_guest_runtime_environment_plan(operation, &plan).is_ok());
+            assert_eq!(plan.variables.get("SystemRoot").map(String::as_str), Some(GUEST_WINDOWS_ROOT));
+            assert_eq!(plan.variables.get("WINDIR").map(String::as_str), Some(GUEST_WINDOWS_ROOT));
+            assert_eq!(plan.variables.get("TEMP").map(String::as_str), Some(GUEST_TEMP_ROOT));
+            assert_eq!(plan.variables.get("TMP").map(String::as_str), Some(GUEST_TEMP_ROOT));
+            assert!(plan.variables.get("PATH").unwrap().contains(r"C:\Windows\System32"));
+            assert!(!plan.variables.keys().any(|key| key.eq_ignore_ascii_case("USERPROFILE")));
+            assert!(!plan.variables.keys().any(|key| key.eq_ignore_ascii_case("APPDATA")));
+            assert!(!plan.variables.keys().any(|key| key.eq_ignore_ascii_case("COMSPEC")));
+        }
+        assert!(build_guest_runtime_environment_plan(GuestRunOperation::RustCargoTest).variables.contains_key("CARGO_HOME"));
+        assert!(build_guest_runtime_environment_plan(GuestRunOperation::RustCargoTest).variables.contains_key("RUSTUP_HOME"));
+        assert!(build_guest_runtime_environment_plan(GuestRunOperation::NodeNpmTest).variables.contains_key("npm_config_cache"));
+        assert!(build_guest_runtime_environment_plan(GuestRunOperation::PythonUnittest).variables.contains_key("PYTHONHOME"));
+    }
+
+    #[test]
+    fn guest_runtime_environment_validator_rejects_mutations_and_injected_variables() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let trusted = build_guest_runtime_environment_plan(operation);
+            let mut changed_value = trusted.clone();
+            changed_value.variables.insert("PATH".into(), r"C:\Attacker".into());
+            assert!(validate_guest_runtime_environment_plan(operation, &changed_value).is_err());
+
+            let mut injected = trusted.clone();
+            injected.variables.insert("COMSPEC".into(), r"C:\Windows\System32\cmd.exe".into());
+            assert!(validate_guest_runtime_environment_plan(operation, &injected).is_err());
+
+            let mut inherited = trusted.clone();
+            inherited.variables.insert("USERPROFILE".into(), r"C:\Users\Someone".into());
+            assert!(validate_guest_runtime_environment_plan(operation, &inherited).is_err());
         }
     }
 

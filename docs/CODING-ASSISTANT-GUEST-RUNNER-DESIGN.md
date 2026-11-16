@@ -2104,3 +2104,23 @@ final process environment, create a process, or launch Windows Sandbox.
 Integrity-pinned provisioning, environment policy, guest Job Object
 containment, and the complete ownership/approval transaction remain required;
 guest execution remains disabled.
+
+
+## Explicit per-operation guest environment — implemented as an inert plan
+
+The host now defines a fixed environment plan for each supported operation.
+All plans contain only explicit Windows system paths, a dedicated FRIDAY temp
+folder, and a controlled PATH. Rust receives only its fixed Cargo/Rustup home
+locations, Node receives its dedicated npm cache, and Python receives its
+pinned Python home plus bytecode-write suppression. The plan is not merged
+with the host environment, and no project-supplied environment values are
+accepted. A strict validator compares the complete map to the trusted
+operation profile and rejects altered paths, injected variables, and
+host-profile additions. Regression tests cover all three profiles.
+
+These are policy descriptions only. The directories and toolchains are not
+claimed to be provisioned, the environment is not yet passed to a process,
+and no guest command or Sandbox session is launched. A later integration
+must verify each directory's identity and permissions, provision and verify
+the pinned toolchains, and create the process with this exact environment
+rather than inheriting host values. Guest execution remains disabled.
