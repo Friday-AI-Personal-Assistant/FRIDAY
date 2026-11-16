@@ -87,7 +87,7 @@ fn guest_operation_command(operation: GuestRunOperation) -> GuestOperationComman
         },
         GuestRunOperation::NodeNpmTest => GuestOperationCommand {
             program: "npm",
-            arguments: &["test", "--", "--runInBand"],
+            arguments: &["test"],
         },
         GuestRunOperation::PythonUnittest => GuestOperationCommand {
             program: "python",
@@ -5177,7 +5177,7 @@ mod tests {
     fn guest_operation_commands_are_fixed_and_have_no_shell_or_user_arguments() {
         let cases = [
             (GuestRunOperation::RustCargoTest, "cargo", &["test", "--locked", "--offline"][..]),
-            (GuestRunOperation::NodeNpmTest, "npm", &["test", "--", "--runInBand"][..]),
+            (GuestRunOperation::NodeNpmTest, "npm", &["test"][..]),
             (GuestRunOperation::PythonUnittest, "python", &["-m", "unittest", "discover", "-v"][..]),
         ];
         for (operation, expected_program, expected_arguments) in cases {

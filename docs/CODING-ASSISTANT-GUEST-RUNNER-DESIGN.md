@@ -2019,3 +2019,17 @@ run ID, leaving other pending approvals unaffected.
 These tests cover host-memory authorization state only. They do not start
 Windows Sandbox, execute a guest command, or enable guest execution.
 
+
+
+## Portable Node test command contract — regression correction
+
+The allowlisted Node operation now invokes the package's standard `npm test`
+script without appending Jest-specific `--runInBand` arguments. This keeps
+the operation compatible with the test runner selected by the project's own
+package script (including Vitest and other npm-supported runners) and avoids
+FRIDAY imposing an unrelated runner-specific option. The command remains a
+fixed program and argument list; project content cannot supply executable
+paths, extra arguments, shell fragments, or environment values.
+
+This is a command-contract correction only. The guest runner is not wired,
+and no Sandbox or project test command is launched.
