@@ -19,7 +19,7 @@ The host may send only a versioned, bounded JSON request with these fields:
 - `snapshotId`: generated 32-character hexadecimal identifier for a current-session-owned snapshot.
 - `operation`: one enum value from the fixed operation list below.
 - `maxDurationMs`: selected by FRIDAY policy, never by the model; integer from 1 through 120,000 milliseconds.
-- `maxOutputBytes`: selected by FRIDAY policy; integer from 1 byte through 1 MiB for the combined structured result and captured diagnostics.
+- `maxOutputBytes`: selected by FRIDAY policy; integer from 1 byte through 1 MiB for the combined UTF-8 stdout/stderr diagnostics. The complete JSON result document has its own independent 1 MiB cap.
 
 Reject unknown fields, duplicate/invalid identifiers, unsupported schema versions, oversized requests, invalid enum values, and any caller-supplied executable, shell, arguments, environment, path, or network setting. The guest runner derives every path from its fixed installation directory and the validated run identifier.
 
@@ -58,6 +58,7 @@ The guest may write only to a dedicated per-run output location. The result is a
 
 - `schemaVersion`: integer, exactly `1`.
 - `runId`: must exactly match the request.
+- `snapshotId`: must exactly match the trusted snapshot identifier for this run; a result from another snapshot is rejected even when its run ID matches.
 - `operation`: must exactly match the request.
 - `status`: one of `passed`, `failed`, `timed_out`, `cancelled`, `unsupported`, or `runner_error`.
 - `exitCode`: optional signed 32-bit integer; required only for a process that exited normally.
@@ -157,7 +158,7 @@ References:
 
 The Rust host now contains a strict JSON contract validator for a future guest result. It accepts only schema version 1, the fixed operation enum (`rust-cargo-test`, `node-npm-test`, `python-unittest`), the fixed status enum, the expected 32-character run identifier, and the expected operation. Unknown fields and duplicate fields are rejected by the typed deserializer. The complete JSON document is capped at 1 MiB, combined UTF-8 stdout/stderr must also remain within the exact `maxOutputBytes` budget assigned to that run (never above 1 MiB), and reported duration is capped at 120 seconds. The host validator checks the per-run budget rather than relying only on the global ceiling. Status/exit-code combinations are checked so a successful result must report exit code 0, a failed result must report a non-zero exit code, and non-process terminal states must not claim an exit code.
 
-Unit tests cover valid success, malformed JSON, unknown and duplicate fields, run/operation mismatch, inconsistent status/exit codes, excessive output, excessive duration, oversized documents, and invalid expected identifiers.
+Unit tests cover valid success, all six terminal statuses and their exit-code rules, malformed JSON, unknown and duplicate fields, run/snapshot/operation mismatch, inconsistent status/exit codes, exact per-run output budgets (measured in UTF-8 bytes), excessive output, excessive duration, oversized documents, and invalid expected identifiers.
 
 This is deliberately only a pure host-side JSON validator. It is not yet connected to a result directory, safe file opening, a guest process, Windows Sandbox, VHDX storage, or any execution command. The parser does not authenticate guest output; even accepted diagnostics remain untrusted data. All storage, ownership, session, resource, and isolation gates remain outstanding, and execution remains disabled.
 
