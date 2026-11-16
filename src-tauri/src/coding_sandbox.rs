@@ -434,7 +434,10 @@ fn validate_guest_runtime_provisioning_plan_with_final_root(
 fn normalize_guest_runtime_source_path(path: &Path) -> Result<String, String> {
     let raw = path.to_str()
         .ok_or("A runtime source path is not valid UTF-8.")?;
-    let portable = raw.replace('/', "\\");
+    if raw.contains('/') && raw.contains('\\') {
+        return Err("A runtime source path mixes separator styles.".into());
+    }
+    let portable = raw.replace('/', "\\\\");
     if portable.is_empty()
         || portable.len() > MAX_GUEST_RUNTIME_ARTIFACT_PATH_BYTES
         || portable.starts_with('\\')
