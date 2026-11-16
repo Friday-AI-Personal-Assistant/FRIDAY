@@ -749,6 +749,81 @@ fn authorize_verified_guest_runtime_staging_cleanup(
     })
 }
 
+/// An immutable, non-executing deletion order derived from a fresh cleanup
+/// authorization. Payload files are listed first, directories deepest-first,
+/// and the authenticated ownership marker is always the final entry. This
+/// plan is not permission to delete; a future executor must revalidate the
+/// held parent/root identities and exact tree at the mutation boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestRuntimeStagingCleanupPlan {
+    operation: GuestRunOperation,
+    parent_path: PathBuf,
+    parent_identity: (u64, u64),
+    staging_root: PathBuf,
+    root_identity: (u64, u64),
+    bundle_id: String,
+    manifest_sha256: String,
+    payload_files: Vec<String>,
+    directories: Vec<String>,
+    ownership_marker: String,
+}
+
+fn build_guest_runtime_staging_cleanup_plan(
+    authorization: &GuestRuntimeStagingCleanupAuthorization,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+) -> Result<GuestRuntimeStagingCleanupPlan, String> {
+    authenticate_guest_runtime_manifest(anchor.operation, manifest, anchor)?;
+    if authorization.operation != anchor.operation
+        || authorization.parent_path != provisioning.staging_root.parent().unwrap_or(Path::new("")).to_path_buf()
+        || authorization.staging_root != provisioning.staging_root
+        || authorization.bundle_id != anchor.bundle_id
+        || authorization.manifest_sha256 != anchor.manifest_sha256.to_ascii_lowercase()
+        || authorization.artifact_count != manifest.artifacts.len()
+        || authorization.parent_identity == (0, 0)
+        || authorization.root_identity == (0, 0)
+        || authorization.staging_root.parent() != Some(authorization.parent_path.as_path())
+    {
+        return Err("Runtime staging cleanup authorization does not match the authenticated provisioning plan.".into());
+    }
+
+    let mut payload_files = Vec::with_capacity(manifest.artifacts.len());
+    let mut directories = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for artifact in &manifest.artifacts {
+        validate_guest_runtime_relative_path(&artifact.relative_path)?;
+        let normalized = artifact.relative_path.to_ascii_lowercase();
+        if !seen.insert(normalized) {
+            return Err("Runtime cleanup manifest contains colliding artifact paths.".into());
+        }
+        payload_files.push(artifact.relative_path.clone());
+        let components = artifact.relative_path.split('\\').collect::<Vec<_>>();
+        for depth in 1..components.len() {
+            directories.insert(components[..depth].join("\\"));
+        }
+    }
+    payload_files.sort_by_key(|path| path.to_ascii_lowercase());
+    let mut directories = directories.into_iter().collect::<Vec<_>>();
+    directories.sort_by(|left, right| {
+        right.matches('\\').count().cmp(&left.matches('\\').count())
+            .then_with(|| right.to_ascii_lowercase().cmp(&left.to_ascii_lowercase()))
+    });
+
+    Ok(GuestRuntimeStagingCleanupPlan {
+        operation: authorization.operation,
+        parent_path: authorization.parent_path.clone(),
+        parent_identity: authorization.parent_identity,
+        staging_root: authorization.staging_root.clone(),
+        root_identity: authorization.root_identity,
+        bundle_id: authorization.bundle_id.clone(),
+        manifest_sha256: authorization.manifest_sha256.clone(),
+        payload_files,
+        directories,
+        ownership_marker: ".friday-runtime-owner.json".into(),
+    })
+}
+
 /// A non-executing, no-overwrite publication intent derived only from a
 /// verified staging proof and the authenticated provisioning plan. This is
 /// not a filesystem rename and does not make the staged bundle executable.
@@ -7327,6 +7402,44 @@ mod tests {
         assert!(authorize_verified_guest_runtime_staging_cleanup(
             &staging, &root, &parent, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
         ).is_err(), "changed payload must not receive cleanup authorization");
+
+        drop(staging_handle);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_staging_cleanup_plan_is_exact_ordered_and_marker_last() {
+        let (root, parent, manifest, anchor, plan, staging, staging_handle) =
+            runtime_cleanup_test_fixture("cleanup-plan-order");
+        let authorization = authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &plan.staging_root, &staging_handle,
+            &manifest, &anchor, &plan,
+        ).unwrap();
+        let cleanup = build_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan,
+        ).unwrap();
+        assert_eq!(cleanup.operation, anchor.operation);
+        assert_eq!(cleanup.parent_identity, authorization.parent_identity);
+        assert_eq!(cleanup.root_identity, staging.root_identity);
+        assert_eq!(cleanup.payload_files.len(), manifest.artifacts.len());
+        assert_eq!(cleanup.ownership_marker, ".friday-runtime-owner.json");
+        assert!(cleanup.payload_files.iter().all(|path| !path.starts_with('.')));
+        assert!(cleanup.directories.iter().all(|path| !path.is_empty()));
+        for pair in cleanup.directories.windows(2) {
+            assert!(pair[0].matches('\\').count() >= pair[1].matches('\\').count());
+        }
+
+        let mut substituted = authorization.clone();
+        substituted.parent_identity.1 ^= 1;
+        assert!(build_guest_runtime_staging_cleanup_plan(
+            &substituted, &manifest, &anchor, &plan,
+        ).is_err());
+        let mut altered = manifest.clone();
+        altered.artifacts[0].relative_path = "../outside".into();
+        assert!(build_guest_runtime_staging_cleanup_plan(
+            &authorization, &altered, &anchor, &plan,
+        ).is_err());
 
         drop(staging_handle);
         drop(parent);
