@@ -5351,7 +5351,7 @@ mod tests {
     #[test]
     fn node_runtime_profile_never_invokes_a_command_script() {
         let plan = build_guest_runtime_launch_plan(GuestRunOperation::NodeNpmTest);
-        assert!(plan.program.ends_with("node.exe"));
+        assert!(plan.program.to_string_lossy().ends_with("node.exe"));
         assert_eq!(plan.arguments.len(), 2);
         assert!(plan.arguments[0].ends_with(r"npm-cli.js"));
         assert_eq!(plan.arguments[1], "test");
