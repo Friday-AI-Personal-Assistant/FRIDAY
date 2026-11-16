@@ -434,15 +434,15 @@ fn validate_guest_runtime_provisioning_plan_with_final_root(
 fn normalize_guest_runtime_source_path(path: &Path) -> Result<String, String> {
     let raw = path.to_str()
         .ok_or("A runtime source path is not valid UTF-8.")?;
-    let portable = raw.replace('/', "\\\\");
+    let portable = raw.replace('/', "\\");
     if portable.is_empty()
         || portable.len() > MAX_GUEST_RUNTIME_ARTIFACT_PATH_BYTES
-        || portable.starts_with('\\\\')
-        || portable.ends_with('\\\\')
+        || portable.starts_with('\\')
+        || portable.ends_with('\\')
     {
         return Err("A runtime source path is empty, rooted, or exceeds FRIDAY's path limit.".into());
     }
-    let components = portable.split('\\\\').collect::<Vec<_>>();
+    let components = portable.split('\\').collect::<Vec<_>>();
     if components.is_empty() || components.len() > 32 || components.iter().any(|part| {
         part.is_empty()
             || part.len() > MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES
@@ -453,7 +453,7 @@ fn normalize_guest_runtime_source_path(path: &Path) -> Result<String, String> {
     }) {
         return Err("A runtime source path contains an unsafe or non-portable component.".into());
     }
-    Ok(components.join("\\\\").to_ascii_lowercase())
+    Ok(components.join("\\").to_ascii_lowercase())
 }
 
 /// Materialize a complete runtime bundle only from bytes whose exact paths and
@@ -506,7 +506,7 @@ fn provision_authenticated_guest_runtime_bundle_from_bytes(
             .ok_or("A required authenticated runtime artifact is missing from the source set.")?;
         verify_guest_runtime_artifact_bytes(artifact, bytes)?;
         materialized.push((
-            PathBuf::from(artifact.relative_path.replace('\\\\', "/")),
+            PathBuf::from(artifact.relative_path.replace('\\', "/")),
             bytes.to_vec(),
         ));
     }
