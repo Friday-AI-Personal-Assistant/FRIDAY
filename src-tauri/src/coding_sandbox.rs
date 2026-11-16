@@ -456,6 +456,7 @@ fn build_guest_runtime_staging_owner_marker(
 /// executable-bundle proof. It cannot authorize a runtime launch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct VerifiedGuestRuntimeStaging {
+    operation: GuestRunOperation,
     staging_root: PathBuf,
     root_identity: (u64, u64),
     bundle_id: String,
@@ -544,12 +545,93 @@ fn verify_staged_guest_runtime_bundle_with_final_root(
     }
 
     Ok(VerifiedGuestRuntimeStaging {
+        operation: anchor.operation,
         staging_root: staging_root_path.to_path_buf(),
         root_identity,
         bundle_id: anchor.bundle_id.clone(),
         manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
         artifact_count: manifest.artifacts.len(),
     })
+}
+
+/// A non-executing, no-overwrite publication intent derived only from a
+/// verified staging proof and the authenticated provisioning plan. This is
+/// not a filesystem rename and does not make the staged bundle executable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestRuntimePublicationPlan {
+    operation: GuestRunOperation,
+    bundle_id: String,
+    manifest_sha256: String,
+    artifact_count: usize,
+    staging_root: PathBuf,
+    staging_root_identity: (u64, u64),
+    final_root: PathBuf,
+}
+
+#[allow(dead_code)]
+fn build_guest_runtime_publication_plan(
+    staging: &VerifiedGuestRuntimeStaging,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+) -> Result<GuestRuntimePublicationPlan, String> {
+    build_guest_runtime_publication_plan_with_final_root(
+        staging, manifest, anchor, provisioning,
+        PathBuf::from(fixed_guest_runtime_root(anchor.operation)),
+    )
+}
+
+fn build_guest_runtime_publication_plan_with_final_root(
+    staging: &VerifiedGuestRuntimeStaging,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+    final_root: PathBuf,
+) -> Result<GuestRuntimePublicationPlan, String> {
+    validate_guest_runtime_provisioning_plan_with_final_root(
+        manifest, anchor, provisioning, final_root.clone(),
+    )?;
+    authenticate_guest_runtime_manifest(anchor.operation, manifest, anchor)?;
+    if staging.operation != anchor.operation
+        || staging.staging_root != provisioning.staging_root
+        || staging.bundle_id != anchor.bundle_id
+        || staging.manifest_sha256 != anchor.manifest_sha256.to_ascii_lowercase()
+        || staging.artifact_count != manifest.artifacts.len()
+        || staging.root_identity == (0, 0)
+    {
+        return Err("The verified staging proof does not match the authenticated publication plan.".into());
+    }
+    if staging.staging_root == final_root
+        || staging.staging_root.parent() != final_root.parent()
+    {
+        return Err("Runtime publication must remain within the planned same-volume parent.".into());
+    }
+    Ok(GuestRuntimePublicationPlan {
+        operation: anchor.operation,
+        bundle_id: anchor.bundle_id.clone(),
+        manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+        artifact_count: manifest.artifacts.len(),
+        staging_root: staging.staging_root.clone(),
+        staging_root_identity: staging.root_identity,
+        final_root,
+    })
+}
+
+/// Rebuild the exact intent from the authenticated inputs and private staging
+/// proof. A modified destination, identity, or bundle binding is rejected.
+#[allow(dead_code)]
+fn validate_guest_runtime_publication_plan(
+    staging: &VerifiedGuestRuntimeStaging,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+    publication: &GuestRuntimePublicationPlan,
+) -> Result<(), String> {
+    let expected = build_guest_runtime_publication_plan(staging, manifest, anchor, provisioning)?;
+    if publication != &expected {
+        return Err("The runtime publication plan differs from FRIDAY's verified staging authorization.".into());
+    }
+    Ok(())
 }
 
 /// Evidence that a specific build-pinned runtime manifest authenticated and
