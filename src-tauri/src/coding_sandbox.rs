@@ -451,12 +451,12 @@ fn provision_authenticated_guest_runtime_bundle_from_bytes(
     let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(parent_path, parent_handle)
         .map_err(|_| "The runtime staging parent identity could not be verified.".to_string())?;
 
-    let mut supplied = std::collections::BTreeMap::<String, &Vec<u8>>::new();
+    let mut supplied = std::collections::BTreeMap::<String, Vec<u8>>::new();
     for (path, bytes) in source_files {
-        let portable = path.to_string_lossy().replace('/', "\\\\").to_ascii_lowercase();
+        let portable = path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
         if path.is_absolute()
             || path.components().any(|component| !matches!(component, Component::Normal(_)))
-            || supplied.insert(portable, bytes).is_some()
+            || supplied.insert(portable, bytes.clone()).is_some()
         {
             return Err("The runtime source set contains an unsafe or duplicate artifact path.".into());
         }
@@ -468,15 +468,15 @@ fn provision_authenticated_guest_runtime_bundle_from_bytes(
         let key = artifact.relative_path.to_ascii_lowercase();
         let bytes = supplied.get(&key)
             .ok_or("A required authenticated runtime artifact is missing from the source set.")?;
-        verify_guest_runtime_artifact_bytes(artifact, bytes)?;
+        verify_guest_runtime_artifact_bytes(artifact, bytes.as_slice())?
         actual_total = actual_total.checked_add(bytes.len() as u64)
             .ok_or("The runtime source byte count overflowed.")?;
         if actual_total > plan.declared_max_bytes {
             return Err("The runtime source set exceeds its authenticated aggregate size bound.".into());
         }
         materialized.push((
-            PathBuf::from(artifact.relative_path.replace('\\\\', "/")),
-            (*bytes).clone(),
+            PathBuf::from(artifact.relative_path.replace('\\', "/")),
+            bytes.clone(),
         ));
     }
     if supplied.len() != materialized.len() {
