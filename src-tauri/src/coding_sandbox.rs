@@ -673,6 +673,70 @@ fn verify_staged_guest_runtime_bundle_with_final_root(
     })
 }
 
+/// A narrowly scoped cleanup authorization for a fully verified staging
+/// directory. This is only a capability/preflight result: it performs no
+/// deletion. Incomplete, unmarked, modified, or identity-substituted staging
+/// trees cannot obtain it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestRuntimeStagingCleanupAuthorization {
+    operation: GuestRunOperation,
+    staging_root: PathBuf,
+    root_identity: (u64, u64),
+    bundle_id: String,
+    manifest_sha256: String,
+    artifact_count: usize,
+}
+
+fn authorize_verified_guest_runtime_staging_cleanup(
+    staging: &VerifiedGuestRuntimeStaging,
+    staging_root_path: &Path,
+    staging_root: &File,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    plan: &GuestRuntimeProvisioningPlan,
+) -> Result<GuestRuntimeStagingCleanupAuthorization, String> {
+    if staging_root_path != plan.staging_root
+        || staging.staging_root != plan.staging_root
+        || staging.operation != anchor.operation
+        || staging.bundle_id != anchor.bundle_id
+        || staging.manifest_sha256 != anchor.manifest_sha256.to_ascii_lowercase()
+        || staging.artifact_count != manifest.artifacts.len()
+        || staging.root_identity == (0, 0)
+    {
+        return Err("Runtime staging cleanup lacks a matching authenticated proof and plan.".into());
+    }
+
+    let current_identity =
+        crate::coding_sandbox_fs::verified_directory_identity(staging_root_path, staging_root)
+            .map_err(|_| "Runtime staging cleanup could not verify the directory identity.".to_string())?;
+    if current_identity != staging.root_identity {
+        return Err("Runtime staging directory identity changed before cleanup authorization.".into());
+    }
+
+    // Re-run the complete marker, inventory, and digest verification at the
+    // cleanup boundary rather than trusting a stale staging proof.
+    let reverified = verify_staged_guest_runtime_bundle_with_final_root(
+        staging_root_path,
+        staging_root,
+        manifest,
+        anchor,
+        plan,
+        plan.final_root.clone(),
+    )?;
+    if reverified != *staging {
+        return Err("Runtime staging contents or identity changed since the original proof.".into());
+    }
+
+    Ok(GuestRuntimeStagingCleanupAuthorization {
+        operation: staging.operation,
+        staging_root: staging.staging_root.clone(),
+        root_identity: staging.root_identity,
+        bundle_id: staging.bundle_id.clone(),
+        manifest_sha256: staging.manifest_sha256.clone(),
+        artifact_count: staging.artifact_count,
+    })
+}
+
 /// A non-executing, no-overwrite publication intent derived only from a
 /// verified staging proof and the authenticated provisioning plan. This is
 /// not a filesystem rename and does not make the staged bundle executable.
@@ -7150,6 +7214,56 @@ mod tests {
         drop(missing_stage);
         drop(missing_parent);
         fs::remove_dir_all(missing_root).unwrap();
+    }
+
+    #[test]
+    fn runtime_staging_cleanup_authorization_requires_fresh_exact_verified_proof() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-cleanup-authorization");
+        let final_root = root.join("published-runtime");
+        let plan = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, final_root.clone(),
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
+        let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &plan, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, plan.staging_root.file_name().unwrap(),
+        ).unwrap();
+
+        let authorization = authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+        ).unwrap();
+        assert_eq!(authorization.operation, operation);
+        assert_eq!(authorization.staging_root, plan.staging_root);
+        assert_eq!(authorization.root_identity, staging.root_identity);
+        assert_eq!(authorization.bundle_id, anchor.bundle_id);
+        assert_eq!(authorization.manifest_sha256, anchor.manifest_sha256);
+        assert_eq!(authorization.artifact_count, manifest.artifacts.len());
+        assert!(plan.staging_root.exists(), "authorization must not itself delete data");
+
+        let mut substituted = staging.clone();
+        substituted.root_identity.1 ^= 1;
+        assert!(authorize_verified_guest_runtime_staging_cleanup(
+            &substituted, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+        ).is_err());
+
+        assert!(authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &root.join("other-staging"), &staging_handle, &manifest, &anchor, &plan,
+        ).is_err());
+
+        fs::write(plan.staging_root.join("bin/cargo.exe"), b"tampered-after-proof").unwrap();
+        assert!(authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+        ).is_err(), "changed payload must not receive cleanup authorization");
+
+        drop(staging_handle);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
