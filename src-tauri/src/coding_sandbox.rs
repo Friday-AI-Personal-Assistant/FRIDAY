@@ -623,6 +623,46 @@ fn validate_verified_guest_runtime_execution_context(
     validate_verified_guest_runtime_bundle_root(proof, root_path, root)
 }
 
+/// A one-use authorization result that binds the user's approved run request
+/// to a verified runtime bundle and a freshly revalidated root identity.
+/// This value is still not a process handle and cannot launch Windows Sandbox.
+#[derive(Debug)]
+struct AuthorizedVerifiedGuestRun {
+    run: GuestRunExecutionPlan,
+    runtime: VerifiedGuestRuntimeExecutionPlan,
+    request_bytes: Vec<u8>,
+}
+
+/// The final host-side authorization gate. All runtime/proof checks happen
+/// before the one-time approval is consumed, so a stale or substituted runtime
+/// cannot burn an otherwise valid approval. No process or Sandbox is created.
+#[allow(dead_code)]
+fn authorize_verified_guest_runtime_execution(
+    approvals: &mut GuestRunApprovalStore,
+    request: GuestRunRequest,
+    token: &str,
+    proof: &VerifiedGuestRuntimeBundle,
+    runtime_plan: &VerifiedGuestRuntimeExecutionPlan,
+    root_path: &Path,
+    root: &File,
+    now: u64,
+) -> Result<AuthorizedVerifiedGuestRun, String> {
+    let run = build_guest_run_execution_plan(request)?;
+    if run.operation != proof.operation || runtime_plan.operation != run.operation {
+        return Err("The approved guest operation does not match the verified runtime operation.".into());
+    }
+    validate_verified_guest_runtime_execution_context(
+        proof, runtime_plan, root_path, root,
+    )?;
+    let request_bytes = serialize_guest_run_execution_request(&run)?;
+    approvals.consume(&run, token, now)?;
+    Ok(AuthorizedVerifiedGuestRun {
+        run,
+        runtime: runtime_plan.clone(),
+        request_bytes,
+    })
+}
+
 /// Validate an image-owned artifact manifest before any future file access.
 /// The manifest must come from FRIDAY's trusted, version-pinned provisioning
 /// metadata; guest, project, and model content must never supply it.
@@ -8880,6 +8920,101 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert_eq!(store.pending_count(), 0);
     }
 
+
+    #[test]
+    fn final_runtime_authorization_rejects_operation_mismatch_without_consuming_approval() {
+        let request = parse_guest_run_request(&valid_guest_request_json()).unwrap();
+        let run = build_guest_run_execution_plan(request).unwrap();
+        let mut approvals = GuestRunApprovalStore::default();
+        let token = approvals.issue(&run, 5_000).unwrap();
+        let proof = runtime_proof_fixture(GuestRunOperation::PythonUnittest);
+        let runtime_plan = build_verified_guest_runtime_execution_plan(&proof).unwrap();
+        let unrelated_path = make_test_directory("runtime-authorization-operation");
+        let file_path = unrelated_path.join("not-a-directory-handle");
+        fs::write(&file_path, b"not a directory").unwrap();
+        let handle = File::open(&file_path).unwrap();
+
+        let result = authorize_verified_guest_runtime_execution(
+            &mut approvals,
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+            &token,
+            &proof,
+            &runtime_plan,
+            &proof.root_path,
+            &handle,
+            5_001,
+        );
+        assert!(result.is_err());
+        assert_eq!(approvals.pending_count(), 1);
+        assert!(approvals.consume(&run, &token, 5_002).is_ok());
+
+        drop(handle);
+        fs::remove_dir_all(unrelated_path).unwrap();
+    }
+
+    #[test]
+    fn final_runtime_authorization_rejects_detached_root_without_consuming_approval() {
+        let request = parse_guest_run_request(&valid_guest_request_json()).unwrap();
+        let run = build_guest_run_execution_plan(request).unwrap();
+        let mut approvals = GuestRunApprovalStore::default();
+        let token = approvals.issue(&run, 6_000).unwrap();
+        let proof = runtime_proof_fixture(run.operation);
+        let runtime_plan = build_verified_guest_runtime_execution_plan(&proof).unwrap();
+        let unrelated_path = make_test_directory("runtime-authorization-root");
+        let file_path = unrelated_path.join("not-a-directory-handle");
+        fs::write(&file_path, b"not a directory").unwrap();
+        let handle = File::open(&file_path).unwrap();
+        let wrong_root = PathBuf::from(r"C:\\FRIDAY\\Toolchains\\Other");
+
+        let result = authorize_verified_guest_runtime_execution(
+            &mut approvals,
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+            &token,
+            &proof,
+            &runtime_plan,
+            &wrong_root,
+            &handle,
+            6_001,
+        );
+        assert!(result.is_err());
+        assert_eq!(approvals.pending_count(), 1);
+        assert!(approvals.consume(&run, &token, 6_002).is_ok());
+
+        drop(handle);
+        fs::remove_dir_all(unrelated_path).unwrap();
+    }
+
+    #[test]
+    fn final_runtime_authorization_rejects_mutated_plan_without_consuming_approval() {
+        let request = parse_guest_run_request(&valid_guest_request_json()).unwrap();
+        let run = build_guest_run_execution_plan(request).unwrap();
+        let mut approvals = GuestRunApprovalStore::default();
+        let token = approvals.issue(&run, 7_000).unwrap();
+        let proof = runtime_proof_fixture(run.operation);
+        let mut runtime_plan = build_verified_guest_runtime_execution_plan(&proof).unwrap();
+        runtime_plan.launch.arguments.push("unapproved".into());
+        let unrelated_path = make_test_directory("runtime-authorization-plan");
+        let file_path = unrelated_path.join("not-a-directory-handle");
+        fs::write(&file_path, b"not a directory").unwrap();
+        let handle = File::open(&file_path).unwrap();
+
+        let result = authorize_verified_guest_runtime_execution(
+            &mut approvals,
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+            &token,
+            &proof,
+            &runtime_plan,
+            &proof.root_path,
+            &handle,
+            7_001,
+        );
+        assert!(result.is_err());
+        assert_eq!(approvals.pending_count(), 1);
+        assert!(approvals.consume(&run, &token, 7_002).is_ok());
+
+        drop(handle);
+        fs::remove_dir_all(unrelated_path).unwrap();
+    }
 
     fn runtime_proof_fixture(operation: GuestRunOperation) -> VerifiedGuestRuntimeBundle {
         VerifiedGuestRuntimeBundle {
