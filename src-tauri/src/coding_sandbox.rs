@@ -7447,10 +7447,20 @@ mod tests {
             assert!(pair[0].matches('\\').count() >= pair[1].matches('\\').count());
         }
 
+        // The cleanup authorization is a private capability produced only
+        // after the parent handle identity has been revalidated. The pure plan
+        // builder consumes that capability; it cannot independently compare a
+        // nonzero identity without the original handle. It must still reject
+        // missing identity data.
         let mut substituted = authorization.clone();
-        substituted.parent_identity.1 ^= 1;
+        substituted.parent_identity = (0, 0);
         assert!(build_guest_runtime_staging_cleanup_plan(
             &substituted, &manifest, &anchor, &plan,
+        ).is_err());
+        let mut missing_root_identity = authorization.clone();
+        missing_root_identity.root_identity = (0, 0);
+        assert!(build_guest_runtime_staging_cleanup_plan(
+            &missing_root_identity, &manifest, &anchor, &plan,
         ).is_err());
         let mut altered = manifest.clone();
         altered.artifacts[0].relative_path = "../outside".into();
