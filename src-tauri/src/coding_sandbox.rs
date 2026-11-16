@@ -428,6 +428,34 @@ fn validate_guest_runtime_provisioning_plan_with_final_root(
 }
 
 
+/// Convert a caller-supplied source path into the single portable identity
+/// used by the Windows runtime manifest. Reject lossy, non-ASCII, ambiguous,
+/// traversal, reserved-device, and overlong paths before retaining any bytes.
+fn normalize_guest_runtime_source_path(path: &Path) -> Result<String, String> {
+    let raw = path.to_str()
+        .ok_or("A runtime source path is not valid UTF-8.")?;
+    let portable = raw.replace('/', "\\\\");
+    if portable.is_empty()
+        || portable.len() > MAX_GUEST_RUNTIME_ARTIFACT_PATH_BYTES
+        || portable.starts_with('\\\\')
+        || portable.ends_with('\\\\')
+    {
+        return Err("A runtime source path is empty, rooted, or exceeds FRIDAY's path limit.".into());
+    }
+    let components = portable.split('\\\\').collect::<Vec<_>>();
+    if components.is_empty() || components.len() > 32 || components.iter().any(|part| {
+        part.is_empty()
+            || part.len() > MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES
+            || *part == "."
+            || *part == ".."
+            || is_reserved_windows_runtime_component(part)
+            || !part.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    }) {
+        return Err("A runtime source path contains an unsafe or non-portable component.".into());
+    }
+    Ok(components.join("\\\\").to_ascii_lowercase())
+}
+
 /// Materialize a complete runtime bundle only from bytes whose exact paths and
 /// SHA-256 digests are authenticated by FRIDAY's immutable manifest anchor.
 /// The staging marker is written last by the filesystem helper; the returned
@@ -451,36 +479,36 @@ fn provision_authenticated_guest_runtime_bundle_from_bytes(
     let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(parent_path, parent_handle)
         .map_err(|_| "The runtime staging parent identity could not be verified.".to_string())?;
 
-    let mut supplied = std::collections::BTreeMap::<String, Vec<u8>>::new();
-    for (path, bytes) in source_files {
-        let portable = path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
-        if path.is_absolute()
-            || path.components().any(|component| !matches!(component, Component::Normal(_)))
-            || supplied.insert(portable, bytes.clone()).is_some()
-        {
-            return Err("The runtime source set contains an unsafe or duplicate artifact path.".into());
-        }
-    }
-
-    let mut materialized = Vec::with_capacity(manifest.artifacts.len());
+    // Keep references to caller-owned buffers until every path, digest, and
+    // aggregate bound has been checked. This avoids cloning untrusted payloads
+    // before the exact manifest closure is established.
+    let mut supplied = std::collections::BTreeMap::<String, &[u8]>::new();
     let mut actual_total = 0u64;
-    for artifact in &manifest.artifacts {
-        let key = artifact.relative_path.to_ascii_lowercase();
-        let bytes = supplied.get(&key)
-            .ok_or("A required authenticated runtime artifact is missing from the source set.")?;
-        verify_guest_runtime_artifact_bytes(artifact, bytes.as_slice())?;
+    for (path, bytes) in source_files {
+        let key = normalize_guest_runtime_source_path(path)?;
+        if supplied.insert(key, bytes.as_slice()).is_some() {
+            return Err("The runtime source set contains duplicate case-insensitive artifact paths.".into());
+        }
         actual_total = actual_total.checked_add(bytes.len() as u64)
             .ok_or("The runtime source byte count overflowed.")?;
         if actual_total > plan.declared_max_bytes {
             return Err("The runtime source set exceeds its authenticated aggregate size bound.".into());
         }
-        materialized.push((
-            PathBuf::from(artifact.relative_path.replace('\\', "/")),
-            bytes.clone(),
-        ));
     }
-    if supplied.len() != materialized.len() {
-        return Err("The runtime source set contains unlisted artifacts.".into());
+    if supplied.len() != manifest.artifacts.len() {
+        return Err("The runtime source set is missing or contains unlisted artifacts.".into());
+    }
+
+    let mut materialized = Vec::with_capacity(manifest.artifacts.len());
+    for artifact in &manifest.artifacts {
+        let key = artifact.relative_path.to_ascii_lowercase();
+        let bytes = supplied.get(&key)
+            .ok_or("A required authenticated runtime artifact is missing from the source set.")?;
+        verify_guest_runtime_artifact_bytes(artifact, bytes)?;
+        materialized.push((
+            PathBuf::from(artifact.relative_path.replace('\\\\', "/")),
+            bytes.to_vec(),
+        ));
     }
 
     let marker = build_guest_runtime_staging_owner_marker(manifest, anchor)?;
@@ -10882,6 +10910,35 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
 
         drop(parent);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_source_path_normalization_rejects_ambiguous_and_unsafe_names() {
+        assert_eq!(normalize_guest_runtime_source_path(Path::new("bin/cargo.exe")).unwrap(), "bin\\\\cargo.exe");
+        assert_eq!(normalize_guest_runtime_source_path(Path::new("BIN/CARGO.EXE")).unwrap(), "bin\\\\cargo.exe");
+        for path in [
+            "../cargo.exe",
+            "bin/../cargo.exe",
+            "bin//cargo.exe",
+            "/bin/cargo.exe",
+            "C:/bin/cargo.exe",
+            "bin\\\\NUL.exe",
+            "bin/cargo.exe/",
+            "bin/cargo\\\\other.exe",
+            "bin/é.exe",
+        ] {
+            assert!(normalize_guest_runtime_source_path(Path::new(path)).is_err(), "accepted unsafe source path: {path}");
+        }
+    }
+
+    #[test]
+    fn runtime_source_path_normalization_enforces_path_and_component_limits() {
+        let component = format!("{}.bin", "a".repeat(MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES - 4));
+        assert!(normalize_guest_runtime_source_path(Path::new(&component)).is_ok());
+        let oversized_component = format!("{}.bin", "a".repeat(MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES));
+        assert!(normalize_guest_runtime_source_path(Path::new(&oversized_component)).is_err());
+        let oversized_path = format!("{}\\\\{}", "a".repeat(510), "b".repeat(510));
+        assert!(normalize_guest_runtime_source_path(Path::new(&oversized_path)).is_err());
     }
 
     #[test]
