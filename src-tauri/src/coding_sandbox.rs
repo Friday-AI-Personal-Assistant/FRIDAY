@@ -10914,8 +10914,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
 
     #[test]
     fn runtime_source_path_normalization_rejects_ambiguous_and_unsafe_names() {
-        assert_eq!(normalize_guest_runtime_source_path(Path::new("bin/cargo.exe")).unwrap(), "bin\cargo.exe");
-        assert_eq!(normalize_guest_runtime_source_path(Path::new("BIN/CARGO.EXE")).unwrap(), "bin\cargo.exe");
+        assert_eq!(normalize_guest_runtime_source_path(Path::new("bin/cargo.exe")).unwrap(), r"bin\cargo.exe");
+        assert_eq!(normalize_guest_runtime_source_path(Path::new("BIN/CARGO.EXE")).unwrap(), r"bin\cargo.exe");
         for path in [
             "../cargo.exe",
             "bin/../cargo.exe",
