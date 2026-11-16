@@ -215,6 +215,38 @@ fn validate_guest_runtime_environment_plan(
     Ok(())
 }
 
+/// Serializes the exact trusted environment into a Windows UTF-16 environment
+/// block. Entries are sorted case-insensitively as required by CreateProcessW;
+/// the block is double-NUL terminated and never inherits host variables.
+#[allow(dead_code)]
+fn serialize_guest_runtime_environment_block(
+    operation: GuestRunOperation,
+    plan: &GuestRuntimeEnvironmentPlan,
+) -> Result<Vec<u16>, String> {
+    validate_guest_runtime_environment_plan(operation, plan)?;
+    let mut entries = plan.variables.iter().collect::<Vec<_>>();
+    entries.sort_by(|(left, _), (right, _)| {
+        left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase())
+    });
+    for pair in entries.windows(2) {
+        if pair[0].0.eq_ignore_ascii_case(pair[1].0) {
+            return Err("The guest environment contains duplicate case-insensitive variable names.".into());
+        }
+    }
+
+    let mut block = Vec::new();
+    for (key, value) in entries {
+        let entry = format!("{key}={value}");
+        block.extend(entry.encode_utf16());
+        block.push(0);
+    }
+    block.push(0);
+    if block.len() < 2 || block.len() > 32_767 || block.iter().any(|unit| *unit == 0 && block.last() != Some(unit)) {
+        return Err("The serialized guest environment block is empty or exceeds Windows limits.".into());
+    }
+    Ok(block)
+}
+
 /// Immutable, policy-bounded description of one guest test run. It deliberately
 /// contains no executable path, working-directory path, environment, or
 /// caller-supplied arguments; those are resolved only by later trusted stages.
@@ -5451,6 +5483,41 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn guest_runtime_environment_block_is_sorted_and_double_nul_terminated() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let plan = build_guest_runtime_environment_plan(operation);
+            let block = serialize_guest_runtime_environment_block(operation, &plan).unwrap();
+            assert!(block.len() >= 2);
+            assert_eq!(&block[block.len() - 2..], &[0, 0]);
+            let entries = String::from_utf16(&block[..block.len() - 1]).unwrap();
+            let names = entries.split('\0').filter_map(|entry| entry.split_once('=').map(|(name, _)| name))
+                .collect::<Vec<_>>();
+            let mut sorted = names.clone();
+            sorted.sort_by_key(|name| name.to_ascii_lowercase());
+            assert_eq!(names, sorted);
+            assert!(!entries.contains("USERPROFILE="));
+            assert!(!entries.contains("APPDATA="));
+            assert!(!entries.contains("COMSPEC="));
+        }
+    }
+
+    #[test]
+    fn guest_runtime_environment_block_rejects_non_profile_values() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        let mut plan = build_guest_runtime_environment_plan(operation);
+        plan.variables.insert("COMSPEC".into(), r"C:\Windows\System32\cmd.exe".into());
+        assert!(serialize_guest_runtime_environment_block(operation, &plan).is_err());
+
+        let mut plan = build_guest_runtime_environment_plan(operation);
+        plan.variables.insert("PATH".into(), "C:\\Injected".into());
+        assert!(serialize_guest_runtime_environment_block(operation, &plan).is_err());
+    }
+
     fn guest_runtime_environment_validator_rejects_mutations_and_injected_variables() {
         for operation in [
             GuestRunOperation::RustCargoTest,
