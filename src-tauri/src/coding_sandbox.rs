@@ -250,6 +250,8 @@ fn serialize_guest_runtime_environment_block(
 const MAX_GUEST_RUNTIME_MANIFEST_ENTRIES: usize = 256;
 const MAX_GUEST_RUNTIME_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_GUEST_RUNTIME_MANIFEST_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES: usize = 255;
+const MAX_GUEST_RUNTIME_ARTIFACT_PATH_BYTES: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct GuestRuntimeArtifactSpec {
@@ -1314,11 +1316,13 @@ fn validate_guest_runtime_artifact_manifest(
             paths.contains(&components[..index].join("\\").to_ascii_lowercase())
         }) || paths.iter().any(|existing| existing.starts_with(&(normalized_path.clone() + "\\")));
         if path.is_empty()
+            || path.len() > MAX_GUEST_RUNTIME_ARTIFACT_PATH_BYTES
             || path.starts_with('\\')
             || path.contains('/')
             || path.contains(':')
             || components.iter().any(|part| {
                 part.is_empty()
+                    || part.len() > MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES
                     || *part == "."
                     || *part == ".."
                     || is_reserved_windows_runtime_component(part)
@@ -7152,6 +7156,37 @@ mod tests {
             ));
         }
         assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_ok());
+    }
+
+    #[test]
+    fn guest_runtime_artifact_manifest_enforces_windows_path_component_and_total_path_limits() {
+        let operation = GuestRunOperation::NodeNpmTest;
+
+        let mut oversized_component = test_runtime_manifest(operation);
+        oversized_component.artifacts.push(test_runtime_artifact(
+            &format!(r"tools\\{}", "a".repeat(MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES + 1)),
+            b"oversized component",
+        ));
+        assert!(validate_guest_runtime_artifact_manifest(operation, &oversized_component).is_err());
+
+        let mut maximum_component = test_runtime_manifest(operation);
+        maximum_component.artifacts.push(test_runtime_artifact(
+            &format!(r"tools\\{}", "a".repeat(MAX_GUEST_RUNTIME_ARTIFACT_COMPONENT_BYTES)),
+            b"maximum component",
+        ));
+        assert!(validate_guest_runtime_artifact_manifest(operation, &maximum_component).is_ok());
+
+        let mut oversized_path = test_runtime_manifest(operation);
+        let long_path = vec!["a".repeat(205); 5].join(r"\\");
+        assert!(long_path.len() > MAX_GUEST_RUNTIME_ARTIFACT_PATH_BYTES);
+        oversized_path.artifacts.push(test_runtime_artifact(&long_path, b"oversized path"));
+        assert!(validate_guest_runtime_artifact_manifest(operation, &oversized_path).is_err());
+
+        let mut maximum_path = test_runtime_manifest(operation);
+        let bounded_path = vec!["a".repeat(255); 4].join(r"\\");
+        assert!(bounded_path.len() <= MAX_GUEST_RUNTIME_ARTIFACT_PATH_BYTES);
+        maximum_path.artifacts.push(test_runtime_artifact(&bounded_path, b"bounded path"));
+        assert!(validate_guest_runtime_artifact_manifest(operation, &maximum_path).is_ok());
     }
 
     #[test]
