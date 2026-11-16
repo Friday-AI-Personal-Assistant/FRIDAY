@@ -5341,7 +5341,7 @@ mod tests {
             assert_eq!(plan.program, PathBuf::from(expected_program));
             assert_eq!(plan.arguments, expected_arguments.iter().map(|value| value.to_string()).collect::<Vec<_>>());
             assert_eq!(plan.working_directory, PathBuf::from(GUEST_WORKSPACE_ROOT));
-            assert!(plan.program.to_string_lossy().starts_with("C:\FRIDAY\"));
+            assert!(plan.program.to_string_lossy().starts_with(r"C:\FRIDAY"));
             assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".cmd"));
             assert!(!plan.program.to_string_lossy().to_ascii_lowercase().ends_with(".bat"));
             assert!(plan.arguments.iter().all(|argument| argument.chars().all(|character| !matches!(character, '&' | '|' | ';' | '\n' | '\r'))));
