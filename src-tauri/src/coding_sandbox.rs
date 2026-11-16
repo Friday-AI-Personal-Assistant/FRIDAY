@@ -5087,6 +5087,24 @@ mod tests {
         br#"{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","snapshotId":"abcdef0123456789abcdef0123456789","operation":"rust-cargo-test","maxDurationMs":120000,"maxOutputBytes":1048576}"#.to_vec()
     }
 
+    #[test]
+    fn guest_request_rejects_duplicate_json_fields() {
+        let duplicate = br#"{\"schemaVersion\":1,\"runId\":\"0123456789abcdef0123456789abcdef\",\"snapshotId\":\"abcdef0123456789abcdef0123456789\",\"operation\":\"rust-cargo-test\",\"maxDurationMs\":120000,\"maxDurationMs\":1,\"maxOutputBytes\":1048576}"#;
+        assert!(parse_guest_run_request(duplicate).is_err());
+    }
+
+    #[test]
+    fn guest_result_rejects_duplicate_json_fields() {
+        let duplicate = br#"{\"schemaVersion\":1,\"runId\":\"0123456789abcdef0123456789abcdef\",\"snapshotId\":\"abcdef0123456789abcdef0123456789\",\"operation\":\"rust-cargo-test\",\"status\":\"passed\",\"status\":\"failed\",\"exitCode\":0,\"stdout\":\"ok\",\"stderr\":\"\",\"truncated\":false,\"durationMs\":25}"#;
+        assert!(validate_guest_result_json(
+            duplicate,
+            "0123456789abcdef0123456789abcdef",
+            "abcdef0123456789abcdef0123456789",
+            GuestRunOperation::RustCargoTest,
+        ).is_err());
+    }
+
+
 
     #[test]
     fn gpt_metadata_contains_matching_primary_backup_tables_and_crc_values() {
