@@ -2124,3 +2124,32 @@ and no guest command or Sandbox session is launched. A later integration
 must verify each directory's identity and permissions, provision and verify
 the pinned toolchains, and create the process with this exact environment
 rather than inheriting host values. Guest execution remains disabled.
+
+## Guest runtime artifact manifest and digest policy — implemented as pure validation
+
+The host now defines a bounded artifact-manifest contract for future Rust,
+Node.js, and Python guest runtimes. A manifest is bound to one typed operation,
+has a fixed schema version, is limited to 256 entries and 512 MiB of declared
+aggregate size, and gives every artifact a normalized relative path, a
+64-character SHA-256 digest, and a per-file size ceiling. Duplicate paths are
+rejected case-insensitively; traversal, rooted paths, drive-qualified paths,
+forward-slash alternatives, empty components, invalid digest characters, and
+oversized limits fail closed. The fixed operation entrypoint must be present;
+the Node profile must also include its pinned npm CLI entrypoint.
+
+A separate bounded byte verifier computes SHA-256 and rejects empty, oversized,
+or digest-mismatched artifact bytes. Regression tests cover each operation,
+entrypoint requirements, duplicate/path traversal cases, malformed digests,
+size limits, and tampered content.
+
+This is a pure policy and byte-verification layer only. It does not read files,
+verify a directory tree, provision toolchains, authenticate a manifest, or
+launch a process. The manifest must be supplied by FRIDAY's trusted,
+version-pinned provisioning metadata—not by a project, guest, model, or UI
+request. The future provisioner must authenticate that metadata, enumerate and
+verify the complete runtime dependency closure (including DLLs, scripts,
+standard libraries, and supporting files), then verify files through
+handle-relative no-follow reads before the runtime can be considered ready.
+The current entrypoint checks are not a claim that the complete toolchain has
+been enumerated or verified; guest execution remains disabled.
+
