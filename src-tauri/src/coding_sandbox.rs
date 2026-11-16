@@ -9178,7 +9178,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             GuestRunOperation::NodeNpmTest,
             GuestRunOperation::PythonUnittest,
         ] {
-            let (manifest, anchor) = runtime_manifest_fixture(operation);
+            let manifest = test_runtime_manifest(operation);
+            let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
             let plan = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
             validate_guest_runtime_provisioning_plan(&manifest, &anchor, &plan).unwrap();
             assert_eq!(plan.operation, operation);
@@ -9195,7 +9196,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
     #[test]
     fn runtime_provisioning_plan_rejects_redirected_paths_and_changed_limits() {
         let operation = GuestRunOperation::NodeNpmTest;
-        let (manifest, anchor) = runtime_manifest_fixture(operation);
+        let manifest = test_runtime_manifest(operation);
+            let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
         let plan = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
 
         let mut changed = plan.clone();
@@ -9214,7 +9216,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
     #[test]
     fn runtime_provisioning_plan_rejects_manifest_or_anchor_tampering() {
         let operation = GuestRunOperation::PythonUnittest;
-        let (manifest, anchor) = runtime_manifest_fixture(operation);
+        let manifest = test_runtime_manifest(operation);
+            let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
         let plan = build_guest_runtime_provisioning_plan(&manifest, &anchor).unwrap();
 
         let mut changed_manifest = manifest.clone();
