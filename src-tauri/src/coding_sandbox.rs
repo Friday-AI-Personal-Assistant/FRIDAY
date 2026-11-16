@@ -605,6 +605,24 @@ fn validate_verified_guest_runtime_execution_plan(
     Ok(())
 }
 
+/// Final pure authorization gate for a future runtime consumer. It validates
+/// the complete proof-derived plan and then reopens/rechecks the exact runtime
+/// root identity. Callers must use this immediately before any later handoff;
+/// this function itself never launches a process or starts Windows Sandbox.
+#[allow(dead_code)]
+fn validate_verified_guest_runtime_execution_context(
+    proof: &VerifiedGuestRuntimeBundle,
+    plan: &VerifiedGuestRuntimeExecutionPlan,
+    root_path: &Path,
+    root: &File,
+) -> Result<(), String> {
+    validate_verified_guest_runtime_execution_plan(proof, plan)?;
+    if plan.root_path != root_path || plan.root_identity != proof.root_identity {
+        return Err("The runtime execution plan is detached from the supplied verified root.".into());
+    }
+    validate_verified_guest_runtime_bundle_root(proof, root_path, root)
+}
+
 /// Validate an image-owned artifact manifest before any future file access.
 /// The manifest must come from FRIDAY's trusted, version-pinned provisioning
 /// metadata; guest, project, and model content must never supply it.
@@ -8927,6 +8945,30 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let mut changed_proof = proof.clone();
         changed_proof.root_identity = (9, 9);
         assert!(validate_verified_guest_runtime_execution_plan(&changed_proof, &plan).is_err());
+    }
+
+    #[test]
+    fn verified_runtime_execution_context_rejects_detached_plan_and_root() {
+        let proof = runtime_proof_fixture(GuestRunOperation::RustCargoTest);
+        let plan = build_verified_guest_runtime_execution_plan(&proof).unwrap();
+        let unrelated_path = make_test_directory("runtime-context-unrelated");
+        let unrelated_file_path = unrelated_path.join("not-a-directory-handle");
+        fs::write(&unrelated_file_path, b"not a directory").unwrap();
+        let unrelated_handle = File::open(&unrelated_file_path).unwrap();
+
+        let mut substituted_plan = plan.clone();
+        substituted_plan.root_identity = (9, 9);
+        assert!(validate_verified_guest_runtime_execution_context(
+            &proof, &substituted_plan, &proof.root_path, &unrelated_handle,
+        ).is_err());
+
+        let wrong_path = PathBuf::from(r"C:\FRIDAY\Toolchains\Other");
+        assert!(validate_verified_guest_runtime_execution_context(
+            &proof, &plan, &wrong_path, &unrelated_handle,
+        ).is_err());
+
+        drop(unrelated_handle);
+        fs::remove_dir_all(unrelated_path).unwrap();
     }
 
     #[test]
