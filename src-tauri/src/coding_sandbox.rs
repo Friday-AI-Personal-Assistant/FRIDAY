@@ -7051,6 +7051,51 @@ mod tests {
     }
 
     #[test]
+    fn guest_runtime_artifact_manifest_rejects_file_directory_collisions_in_either_order() {
+        let operation = GuestRunOperation::NodeNpmTest;
+
+        let mut file_then_child = test_runtime_manifest(operation);
+        file_then_child.artifacts = vec![
+            test_runtime_artifact("tools\runtime.exe", b"file"),
+            test_runtime_artifact("tools\runtime.exe\child.dll", b"child"),
+        ];
+        assert!(validate_guest_runtime_artifact_manifest(operation, &file_then_child).is_err());
+
+        let mut child_then_file = test_runtime_manifest(operation);
+        child_then_file.artifacts = vec![
+            test_runtime_artifact("tools\runtime.exe\child.dll", b"child"),
+            test_runtime_artifact("tools\runtime.exe", b"file"),
+        ];
+        assert!(validate_guest_runtime_artifact_manifest(operation, &child_then_file).is_err());
+
+        let mut case_variant_collision = test_runtime_manifest(operation);
+        case_variant_collision.artifacts = vec![
+            test_runtime_artifact("Tools\Runtime.exe\child.dll", b"child"),
+            test_runtime_artifact("tools\runtime.EXE", b"file"),
+        ];
+        assert!(validate_guest_runtime_artifact_manifest(operation, &case_variant_collision).is_err());
+    }
+
+    #[test]
+    fn guest_runtime_artifact_manifest_allows_distinct_sibling_prefix_names() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        let mut manifest = test_runtime_manifest(operation);
+        manifest.artifacts = vec![
+            test_runtime_artifact("tools\runtime.exe", b"file"),
+            test_runtime_artifact("tools\runtime.exe.extra", b"sibling"),
+        ];
+        assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_ok());
+    }
+
+    #[test]
+    fn guest_runtime_artifact_manifest_rejects_case_variant_reserved_owner_marker() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        let mut manifest = test_runtime_manifest(operation);
+        manifest.artifacts[0].relative_path = ".FRIDAY-RUNTIME-OWNER.JSON".into();
+        assert!(validate_guest_runtime_artifact_manifest(operation, &manifest).is_err());
+    }
+
+    #[test]
     fn guest_runtime_artifact_digest_verification_rejects_tampering_and_size_overrun() {
         let artifact = test_runtime_artifact("python.exe", b"trusted-fixture");
         assert!(verify_guest_runtime_artifact_bytes(&artifact, b"trusted-fixture").is_ok());
