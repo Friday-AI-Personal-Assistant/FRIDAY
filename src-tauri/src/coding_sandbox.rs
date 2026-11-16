@@ -468,7 +468,7 @@ fn provision_authenticated_guest_runtime_bundle_from_bytes(
         let key = artifact.relative_path.to_ascii_lowercase();
         let bytes = supplied.get(&key)
             .ok_or("A required authenticated runtime artifact is missing from the source set.")?;
-        verify_guest_runtime_artifact_bytes(artifact, bytes.as_slice())?
+        verify_guest_runtime_artifact_bytes(artifact, bytes.as_slice())?;
         actual_total = actual_total.checked_add(bytes.len() as u64)
             .ok_or("The runtime source byte count overflowed.")?;
         if actual_total > plan.declared_max_bytes {
