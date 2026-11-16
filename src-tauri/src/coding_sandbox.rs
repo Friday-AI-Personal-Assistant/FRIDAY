@@ -7256,6 +7256,49 @@ mod tests {
             &staging, &root.join("other-staging"), &staging_handle, &manifest, &anchor, &plan,
         ).is_err());
 
+        // A valid staging proof is not transferable to altered authenticated inputs.
+        let mut altered_manifest = manifest.clone();
+        altered_manifest.artifacts[0].sha256 = "0".repeat(64);
+        assert!(authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &plan.staging_root, &staging_handle, &altered_manifest, &anchor, &plan,
+        ).is_err(), "a changed artifact digest must invalidate cleanup authorization");
+
+        let mut altered_anchor = anchor.clone();
+        altered_anchor.bundle_id.push_str("-substituted");
+        assert!(authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &plan.staging_root, &staging_handle, &manifest, &altered_anchor, &plan,
+        ).is_err(), "a substituted trust anchor must invalidate cleanup authorization");
+
+        let mut altered_plan = plan.clone();
+        altered_plan.staging_root = root.join("different-staging");
+        assert!(authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &altered_plan,
+        ).is_err(), "a substituted provisioning plan must invalidate cleanup authorization");
+
+        // Exact-tree verification must reject even harmless-looking additions.
+        let unexpected_file = plan.staging_root.join("unexpected.txt");
+        fs::write(&unexpected_file, b"unlisted").unwrap();
+        assert!(authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+        ).is_err(), "an unmanifested file must invalidate cleanup authorization");
+        fs::remove_file(&unexpected_file).unwrap();
+
+        let unexpected_directory = plan.staging_root.join("unexpected-directory");
+        fs::create_dir(&unexpected_directory).unwrap();
+        assert!(authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+        ).is_err(), "an unmanifested directory must invalidate cleanup authorization");
+        fs::remove_dir(&unexpected_directory).unwrap();
+
+        // The ownership marker is part of the authenticated tree, not a hint.
+        let marker_path = plan.staging_root.join(".friday-runtime-owner.json");
+        let marker_bytes = fs::read(&marker_path).unwrap();
+        fs::write(&marker_path, b"{\\"owner\\":\\"not-friday\\"}").unwrap();
+        assert!(authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
+        ).is_err(), "a modified ownership marker must invalidate cleanup authorization");
+        fs::write(&marker_path, marker_bytes).unwrap();
+
         fs::write(plan.staging_root.join("bin/cargo.exe"), b"tampered-after-proof").unwrap();
         assert!(authorize_verified_guest_runtime_staging_cleanup(
             &staging, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
