@@ -2231,6 +2231,11 @@ pub(crate) fn rename_directory_noreplace(
     expected_parent_identity: (u64, u64),
     expected_source_identity: (u64, u64),
 ) -> io::Result<()> {
+    // Normalize the platform-specific volume identifier to the shared
+    // (u64, u64) identity shape used by the higher-level preflight.
+    let identity = |handle: &File| {
+        handle_identity(handle).map(|(volume, file_id)| (volume as u64, file_id))
+    };
     if !is_single_normal_component(source_name)
         || !is_single_normal_component(destination_name)
         || source_name == destination_name
@@ -2239,14 +2244,14 @@ pub(crate) fn rename_directory_noreplace(
     }
     let parent_metadata = parent.metadata()?;
     if !parent_metadata.is_dir() || is_reparse_or_symlink(&parent_metadata)
-        || handle_identity(parent)? != expected_parent_identity
+        || identity(parent)? != expected_parent_identity
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime publication parent identity changed"));
     }
     let source = open_child_directory_nofollow(parent, source_name)?;
     let source_metadata = source.metadata()?;
     if !source_metadata.is_dir() || is_reparse_or_symlink(&source_metadata)
-        || handle_identity(&source)? != expected_source_identity
+        || identity(&source)? != expected_source_identity
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime staging source identity changed"));
     }
@@ -2382,7 +2387,7 @@ pub(crate) fn rename_directory_noreplace(
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("handle-relative runtime source open failed (NTSTATUS 0x{:08X})", status as u32)));
         }
         let source = unsafe { File::from_raw_handle(source_handle) };
-        if handle_identity(&source)? != expected_source_identity {
+        if identity(&source)? != expected_source_identity {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime staging source changed before atomic publication"));
         }
 
@@ -2426,7 +2431,7 @@ pub(crate) fn rename_directory_noreplace(
 
     // Verify the kernel-visible result through the same pinned parent handle.
     let published = open_child_directory_nofollow(parent, destination_name)?;
-    if handle_identity(&published)? != expected_source_identity {
+    if identity(&published)? != expected_source_identity {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "published runtime directory identity does not match the verified staging directory"));
     }
     match open_child_directory_nofollow(parent, source_name) {
@@ -2434,7 +2439,7 @@ pub(crate) fn rename_directory_noreplace(
         Ok(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime staging name still exists after publication")),
         Err(error) => return Err(error),
     }
-    if handle_identity(parent)? != expected_parent_identity {
+    if identity(parent)? != expected_parent_identity {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime publication parent identity changed during rename"));
     }
     Ok(())
