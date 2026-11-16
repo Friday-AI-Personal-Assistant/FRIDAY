@@ -2129,6 +2129,29 @@ pub(crate) fn create_bounded_runtime_destination(
     max_total_bytes: u64,
     max_depth: usize,
 ) -> io::Result<()> {
+    create_bounded_runtime_destination_with_hook(
+        parent, staging_name, files, owner_marker,
+        max_files, max_file_bytes, max_total_bytes, max_depth, |_| Ok(()),
+    )
+}
+
+/// Test seam for deterministic interruption after a fully synced artifact.
+/// Production always uses the no-op hook above; an interrupted write leaves
+/// an unmarked staging directory that is never treated as a trusted bundle.
+fn create_bounded_runtime_destination_with_hook<F>(
+    parent: &File,
+    staging_name: &OsStr,
+    files: &[(PathBuf, Vec<u8>)],
+    owner_marker: &[u8],
+    max_files: usize,
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+    max_depth: usize,
+    mut after_file_written: F,
+) -> io::Result<()>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+{
     use std::io::Write;
 
     let parent_metadata = parent.metadata()?;
@@ -2203,6 +2226,7 @@ pub(crate) fn create_bounded_runtime_destination(
         )?;
         output.write_all(contents)?;
         output.sync_all()?;
+        after_file_written(relative_path)?;
     }
 
     // This marker is the final write. Its presence attests only that bounded
@@ -4179,6 +4203,55 @@ mod tests {
         assert_eq!(
             fs::read(root_path.join(".friday-existing.staging").join("keep")).unwrap(),
             b"preserve",
+        );
+        drop(parent);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn runtime_staging_interruption_leaves_unmarked_partial_data_untrusted_and_preserved() {
+        let root_path = make_test_directory("runtime-stage-interrupted");
+        let parent = open_verified_root_directory(&root_path).unwrap();
+        let staging_name = OsStr::new(".friday-interrupted.staging");
+        let files = vec![
+            (PathBuf::from("bin/cargo.exe"), b"first-complete-artifact".to_vec()),
+            (PathBuf::from("lib/rustlib/manifest"), b"second-artifact".to_vec()),
+        ];
+        let marker = br#"{"schemaVersion":1,"bundleId":"fixture"}"#;
+        let mut completed = 0usize;
+
+        let result = create_bounded_runtime_destination_with_hook(
+            &parent, staging_name, &files, marker, 8, 1024, 4096, 8,
+            |_| {
+                completed += 1;
+                if completed == 1 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "simulated interruption after first synced artifact",
+                    ));
+                }
+                Ok(())
+            },
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+
+        let stage_path = root_path.join(staging_name);
+        assert!(stage_path.is_dir(), "partial staging data is retained for safe recovery");
+        assert_eq!(
+            fs::read(stage_path.join("bin").join("cargo.exe")).unwrap(),
+            b"first-complete-artifact",
+        );
+        assert!(!stage_path.join("lib").exists());
+        assert!(
+            !stage_path.join(".friday-runtime-owner.json").exists(),
+            "the owner marker must never be written after an interrupted artifact sequence",
+        );
+
+        // No cleanup authority is inferred from a familiar staging name.
+        // Preserve the unmarked data rather than deleting/adopting it.
+        assert_eq!(
+            fs::read(stage_path.join("bin").join("cargo.exe")).unwrap(),
+            b"first-complete-artifact",
         );
         drop(parent);
         fs::remove_dir_all(root_path).unwrap();
