@@ -478,10 +478,10 @@ fn verified_runtime_artifact_inventory_is_consistent(
     proof.artifact_paths.iter().all(|path| {
         !path.is_empty()
             && path == &path.to_ascii_lowercase()
-            && !path.starts_with('\\\\')
+            && !path.starts_with('\\')
             && !path.contains('/')
             && !path.contains(':')
-            && path.split('\\\\').all(|component| {
+            && path.split('\\').all(|component| {
                 !component.is_empty()
                     && component != "."
                     && component != ".."
