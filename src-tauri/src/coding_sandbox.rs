@@ -346,6 +346,9 @@ fn canonical_guest_runtime_bundle_sha256(
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct VerifiedGuestRuntimeBundle {
     operation: GuestRunOperation,
+    /// Exact directory path whose held handle was inventoried and hashed.
+    /// Later launch planning must compare this with the operation's fixed root.
+    root_path: PathBuf,
     bundle_id: String,
     toolchain_version: String,
     platform: String,
@@ -359,15 +362,29 @@ struct VerifiedGuestRuntimeBundle {
 /// accepting an independently supplied path or an unverified manifest.
 #[allow(dead_code)]
 fn verify_authenticated_guest_runtime_bundle(
+    root_path: &Path,
     root: &File,
     operation: GuestRunOperation,
     manifest: &GuestRuntimeArtifactManifest,
     anchor: &GuestRuntimeManifestTrustAnchor,
 ) -> Result<VerifiedGuestRuntimeBundle, String> {
     authenticate_guest_runtime_manifest(operation, manifest, anchor)?;
+    if !crate::coding_sandbox_fs::verified_directory_handle_matches_path(root_path, root)
+        .map_err(|_| "The guest runtime root identity could not be checked.".to_string())?
+    {
+        return Err("The held guest runtime directory does not match its authorized path.".into());
+    }
     verify_guest_runtime_artifact_tree(root, operation, manifest)?;
+    // Recheck after the complete inventory and digest pass to detect path
+    // replacement while verification was in progress.
+    if !crate::coding_sandbox_fs::verified_directory_handle_matches_path(root_path, root)
+        .map_err(|_| "The guest runtime root identity could not be rechecked.".to_string())?
+    {
+        return Err("The guest runtime root path changed during verification.".into());
+    }
     Ok(VerifiedGuestRuntimeBundle {
         operation,
+        root_path: root_path.to_path_buf(),
         bundle_id: anchor.bundle_id.clone(),
         toolchain_version: anchor.toolchain_version.clone(),
         platform: anchor.platform.clone(),
@@ -5911,8 +5928,9 @@ mod tests {
                 fs::write(file_path, bytes).unwrap();
             }
             let root = crate::coding_sandbox_fs::open_verified_root_directory(&path).unwrap();
-            let proof = verify_authenticated_guest_runtime_bundle(&root, operation, &manifest, &anchor).unwrap();
+            let proof = verify_authenticated_guest_runtime_bundle(&path, &root, operation, &manifest, &anchor).unwrap();
             assert_eq!(proof.operation, operation);
+            assert_eq!(proof.root_path, path);
             assert_eq!(proof.bundle_id, anchor.bundle_id);
             assert_eq!(proof.toolchain_version, anchor.toolchain_version);
             assert_eq!(proof.platform, "windows");
@@ -5922,11 +5940,15 @@ mod tests {
 
             let mut wrong_anchor = anchor.clone();
             wrong_anchor.bundle_id = "different-bundle".into();
-            assert!(verify_authenticated_guest_runtime_bundle(&root, operation, &manifest, &wrong_anchor).is_err());
+            assert!(verify_authenticated_guest_runtime_bundle(&path, &root, operation, &manifest, &wrong_anchor).is_err());
+            let unrelated_path = path.with_file_name(format!("{}-other", path.file_name().unwrap().to_string_lossy()));
+            fs::create_dir_all(&unrelated_path).unwrap();
+            assert!(verify_authenticated_guest_runtime_bundle(&unrelated_path, &root, operation, &manifest, &anchor).is_err());
+            fs::remove_dir_all(unrelated_path).unwrap();
 
             let mut wrong_version = anchor.clone();
             wrong_version.toolchain_version = "9.9.9".into();
-            assert!(verify_authenticated_guest_runtime_bundle(&root, operation, &manifest, &wrong_version).is_err());
+            assert!(verify_authenticated_guest_runtime_bundle(&path, &root, operation, &manifest, &wrong_version).is_err());
 
             drop(root);
             fs::remove_dir_all(path).unwrap();

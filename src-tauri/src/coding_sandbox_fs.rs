@@ -613,6 +613,28 @@ fn same_path_handle_identity(path: &Path, handle: &File) -> io::Result<bool> {
     Ok(path_identity(path)? == handle_identity(handle)?)
 }
 
+/// Confirm that an already-held ordinary directory handle still identifies
+/// the directory currently named by this exact path. Symlinks/reparse points
+/// are rejected rather than canonicalized through.
+pub(crate) fn verified_directory_handle_matches_path(
+    path: &Path,
+    handle: &File,
+) -> io::Result<bool> {
+    if !path.is_absolute() {
+        return Ok(false);
+    }
+    let path_metadata = std::fs::symlink_metadata(path)?;
+    let handle_metadata = handle.metadata()?;
+    if !path_metadata.is_dir()
+        || is_reparse_or_symlink(&path_metadata)
+        || !handle_metadata.is_dir()
+        || is_reparse_or_symlink(&handle_metadata)
+    {
+        return Ok(false);
+    }
+    same_path_handle_identity(path, handle)
+}
+
 fn same_handle_identity(left: &File, right: &File) -> io::Result<bool> {
     Ok(handle_identity(left)? == handle_identity(right)?)
 }
