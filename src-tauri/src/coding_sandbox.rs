@@ -827,6 +827,27 @@ fn build_guest_runtime_staging_cleanup_plan(
     })
 }
 
+/// Reconstruct the cleanup order from the authenticated manifest and the
+/// private cleanup authorization immediately before a future mutation boundary.
+/// This detects altered or stale plan fields; it does not touch the filesystem
+/// and is not a substitute for rechecking held directory handles and the exact
+/// tree inventory at the moment deletion is performed.
+fn validate_guest_runtime_staging_cleanup_plan(
+    authorization: &GuestRuntimeStagingCleanupAuthorization,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+    cleanup: &GuestRuntimeStagingCleanupPlan,
+) -> Result<(), String> {
+    let expected = build_guest_runtime_staging_cleanup_plan(
+        authorization, manifest, anchor, provisioning,
+    )?;
+    if cleanup != &expected {
+        return Err("Runtime staging cleanup plan differs from the freshly derived authenticated deletion order.".into());
+    }
+    Ok(())
+}
+
 /// A non-executing, no-overwrite publication intent derived only from a
 /// verified staging proof and the authenticated provisioning plan. This is
 /// not a filesystem rename and does not make the staged bundle executable.
@@ -7466,6 +7487,37 @@ mod tests {
         altered.artifacts[0].relative_path = "../outside".into();
         assert!(build_guest_runtime_staging_cleanup_plan(
             &authorization, &altered, &anchor, &plan,
+        ).is_err());
+        assert!(validate_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan, &cleanup,
+        ).is_ok());
+
+        // Every field that could redirect or weaken a later deletion must be
+        // bound to the freshly reconstructed plan.
+        let mut altered_plan = cleanup.clone();
+        altered_plan.staging_root.push("substituted");
+        assert!(validate_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan, &altered_plan,
+        ).is_err());
+        let mut altered_plan = cleanup.clone();
+        altered_plan.payload_files.clear();
+        assert!(validate_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan, &altered_plan,
+        ).is_err());
+        let mut altered_plan = cleanup.clone();
+        altered_plan.directories.push("unexpected".into());
+        assert!(validate_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan, &altered_plan,
+        ).is_err());
+        let mut altered_plan = cleanup.clone();
+        altered_plan.ownership_marker = "payload.exe".into();
+        assert!(validate_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan, &altered_plan,
+        ).is_err());
+        let mut altered_plan = cleanup.clone();
+        altered_plan.root_identity.1 ^= 1;
+        assert!(validate_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan, &altered_plan,
         ).is_err());
 
         drop(staging_handle);
