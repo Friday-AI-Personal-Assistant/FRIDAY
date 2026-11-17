@@ -6440,6 +6440,87 @@ fn verify_windows_sandbox_cli_stop_completion_from_receipt(
     )
 }
 
+/// Persist the CLI receipt only after the exact Running journal has itself
+/// been recovered from immutable generations. A valid-looking in-memory
+/// journal is not enough to create durable stop authority.
+#[allow(dead_code)]
+fn persist_windows_sandbox_cli_ownership_receipt_for_running_journal(
+    root: &Path,
+    journal: &SandboxSessionJournal,
+    receipt: &WindowsSandboxCliOwnershipReceipt,
+) -> Result<(), String> {
+    if validate_sandbox_session_journal(journal)? != SandboxSessionState::Running
+        || journal.run_id != receipt.run_id
+    {
+        return Err("The Windows Sandbox ownership receipt requires the matching FRIDAY run in durable Running state.".into());
+    }
+    let persisted = load_sandbox_session_journal(root, &journal.run_id)?;
+    if persisted != *journal {
+        return Err("The supplied Running journal is stale or differs from the immutable persisted session history.".into());
+    }
+    persist_windows_sandbox_cli_ownership_receipt(root, receipt)?;
+    let recovered = load_windows_sandbox_cli_ownership_receipt(root)?;
+    if recovered != *receipt {
+        return Err("The Windows Sandbox ownership receipt did not survive exact durable read-back.".into());
+    }
+    Ok(())
+}
+
+/// Load the receipt and journal from one private run root. The expected run ID
+/// is checked against both files before either can authorize a lifecycle plan.
+#[allow(dead_code)]
+fn load_windows_sandbox_cli_run_evidence(
+    root: &Path,
+    expected_run_id: &str,
+) -> Result<(SandboxSessionJournal, WindowsSandboxCliOwnershipReceipt), String> {
+    if !valid_snapshot_id(expected_run_id) {
+        return Err("The expected FRIDAY run identifier is invalid.".into());
+    }
+    let journal = load_sandbox_session_journal(root, expected_run_id)?;
+    let receipt = load_windows_sandbox_cli_ownership_receipt(root)?;
+    if receipt.run_id != journal.run_id || receipt.run_id != expected_run_id {
+        return Err("The persisted Windows Sandbox receipt and session journal do not belong to the same FRIDAY run.".into());
+    }
+    Ok((journal, receipt))
+}
+
+/// The production-facing stop-plan boundary recovers both durable records
+/// from the same run root; callers cannot supply a substituted in-memory
+/// journal or ownership proof.
+#[allow(dead_code)]
+fn prepare_authorized_windows_sandbox_stop_plan_from_persisted_state(
+    executable_path: &str,
+    root: &Path,
+    expected_run_id: &str,
+    sessions: &[WindowsSandboxCliSession],
+) -> Result<WindowsSandboxCliPlan, String> {
+    let (journal, receipt) = load_windows_sandbox_cli_run_evidence(root, expected_run_id)?;
+    if validate_sandbox_session_journal(&journal)? != SandboxSessionState::Running {
+        return Err("The durable Sandbox session journal does not authorize stopping from its current state.".into());
+    }
+    let proof = windows_sandbox_cli_ownership_proof_from_receipt(&receipt)?;
+    prepare_authorized_windows_sandbox_stop_plan(executable_path, &journal, &proof, sessions)
+}
+
+/// A successful CLI stop is accepted only after the durable journal records
+/// RequestStop for this run and the persisted receipt proves the exact CLI ID.
+#[allow(dead_code)]
+fn verify_windows_sandbox_cli_stop_completion_from_persisted_state(
+    root: &Path,
+    expected_run_id: &str,
+    command_succeeded: bool,
+    post_stop_sessions: &[WindowsSandboxCliSession],
+) -> Result<WindowsSandboxCliStopCompletion, String> {
+    let (journal, receipt) = load_windows_sandbox_cli_run_evidence(root, expected_run_id)?;
+    if validate_sandbox_session_journal(&journal)? != SandboxSessionState::StopRequested {
+        return Err("The durable Sandbox session journal must record RequestStop before CLI shutdown can be accepted.".into());
+    }
+    let proof = windows_sandbox_cli_ownership_proof_from_receipt(&receipt)?;
+    verify_windows_sandbox_cli_stop_completion(
+        &proof, expected_run_id, command_succeeded, post_stop_sessions,
+    )
+}
+
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WindowsSandboxLaunchPlan {
@@ -12931,6 +13012,107 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         ).is_err(), "tampered receipt cannot authorize stop completion");
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_sandbox_cli_receipt_and_stop_authority_require_same_durable_run_journal() {
+        let root = make_test_directory("wsb-durable-run-evidence");
+        let alternate_root = make_test_directory("wsb-alternate-run-evidence");
+        secure_private_workspace_directory(&root).unwrap();
+        secure_private_workspace_directory(&alternate_root).unwrap();
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let session_id = windows_sandbox_cli_id_from_run_id(run_id).unwrap();
+
+        let make_running_journal = |journal_root: &Path, process_id: u32| {
+            let identity = SandboxProcessIdentity {
+                session_id: run_id.into(),
+                process_id,
+                process_creation_time: 987654 + process_id as u64,
+                image_path: r"C:\Windows\System32\WindowsSandbox.exe".into(),
+            };
+            let mut journal = SandboxSessionJournal {
+                schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+                run_id: run_id.into(),
+                entries: Vec::new(),
+            };
+            journal = append_and_persist_sandbox_session_transition(
+                journal_root, &journal, SandboxSessionEvent::RequestLaunch, None, false, false,
+            ).unwrap();
+            journal = append_and_persist_sandbox_session_transition(
+                journal_root, &journal, SandboxSessionEvent::ObserveProcess, Some(&identity), false, false,
+            ).unwrap();
+            journal = append_and_persist_sandbox_session_transition(
+                journal_root, &journal, SandboxSessionEvent::ConfirmSession, Some(&identity), true, false,
+            ).unwrap();
+            append_and_persist_sandbox_session_transition(
+                journal_root, &journal, SandboxSessionEvent::ConfirmRunning, Some(&identity), true, false,
+            ).unwrap()
+        };
+
+        let journal = make_running_journal(&root, 4321);
+        let alternate_journal = make_running_journal(&alternate_root, 5432);
+        let running = WindowsSandboxCliSession {
+            id: session_id.clone(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        let response = format!(r#"{{"Id":"{}"}}"#, session_id);
+        let receipt = build_windows_sandbox_cli_ownership_receipt(
+            run_id, response.as_bytes(), &[], &[running.clone()],
+        ).unwrap();
+
+        assert!(persist_windows_sandbox_cli_ownership_receipt_for_running_journal(
+            &root, &alternate_journal, &receipt,
+        ).is_err(), "a valid but separately persisted journal cannot be substituted");
+        persist_windows_sandbox_cli_ownership_receipt_for_running_journal(
+            &root, &journal, &receipt,
+        ).unwrap();
+        assert_eq!(
+            load_windows_sandbox_cli_run_evidence(&root, run_id).unwrap(),
+            (journal.clone(), receipt.clone()),
+        );
+        assert!(persist_windows_sandbox_cli_ownership_receipt_for_running_journal(
+            &root, &journal, &receipt,
+        ).is_err(), "an existing durable receipt cannot be replaced");
+
+        let stop_plan = prepare_authorized_windows_sandbox_stop_plan_from_persisted_state(
+            r"C:\Program Files\WindowsApps\wsb.exe", &root, run_id, &[running.clone()],
+        ).unwrap();
+        assert_eq!(stop_plan.arguments, vec!["stop", "--raw", "--id", session_id.as_str()]);
+        assert!(verify_windows_sandbox_cli_stop_completion_from_persisted_state(
+            &root, run_id, true, &[],
+        ).is_err(), "CLI shutdown cannot be accepted before durable RequestStop");
+
+        let identity = journal.entries.iter()
+            .find(|entry| entry.event == SandboxSessionEvent::ObserveProcess)
+            .and_then(|entry| entry.observed_identity.as_ref())
+            .unwrap()
+            .clone();
+        let stop_requested = append_and_persist_sandbox_session_transition(
+            &root, &journal, SandboxSessionEvent::RequestStop, Some(&identity), true, false,
+        ).unwrap();
+        assert_eq!(validate_sandbox_session_journal(&stop_requested).unwrap(), SandboxSessionState::StopRequested);
+        assert_eq!(
+            verify_windows_sandbox_cli_stop_completion_from_persisted_state(
+                &root, run_id, true, &[],
+            ).unwrap(),
+            WindowsSandboxCliStopCompletion::SessionAbsent,
+        );
+        assert!(verify_windows_sandbox_cli_stop_completion_from_persisted_state(
+            &root, run_id, false, &[],
+        ).is_err(), "a failed CLI command cannot prove shutdown");
+        assert!(verify_windows_sandbox_cli_stop_completion_from_persisted_state(
+            &root, run_id, true, &[running],
+        ).is_err(), "a still-running exact CLI session cannot prove shutdown");
+        assert!(prepare_authorized_windows_sandbox_stop_plan_from_persisted_state(
+            r"C:\Program Files\WindowsApps\wsb.exe", &root, run_id, &[],
+        ).is_err(), "the stop plan is no longer authorized after RequestStop");
+
+        assert!(load_windows_sandbox_cli_run_evidence(
+            &root, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ).is_err(), "the journal cannot be recovered under a different run ID");
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(alternate_root).unwrap();
     }
 
     #[test]
