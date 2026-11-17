@@ -619,7 +619,7 @@ fn verify_staged_guest_runtime_bundle_with_final_root(
 
     validate_guest_runtime_artifact_manifest(anchor.operation, manifest)?;
     let (mut actual_files, mut actual_directories) =
-        crate::coding_sandbox_fs::collect_runtime_tree_inventory(staging_root, 32, 1281)
+        crate::coding_sandbox_fs::collect_runtime_tree_inventory(&staging_root, 32, 1281)
             .map_err(|_| "The staged runtime contains unsafe, unexpected, or excessive entries.".to_string())?;
     let marker_name = ".friday-runtime-owner.json";
     let marker_positions = actual_files.iter().enumerate()
@@ -979,7 +979,7 @@ fn execute_verified_guest_runtime_staging_cleanup(
     parent_path: &Path,
     parent_handle: &File,
     staging_root_path: &Path,
-    staging_root: &File,
+    staging_root: File,
     manifest: &GuestRuntimeArtifactManifest,
     anchor: &GuestRuntimeManifestTrustAnchor,
     provisioning: &GuestRuntimeProvisioningPlan,
@@ -999,7 +999,7 @@ fn execute_verified_guest_runtime_staging_cleanup(
             parent_path, parent_handle,
         ).map_err(|_| "Runtime cleanup could not revalidate its held parent directory.".to_string())?;
         let root_identity = crate::coding_sandbox_fs::verified_directory_identity(
-            staging_root_path, staging_root,
+            staging_root_path, &staging_root,
         ).map_err(|_| "Runtime cleanup could not revalidate its held staging directory.".to_string())?;
         if parent_identity != authorization.parent_identity
             || root_identity != authorization.root_identity
@@ -1015,7 +1015,7 @@ fn execute_verified_guest_runtime_staging_cleanup(
     for file in &plan.payload_files {
         check_identities()?;
         let bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
-            staging_root, &file.relative_path, file.max_bytes,
+            &staging_root, &file.relative_path, file.max_bytes,
         ).map_err(|_| "A runtime payload could not be safely re-read before cleanup.".to_string())?;
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(&bytes)
@@ -1024,7 +1024,7 @@ fn execute_verified_guest_runtime_staging_cleanup(
             return Err("A runtime payload no longer matches its authenticated cleanup inventory.".into());
         }
         let (file_parent, file_name) = open_runtime_cleanup_relative_parent(
-            staging_root, &file.relative_path,
+            &staging_root, &file.relative_path,
         ).map_err(|_| "A runtime payload parent could not be safely opened.".to_string())?;
         check_identities()?;
         crate::coding_sandbox_fs::remove_verified_runtime_file(
@@ -1038,7 +1038,7 @@ fn execute_verified_guest_runtime_staging_cleanup(
     for relative_directory in &plan.directories {
         check_identities()?;
         let (directory_parent, directory_name) = open_runtime_cleanup_relative_parent(
-            staging_root, relative_directory,
+            &staging_root, relative_directory,
         ).map_err(|_| "A runtime cleanup directory parent could not be safely opened.".to_string())?;
         check_identities()?;
         crate::coding_sandbox_fs::remove_verified_runtime_empty_directory(
@@ -1061,7 +1061,7 @@ fn execute_verified_guest_runtime_staging_cleanup(
     // authenticated byte length and digest captured in the cleanup plan.
     check_identities()?;
     crate::coding_sandbox_fs::remove_verified_runtime_owner_marker(
-        staging_root, OsStr::new(&plan.ownership_marker),
+        &staging_root, OsStr::new(&plan.ownership_marker),
         plan.ownership_marker_size, &plan.ownership_marker_sha256,
     ).map_err(|_| "The authenticated runtime ownership marker could not be safely removed.".to_string())?;
 
@@ -7695,7 +7695,7 @@ mod tests {
         ).unwrap();
 
         let preflight = authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &staging, &root, &parent, &provisioning.staging_root, staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).unwrap();
         assert_eq!(preflight.authorization, authorization);
@@ -7752,7 +7752,7 @@ mod tests {
         let payload = provisioning.staging_root.join("bin/cargo.exe");
         fs::write(&payload, b"changed-payload").unwrap();
         assert!(authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "preflight must re-hash payload files instead of trusting the earlier proof");
         fs::write(&payload, b"cargo-fixture").unwrap();
@@ -12043,7 +12043,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         ).unwrap();
 
         let error = execute_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
             &manifest, &anchor, &provisioning, &cleanup,
         ).unwrap_err();
         assert!(error.contains("not supported"));
