@@ -1246,8 +1246,23 @@ fn load_latest_guest_runtime_cleanup_journal(
     if root != expected_root {
         return Err("The cleanup journal location differs from the authenticated bundle identity.".into());
     }
-    let journal_root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
-        .map_err(|_| "The cleanup journal root could not be opened safely for recovery.".to_string())?;
+    // Pin and authenticate the parent before discovering the journal child.
+    // An absolute-path open of the journal root could otherwise follow a
+    // substituted parent directory between authorization and recovery.
+    let parent_handle = crate::coding_sandbox_fs::open_verified_root_directory(
+        &authorization.parent_path,
+    ).map_err(|_| "The cleanup journal parent could not be opened safely for recovery.".to_string())?;
+    let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &authorization.parent_path, &parent_handle,
+    ).map_err(|_| "The cleanup journal parent identity could not be verified for recovery.".to_string())?;
+    if parent_identity != authorization.parent_identity {
+        return Err("The cleanup journal parent differs from its authenticated identity.".into());
+    }
+    let journal_root_name = root.file_name()
+        .ok_or("The authenticated cleanup journal root has no final path component.")?;
+    let journal_root_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+        &parent_handle, journal_root_name,
+    ).map_err(|_| "The cleanup journal child could not be opened relative to its authenticated parent.".to_string())?;
     let journal_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &journal_root_handle)
         .map_err(|_| "The cleanup journal root identity could not be verified for recovery.".to_string())?;
     let mut latest: Option<GuestRuntimeCleanupJournal> = None;
@@ -1287,6 +1302,12 @@ fn load_latest_guest_runtime_cleanup_journal(
         .map_err(|_| "The cleanup journal root changed while recovery history was being loaded.".to_string())?;
     if final_identity != journal_root_identity {
         return Err("The cleanup journal root identity changed while recovery history was being loaded.".into());
+    }
+    let final_parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &authorization.parent_path, &parent_handle,
+    ).map_err(|_| "The cleanup journal parent changed while recovery history was being loaded.".to_string())?;
+    if final_parent_identity != authorization.parent_identity {
+        return Err("The cleanup journal parent identity changed while recovery history was being loaded.".into());
     }
     Ok(latest)
 }
@@ -13400,6 +13421,63 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         drop(generation);
         drop(root_handle);
         fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn cleanup_journal_recovery_rejects_a_replaced_parent_directory() {
+        let parent = make_test_directory("cleanup-journal-parent-replacement");
+        let staging = parent.join(".friday-node.staging");
+        let root = guest_runtime_cleanup_journal_root_path(&parent, "node-parent-test").unwrap();
+        fs::create_dir(&root).unwrap();
+        secure_private_workspace_directory(&root).unwrap();
+        let parent_handle = crate::coding_sandbox_fs::open_verified_root_directory(&parent).unwrap();
+        let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(&parent, &parent_handle).unwrap();
+        let journal_root_identity = crate::coding_sandbox_fs::verified_directory_identity(&root,
+            &crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap()).unwrap();
+        let authorization = GuestRuntimeStagingCleanupAuthorization {
+            operation: GuestRunOperation::NodeNpmTest,
+            parent_path: parent.clone(),
+            parent_identity,
+            staging_root: staging.clone(),
+            root_identity: (7, 52),
+            bundle_id: "node-parent-test".into(),
+            manifest_sha256: "f".repeat(64),
+            artifact_count: 1,
+        };
+        let journal = GuestRuntimeCleanupJournal {
+            schema_version: GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA,
+            operation: authorization.operation,
+            bundle_id: authorization.bundle_id.clone(),
+            manifest_sha256: authorization.manifest_sha256.clone(),
+            parent_path: parent.to_string_lossy().into_owned(),
+            staging_root_path: staging.to_string_lossy().into_owned(),
+            parent_identity_volume: parent_identity.0,
+            parent_identity_file: parent_identity.1,
+            journal_root_identity_volume: journal_root_identity.0,
+            journal_root_identity_file: journal_root_identity.1,
+            root_identity_volume: authorization.root_identity.0,
+            root_identity_file: authorization.root_identity.1,
+            entries: vec![GuestRuntimeCleanupJournalEntry {
+                sequence: 1,
+                phase: GuestRuntimeCleanupJournalPhase::Prepared,
+            }],
+        };
+        persist_guest_runtime_cleanup_journal(&root, &journal).unwrap();
+        drop(parent_handle);
+
+        let moved = parent.with_extension("original");
+        fs::rename(&parent, &moved).unwrap();
+        fs::create_dir(&parent).unwrap();
+        assert!(
+            load_latest_guest_runtime_cleanup_journal(&root, &authorization).is_err(),
+            "recovery must reject a replacement parent even when the original journal still exists elsewhere",
+        );
+        assert!(
+            moved.join(format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_DIR_PREFIX}node-parent-test")).exists(),
+            "the original journal evidence must remain untouched",
+        );
+        fs::remove_dir_all(parent).unwrap();
+        fs::remove_dir_all(moved).unwrap();
     }
 
     #[test]
