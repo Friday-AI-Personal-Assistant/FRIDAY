@@ -12535,12 +12535,6 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             validate_guest_runtime_cleanup_journal(&payloads_removed).unwrap(),
             GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
         );
-        persist_guest_runtime_cleanup_journal(&root, &payloads_removed).unwrap();
-        assert_eq!(
-            load_guest_runtime_cleanup_journal(&root, &payloads_removed).unwrap(),
-            payloads_removed,
-        );
-
         let mut marker_removed = payloads_removed.clone();
         marker_removed.entries.push(GuestRuntimeCleanupJournalEntry {
             sequence: 3,
@@ -12665,6 +12659,11 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert_eq!(
             validate_guest_runtime_cleanup_journal(&payloads_removed).unwrap(),
             GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+        );
+        persist_guest_runtime_cleanup_journal(&root, &payloads_removed).unwrap();
+        assert_eq!(
+            load_guest_runtime_cleanup_journal(&root, &payloads_removed).unwrap(),
+            payloads_removed,
         );
 
         let mut marker_removed = payloads_removed.clone();
