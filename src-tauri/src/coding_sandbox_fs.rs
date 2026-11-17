@@ -3547,7 +3547,7 @@ mod tests {
         let result_dir = parent.join("result");
         fs::create_dir(&result_dir).unwrap();
         let result_path = result_dir.join("result.json");
-        fs::write(&result_path, b"{\\"status\\":\\"ok\\"}").unwrap();
+        fs::write(&result_path, br#"{"status":"ok"}"#).unwrap();
         let directory = open_verified_root_directory(&result_dir).unwrap();
 
         // An already-open writer must prevent the exclusive result reader from
