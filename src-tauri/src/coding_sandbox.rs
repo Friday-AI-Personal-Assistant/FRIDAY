@@ -3201,6 +3201,81 @@ fn serialize_guest_run_execution_request(
     Ok(bytes)
 }
 
+
+ // Fixed Windows Job Object envelope for the future guest process tree.
+ // The host watchdog separately enforces wall-clock time; Job Objects do not
+ // provide a reliable wall-clock deadline for the complete Sandbox session.
+const GUEST_JOB_CPU_RATE_PERCENT: u8 = 50;
+const GUEST_JOB_ACTIVE_PROCESS_LIMIT: u32 = 64;
+const GUEST_JOB_PROCESS_MEMORY_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
+const GUEST_JOB_TOTAL_MEMORY_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
+
+// Windows JOBOBJECT_BASIC_LIMIT_INFORMATION / EXTENDED_LIMIT_INFORMATION flags:
+// ACTIVE_PROCESS | PROCESS_MEMORY | JOB_MEMORY | KILL_ON_JOB_CLOSE.
+const GUEST_JOB_LIMIT_FLAGS: u32 = 0x0000_0008 | 0x0000_0100 | 0x0000_0200 | 0x0000_2000;
+// Windows JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP.
+const GUEST_JOB_CPU_CONTROL_FLAGS: u32 = 0x0000_0001 | 0x0000_0004;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestJobObjectResourcePlan {
+    cpu_rate_percent: u8,
+    cpu_control_flags: u32,
+    limit_flags: u32,
+    active_process_limit: u32,
+    process_memory_limit_bytes: u64,
+    total_job_memory_limit_bytes: u64,
+    kill_process_tree_on_job_close: bool,
+    allow_breakaway: bool,
+    host_watchdog_duration: Duration,
+    max_output_bytes: u64,
+}
+
+/// Builds the exact resource envelope from an already validated execution plan.
+/// This is an inert policy description: it does not create/configure a Job
+/// Object, launch a process, or claim that any resource limit is enforced.
+fn build_guest_job_object_resource_plan(
+    execution: &GuestRunExecutionPlan,
+) -> Result<GuestJobObjectResourcePlan, String> {
+    validate_guest_run_execution_plan(execution)?;
+    Ok(GuestJobObjectResourcePlan {
+        cpu_rate_percent: GUEST_JOB_CPU_RATE_PERCENT,
+        cpu_control_flags: GUEST_JOB_CPU_CONTROL_FLAGS,
+        limit_flags: GUEST_JOB_LIMIT_FLAGS,
+        active_process_limit: GUEST_JOB_ACTIVE_PROCESS_LIMIT,
+        process_memory_limit_bytes: GUEST_JOB_PROCESS_MEMORY_LIMIT_BYTES,
+        total_job_memory_limit_bytes: GUEST_JOB_TOTAL_MEMORY_LIMIT_BYTES,
+        kill_process_tree_on_job_close: true,
+        allow_breakaway: false,
+        host_watchdog_duration: execution.max_duration,
+        max_output_bytes: execution.max_output_bytes,
+    })
+}
+
+/// Rejects any resource-plan substitution or weakening before a future
+/// suspended-process/Job-Object launch transaction.
+fn validate_guest_job_object_resource_plan(
+    execution: &GuestRunExecutionPlan,
+    candidate: &GuestJobObjectResourcePlan,
+) -> Result<(), String> {
+    let expected = build_guest_job_object_resource_plan(execution)?;
+    if candidate != &expected
+        || candidate.cpu_rate_percent == 0
+        || candidate.cpu_rate_percent > 100
+        || candidate.active_process_limit == 0
+        || candidate.process_memory_limit_bytes == 0
+        || candidate.total_job_memory_limit_bytes < candidate.process_memory_limit_bytes
+        || candidate.host_watchdog_duration.is_zero()
+        || candidate.host_watchdog_duration > Duration::from_millis(MAX_GUEST_REQUEST_DURATION_MS)
+        || candidate.max_output_bytes == 0
+        || candidate.max_output_bytes > MAX_GUEST_REQUEST_OUTPUT_BYTES
+        || candidate.allow_breakaway
+        || !candidate.kill_process_tree_on_job_close
+    {
+        return Err("The guest resource envelope differs from FRIDAY's fixed fail-closed policy.".into());
+    }
+    Ok(())
+}
+
 const GUEST_RUN_APPROVAL_TTL_SECONDS: u64 = 120;
 
 /// A short-lived authorization for one exact immutable execution plan.
@@ -9501,6 +9576,75 @@ mod tests {
 
     fn valid_guest_request_json() -> Vec<u8> {
         br#"{"schemaVersion":1,"runId":"0123456789abcdef0123456789abcdef","snapshotId":"abcdef0123456789abcdef0123456789","operation":"rust-cargo-test","maxDurationMs":120000,"maxOutputBytes":1048576}"#.to_vec()
+    }
+
+
+    #[test]
+    fn guest_job_object_resource_plan_is_fixed_and_bound_to_run_limits() {
+        let execution = build_guest_run_execution_plan(GuestRunRequest {
+            schema_version: 1,
+            run_id: "0123456789abcdef0123456789abcdef".into(),
+            snapshot_id: "abcdef0123456789abcdef0123456789".into(),
+            operation: GuestRunOperation::RustCargoTest,
+            max_duration_ms: 45_000,
+            max_output_bytes: 256 * 1024,
+        }).unwrap();
+        let plan = build_guest_job_object_resource_plan(&execution).unwrap();
+        assert_eq!(plan.cpu_rate_percent, 50);
+        assert_eq!(plan.cpu_control_flags, GUEST_JOB_CPU_CONTROL_FLAGS);
+        assert_eq!(plan.limit_flags, GUEST_JOB_LIMIT_FLAGS);
+        assert_eq!(plan.active_process_limit, 64);
+        assert_eq!(plan.process_memory_limit_bytes, 512 * 1024 * 1024);
+        assert_eq!(plan.total_job_memory_limit_bytes, 1024 * 1024 * 1024);
+        assert_eq!(plan.host_watchdog_duration, Duration::from_millis(45_000));
+        assert_eq!(plan.max_output_bytes, 256 * 1024);
+        assert!(plan.kill_process_tree_on_job_close);
+        assert!(!plan.allow_breakaway);
+        validate_guest_job_object_resource_plan(&execution, &plan).unwrap();
+    }
+
+    #[test]
+    fn guest_job_object_resource_plan_rejects_every_limit_weakening() {
+        let execution = build_guest_run_execution_plan(GuestRunRequest {
+            schema_version: 1,
+            run_id: "0123456789abcdef0123456789abcdef".into(),
+            snapshot_id: "abcdef0123456789abcdef0123456789".into(),
+            operation: GuestRunOperation::NodeNpmTest,
+            max_duration_ms: 120_000,
+            max_output_bytes: 1024 * 1024,
+        }).unwrap();
+        let valid = build_guest_job_object_resource_plan(&execution).unwrap();
+
+        let mut changed = valid.clone();
+        changed.cpu_rate_percent = 100;
+        assert!(validate_guest_job_object_resource_plan(&execution, &changed).is_err());
+        let mut changed = valid.clone();
+        changed.cpu_control_flags = 0;
+        assert!(validate_guest_job_object_resource_plan(&execution, &changed).is_err());
+        let mut changed = valid.clone();
+        changed.limit_flags = 0;
+        assert!(validate_guest_job_object_resource_plan(&execution, &changed).is_err());
+        let mut changed = valid.clone();
+        changed.active_process_limit += 1;
+        assert!(validate_guest_job_object_resource_plan(&execution, &changed).is_err());
+        let mut changed = valid.clone();
+        changed.process_memory_limit_bytes *= 2;
+        assert!(validate_guest_job_object_resource_plan(&execution, &changed).is_err());
+        let mut changed = valid.clone();
+        changed.total_job_memory_limit_bytes *= 2;
+        assert!(validate_guest_job_object_resource_plan(&execution, &changed).is_err());
+        let mut changed = valid.clone();
+        changed.kill_process_tree_on_job_close = false;
+        assert!(validate_guest_job_object_resource_plan(&execution, &changed).is_err());
+        let mut changed = valid.clone();
+        changed.allow_breakaway = true;
+        assert!(validate_guest_job_object_resource_plan(&execution, &changed).is_err());
+        let mut changed = valid.clone();
+        changed.host_watchdog_duration = Duration::from_millis(120_001);
+        assert!(validate_guest_job_object_resource_plan(&execution, &changed).is_err());
+        let mut changed = valid;
+        changed.max_output_bytes += 1;
+        assert!(validate_guest_job_object_resource_plan(&execution, &changed).is_err());
     }
 
     fn runtime_fixture_digest(bytes: &[u8]) -> String {

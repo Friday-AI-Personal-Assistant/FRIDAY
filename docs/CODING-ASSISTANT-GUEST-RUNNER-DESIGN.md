@@ -171,6 +171,32 @@ Unit tests cover the valid contract, unknown/duplicate fields, unsupported versi
 
 The request parser is currently a pure host-side validator and is not wired to any UI, file, guest process, or Sandbox session. Execution remains disabled.
 
+
+## Fixed guest process resource envelope — implemented as an inert policy plan
+
+The host now derives a fixed Windows Job Object resource plan from the exact
+validated guest execution plan. The policy caps the guest process tree at
+50% CPU, 64 active processes, 512 MiB per process, and 1 GiB total Job Object
+memory. The plan requires the Windows CPU hard-cap controls, active-process
+and memory-limit flags, kill-on-job-close behavior, and no breakaway. The
+host-watchdog deadline and exact per-run output-byte budget are copied from
+the approved execution plan, so a resource plan cannot extend either limit.
+
+A strict validator rebuilds the expected plan and rejects any changed CPU
+rate/flags, process count, memory ceiling, kill-on-close setting, breakaway
+permission, watchdog duration, or output budget. Regression tests cover the
+fixed values and attempted weakening/substitution of every policy dimension.
+
+**Important limitation:** this is not resource enforcement. No Job Object is
+created or configured, no process is assigned to one, and no guest process is
+launched. Before execution can be enabled, the Windows launcher must create a
+Job Object, apply and read back the limits before resuming the guest runner,
+assign the entire child process tree without breakaway, and close the job on
+cancellation or watchdog expiry. The watchdog must remain independently
+authoritative for wall-clock time, and physical Windows tests must prove the
+limits under process-spawn, memory-pressure, timeout, and crash conditions.
+Guest execution remains disabled.
+
 ## Required regression suite
 
 The implementation must add tests for:
