@@ -1247,7 +1247,21 @@ pub(crate) fn create_destination_entry(parent: &File, name: &OsStr, directory: b
     if directory {
         let result = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) };
         if result != 0 { return Err(io::Error::last_os_error()); }
-        let directory = open_dir_nofollow(parent, &relative_name)?;
+        // Open the newly-created directory with a normal read-capable
+        // directory descriptor. cap-primitives' traversal handle may be
+        // intentionally unsuitable for fchmod, while this descriptor is
+        // needed by callers that must apply permissions to this exact object.
+        // O_NOFOLLOW prevents a raced symlink from being accepted.
+        let directory_fd = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC
+                    | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            )
+        };
+        if directory_fd < 0 { return Err(io::Error::last_os_error()); }
+        let directory = unsafe { File::from_raw_fd(directory_fd) };
         // mkdirat and openat are separate syscalls. Confirm the name still
         // resolves (without following links) to the exact directory handle.
         use std::os::unix::fs::MetadataExt;
@@ -4265,6 +4279,21 @@ mod tests {
         fs::remove_file(root_path.join("replace-me.txt")).unwrap();
         fs::remove_dir_all(root_path).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_destination_directory_handle_supports_exact_object_permissions() {
+        use std::os::unix::{fs::PermissionsExt, io::AsRawFd};
+        let root_path = make_test_directory("destination-directory-fchmod");
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let child = create_destination_entry(&root, OsStr::new("private-child"), true).unwrap();
+        assert!(child.metadata().unwrap().is_dir());
+        assert_eq!(unsafe { libc::fchmod(child.as_raw_fd(), 0o700) }, 0);
+        assert_eq!(child.metadata().unwrap().permissions().mode() & 0o077, 0);
+        drop(child);
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
     }
 
     #[cfg(unix)]
