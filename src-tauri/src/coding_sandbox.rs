@@ -11967,6 +11967,71 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
     }
 
 
+    #[test]
+    fn runtime_cleanup_progress_preflight_accepts_only_authenticated_remaining_entries() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-cleanup-progress-preflight");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, root.join("published-runtime"),
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![
+            (PathBuf::from("node.exe"), b"node-fixture".to_vec()),
+            (PathBuf::from("node_modules/npm/bin/npm-cli.js"), b"npm-fixture".to_vec()),
+        ];
+        let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &provisioning, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let authorization = authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning,
+        ).unwrap();
+        let cleanup = build_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &provisioning,
+        ).unwrap();
+
+        // Simulate an interruption after one authenticated payload was removed.
+        drop(staging_handle);
+        fs::remove_file(provisioning.staging_root.join("node.exe")).unwrap();
+        let recovered_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let recovered = authorize_guest_runtime_staging_cleanup_progress_preflight(
+            &root, &parent, &provisioning.staging_root, &recovered_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).unwrap();
+        assert_eq!(recovered.authorization.root_identity, authorization.root_identity);
+
+        // A remaining payload with changed bytes is not recoverable authority.
+        let npm = provisioning.staging_root.join("node_modules/npm/bin/npm-cli.js");
+        fs::write(&npm, b"tampered-npm").unwrap();
+        assert!(authorize_guest_runtime_staging_cleanup_progress_preflight(
+            &root, &parent, &provisioning.staging_root, &recovered_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).is_err());
+        assert_eq!(fs::read(&npm).unwrap(), b"tampered-npm");
+
+        // Unknown entries are preserved and make progress preflight fail closed.
+        fs::write(&npm, b"npm-fixture").unwrap();
+        let unexpected = provisioning.staging_root.join("unexpected.bin");
+        fs::write(&unexpected, b"preserve").unwrap();
+        assert!(authorize_guest_runtime_staging_cleanup_progress_preflight(
+            &root, &parent, &provisioning.staging_root, &recovered_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).is_err());
+        assert_eq!(fs::read(&unexpected).unwrap(), b"preserve");
+        assert!(provisioning.staging_root.exists());
+
+        drop(recovered_handle);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn runtime_staging_cleanup_executor_removes_only_authenticated_complete_bundle() {
