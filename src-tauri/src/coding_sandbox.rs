@@ -13893,7 +13893,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             r"C:\FRIDAY\result-mount",
         );
         let executable = r"C:\Program Files\WindowsApps\wsb.exe";
-        prepare_and_persist_windows_sandbox_cli_start_transaction(executable, config, &root, &initial, &[]).unwrap();
+        prepare_and_persist_windows_sandbox_cli_start_transaction(executable, &config, &root, &initial, &[]).unwrap();
         let target = WindowsSandboxCliSession { id: windows_sandbox_cli_id_from_run_id(run_id).unwrap(), status: WindowsSandboxCliSessionStatus::Running };
         let first = preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[target.clone()]).unwrap();
         assert_eq!(first.recovery_receipt_sequence, 1);
@@ -13929,7 +13929,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             r"C:\FRIDAY\result-mount",
         );
         let executable = r"C:\Program Files\WindowsApps\wsb.exe";
-        prepare_and_persist_windows_sandbox_cli_start_transaction(executable, config, &root, &initial, &[]).unwrap();
+        prepare_and_persist_windows_sandbox_cli_start_transaction(executable, &config, &root, &initial, &[]).unwrap();
         let expected_id = windows_sandbox_cli_id_from_run_id(run_id).unwrap();
         let target = WindowsSandboxCliSession { id: expected_id.clone(), status: WindowsSandboxCliSessionStatus::Running };
         preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[target.clone()]).unwrap();
@@ -13997,7 +13997,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             r"C:\FRIDAY\result-mount",
         );
         let executable = r"C:\Program Files\WindowsApps\wsb.exe";
-        prepare_and_persist_windows_sandbox_cli_start_transaction(executable, config, &root, &initial, &[]).unwrap();
+        prepare_and_persist_windows_sandbox_cli_start_transaction(executable, &config, &root, &initial, &[]).unwrap();
         preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[]).unwrap();
         fs::remove_file(root.join(windows_sandbox_cli_recovery_receipt_file_name(1))).unwrap();
         let outside = root.join("outside-recovery-receipt.json");
