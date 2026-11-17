@@ -1319,8 +1319,8 @@ fn begin_guest_runtime_cleanup_journal(
     let journal_root_handle = crate::coding_sandbox_fs::create_destination_entry(
         &parent_handle, root_name, true,
     ).map_err(|_| "FRIDAY could not exclusively create the private runtime cleanup journal.".to_string())?;
-    secure_private_workspace_directory(&root)
-        .map_err(|_| "FRIDAY could not secure the runtime cleanup journal; no cleanup was started.".to_string())?;
+    secure_private_workspace_directory_handle(&root, &journal_root_handle)
+        .map_err(|_| "FRIDAY could not secure the authenticated runtime cleanup journal handle; no cleanup was started.".to_string())?;
     let journal_root_identity = crate::coding_sandbox_fs::verified_directory_identity(
         &root, &journal_root_handle,
     ).map_err(|_| "The newly created cleanup journal root identity could not be verified.".to_string())?;
@@ -6598,6 +6598,45 @@ try {
             let diagnostic = diagnostic.lines().find(|line| line.contains("PRIVATE_WORKSPACE_ACL_FAILED:"))
                 .unwrap_or("PRIVATE_WORKSPACE_ACL_FAILED:UNKNOWN");
             return Err(format!("Windows workspace ACL could not be rebuilt and verified; snapshot operation was stopped ({diagnostic})."));
+        }
+    }
+    Ok(())
+}
+
+/// Secure a directory whose handle was opened and authenticated by the caller.
+/// Unix applies permissions directly to that exact open object. Windows keeps
+/// the verified handle alive (opened without delete sharing), applies the
+/// existing protected-DACL policy, then confirms the path still names that
+/// same object before allowing journal creation to continue.
+fn secure_private_workspace_directory_handle(path: &Path, directory: &File) -> Result<(), String> {
+    let metadata = directory.metadata()
+        .map_err(|_| "FRIDAY could not inspect the held private workspace directory.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("The held private workspace handle is not an ordinary directory.".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::{fs::PermissionsExt, io::AsRawFd};
+        if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
+            return Err("FRIDAY could not restrict permissions on the authenticated directory handle.".into());
+        }
+        let verified = directory.metadata()
+            .map_err(|_| "FRIDAY could not verify permissions on the authenticated directory handle.".to_string())?;
+        if verified.permissions().mode() & 0o077 != 0 {
+            return Err("The authenticated private directory handle has permissions broader than owner-only.".into());
+        }
+    }
+    #[cfg(windows)]
+    {
+        let before = crate::coding_sandbox_fs::verified_directory_identity(path, directory)
+            .map_err(|_| "The held private directory identity could not be verified before ACL setup.".to_string())?;
+        // The Windows directory handle is opened without delete sharing, so a
+        // rename/replacement cannot redirect this path-based ACL operation.
+        secure_private_workspace_directory(path)?;
+        let after = crate::coding_sandbox_fs::verified_directory_identity(path, directory)
+            .map_err(|_| "The held private directory identity could not be verified after ACL setup.".to_string())?;
+        if before != after {
+            return Err("The private directory identity changed during ACL setup.".into());
         }
     }
     Ok(())
