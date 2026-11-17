@@ -1341,37 +1341,34 @@ fn load_guest_runtime_cleanup_journal(
         return Err("The guest runtime cleanup journal root was replaced after its identity was recorded.".into());
     }
     let mut latest: Option<GuestRuntimeCleanupJournal> = None;
-    let mut gap_seen = false;
-    for generation in 1..=MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
-        let path = guest_runtime_cleanup_journal_generation_path(root, generation);
-        match fs::symlink_metadata(&path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => gap_seen = true,
-            Err(_) => return Err("A guest runtime cleanup journal generation could not be inspected.".into()),
-            Ok(_) if gap_seen => return Err("The guest runtime cleanup journal contains a generation gap.".into()),
-            Ok(_) => {
-                let current = read_guest_runtime_cleanup_journal_generation_from_handle(root, &root_handle, generation)?;
-                if current.operation != expected.operation
-                    || current.bundle_id != expected.bundle_id
-                    || current.manifest_sha256 != expected.manifest_sha256
-                    || current.parent_path != expected.parent_path
-                    || current.staging_root_path != expected.staging_root_path
-                    || current.parent_identity_volume != expected.parent_identity_volume
-                    || current.parent_identity_file != expected.parent_identity_file
-                    || current.journal_root_identity_volume != expected.journal_root_identity_volume
-                    || current.journal_root_identity_file != expected.journal_root_identity_file
-                    || current.root_identity_volume != expected.root_identity_volume
-                    || current.root_identity_file != expected.root_identity_file
-                {
-                    return Err("The guest runtime cleanup journal identity changed between generations.".into());
-                }
-                if let Some(previous) = &latest {
-                    if current.entries[..generation - 1] != previous.entries {
-                        return Err("The guest runtime cleanup journal history is not append-only.".into());
-                    }
-                }
-                latest = Some(current);
+    let generations = guest_runtime_cleanup_journal_generations_from_handle(&root_handle)?;
+    for (index, generation) in generations.iter().copied().enumerate() {
+        if generation != index + 1 {
+            return Err("The guest runtime cleanup journal contains a generation gap.".into());
+        }
+        let current = read_guest_runtime_cleanup_journal_generation_from_handle(root, &root_handle, generation)?;
+        if current.operation != expected.operation
+            || current.bundle_id != expected.bundle_id
+            || current.manifest_sha256 != expected.manifest_sha256
+            || current.parent_path != expected.parent_path
+            || current.staging_root_path != expected.staging_root_path
+            || current.parent_identity_volume != expected.parent_identity_volume
+            || current.parent_identity_file != expected.parent_identity_file
+            || current.journal_root_identity_volume != expected.journal_root_identity_volume
+            || current.journal_root_identity_file != expected.journal_root_identity_file
+            || current.root_identity_volume != expected.root_identity_volume
+            || current.root_identity_file != expected.root_identity_file
+        {
+            return Err("The guest runtime cleanup journal identity changed between generations.".into());
+        }
+        if let Some(previous) = &latest {
+            if current.entries.len() != previous.entries.len() + 1
+                || current.entries[..previous.entries.len()] != previous.entries
+            {
+                return Err("The guest runtime cleanup journal history is not append-only.".into());
             }
         }
+        latest = Some(current);
     }
     let latest = latest.ok_or_else(|| "No complete guest runtime cleanup journal generation is available.".to_string())?;
     if latest.entries.len() != expected.entries.len()
@@ -13218,6 +13215,53 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             load_guest_runtime_cleanup_journal(&root, &next).is_err(),
             "a generation that substitutes the journal-root identity must be rejected",
         );
+
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn cleanup_journal_loader_rejects_unexpected_root_inventory() {
+        let parent = make_test_directory("cleanup-journal-loader-inventory");
+        let staging = parent.join(".friday-node.staging");
+        let root = guest_runtime_cleanup_journal_root_path(&parent, "node-loader-test").unwrap();
+        fs::create_dir(&root).unwrap();
+        secure_private_workspace_directory(&root).unwrap();
+        let base = GuestRuntimeCleanupJournal {
+            schema_version: GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA,
+            operation: GuestRunOperation::NodeNpmTest,
+            bundle_id: "node-loader-test".into(),
+            manifest_sha256: "e".repeat(64),
+            parent_path: parent.to_string_lossy().into_owned(),
+            staging_root_path: staging.to_string_lossy().into_owned(),
+            parent_identity_volume: 7,
+            parent_identity_file: 51,
+            journal_root_identity_volume: guest_runtime_cleanup_journal_root_identity(&root).unwrap().0,
+            journal_root_identity_file: guest_runtime_cleanup_journal_root_identity(&root).unwrap().1,
+            root_identity_volume: 7,
+            root_identity_file: 52,
+            entries: vec![GuestRuntimeCleanupJournalEntry {
+                sequence: 1,
+                phase: GuestRuntimeCleanupJournalPhase::Prepared,
+            }],
+        };
+        persist_guest_runtime_cleanup_journal(&root, &base).unwrap();
+
+        let unexpected = root.join("untrusted-note.txt");
+        fs::write(&unexpected, b"preserve").unwrap();
+        assert!(
+            load_guest_runtime_cleanup_journal(&root, &base).is_err(),
+            "the loader must reject unexpected root-level entries",
+        );
+        assert_eq!(fs::read(&unexpected).unwrap(), b"preserve");
+        fs::remove_file(&unexpected).unwrap();
+
+        let future = guest_runtime_cleanup_journal_generation_path(&root, 3);
+        fs::create_dir(&future).unwrap();
+        assert!(
+            load_guest_runtime_cleanup_journal(&root, &base).is_err(),
+            "the loader must reject future generations beyond a gap",
+        );
+        assert!(future.exists(), "ambiguous evidence must be preserved");
 
         fs::remove_dir_all(parent).unwrap();
     }
