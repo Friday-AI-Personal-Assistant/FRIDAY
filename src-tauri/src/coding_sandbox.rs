@@ -1167,12 +1167,20 @@ fn persist_guest_runtime_cleanup_journal(
     if generation == 0 || generation > MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
         return Err("Only a non-empty bounded guest runtime cleanup journal can be persisted.".into());
     }
-    let root_identity = guest_runtime_cleanup_journal_root_identity(root)?;
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The guest runtime cleanup journal root could not be opened safely.".to_string())?;
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The guest runtime cleanup journal root identity could not be verified.".to_string())?;
     if root_identity != (journal.journal_root_identity_volume, journal.journal_root_identity_file) {
         return Err("The guest runtime cleanup journal root differs from its recorded directory identity.".into());
     }
+    let existing_generations = guest_runtime_cleanup_journal_generations_from_handle(&root_handle)?;
+    let expected_generations = (1..generation).collect::<Vec<_>>();
+    if existing_generations != expected_generations {
+        return Err("The cleanup journal cannot be extended because its existing generation inventory is incomplete or unexpected.".into());
+    }
     if generation > 1 {
-        let previous = read_guest_runtime_cleanup_journal_generation(root, generation - 1)?;
+        let previous = read_guest_runtime_cleanup_journal_generation_from_handle(root, &root_handle, generation - 1)?;
         if previous.operation != journal.operation
             || previous.bundle_id != journal.bundle_id
             || previous.manifest_sha256 != journal.manifest_sha256
@@ -13137,6 +13145,61 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert!(load_guest_runtime_cleanup_journal(&root, &marker_removed).is_err(),
             "a generation with extra files must not be trusted");
         assert_eq!(fs::read(guest_runtime_cleanup_journal_generation_path(&root, 3).join("unexpected.bin")).unwrap(), b"keep");
+
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn cleanup_journal_persistence_refuses_to_extend_unexpected_inventory() {
+        let parent = make_test_directory("cleanup-journal-persist-inventory");
+        let staging = parent.join(".friday-node.staging");
+        let root = guest_runtime_cleanup_journal_root_path(&parent, "node-test-bundle").unwrap();
+        fs::create_dir(&root).unwrap();
+        secure_private_workspace_directory(&root).unwrap();
+        let base = GuestRuntimeCleanupJournal {
+            schema_version: GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA,
+            operation: GuestRunOperation::NodeNpmTest,
+            bundle_id: "node-test-bundle".into(),
+            manifest_sha256: "d".repeat(64),
+            parent_path: parent.to_string_lossy().into_owned(),
+            staging_root_path: staging.to_string_lossy().into_owned(),
+            parent_identity_volume: 7,
+            parent_identity_file: 41,
+            journal_root_identity_volume: guest_runtime_cleanup_journal_root_identity(&root).unwrap().0,
+            journal_root_identity_file: guest_runtime_cleanup_journal_root_identity(&root).unwrap().1,
+            root_identity_volume: 7,
+            root_identity_file: 42,
+            entries: vec![GuestRuntimeCleanupJournalEntry {
+                sequence: 1,
+                phase: GuestRuntimeCleanupJournalPhase::Prepared,
+            }],
+        };
+        persist_guest_runtime_cleanup_journal(&root, &base).unwrap();
+
+        let mut next = base.clone();
+        next.entries.push(GuestRuntimeCleanupJournalEntry {
+            sequence: 2,
+            phase: GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+        });
+
+        let unexpected = root.join("unexpected.bin");
+        fs::write(&unexpected, b"preserve").unwrap();
+        assert!(
+            persist_guest_runtime_cleanup_journal(&root, &next).is_err(),
+            "an unexpected root-level file must prevent appending a trusted generation",
+        );
+        assert!(!guest_runtime_cleanup_journal_generation_path(&root, 2).exists());
+        assert_eq!(fs::read(&unexpected).unwrap(), b"preserve");
+        fs::remove_file(&unexpected).unwrap();
+
+        let gap = guest_runtime_cleanup_journal_generation_path(&root, 3);
+        fs::create_dir(&gap).unwrap();
+        assert!(
+            persist_guest_runtime_cleanup_journal(&root, &next).is_err(),
+            "a future generation directory must prevent appending across a gap",
+        );
+        assert!(!guest_runtime_cleanup_journal_generation_path(&root, 2).exists());
+        assert!(gap.exists(), "ambiguous evidence must be preserved");
 
         fs::remove_dir_all(parent).unwrap();
     }
