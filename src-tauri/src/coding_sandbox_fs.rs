@@ -107,6 +107,23 @@ fn collect_runtime_tree_directory(
 /// request, the caller must fail closed rather than fall back to a path open.
 #[cfg(windows)]
 pub(crate) fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
+    open_file_nofollow_with_share(parent, name, 0x0000_0001 | 0x0000_0002 | 0x0000_0004)
+}
+
+/// Open a result file while denying concurrent write and delete sharing on
+/// Windows. Once this handle is acquired, new writers/deleters cannot open the
+/// file until it is closed; if a writer is already active, acquisition fails.
+#[cfg(windows)]
+fn open_result_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
+    open_file_nofollow_with_share(parent, name, 0x0000_0001)
+}
+
+#[cfg(windows)]
+fn open_file_nofollow_with_share(
+    parent: &File,
+    name: &OsStr,
+    share_access: u32,
+) -> io::Result<File> {
     use std::{
         mem,
         os::windows::{ffi::OsStrExt, io::{AsRawHandle, FromRawHandle}},
@@ -213,7 +230,7 @@ pub(crate) fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File
             &mut io_status,
             ptr::null(),
             0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            share_access,
             FILE_OPEN,
             FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
             ptr::null(),
@@ -243,6 +260,14 @@ pub(crate) fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File
     }
 
     Ok(file)
+}
+
+/// Open a result file without following links. Unix relies on the caller's
+/// process-lifecycle gate; Windows additionally denies concurrent write/delete
+/// sharing through the native handle's share mode.
+#[cfg(unix)]
+fn open_result_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
+    open_file_nofollow(parent, name)
 }
 
 /// Open one regular file relative to an already-open directory handle on Unix.
@@ -778,7 +803,7 @@ fn read_single_bounded_file_from_handle(
             ));
         }
 
-        let mut file = open_file_nofollow(directory, &name)?;
+        let mut file = open_result_file_nofollow(directory, &name)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() || is_reparse_or_symlink(&metadata)
             || !has_single_hard_link(&file)
@@ -3510,6 +3535,42 @@ mod tests {
         assert_eq!(fs::read(original.join("result.json")).unwrap(), b"replacement");
 
         drop(held);
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn result_file_handle_blocks_concurrent_writers_and_deleters() {
+        use std::fs::OpenOptions;
+
+        let parent = make_test_directory("bounded-result-exclusive-read");
+        let result_dir = parent.join("result");
+        fs::create_dir(&result_dir).unwrap();
+        let result_path = result_dir.join("result.json");
+        fs::write(&result_path, b"{\\"status\\":\\"ok\\"}").unwrap();
+        let directory = open_verified_root_directory(&result_dir).unwrap();
+
+        // An already-open writer must prevent the exclusive result reader from
+        // acquiring a handle; collecting while the guest can still write fails closed.
+        let writer = OpenOptions::new().write(true).open(&result_path).unwrap();
+        assert!(
+            open_result_file_nofollow(&directory, OsStr::new("result.json")).is_err(),
+            "result collection must not race an already-open writer"
+        );
+        drop(writer);
+
+        let reader = open_result_file_nofollow(&directory, OsStr::new("result.json")).unwrap();
+        assert!(
+            OpenOptions::new().write(true).open(&result_path).is_err(),
+            "a retained result handle must deny new writers"
+        );
+        assert!(
+            fs::remove_file(&result_path).is_err(),
+            "a retained result handle must deny deletion/replacement"
+        );
+
+        drop(reader);
+        drop(directory);
         fs::remove_dir_all(parent).unwrap();
     }
 
