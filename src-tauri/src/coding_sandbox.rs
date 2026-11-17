@@ -13519,26 +13519,60 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         persist_guest_runtime_cleanup_journal(&root, &journal).unwrap();
 
         let moved = parent.with_extension("original");
-        fs::rename(&parent, &moved).unwrap();
-        fs::create_dir(&parent).unwrap();
-        assert!(
-            advance_guest_runtime_cleanup_journal_from_parent_handle(
+        // Unix permits renaming an open directory, so it can exercise the
+        // substituted-path rejection directly. Windows intentionally denies
+        // delete sharing on the pinned parent handle; there, assert that the
+        // replacement is blocked and that the transition remains anchored.
+        let parent_replaced = match fs::rename(&parent, &moved) {
+            Ok(()) => {
+                fs::create_dir(&parent).unwrap();
+                true
+            }
+            Err(_error) if cfg!(windows) => {
+                assert!(parent.is_dir(), "the pinned parent must remain in place");
+                assert!(!moved.exists(), "the pinned parent must not be renamed");
+                false
+            }
+            Err(error) => panic!("could not replace authenticated parent in regression test: {error}"),
+        };
+        if parent_replaced {
+            assert!(
+                advance_guest_runtime_cleanup_journal_from_parent_handle(
+                    &root, &parent, &parent_handle, parent_identity, &journal,
+                    GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+                ).is_err(),
+                "an authenticated transition must refuse to append through a replaced parent path",
+            );
+        } else {
+            let advanced = advance_guest_runtime_cleanup_journal_from_parent_handle(
                 &root, &parent, &parent_handle, parent_identity, &journal,
                 GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
-            ).is_err(),
-            "an authenticated transition must refuse to append through a replaced parent path",
-        );
+            ).expect("the pinned parent must keep the transition on the authenticated directory");
+            assert_eq!(
+                validate_guest_runtime_cleanup_journal(&advanced).unwrap(),
+                GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+            );
+        }
         drop(parent_handle);
-        assert!(
-            load_latest_guest_runtime_cleanup_journal(&root, &authorization).is_err(),
-            "recovery must reject a replacement parent even when the original journal still exists elsewhere",
-        );
-        assert!(
-            moved.join(format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_DIR_PREFIX}node-parent-test")).exists(),
-            "the original journal evidence must remain untouched",
-        );
+        if parent_replaced {
+            assert!(
+                load_latest_guest_runtime_cleanup_journal(&root, &authorization).is_err(),
+                "recovery must reject a replacement parent even when the original journal still exists elsewhere",
+            );
+            assert!(
+                moved.join(format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_DIR_PREFIX}node-parent-test")).exists(),
+                "the original journal evidence must remain untouched",
+            );
+            fs::remove_dir_all(moved).unwrap();
+        } else {
+            assert_eq!(
+                validate_guest_runtime_cleanup_journal(
+                    &load_latest_guest_runtime_cleanup_journal(&root, &authorization).unwrap(),
+                ).unwrap(),
+                GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+            );
+        }
         fs::remove_dir_all(parent).unwrap();
-        fs::remove_dir_all(moved).unwrap();
     }
 
     #[test]
