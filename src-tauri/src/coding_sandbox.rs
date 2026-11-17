@@ -8600,9 +8600,17 @@ mod tests {
             let final_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
                 &parent_handle, final_root.file_name().unwrap(),
             ).unwrap();
-            validate_verified_guest_runtime_bundle_root(
+            // The fixture lives under a temporary directory, not the
+            // operation's fixed production installation root. The final-use
+            // gate must therefore reject this path even though publication
+            // itself successfully revalidated the authenticated tree.
+            assert!(validate_verified_guest_runtime_bundle_root(
                 &published, &final_root, &final_handle,
+            ).is_err());
+            let final_identity = crate::coding_sandbox_fs::verified_directory_identity(
+                &final_root, &final_handle,
             ).unwrap();
+            assert_eq!(final_identity, published.root_identity);
             drop(final_handle);
             drop(parent_handle);
             fs::remove_dir_all(parent_path).unwrap();
