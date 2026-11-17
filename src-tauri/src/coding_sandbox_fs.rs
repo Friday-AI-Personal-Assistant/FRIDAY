@@ -758,6 +758,9 @@ fn read_single_bounded_file_from_handle(
 ) -> io::Result<Vec<u8>> {
     let initial_identity = verified_directory_identity(directory_path, directory)?;
     let mut found: Option<Vec<u8>> = None;
+    // Keep the opened file capability alive through the final inventory and
+    // link-count checks; a pathname-only check would lose that identity.
+    let mut opened_file: Option<File> = None;
     for entry in read_dir(directory, Path::new("."))? {
         let entry = entry?;
         let name = entry.file_name();
@@ -778,6 +781,7 @@ fn read_single_bounded_file_from_handle(
         let mut file = open_file_nofollow(directory, &name)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() || is_reparse_or_symlink(&metadata)
+            || !has_single_hard_link(&metadata)
             || metadata.len() == 0 || metadata.len() > max_bytes
         {
             return Err(io::Error::new(
@@ -796,6 +800,7 @@ fn read_single_bounded_file_from_handle(
             || contents.len() as u64 > max_bytes
             || contents.len() as u64 != expected_length
             || after.len() != expected_length
+            || !has_single_hard_link(&after)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -803,6 +808,7 @@ fn read_single_bounded_file_from_handle(
             ));
         }
         found = Some(contents);
+        opened_file = Some(file);
     }
 
     let contents = found.ok_or_else(|| io::Error::new(
@@ -839,9 +845,43 @@ fn read_single_bounded_file_from_handle(
             "result entry is no longer an ordinary regular file",
         ));
     }
+    let final_file_metadata = opened_file
+        .as_ref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "result file handle was lost"))?
+        .metadata()?;
+    if !final_file_metadata.is_file()
+        || is_reparse_or_symlink(&final_file_metadata)
+        || !has_single_hard_link(&final_file_metadata)
+        || final_file_metadata.len() != contents.len() as u64
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "result file identity, link count, or size changed while being read",
+        ));
+    }
     Ok(contents)
 }
 
+/// Guest-written result files must have exactly one filesystem link. This
+/// prevents a result entry from aliasing another host-visible file through a
+/// hard link, even though hard links are not symlinks or reparse points.
+fn has_single_hard_link(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        metadata.nlink() == 1
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.number_of_links() == 1
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = metadata;
+        false
+    }
+}
 
 fn is_single_normal_component(name: &OsStr) -> bool {
     let mut components = Path::new(name).components();
@@ -3457,6 +3497,27 @@ mod tests {
         assert_eq!(fs::read(original.join("result.json")).unwrap(), b"replacement");
 
         drop(held);
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn bounded_single_file_reader_rejects_hard_linked_result_file() {
+        let parent = make_test_directory("bounded-result-hard-link");
+        let result_dir = parent.join("result");
+        let external = parent.join("outside.json");
+        fs::create_dir(&result_dir).unwrap();
+        fs::write(&external, b"shared-result-bytes").unwrap();
+        fs::hard_link(&external, result_dir.join("result.json"))
+            .expect("the test filesystem should support hard links");
+
+        assert!(
+            read_single_bounded_file_from_directory(
+                &result_dir, OsStr::new("result.json"), 128,
+            ).is_err(),
+            "a result file with another filesystem link must be rejected"
+        );
+        assert_eq!(fs::read(&external).unwrap(), b"shared-result-bytes");
         fs::remove_dir_all(parent).unwrap();
     }
 
