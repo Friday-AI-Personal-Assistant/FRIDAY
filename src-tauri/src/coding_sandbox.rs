@@ -589,7 +589,7 @@ fn verify_staged_guest_runtime_bundle(
     plan: &GuestRuntimeProvisioningPlan,
 ) -> Result<VerifiedGuestRuntimeStaging, String> {
     verify_staged_guest_runtime_bundle_with_final_root(
-        staging_root_path, staging_root, manifest, anchor, plan,
+        staging_root_path, &staging_root, manifest, anchor, plan,
         PathBuf::from(fixed_guest_runtime_root(anchor.operation)),
     )
 }
@@ -7695,7 +7695,7 @@ mod tests {
         ).unwrap();
 
         let preflight = authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle,
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).unwrap();
         assert_eq!(preflight.authorization, authorization);
@@ -7760,7 +7760,7 @@ mod tests {
         let unexpected = provisioning.staging_root.join("unexpected.bin");
         fs::write(&unexpected, b"unlisted").unwrap();
         assert!(authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle.try_clone().unwrap(),
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "preflight must reject additions after the earlier proof");
         fs::remove_file(&unexpected).unwrap();
@@ -7769,7 +7769,7 @@ mod tests {
         let marker_bytes = fs::read(&marker).unwrap();
         fs::write(&marker, b"invalid-owner-marker").unwrap();
         assert!(authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle.try_clone().unwrap(),
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "preflight must authenticate the ownership marker again");
         fs::write(&marker, marker_bytes).unwrap();
@@ -7816,7 +7816,7 @@ mod tests {
             &parent, decoy_path.file_name().unwrap(),
         ).unwrap();
         assert!(authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, decoy_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &decoy_handle.try_clone().unwrap(),
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "preflight must reject a sibling directory handle with a stale identity");
 
@@ -11892,7 +11892,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         ).unwrap();
 
         execute_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle,
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).unwrap();
 
@@ -11938,7 +11938,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let marker_bytes = fs::read(&marker).unwrap();
         fs::write(&payload, b"tampered-payload").unwrap();
         assert!(execute_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle.try_clone().unwrap(),
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "tampered payload must be rejected before the first deletion");
         assert_eq!(fs::read(&payload).unwrap(), b"tampered-payload");
@@ -11949,7 +11949,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let unexpected = provisioning.staging_root.join("unexpected.bin");
         fs::write(&unexpected, b"unlisted-data").unwrap();
         assert!(execute_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle.try_clone().unwrap(),
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "unexpected entries must be rejected before the first deletion");
         assert_eq!(fs::read(&payload).unwrap(), b"cargo-fixture");
@@ -11997,7 +11997,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             &parent, decoy_path.file_name().unwrap(),
         ).unwrap();
         assert!(execute_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, decoy_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &decoy_handle.try_clone().unwrap(),
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "a sibling directory handle must not authorize deletion of the staged bundle");
         assert_eq!(
