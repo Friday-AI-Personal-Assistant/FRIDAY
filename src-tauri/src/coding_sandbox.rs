@@ -3945,6 +3945,23 @@ fn advance_guest_result_storage_state(
     if state == GuestResultStorageState::RecoveryRequired {
         return Err("Result storage is preserved for recovery; automatic lifecycle actions are blocked.".into());
     }
+
+    // The journal records guest-stop evidence on every transition so recovery
+    // cannot infer that a later cleanup step was safe from an earlier state
+    // label alone. Pre-stop transitions must not claim shutdown; all transitions
+    // that revoke access or dismantle storage must carry positive stop evidence.
+    let stop_evidence_required = matches!(
+        event,
+        GuestResultStorageEvent::ConfirmGuestStopped
+            | GuestResultStorageEvent::RevokeShare
+            | GuestResultStorageEvent::BeginUnmount
+            | GuestResultStorageEvent::CompleteUnmount
+            | GuestResultStorageEvent::DetachVerified
+            | GuestResultStorageEvent::DeleteVerified
+    );
+    if guest_stopped != stop_evidence_required {
+        return Err("The result-storage transition has missing or inconsistent guest-stop evidence.".into());
+    }
     if !ownership_verified {
         return Err("Result-storage ownership could not be verified; the operation was refused.".into());
     }
@@ -10853,7 +10870,12 @@ mod tests {
             E::BeginNtfsFormat, E::CompleteNtfsFormat, E::BeginMount, E::CompleteMount,
             E::GrantShare, E::ConfirmGuestStopped, E::RevokeShare, E::BeginUnmount,
             E::CompleteUnmount, E::DetachVerified, E::DeleteVerified] {
-            state = advance_guest_result_storage_state(state, event, true, event == E::ConfirmGuestStopped)
+            let guest_stopped = matches!(
+                event,
+                E::ConfirmGuestStopped | E::RevokeShare | E::BeginUnmount
+                    | E::CompleteUnmount | E::DetachVerified | E::DeleteVerified
+            );
+            state = advance_guest_result_storage_state(state, event, true, guest_stopped)
                 .expect("valid lifecycle transition should succeed");
         }
         assert_eq!(state, S::Removed);
@@ -10884,6 +10906,108 @@ mod tests {
         use GuestResultStorageState as S;
         assert!(advance_guest_result_storage_state(S::Shared, E::ConfirmGuestStopped, true, false).is_err());
         assert_eq!(advance_guest_result_storage_state(S::Shared, E::ConfirmGuestStopped, true, true).unwrap(), S::GuestStopped);
+    }
+
+    #[test]
+    fn result_storage_lifecycle_requires_consistent_stop_evidence_before_and_after_shutdown() {
+        use GuestResultStorageEvent as E;
+        use GuestResultStorageState as S;
+
+        // Before shutdown, no transition may claim that the guest has stopped.
+        for (state, event) in [
+            (S::Planned, E::CreateVerified),
+            (S::Created, E::AttachVerified),
+            (S::Attached, E::BeginGptInitialization),
+            (S::GptWriteInProgress, E::CompleteGptInitialization),
+            (S::Partitioned, E::BeginNtfsFormat),
+            (S::NtfsFormatInProgress, E::CompleteNtfsFormat),
+            (S::Formatted, E::BeginMount),
+            (S::MountInProgress, E::CompleteMount),
+            (S::Mounted, E::GrantShare),
+        ] {
+            assert!(
+                advance_guest_result_storage_state(state, event, true, true).is_err(),
+                "pre-stop transition {event:?} must not claim guest shutdown"
+            );
+        }
+
+        // Once shutdown begins, every access-revocation and cleanup transition
+        // must carry positive evidence, not merely inherit a prior state label.
+        for (state, event) in [
+            (S::Shared, E::ConfirmGuestStopped),
+            (S::GuestStopped, E::RevokeShare),
+            (S::ShareRevoked, E::BeginUnmount),
+            (S::UnmountInProgress, E::CompleteUnmount),
+            (S::Unmounted, E::DetachVerified),
+            (S::Detached, E::DeleteVerified),
+        ] {
+            assert!(
+                advance_guest_result_storage_state(state, event, true, false).is_err(),
+                "post-stop transition {event:?} must carry positive guest-stop evidence"
+            );
+        }
+
+        assert_eq!(
+            advance_guest_result_storage_state(S::GuestStopped, E::RevokeShare, true, true).unwrap(),
+            S::ShareRevoked
+        );
+        assert_eq!(
+            advance_guest_result_storage_state(S::ShareRevoked, E::BeginUnmount, true, true).unwrap(),
+            S::UnmountInProgress
+        );
+    }
+
+    #[test]
+    fn result_storage_journal_rejects_tampered_stop_evidence_in_every_phase() {
+        use GuestResultStorageEvent as E;
+
+        let mut journal = valid_result_storage_journal();
+        for event in [
+            E::AttachVerified,
+            E::BeginGptInitialization,
+            E::CompleteGptInitialization,
+            E::BeginNtfsFormat,
+            E::CompleteNtfsFormat,
+            E::BeginMount,
+            E::CompleteMount,
+            E::GrantShare,
+            E::ConfirmGuestStopped,
+            E::RevokeShare,
+            E::BeginUnmount,
+            E::CompleteUnmount,
+            E::DetachVerified,
+            E::DeleteVerified,
+        ] {
+            let stopped = matches!(
+                event,
+                E::ConfirmGuestStopped | E::RevokeShare | E::BeginUnmount
+                    | E::CompleteUnmount | E::DetachVerified | E::DeleteVerified
+            );
+            journal = append_guest_result_storage_journal_entry(&journal, event, true, stopped)
+                .expect("the correctly evidenced lifecycle should advance");
+        }
+        assert_eq!(
+            validate_guest_result_storage_journal(&journal).unwrap(),
+            GuestResultStorageState::Removed
+        );
+
+        for index in 0..journal.entries.len() {
+            let event = journal.entries[index].event;
+            if event == E::PreserveForRecovery {
+                continue;
+            }
+            let expected = matches!(
+                event,
+                E::ConfirmGuestStopped | E::RevokeShare | E::BeginUnmount
+                    | E::CompleteUnmount | E::DetachVerified | E::DeleteVerified
+            );
+            let mut tampered = journal.clone();
+            tampered.entries[index].guest_stopped = !expected;
+            assert!(
+                validate_guest_result_storage_journal(&tampered).is_err(),
+                "tampered guest-stop evidence was accepted for {event:?}"
+            );
+        }
     }
 
     #[test]
