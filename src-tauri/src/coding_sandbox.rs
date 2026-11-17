@@ -2109,6 +2109,8 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
     }
     let journal = latest.ok_or_else(|| "No complete cleanup journal is available for markerless recovery.".to_string())?;
     validate_guest_runtime_cleanup_journal(&journal)?;
+    let expected_generation_count = u32::try_from(generations.len())
+        .map_err(|_| "The cleanup journal contains too many generations.".to_string())?;
     if journal.operation != anchor.operation
         || journal.bundle_id != anchor.bundle_id
         || journal.manifest_sha256 != anchor.manifest_sha256.to_ascii_lowercase()
@@ -2117,7 +2119,7 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
         || journal.parent_identity_volume != parent_identity.0
         || journal.parent_identity_file != parent_identity.1
         || journal.entries.len() != generations.len()
-        || journal.entries.last().map(|entry| entry.sequence) != Some(generations.len())
+        || journal.entries.last().map(|entry| entry.sequence) != Some(expected_generation_count)
     {
         return Err("The latest cleanup journal differs from the authenticated runtime plan.".into());
     }
