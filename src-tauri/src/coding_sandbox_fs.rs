@@ -781,7 +781,7 @@ fn read_single_bounded_file_from_handle(
         let mut file = open_file_nofollow(directory, &name)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() || is_reparse_or_symlink(&metadata)
-            || !has_single_hard_link(&metadata)
+            || !has_single_hard_link(&file)
             || metadata.len() == 0 || metadata.len() > max_bytes
         {
             return Err(io::Error::new(
@@ -800,7 +800,7 @@ fn read_single_bounded_file_from_handle(
             || contents.len() as u64 > max_bytes
             || contents.len() as u64 != expected_length
             || after.len() != expected_length
-            || !has_single_hard_link(&after)
+            || !has_single_hard_link(&file)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -851,7 +851,7 @@ fn read_single_bounded_file_from_handle(
         .metadata()?;
     if !final_file_metadata.is_file()
         || is_reparse_or_symlink(&final_file_metadata)
-        || !has_single_hard_link(&final_file_metadata)
+        || !has_single_hard_link(opened_file.as_ref().expect("checked above"))
         || final_file_metadata.len() != contents.len() as u64
     {
         return Err(io::Error::new(
@@ -865,20 +865,33 @@ fn read_single_bounded_file_from_handle(
 /// Guest-written result files must have exactly one filesystem link. This
 /// prevents a result entry from aliasing another host-visible file through a
 /// hard link, even though hard links are not symlinks or reparse points.
-fn has_single_hard_link(metadata: &std::fs::Metadata) -> bool {
+fn has_single_hard_link(file: &File) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        metadata.nlink() == 1
+        file.metadata().map(|metadata| metadata.nlink() == 1).unwrap_or(false)
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        metadata.number_of_links() == 1
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::{
+            Foundation::HANDLE,
+            Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION},
+        };
+
+        let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // Query the link count from the exact open file handle. The Windows
+        // MetadataExt::number_of_links API remains unstable on our toolchain.
+        unsafe {
+            GetFileInformationByHandle(
+                file.as_raw_handle() as HANDLE,
+                &mut information,
+            ) != 0 && information.nNumberOfLinks == 1
+        }
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = metadata;
+        let _ = file;
         false
     }
 }
