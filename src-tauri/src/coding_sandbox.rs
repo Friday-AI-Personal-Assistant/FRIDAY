@@ -927,6 +927,111 @@ fn authorize_guest_runtime_staging_cleanup_preflight(
     })
 }
 
+/// Revalidate a runtime staging tree after an interrupted cleanup. Unlike the
+/// initial full-bundle authorization, this accepts only *missing* authenticated
+/// payload files/directories. The marker must remain byte-for-byte authenticated;
+/// every remaining entry must be in the original manifest and every remaining
+/// payload is re-hashed through a no-follow bounded read. No mutation occurs.
+#[allow(dead_code)]
+fn authorize_guest_runtime_staging_cleanup_progress_preflight(
+    parent_path: &Path,
+    parent_handle: &File,
+    staging_root_path: &Path,
+    staging_root: &File,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+    cleanup: &GuestRuntimeStagingCleanupPlan,
+) -> Result<VerifiedGuestRuntimeStagingCleanupPreflight, String> {
+    authenticate_guest_runtime_manifest(anchor.operation, manifest, anchor)?;
+    validate_guest_runtime_provisioning_plan_with_final_root(
+        manifest, anchor, provisioning, provisioning.final_root.clone(),
+    )?;
+    if staging_root_path != provisioning.staging_root
+        || staging_root_path.parent() != Some(parent_path)
+        || provisioning.staging_root.parent() != Some(parent_path)
+    {
+        return Err("Runtime cleanup recovery path differs from the authenticated staging plan.".into());
+    }
+
+    let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        parent_path, parent_handle,
+    ).map_err(|_| "Runtime cleanup recovery could not verify its parent handle.".to_string())?;
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        staging_root_path, staging_root,
+    ).map_err(|_| "Runtime cleanup recovery could not verify its staging handle.".to_string())?;
+    if parent_identity == (0, 0) || root_identity == (0, 0) {
+        return Err("Runtime cleanup recovery encountered an invalid directory identity.".into());
+    }
+
+    let expected_marker = build_guest_runtime_staging_owner_marker(manifest, anchor)?;
+    let marker = crate::coding_sandbox_fs::read_bounded_relative_file(
+        staging_root, ".friday-runtime-owner.json", 16 * 1024,
+    ).map_err(|_| "Runtime cleanup recovery requires the authenticated ownership marker.".to_string())?;
+    if marker != expected_marker {
+        return Err("Runtime cleanup recovery ownership marker does not match the authenticated bundle.".into());
+    }
+
+    let authorization = GuestRuntimeStagingCleanupAuthorization {
+        operation: anchor.operation,
+        parent_path: parent_path.to_path_buf(),
+        parent_identity,
+        staging_root: staging_root_path.to_path_buf(),
+        root_identity,
+        bundle_id: anchor.bundle_id.clone(),
+        manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+        artifact_count: manifest.artifacts.len(),
+    };
+    validate_guest_runtime_staging_cleanup_plan(
+        &authorization, manifest, anchor, provisioning, cleanup,
+    )?;
+
+    let (actual_files, actual_directories) =
+        crate::coding_sandbox_fs::collect_runtime_tree_inventory(staging_root, 32, 1281)
+            .map_err(|_| "Runtime cleanup recovery found an unsafe or excessive tree entry.".to_string())?;
+    let expected_files = cleanup.payload_files.iter()
+        .map(|item| (item.relative_path.to_ascii_lowercase(), item))
+        .collect::<BTreeMap<_, _>>();
+    let expected_directories = cleanup.directories.iter()
+        .map(|item| item.to_ascii_lowercase())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut marker_count = 0usize;
+    for path in &actual_files {
+        if path.eq_ignore_ascii_case(&cleanup.ownership_marker) {
+            marker_count += 1;
+            continue;
+        }
+        let item = expected_files.get(&path.to_ascii_lowercase())
+            .ok_or("Runtime cleanup recovery found an unrecognized file; it was preserved.")?;
+        let bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
+            staging_root, &item.relative_path, item.max_bytes,
+        ).map_err(|_| "A remaining runtime payload could not be safely verified.".to_string())?;
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(&bytes)
+            .iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        if bytes.is_empty() || bytes.len() as u64 > item.max_bytes || digest != item.sha256 {
+            return Err("A remaining runtime payload differs from its authenticated manifest entry.".into());
+        }
+    }
+    if marker_count != 1 || actual_directories.iter()
+        .any(|path| !expected_directories.contains(&path.to_ascii_lowercase()))
+    {
+        return Err("Runtime cleanup recovery found a missing marker or unrecognized directory.".into());
+    }
+
+    let parent_recheck = crate::coding_sandbox_fs::verified_directory_identity(parent_path, parent_handle)
+        .map_err(|_| "Runtime cleanup recovery could not recheck its parent identity.".to_string())?;
+    let root_recheck = crate::coding_sandbox_fs::verified_directory_identity(staging_root_path, staging_root)
+        .map_err(|_| "Runtime cleanup recovery could not recheck its root identity.".to_string())?;
+    if parent_recheck != parent_identity || root_recheck != root_identity {
+        return Err("Runtime cleanup recovery directory identity changed during verification.".into());
+    }
+    Ok(VerifiedGuestRuntimeStagingCleanupPreflight {
+        authorization,
+        cleanup: cleanup.clone(),
+    })
+}
+
 /// Open the parent directory of one canonical manifest-relative path using
 /// only no-follow, handle-relative child opens. The returned handle is the
 /// only base used for the subsequent file disposition.
