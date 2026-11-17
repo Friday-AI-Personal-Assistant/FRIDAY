@@ -11858,4 +11858,203 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
     }
 
 
+    #[cfg(windows)]
+    #[test]
+    fn runtime_staging_cleanup_executor_removes_only_authenticated_complete_bundle() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-cleanup-executor-success");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, root.join("published-runtime"),
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![(
+            PathBuf::from("bin/cargo.exe"),
+            b"cargo-fixture".to_vec(),
+        )];
+        let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &provisioning, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let authorization = authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning,
+        ).unwrap();
+        let cleanup = build_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &provisioning,
+        ).unwrap();
+
+        execute_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).unwrap();
+
+        assert!(!provisioning.staging_root.exists(),
+            "successful authenticated cleanup must remove the now-empty staging root");
+        assert!(root.join("published-runtime").exists() == false,
+            "cleanup must not create or modify the final runtime destination");
+        drop(staging_handle);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_staging_cleanup_executor_rejects_tampering_and_unexpected_entries_before_mutation() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-cleanup-executor-reject");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, root.join("published-runtime"),
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![(
+            PathBuf::from("bin/cargo.exe"),
+            b"cargo-fixture".to_vec(),
+        )];
+        let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &provisioning, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let authorization = authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning,
+        ).unwrap();
+        let cleanup = build_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &provisioning,
+        ).unwrap();
+
+        let payload = provisioning.staging_root.join("bin").join("cargo.exe");
+        let marker = provisioning.staging_root.join(".friday-runtime-owner.json");
+        let marker_bytes = fs::read(&marker).unwrap();
+        fs::write(&payload, b"tampered-payload").unwrap();
+        assert!(execute_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).is_err(), "tampered payload must be rejected before the first deletion");
+        assert_eq!(fs::read(&payload).unwrap(), b"tampered-payload");
+        assert_eq!(fs::read(&marker).unwrap(), marker_bytes);
+        assert!(provisioning.staging_root.exists());
+
+        fs::write(&payload, b"cargo-fixture").unwrap();
+        let unexpected = provisioning.staging_root.join("unexpected.bin");
+        fs::write(&unexpected, b"unlisted-data").unwrap();
+        assert!(execute_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).is_err(), "unexpected entries must be rejected before the first deletion");
+        assert_eq!(fs::read(&payload).unwrap(), b"cargo-fixture");
+        assert_eq!(fs::read(&marker).unwrap(), marker_bytes);
+        assert_eq!(fs::read(&unexpected).unwrap(), b"unlisted-data");
+        assert!(provisioning.staging_root.exists());
+
+        drop(staging_handle);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_staging_cleanup_executor_rejects_substituted_root_handle_without_touching_bundle() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-cleanup-executor-identity");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, root.join("published-runtime"),
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![(
+            PathBuf::from("bin/cargo.exe"),
+            b"cargo-fixture".to_vec(),
+        )];
+        let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &provisioning, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let authorization = authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning,
+        ).unwrap();
+        let cleanup = build_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &provisioning,
+        ).unwrap();
+
+        let decoy_path = root.join("decoy-staging");
+        fs::create_dir(&decoy_path).unwrap();
+        let decoy_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, decoy_path.file_name().unwrap(),
+        ).unwrap();
+        assert!(execute_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &decoy_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).is_err(), "a sibling directory handle must not authorize deletion of the staged bundle");
+        assert_eq!(
+            fs::read(provisioning.staging_root.join("bin").join("cargo.exe")).unwrap(),
+            b"cargo-fixture",
+        );
+        assert!(provisioning.staging_root.exists());
+        assert!(decoy_path.exists());
+
+        drop(decoy_handle);
+        drop(staging_handle);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_staging_cleanup_executor_fails_closed_without_mutating_bundle() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-cleanup-executor-unix");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, root.join("published-runtime"),
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![(
+            PathBuf::from("bin/cargo.exe"),
+            b"cargo-fixture".to_vec(),
+        )];
+        let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &provisioning, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let authorization = authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning,
+        ).unwrap();
+        let cleanup = build_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &provisioning,
+        ).unwrap();
+
+        let error = execute_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).unwrap_err();
+        assert!(error.contains("not supported"));
+        assert_eq!(
+            fs::read(provisioning.staging_root.join("bin").join("cargo.exe")).unwrap(),
+            b"cargo-fixture",
+        );
+        assert!(provisioning.staging_root.join(".friday-runtime-owner.json").exists());
+        assert!(provisioning.staging_root.exists());
+
+        drop(staging_handle);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+
 }
