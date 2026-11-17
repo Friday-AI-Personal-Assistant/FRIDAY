@@ -1153,6 +1153,57 @@ fn persist_guest_runtime_cleanup_journal(
 /// Load every immutable generation and require a contiguous append-only history.
 /// A gap, extra entry, incomplete generation, changed identity, or foreign run
 /// makes the journal unusable for recovery.
+/// Create the private journal directory and durably record the initial
+/// Prepared state before any authenticated runtime payload can be removed.
+fn begin_guest_runtime_cleanup_journal(
+    authorization: &GuestRuntimeStagingCleanupAuthorization,
+) -> Result<(PathBuf, GuestRuntimeCleanupJournal), String> {
+    let root = guest_runtime_cleanup_journal_root_path(
+        &authorization.parent_path, &authorization.bundle_id,
+    )?;
+    fs::create_dir(&root)
+        .map_err(|_| "FRIDAY could not exclusively create the private runtime cleanup journal.".to_string())?;
+    secure_private_workspace_directory(&root)
+        .map_err(|_| "FRIDAY could not secure the runtime cleanup journal; no cleanup was started.".to_string())?;
+    let journal = GuestRuntimeCleanupJournal {
+        schema_version: GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA,
+        operation: authorization.operation,
+        bundle_id: authorization.bundle_id.clone(),
+        manifest_sha256: authorization.manifest_sha256.to_ascii_lowercase(),
+        parent_path: authorization.parent_path.to_string_lossy().into_owned(),
+        staging_root_path: authorization.staging_root.to_string_lossy().into_owned(),
+        parent_identity_volume: authorization.parent_identity.0,
+        parent_identity_file: authorization.parent_identity.1,
+        root_identity_volume: authorization.root_identity.0,
+        root_identity_file: authorization.root_identity.1,
+        entries: vec![GuestRuntimeCleanupJournalEntry {
+            sequence: 1,
+            phase: GuestRuntimeCleanupJournalPhase::Prepared,
+        }],
+    };
+    persist_guest_runtime_cleanup_journal(&root, &journal)?;
+    Ok((root, journal))
+}
+
+/// Append and read-back verify one cleanup phase. Callers must invoke this only
+/// after independently verifying the filesystem state represented by the phase.
+fn advance_guest_runtime_cleanup_journal(
+    root: &Path,
+    current: &GuestRuntimeCleanupJournal,
+    phase: GuestRuntimeCleanupJournalPhase,
+) -> Result<GuestRuntimeCleanupJournal, String> {
+    let mut next = current.clone();
+    let sequence = u32::try_from(next.entries.len() + 1)
+        .map_err(|_| "The runtime cleanup journal transition count overflowed.".to_string())?;
+    next.entries.push(GuestRuntimeCleanupJournalEntry { sequence, phase });
+    persist_guest_runtime_cleanup_journal(root, &next)?;
+    let loaded = load_guest_runtime_cleanup_journal(root, &next)?;
+    if loaded != next {
+        return Err("The runtime cleanup journal did not retain its exact appended phase.".into());
+    }
+    Ok(loaded)
+}
+
 #[allow(dead_code)]
 fn load_guest_runtime_cleanup_journal(
     root: &Path,
@@ -1427,6 +1478,9 @@ fn execute_verified_guest_runtime_staging_cleanup(
     let plan = &preflight.cleanup;
     let root_name = plan.staging_root.file_name()
         .ok_or("The authenticated runtime staging root has no final path component.")?;
+    // The journal is created and flushed before the first deletion. An existing
+    // journal is treated as recovery evidence, never overwritten by a fresh run.
+    let (journal_root, mut journal) = begin_guest_runtime_cleanup_journal(authorization)?;
 
     let check_identities = || -> Result<(), String> {
         let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
@@ -1491,6 +1545,10 @@ fn execute_verified_guest_runtime_staging_cleanup(
         return Err("Runtime staging root contains unexpected entries; the ownership marker was preserved.".into());
     }
 
+    journal = advance_guest_runtime_cleanup_journal(
+        &journal_root, &journal, GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+    )?;
+
     // The owner marker is the final file and is checked against the exact
     // authenticated byte length and digest captured in the cleanup plan.
     check_identities()?;
@@ -1506,6 +1564,9 @@ fn execute_verified_guest_runtime_staging_cleanup(
     if !remaining_files.is_empty() || !remaining_directories.is_empty() {
         return Err("Runtime staging root is not empty after authenticated payload cleanup.".into());
     }
+    journal = advance_guest_runtime_cleanup_journal(
+        &journal_root, &journal, GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
+    )?;
 
     check_identities()?;
     // The caller transfers ownership of this handle. Close it before opening
@@ -1515,6 +1576,10 @@ fn execute_verified_guest_runtime_staging_cleanup(
     crate::coding_sandbox_fs::remove_verified_runtime_root_directory(
         parent_handle, root_name, authorization.parent_identity, authorization.root_identity,
     ).map_err(|_| "The authenticated empty runtime staging root could not be safely removed.".to_string())?;
+    journal = advance_guest_runtime_cleanup_journal(
+        &journal_root, &journal, GuestRuntimeCleanupJournalPhase::StagingRootRemoved,
+    )?;
+    let _ = journal;
     Ok(())
 }
 
