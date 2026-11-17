@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env,
     ffi::OsStr,
     fs::{self, File, OpenOptions},
@@ -1054,6 +1054,42 @@ fn guest_runtime_cleanup_journal_generation_path(root: &Path, generation: usize)
     root.join(format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_GENERATION_PREFIX}{generation:02}"))
 }
 
+/// Enumerate the complete journal layout through the already-pinned root handle.
+/// Only contiguous generation directories, each containing exactly one state
+/// file, are accepted. This avoids path-based existence probes and rejects
+/// unexpected files, nested directories, and substituted entry types.
+fn guest_runtime_cleanup_journal_generations_from_handle(
+    root_handle: &File,
+) -> Result<Vec<usize>, String> {
+    let (files, directories) = crate::coding_sandbox_fs::collect_runtime_tree_inventory(
+        root_handle,
+        2,
+        MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES * 2,
+    ).map_err(|_| "The cleanup journal root contains an unsafe or oversized entry layout.".to_string())?;
+    let directory_set = directories.into_iter().collect::<BTreeSet<_>>();
+    let file_set = files.into_iter().collect::<BTreeSet<_>>();
+    if directory_set.len() > MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES
+        || directory_set.len() != file_set.len()
+    {
+        return Err("The cleanup journal root does not contain complete bounded generations.".into());
+    }
+    let mut generations = Vec::with_capacity(directory_set.len());
+    let mut expected_files = BTreeSet::new();
+    for generation in 1..=directory_set.len() {
+        let directory = format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_GENERATION_PREFIX}{generation:02}");
+        let file = format!("{directory}\\\\{GUEST_RUNTIME_CLEANUP_JOURNAL_FILE}");
+        if !directory_set.contains(&directory) || !file_set.contains(&file) {
+            return Err("The cleanup journal contains a generation gap or unexpected entry.".into());
+        }
+        expected_files.insert(file);
+        generations.push(generation);
+    }
+    if expected_files != file_set || directory_set.len() != generations.len() {
+        return Err("The cleanup journal contains unexpected files or generation directories.".into());
+    }
+    Ok(generations)
+}
+
 fn guest_runtime_cleanup_journal_root_identity(root: &Path) -> Result<(u64, u64), String> {
     let handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
         .map_err(|_| "The guest runtime cleanup journal root could not be opened safely.".to_string())?;
@@ -1198,38 +1234,30 @@ fn load_latest_guest_runtime_cleanup_journal(
     let journal_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &journal_root_handle)
         .map_err(|_| "The cleanup journal root identity could not be verified for recovery.".to_string())?;
     let mut latest: Option<GuestRuntimeCleanupJournal> = None;
-    let mut gap_seen = false;
-    for generation in 1..=MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
-        let path = guest_runtime_cleanup_journal_generation_path(root, generation);
-        match fs::symlink_metadata(&path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => gap_seen = true,
-            Err(_) => return Err("A cleanup journal generation could not be inspected.".into()),
-            Ok(_) if gap_seen => return Err("The cleanup journal contains a generation gap.".into()),
-            Ok(_) => {
-                let current = read_guest_runtime_cleanup_journal_generation_from_handle(root, &journal_root_handle, generation)?;
-                if current.operation != authorization.operation
-                    || current.bundle_id != authorization.bundle_id
-                    || current.manifest_sha256 != authorization.manifest_sha256
-                    || current.parent_path != authorization.parent_path.to_string_lossy()
-                    || current.staging_root_path != authorization.staging_root.to_string_lossy()
-                    || current.parent_identity_volume != authorization.parent_identity.0
-                    || current.parent_identity_file != authorization.parent_identity.1
-                    || (current.journal_root_identity_volume, current.journal_root_identity_file) != journal_root_identity
-                    || current.root_identity_volume != authorization.root_identity.0
-                    || current.root_identity_file != authorization.root_identity.1
-                {
-                    return Err("The cleanup journal is bound to a different runtime identity.".into());
-                }
-                if let Some(previous) = &latest {
-                    if current.entries.len() != previous.entries.len() + 1
-                        || current.entries[..previous.entries.len()] != previous.entries
-                    {
-                        return Err("The cleanup journal history is not a contiguous append-only sequence.".into());
-                    }
-                }
-                latest = Some(current);
+    let generations = guest_runtime_cleanup_journal_generations_from_handle(&journal_root_handle)?;
+    for generation in generations {
+        let current = read_guest_runtime_cleanup_journal_generation_from_handle(root, &journal_root_handle, generation)?;
+        if current.operation != authorization.operation
+            || current.bundle_id != authorization.bundle_id
+            || current.manifest_sha256 != authorization.manifest_sha256
+            || current.parent_path != authorization.parent_path.to_string_lossy()
+            || current.staging_root_path != authorization.staging_root.to_string_lossy()
+            || current.parent_identity_volume != authorization.parent_identity.0
+            || current.parent_identity_file != authorization.parent_identity.1
+            || (current.journal_root_identity_volume, current.journal_root_identity_file) != journal_root_identity
+            || current.root_identity_volume != authorization.root_identity.0
+            || current.root_identity_file != authorization.root_identity.1
+        {
+            return Err("The cleanup journal is bound to a different runtime identity.".into());
+        }
+        if let Some(previous) = &latest {
+            if current.entries.len() != previous.entries.len() + 1
+                || current.entries[..previous.entries.len()] != previous.entries
+            {
+                return Err("The cleanup journal history is not a contiguous append-only sequence.".into());
             }
         }
+        latest = Some(current);
     }
     latest.ok_or_else(|| "No authenticated runtime cleanup journal is available for recovery.".into())
 }
@@ -1994,39 +2022,31 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
     let journal_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &journal_root_handle)
         .map_err(|_| "The cleanup journal root identity could not be verified for recovery.".to_string())?;
     let mut latest: Option<GuestRuntimeCleanupJournal> = None;
-    let mut gap_seen = false;
-    for generation in 1..=MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
-        let path = guest_runtime_cleanup_journal_generation_path(root, generation);
-        match fs::symlink_metadata(&path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => gap_seen = true,
-            Err(_) => return Err("A cleanup journal generation could not be inspected.".into()),
-            Ok(_) if gap_seen => return Err("The cleanup journal contains a generation gap.".into()),
-            Ok(_) => {
-                let current = read_guest_runtime_cleanup_journal_generation_from_handle(root, &journal_root_handle, generation)?;
-                if current.operation != anchor.operation
-                    || current.bundle_id != anchor.bundle_id
-                    || current.manifest_sha256 != anchor.manifest_sha256.to_ascii_lowercase()
-                    || current.parent_path != parent_path.to_string_lossy()
-                    || current.staging_root_path != provisioning.staging_root.to_string_lossy()
-                    || current.parent_identity_volume != parent_identity.0
-                    || current.parent_identity_file != parent_identity.1
-                    || (current.journal_root_identity_volume, current.journal_root_identity_file) != journal_root_identity
-                    || current.root_identity_volume == 0
-                    || current.root_identity_file == 0
-                    || current.entries.len() != generation
-                {
-                    return Err("The cleanup journal does not match the authenticated runtime identity.".into());
-                }
-                if let Some(previous) = &latest {
-                    if current.entries.len() != previous.entries.len() + 1
-                        || current.entries[..previous.entries.len()] != previous.entries
-                    {
-                        return Err("The cleanup journal history is not contiguous and append-only.".into());
-                    }
-                }
-                latest = Some(current);
+    let generations = guest_runtime_cleanup_journal_generations_from_handle(&journal_root_handle)?;
+    for generation in generations {
+        let current = read_guest_runtime_cleanup_journal_generation_from_handle(root, &journal_root_handle, generation)?;
+        if current.operation != anchor.operation
+            || current.bundle_id != anchor.bundle_id
+            || current.manifest_sha256 != anchor.manifest_sha256.to_ascii_lowercase()
+            || current.parent_path != parent_path.to_string_lossy()
+            || current.staging_root_path != provisioning.staging_root.to_string_lossy()
+            || current.parent_identity_volume != parent_identity.0
+            || current.parent_identity_file != parent_identity.1
+            || (current.journal_root_identity_volume, current.journal_root_identity_file) != journal_root_identity
+            || current.root_identity_volume == 0
+            || current.root_identity_file == 0
+            || current.entries.len() != generation
+        {
+            return Err("The cleanup journal does not match the authenticated runtime identity.".into());
+        }
+        if let Some(previous) = &latest {
+            if current.entries.len() != previous.entries.len() + 1
+                || current.entries[..previous.entries.len()] != previous.entries
+            {
+                return Err("The cleanup journal history is not contiguous and append-only.".into());
             }
         }
+        latest = Some(current);
     }
     let journal = latest.ok_or_else(|| "No complete cleanup journal is available for markerless recovery.".to_string())?;
     validate_guest_runtime_cleanup_journal(&journal)?;
