@@ -861,6 +861,57 @@ fn validate_guest_runtime_staging_cleanup_plan(
     Ok(())
 }
 
+/// A short-lived, read-only capability proving that the authenticated cleanup
+/// plan and both held directory identities were revalidated together. This
+/// object does not authorize deletion by itself and exposes no mutation API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifiedGuestRuntimeStagingCleanupPreflight {
+    authorization: GuestRuntimeStagingCleanupAuthorization,
+    cleanup: GuestRuntimeStagingCleanupPlan,
+}
+
+#[allow(dead_code)]
+fn authorize_guest_runtime_staging_cleanup_preflight(
+    staging: &VerifiedGuestRuntimeStaging,
+    parent_path: &Path,
+    parent_handle: &File,
+    staging_root_path: &Path,
+    staging_root: &File,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+    cleanup: &GuestRuntimeStagingCleanupPlan,
+) -> Result<VerifiedGuestRuntimeStagingCleanupPreflight, String> {
+    let authorization = authorize_verified_guest_runtime_staging_cleanup(
+        staging, parent_path, parent_handle, staging_root_path, staging_root,
+        manifest, anchor, provisioning,
+    )?;
+    validate_guest_runtime_staging_cleanup_plan(
+        &authorization, manifest, anchor, provisioning, cleanup,
+    )?;
+
+    // Recheck both held identities after the potentially expensive exact-tree
+    // and digest verification. This narrows the preflight race window; a real
+    // deletion primitive must repeat these checks while operating relative
+    // to the same held handles immediately before each disposition.
+    let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        parent_path, parent_handle,
+    ).map_err(|_| "Runtime cleanup preflight could not revalidate its parent handle.".to_string())?;
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        staging_root_path, staging_root,
+    ).map_err(|_| "Runtime cleanup preflight could not revalidate its staging handle.".to_string())?;
+    if parent_identity != authorization.parent_identity
+        || root_identity != authorization.root_identity
+    {
+        return Err("Runtime cleanup directory identity changed during preflight.".into());
+    }
+
+    Ok(VerifiedGuestRuntimeStagingCleanupPreflight {
+        authorization,
+        cleanup: cleanup.clone(),
+    })
+}
+
 /// A non-executing, no-overwrite publication intent derived only from a
 /// verified staging proof and the authenticated provisioning plan. This is
 /// not a filesystem rename and does not make the staged bundle executable.
@@ -7439,6 +7490,62 @@ mod tests {
         assert!(authorize_verified_guest_runtime_staging_cleanup(
             &staging, &root, &parent, &plan.staging_root, &staging_handle, &manifest, &anchor, &plan,
         ).is_err(), "changed payload must not receive cleanup authorization");
+
+        drop(staging_handle);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_staging_cleanup_preflight_binds_plan_and_held_directory_identities() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-cleanup-preflight");
+        let final_root = root.join("published-runtime");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, final_root,
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
+        let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &provisioning, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let authorization = authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning,
+        ).unwrap();
+        let cleanup = build_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &provisioning,
+        ).unwrap();
+
+        let preflight = authorize_guest_runtime_staging_cleanup_preflight(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).unwrap();
+        assert_eq!(preflight.authorization, authorization);
+        assert_eq!(preflight.cleanup, cleanup);
+        assert!(provisioning.staging_root.exists(), "read-only preflight must not delete data");
+
+        let mut altered_cleanup = cleanup.clone();
+        altered_cleanup.payload_files[0].sha256 = "0".repeat(64);
+        assert!(authorize_guest_runtime_staging_cleanup_preflight(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning, &altered_cleanup,
+        ).is_err(), "preflight must reject a cleanup plan not derived from the authenticated manifest");
+
+        let other_parent_path = root.join("other-parent");
+        fs::create_dir(&other_parent_path).unwrap();
+        let other_parent = crate::coding_sandbox_fs::open_verified_root_directory(&other_parent_path).unwrap();
+        assert!(authorize_guest_runtime_staging_cleanup_preflight(
+            &staging, &other_parent_path, &other_parent, &provisioning.staging_root,
+            &staging_handle, &manifest, &anchor, &provisioning, &cleanup,
+        ).is_err(), "preflight must reject a substituted parent handle");
+        drop(other_parent);
+        fs::remove_dir(&other_parent_path).unwrap();
 
         drop(staging_handle);
         drop(parent);
