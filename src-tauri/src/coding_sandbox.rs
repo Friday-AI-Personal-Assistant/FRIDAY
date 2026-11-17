@@ -5852,6 +5852,24 @@ struct WindowsSandboxCliPreparedTransaction {
     journal: SandboxSessionJournal,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsSandboxCliRecoveryIntent {
+    Launch,
+    Stop,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowsSandboxCliRecoveryAssessment {
+    run_id: String,
+    expected_session_id: String,
+    intent: WindowsSandboxCliRecoveryIntent,
+    interrupted_state: SandboxSessionState,
+    observed_target_status: Option<WindowsSandboxCliSessionStatus>,
+    observed_session_count: u32,
+    unrelated_session_count: u32,
+    journal: SandboxSessionJournal,
+}
+
 fn valid_windows_sandbox_cli_id(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 36
@@ -6123,11 +6141,31 @@ fn verify_windows_sandbox_cli_session(
     }
 }
 
+/// Validate a decoded CLI inventory again at every authorization boundary.
+/// Parser output is bounded, but callers of these internal helpers must not be
+/// able to smuggle duplicate IDs or an oversized synthetic inventory.
+fn validate_windows_sandbox_cli_inventory(
+    sessions: &[WindowsSandboxCliSession],
+) -> Result<(), String> {
+    if sessions.len() > MAX_WINDOWS_SANDBOX_CLI_SESSIONS {
+        return Err("The Windows Sandbox inventory exceeds FRIDAY's fixed session-count limit.".into());
+    }
+    for (index, session) in sessions.iter().enumerate() {
+        if !valid_windows_sandbox_cli_id(&session.id)
+            || sessions[..index].iter().any(|prior| prior.id.eq_ignore_ascii_case(&session.id))
+        {
+            return Err("The Windows Sandbox inventory contains an invalid or duplicate session identifier.".into());
+        }
+    }
+    Ok(())
+}
+
 /// A new FRIDAY run must never adopt, stop, or reuse a session that existed
 /// before its own launch transaction. The CLI inventory must be empty first.
 fn require_empty_windows_sandbox_cli_inventory(
     sessions: &[WindowsSandboxCliSession],
 ) -> Result<(), String> {
+    validate_windows_sandbox_cli_inventory(sessions)?;
     if sessions.is_empty() {
         Ok(())
     } else {
@@ -6143,6 +6181,7 @@ fn require_exclusive_windows_sandbox_cli_session(
     expected_id: &str,
     expected_status: WindowsSandboxCliSessionStatus,
 ) -> Result<(), String> {
+    validate_windows_sandbox_cli_inventory(sessions)?;
     if !valid_windows_sandbox_cli_id(expected_id) {
         return Err("The expected Windows Sandbox session identifier is invalid.".into());
     }
@@ -6600,6 +6639,84 @@ fn prepare_and_persist_windows_sandbox_cli_stop_transaction(
         return Err("The durable Sandbox stop intent could not be recovered exactly; CLI invocation remains blocked.".into());
     }
     Ok(WindowsSandboxCliPreparedTransaction { plan, journal: recovered })
+}
+
+/// A persisted launch/stop intent without a completed transaction is ambiguous
+/// after restart. Record RecoveryRequired and report observations only: this
+/// function never adopts, starts, stops, confirms exit, or cleans up a session.
+#[allow(dead_code)]
+fn preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
+    root: &Path,
+    expected_run_id: &str,
+    observed_sessions: &[WindowsSandboxCliSession],
+) -> Result<WindowsSandboxCliRecoveryAssessment, String> {
+    validate_windows_sandbox_cli_inventory(observed_sessions)?;
+    if !valid_snapshot_id(expected_run_id) {
+        return Err("The expected Sandbox recovery run identifier is invalid.".into());
+    }
+    let current = load_sandbox_session_journal(root, expected_run_id)?;
+    let state = validate_sandbox_session_journal(&current)?;
+    let (intent, interrupted_state) = match state {
+        SandboxSessionState::LaunchRequested => (
+            WindowsSandboxCliRecoveryIntent::Launch,
+            SandboxSessionState::LaunchRequested,
+        ),
+        SandboxSessionState::StopRequested => (
+            WindowsSandboxCliRecoveryIntent::Stop,
+            SandboxSessionState::StopRequested,
+        ),
+        SandboxSessionState::RecoveryRequired => {
+            let previous = current.entries.last()
+                .map(|entry| entry.previous_state)
+                .ok_or_else(|| "The Sandbox recovery journal has no preceding transition.".to_string())?;
+            let intent = match previous {
+                SandboxSessionState::LaunchRequested => WindowsSandboxCliRecoveryIntent::Launch,
+                SandboxSessionState::StopRequested => WindowsSandboxCliRecoveryIntent::Stop,
+                _ => return Err("The existing recovery record does not represent an interrupted CLI launch or stop intent.".into()),
+            };
+            (intent, previous)
+        }
+        _ => return Err("Only an interrupted durable CLI launch or stop intent can enter this recovery gate.".into()),
+    };
+
+    let expected_session_id = windows_sandbox_cli_id_from_run_id(expected_run_id)?;
+    let observed_target_status = observed_sessions.iter()
+        .find(|session| session.id.eq_ignore_ascii_case(&expected_session_id))
+        .map(|session| session.status);
+    let unrelated_session_count = observed_sessions.len()
+        - usize::from(observed_target_status.is_some());
+
+    let recovered = if state == SandboxSessionState::RecoveryRequired {
+        // Repeated assessment is read-only and idempotent. New observations do
+        // not rewrite the immutable history or upgrade ambiguous evidence.
+        let persisted = load_sandbox_session_journal(root, expected_run_id)?;
+        if persisted != current {
+            return Err("The Sandbox recovery journal changed during its read-only reassessment.".into());
+        }
+        persisted
+    } else {
+        let preserved = append_and_persist_sandbox_session_transition(
+            root, &current, SandboxSessionEvent::PreserveForRecovery, None, false, false,
+        )?;
+        let persisted = load_sandbox_session_journal(root, expected_run_id)?;
+        if persisted != preserved
+            || validate_sandbox_session_journal(&persisted)? != SandboxSessionState::RecoveryRequired
+        {
+            return Err("The interrupted Sandbox transaction could not be durably preserved for manual recovery.".into());
+        }
+        persisted
+    };
+
+    Ok(WindowsSandboxCliRecoveryAssessment {
+        run_id: expected_run_id.to_string(),
+        expected_session_id,
+        intent,
+        interrupted_state,
+        observed_target_status,
+        observed_session_count: observed_sessions.len() as u32,
+        unrelated_session_count: unrelated_session_count as u32,
+        journal: recovered,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13343,6 +13460,173 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         fs::remove_dir_all(start_root).unwrap();
         fs::remove_dir_all(occupied_root).unwrap();
         fs::remove_dir_all(stop_root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_windows_sandbox_cli_intents_are_preserved_for_manual_recovery() {
+        let launch_root = make_test_directory("wsb-interrupted-launch-recovery");
+        secure_private_workspace_directory(&launch_root).unwrap();
+        let launch_run_id = "0123456789abcdef0123456789abcdef";
+        let initial = SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: launch_run_id.into(),
+            entries: Vec::new(),
+        };
+        let config = r#"<Configuration>
+  <VGpu>Disable</VGpu>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\FRIDAY\snapshot</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>C:\FRIDAY\result-mount</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#;
+        let executable = r"C:\Program Files\WindowsApps\wsb.exe";
+        prepare_and_persist_windows_sandbox_cli_start_transaction(
+            executable, config, &launch_root, &initial, &[],
+        ).unwrap();
+        let expected_id = windows_sandbox_cli_id_from_run_id(launch_run_id).unwrap();
+        let appears_running = vec![WindowsSandboxCliSession {
+            id: expected_id.clone(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        }];
+        let assessment = preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
+            &launch_root, launch_run_id, &appears_running,
+        ).unwrap();
+        assert_eq!(assessment.intent, WindowsSandboxCliRecoveryIntent::Launch);
+        assert_eq!(assessment.interrupted_state, SandboxSessionState::LaunchRequested);
+        assert_eq!(assessment.observed_target_status, Some(WindowsSandboxCliSessionStatus::Running));
+        assert_eq!(assessment.unrelated_session_count, 0);
+        assert_eq!(
+            validate_sandbox_session_journal(&assessment.journal).unwrap(),
+            SandboxSessionState::RecoveryRequired,
+        );
+        assert_eq!(
+            assessment.journal.entries.last().unwrap().event,
+            SandboxSessionEvent::PreserveForRecovery,
+        );
+        assert!(assessment.journal.entries.iter().all(|entry| entry.event != SandboxSessionEvent::ConfirmSession
+            && entry.event != SandboxSessionEvent::ConfirmRunning));
+        let generation_count = assessment.journal.entries.len();
+        let foreign = WindowsSandboxCliSession {
+            id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            status: WindowsSandboxCliSessionStatus::Stopped,
+        };
+        let repeated = preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
+            &launch_root, launch_run_id, &[appears_running[0].clone(), foreign],
+        ).unwrap();
+        assert_eq!(repeated.journal.entries.len(), generation_count, "reassessment must not append or rewrite history");
+        assert_eq!(repeated.observed_session_count, 2);
+        assert_eq!(repeated.unrelated_session_count, 1);
+        assert_eq!(repeated.observed_target_status, Some(WindowsSandboxCliSessionStatus::Running));
+        assert!(prepare_and_persist_windows_sandbox_cli_start_transaction(
+            executable, config, &launch_root, &initial, &[],
+        ).is_err(), "a recovery-required launch cannot be replayed");
+
+        let stop_root = make_test_directory("wsb-interrupted-stop-recovery");
+        secure_private_workspace_directory(&stop_root).unwrap();
+        let stop_run_id = "fedcba9876543210fedcba9876543210";
+        let process_identity = SandboxProcessIdentity {
+            session_id: stop_run_id.into(),
+            process_id: 4321,
+            process_creation_time: 987654,
+            image_path: r"C:\Windows\System32\WindowsSandbox.exe".into(),
+        };
+        let mut running_journal = SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: stop_run_id.into(),
+            entries: Vec::new(),
+        };
+        running_journal = append_and_persist_sandbox_session_transition(
+            &stop_root, &running_journal, SandboxSessionEvent::RequestLaunch, None, false, false,
+        ).unwrap();
+        running_journal = append_and_persist_sandbox_session_transition(
+            &stop_root, &running_journal, SandboxSessionEvent::ObserveProcess,
+            Some(&process_identity), false, false,
+        ).unwrap();
+        running_journal = append_and_persist_sandbox_session_transition(
+            &stop_root, &running_journal, SandboxSessionEvent::ConfirmSession,
+            Some(&process_identity), true, false,
+        ).unwrap();
+        running_journal = append_and_persist_sandbox_session_transition(
+            &stop_root, &running_journal, SandboxSessionEvent::ConfirmRunning,
+            Some(&process_identity), true, false,
+        ).unwrap();
+        let stop_session_id = windows_sandbox_cli_id_from_run_id(stop_run_id).unwrap();
+        let running_session = WindowsSandboxCliSession {
+            id: stop_session_id.clone(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        let response = format!(r#"{{"Id":"{}"}}"#, stop_session_id);
+        let receipt = build_windows_sandbox_cli_ownership_receipt(
+            stop_run_id, response.as_bytes(), &[], &[running_session.clone()],
+        ).unwrap();
+        persist_windows_sandbox_cli_ownership_receipt_for_running_journal(
+            &stop_root, &running_journal, &receipt,
+        ).unwrap();
+        prepare_and_persist_windows_sandbox_cli_stop_transaction(
+            executable, &stop_root, stop_run_id, &[running_session.clone()], &process_identity,
+        ).unwrap();
+
+        let absent = preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
+            &stop_root, stop_run_id, &[],
+        ).unwrap();
+        assert_eq!(absent.intent, WindowsSandboxCliRecoveryIntent::Stop);
+        assert_eq!(absent.interrupted_state, SandboxSessionState::StopRequested);
+        assert_eq!(absent.observed_target_status, None);
+        assert_eq!(validate_sandbox_session_journal(&absent.journal).unwrap(), SandboxSessionState::RecoveryRequired);
+        assert!(absent.journal.entries.iter().all(|entry| entry.event != SandboxSessionEvent::ConfirmStopped));
+        assert!(verify_windows_sandbox_cli_stop_completion_from_persisted_state(
+            &stop_root, stop_run_id, true, &[],
+        ).is_err(), "an absent CLI session after a crash is not positive process-exit evidence");
+
+        let still_running = preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
+            &stop_root, stop_run_id, &[running_session],
+        ).unwrap();
+        assert_eq!(still_running.observed_target_status, Some(WindowsSandboxCliSessionStatus::Running));
+        assert_eq!(still_running.journal.entries.len(), absent.journal.entries.len());
+
+        let invalid_root = make_test_directory("wsb-invalid-recovery-inventory");
+        secure_private_workspace_directory(&invalid_root).unwrap();
+        let invalid_initial = SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            entries: Vec::new(),
+        };
+        prepare_and_persist_windows_sandbox_cli_start_transaction(
+            executable, config, &invalid_root, &invalid_initial, &[],
+        ).unwrap();
+        let invalid = WindowsSandboxCliSession {
+            id: "not-a-session-id".into(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        assert!(preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
+            &invalid_root, &invalid_initial.run_id, &[invalid],
+        ).is_err());
+        assert_eq!(
+            validate_sandbox_session_journal(
+                &load_sandbox_session_journal(&invalid_root, &invalid_initial.run_id).unwrap(),
+            ).unwrap(),
+            SandboxSessionState::LaunchRequested,
+            "invalid inventory cannot mutate recovery state",
+        );
+
+        fs::remove_dir_all(launch_root).unwrap();
+        fs::remove_dir_all(stop_root).unwrap();
+        fs::remove_dir_all(invalid_root).unwrap();
     }
 
     #[test]
