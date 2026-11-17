@@ -878,12 +878,13 @@ fn validate_guest_runtime_staging_cleanup_plan(
 
 const GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA: u32 = 1;
 const MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_BYTES: usize = 16 * 1024;
-const MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES: usize = 3;
+const MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES: usize = 4;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum GuestRuntimeCleanupJournalPhase {
     Prepared,
+    PayloadsRemoved,
     OwnershipMarkerRemoved,
     StagingRootRemoved,
 }
@@ -939,6 +940,7 @@ fn validate_guest_runtime_cleanup_journal(
     }
     let expected = [
         GuestRuntimeCleanupJournalPhase::Prepared,
+        GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
         GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
         GuestRuntimeCleanupJournalPhase::StagingRootRemoved,
     ];
@@ -953,6 +955,57 @@ fn validate_guest_runtime_cleanup_journal(
         return Err("The guest runtime cleanup journal exceeds its fixed size limit.".into());
     }
     Ok(journal.entries.last().unwrap().phase)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuestRuntimeCleanupRecoveryObservation {
+    AuthenticatedPayloadsRemain,
+    OwnershipMarkerOnly,
+    EmptyMarkerlessRoot,
+    StagingRootAbsent,
+    UnexpectedOrUnverified,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuestRuntimeCleanupRecoveryAction {
+    ResumeAuthenticatedPayloadRemoval,
+    RemoveAuthenticatedOwnershipMarker,
+    RemoveAuthenticatedEmptyRoot,
+    RecordCompletedRootRemoval,
+    AlreadyComplete,
+    Reject,
+}
+
+/// Pure crash-state decision contract. Filesystem observations must be obtained
+/// independently from held handles and authenticated inventory before callers
+/// may act on this decision. This function never grants deletion authority.
+fn guest_runtime_cleanup_recovery_action(
+    phase: GuestRuntimeCleanupJournalPhase,
+    observation: GuestRuntimeCleanupRecoveryObservation,
+) -> GuestRuntimeCleanupRecoveryAction {
+    use GuestRuntimeCleanupJournalPhase as Phase;
+    use GuestRuntimeCleanupRecoveryAction as Action;
+    use GuestRuntimeCleanupRecoveryObservation as Observation;
+    match (phase, observation) {
+        (Phase::Prepared, Observation::AuthenticatedPayloadsRemain) =>
+            Action::ResumeAuthenticatedPayloadRemoval,
+        (Phase::Prepared, Observation::OwnershipMarkerOnly) =>
+            Action::RemoveAuthenticatedOwnershipMarker,
+        (Phase::PayloadsRemoved, Observation::OwnershipMarkerOnly) =>
+            Action::RemoveAuthenticatedOwnershipMarker,
+        (Phase::PayloadsRemoved, Observation::EmptyMarkerlessRoot) =>
+            Action::RemoveAuthenticatedEmptyRoot,
+        (Phase::PayloadsRemoved, Observation::StagingRootAbsent) =>
+            Action::RecordCompletedRootRemoval,
+        (Phase::OwnershipMarkerRemoved, Observation::EmptyMarkerlessRoot) =>
+            Action::RemoveAuthenticatedEmptyRoot,
+        (Phase::OwnershipMarkerRemoved, Observation::StagingRootAbsent) =>
+            Action::RecordCompletedRootRemoval,
+        (Phase::StagingRootRemoved, Observation::StagingRootAbsent) =>
+            Action::AlreadyComplete,
+        (_, Observation::UnexpectedOrUnverified) => Action::Reject,
+        _ => Action::Reject,
+    }
 }
 
 fn encode_guest_runtime_cleanup_journal(
@@ -12509,6 +12562,55 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         tampered_bytes.push(b' ');
         assert!(parse_guest_runtime_cleanup_journal(&tampered_bytes).is_err());
         assert!(parse_guest_runtime_cleanup_journal(&vec![b'x'; MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn guest_runtime_cleanup_recovery_contract_covers_marker_and_root_crash_windows() {
+        use GuestRuntimeCleanupJournalPhase as Phase;
+        use GuestRuntimeCleanupRecoveryAction as Action;
+        use GuestRuntimeCleanupRecoveryObservation as Observation;
+
+        let cases = [
+            (Phase::Prepared, Observation::AuthenticatedPayloadsRemain, Action::ResumeAuthenticatedPayloadRemoval),
+            (Phase::Prepared, Observation::OwnershipMarkerOnly, Action::RemoveAuthenticatedOwnershipMarker),
+            (Phase::PayloadsRemoved, Observation::OwnershipMarkerOnly, Action::RemoveAuthenticatedOwnershipMarker),
+            (Phase::PayloadsRemoved, Observation::EmptyMarkerlessRoot, Action::RemoveAuthenticatedEmptyRoot),
+            (Phase::PayloadsRemoved, Observation::StagingRootAbsent, Action::RecordCompletedRootRemoval),
+            (Phase::OwnershipMarkerRemoved, Observation::EmptyMarkerlessRoot, Action::RemoveAuthenticatedEmptyRoot),
+            (Phase::OwnershipMarkerRemoved, Observation::StagingRootAbsent, Action::RecordCompletedRootRemoval),
+            (Phase::StagingRootRemoved, Observation::StagingRootAbsent, Action::AlreadyComplete),
+        ];
+        for (phase, observation, expected) in cases {
+            assert_eq!(guest_runtime_cleanup_recovery_action(phase, observation), expected);
+        }
+    }
+
+    #[test]
+    fn guest_runtime_cleanup_recovery_contract_rejects_ambiguous_or_impossible_states() {
+        use GuestRuntimeCleanupJournalPhase as Phase;
+        use GuestRuntimeCleanupRecoveryAction as Action;
+        use GuestRuntimeCleanupRecoveryObservation as Observation;
+
+        let rejected = [
+            (Phase::Prepared, Observation::EmptyMarkerlessRoot),
+            (Phase::Prepared, Observation::StagingRootAbsent),
+            (Phase::PayloadsRemoved, Observation::AuthenticatedPayloadsRemain),
+            (Phase::OwnershipMarkerRemoved, Observation::OwnershipMarkerOnly),
+            (Phase::OwnershipMarkerRemoved, Observation::AuthenticatedPayloadsRemain),
+            (Phase::StagingRootRemoved, Observation::OwnershipMarkerOnly),
+            (Phase::StagingRootRemoved, Observation::EmptyMarkerlessRoot),
+            (Phase::Prepared, Observation::UnexpectedOrUnverified),
+            (Phase::PayloadsRemoved, Observation::UnexpectedOrUnverified),
+            (Phase::OwnershipMarkerRemoved, Observation::UnexpectedOrUnverified),
+            (Phase::StagingRootRemoved, Observation::UnexpectedOrUnverified),
+        ];
+        for (phase, observation) in rejected {
+            assert_eq!(
+                guest_runtime_cleanup_recovery_action(phase, observation),
+                Action::Reject,
+                "phase={phase:?}, observation={observation:?}",
+            );
+        }
     }
 
     #[test]
