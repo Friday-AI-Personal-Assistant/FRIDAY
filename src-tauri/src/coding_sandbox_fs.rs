@@ -240,8 +240,16 @@ fn open_file_nofollow_with_share(
 
     // NT_SUCCESS(status) is status >= 0. Do not retry with weaker flags.
     if status < 0 || handle.is_null() {
+        // Preserve the distinction between an absent directory entry and an
+        // unsafe/denied open. Handle-relative bounded readers use NotFound to
+        // detect the end of an append-only sequence; collapsing every NTSTATUS
+        // to PermissionDenied would make a valid shorter history unreadable.
+        let error_kind = match status as u32 {
+            0xC000_0034 | 0xC000_003A | 0xC000_000F => io::ErrorKind::NotFound,
+            _ => io::ErrorKind::PermissionDenied,
+        };
         return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
+            error_kind,
             format!("handle-relative no-reparse file open failed (NTSTATUS 0x{:08X})", status as u32),
         ));
     }
@@ -4246,6 +4254,13 @@ mod tests {
         let mut contents = Vec::new();
         safe.read_to_end(&mut contents).unwrap();
         assert_eq!(contents, b"safe content");
+
+        let missing = open_file_nofollow(&root, OsStr::new("missing.txt")).unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound,
+            "a missing child must remain distinguishable from a denied/reparse-point open");
+        let missing_bounded = read_bounded_relative_file(&root, "missing.txt", 4096).unwrap_err();
+        assert_eq!(missing_bounded.kind(), std::io::ErrorKind::NotFound,
+            "bounded handle-relative reads must recognize an absent generation");
 
         let linked = open_file_nofollow(&root, OsStr::new("linked.txt"));
         assert!(linked.is_err(), "file symlink must never be followed or accepted");
