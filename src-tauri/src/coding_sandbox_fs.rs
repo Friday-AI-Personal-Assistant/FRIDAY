@@ -1107,7 +1107,7 @@ where
 /// This is a test-only prototype: no ambient destination path is used after
 /// the workspace handle is acquired.
 #[cfg(unix)]
-fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io::Result<File> {
+pub(crate) fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io::Result<File> {
     use std::{ffi::CString, os::unix::{ffi::OsStrExt, io::{AsRawFd, FromRawFd}}};
     if !is_single_normal_component(name) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "destination name must be one normal component"));
@@ -1159,7 +1159,7 @@ fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io:
 }
 
 #[cfg(windows)]
-fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io::Result<File> {
+pub(crate) fn create_destination_entry(parent: &File, name: &OsStr, directory: bool) -> io::Result<File> {
     use std::{
         mem,
         os::windows::{ffi::OsStrExt, fs::MetadataExt, io::{AsRawHandle, FromRawHandle}},

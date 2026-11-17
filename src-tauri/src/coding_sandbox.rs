@@ -1200,15 +1200,17 @@ fn persist_guest_runtime_cleanup_journal(
         return Err("The initial guest runtime cleanup journal generation already exists.".into());
     }
 
-    let directory = guest_runtime_cleanup_journal_generation_path(root, generation);
-    fs::create_dir(&directory)
-        .map_err(|_| "FRIDAY could not exclusively create the guest runtime cleanup journal generation.".to_string())?;
-    secure_private_workspace_directory(&directory)
-        .map_err(|_| "FRIDAY could not secure the new cleanup journal generation; it was preserved.".to_string())?;
+    // Create both levels relative to the already-pinned root handle. The
+    // journal root's protected permissions are inherited by the generation;
+    // Unix creation also uses restrictive 0700/0600 modes.
+    let generation_name = format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_GENERATION_PREFIX}{generation:02}");
+    let directory = crate::coding_sandbox_fs::create_destination_entry(
+        &root_handle, OsStr::new(&generation_name), true,
+    ).map_err(|_| "FRIDAY could not exclusively create the guest runtime cleanup journal generation; it was preserved.".to_string())?;
+    let mut file = crate::coding_sandbox_fs::create_destination_entry(
+        &directory, OsStr::new(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE), false,
+    ).map_err(|_| "FRIDAY could not exclusively create the cleanup journal file; the generation was preserved.".to_string())?;
     let bytes = encode_guest_runtime_cleanup_journal(journal)?;
-    let file_path = directory.join(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE);
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&file_path)
-        .map_err(|_| "FRIDAY could not exclusively create the cleanup journal file; the generation was preserved.".to_string())?;
     use std::io::Write;
     file.write_all(&bytes)
         .map_err(|_| "FRIDAY could not write the cleanup journal; the generation was preserved.".to_string())?;
@@ -1216,9 +1218,16 @@ fn persist_guest_runtime_cleanup_journal(
         .map_err(|_| "FRIDAY could not flush the cleanup journal; the generation was preserved.".to_string())?;
     drop(file);
 
-    let verified = read_guest_runtime_cleanup_journal_generation(root, generation)?;
+    // Read back through the same pinned root handle: a replaced ambient path
+    // must never redirect verification to a different directory tree.
+    let verified = read_guest_runtime_cleanup_journal_generation_from_handle(root, &root_handle, generation)?;
     if verified != *journal {
         return Err("The persisted guest runtime cleanup journal failed exact read-back verification.".into());
+    }
+    let final_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The cleanup journal root path changed during persistence; the generation was preserved.".to_string())?;
+    if final_root_identity != root_identity {
+        return Err("The cleanup journal root was replaced during persistence; the generation was preserved.".into());
     }
     Ok(())
 }
@@ -13216,6 +13225,45 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             "a generation that substitutes the journal-root identity must be rejected",
         );
 
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn cleanup_journal_generation_creation_stays_with_pinned_root_after_path_replacement() {
+        let parent = make_test_directory("cleanup-journal-pinned-create");
+        let root = parent.join("journal-root");
+        let moved = parent.join("journal-root-original");
+        fs::create_dir(&root).unwrap();
+        secure_private_workspace_directory(&root).unwrap();
+        let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+
+        fs::rename(&root, &moved).unwrap();
+        fs::create_dir(&root).unwrap();
+        secure_private_workspace_directory(&root).unwrap();
+
+        let generation = crate::coding_sandbox_fs::create_destination_entry(
+            &root_handle, OsStr::new("generation-01"), true,
+        ).unwrap();
+        let mut state = crate::coding_sandbox_fs::create_destination_entry(
+            &generation, OsStr::new("state.json"), false,
+        ).unwrap();
+        use std::io::Write;
+        state.write_all(b"pinned-original").unwrap();
+        state.sync_all().unwrap();
+
+        assert_eq!(
+            fs::read(moved.join("generation-01").join("state.json")).unwrap(),
+            b"pinned-original",
+        );
+        assert!(
+            !root.join("generation-01").exists(),
+            "a replacement at the original path must not receive journal writes",
+        );
+        assert!(
+            fs::read_dir(&root).unwrap().next().is_none(),
+            "the replacement journal root must remain untouched",
+        );
+        drop(root_handle);
         fs::remove_dir_all(parent).unwrap();
     }
 
