@@ -3446,18 +3446,22 @@ fn read_verified_guest_result_file(
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct VerifiedStoppedSandboxSession {
     run_id: String,
+    snapshot_id: String,
+    operation: GuestRunOperation,
+    max_output_bytes: u64,
+    max_duration_ms: u64,
     process_identity: SandboxProcessIdentity,
 }
 
 fn authorize_guest_result_collection_after_sandbox_stop(
     journal: &SandboxSessionJournal,
-    expected_run_id: &str,
+    approved_run: &GuestRunExecutionPlan,
 ) -> Result<VerifiedStoppedSandboxSession, String> {
-    if !valid_snapshot_id(expected_run_id)
-        || journal.run_id != expected_run_id
+    validate_guest_run_execution_plan(approved_run)?;
+    if journal.run_id != approved_run.run_id
         || validate_sandbox_session_journal(journal)? != SandboxSessionState::Stopped
     {
-        return Err("Guest result collection requires the matching FRIDAY run to have a verified stopped Sandbox session.".into());
+        return Err("Guest result collection requires the matching approved FRIDAY run to have a verified stopped Sandbox session.".into());
     }
     let final_entry = journal.entries.last()
         .ok_or("The Sandbox session journal has no stop confirmation.")?;
@@ -3475,22 +3479,39 @@ fn authorize_guest_result_collection_after_sandbox_stop(
         return Err("The Sandbox stop confirmation does not prove the exact FRIDAY-owned process stopped.".into());
     }
     validate_sandbox_process_identity(recorded)?;
-    Ok(VerifiedStoppedSandboxSession { run_id: expected_run_id.to_string(), process_identity: recorded.clone() })
+    Ok(VerifiedStoppedSandboxSession {
+        run_id: approved_run.run_id.clone(),
+        snapshot_id: approved_run.snapshot_id.clone(),
+        operation: approved_run.operation,
+        max_output_bytes: approved_run.max_output_bytes,
+        max_duration_ms: u64::try_from(approved_run.max_duration.as_millis())
+            .map_err(|_| "The approved guest duration cannot be represented safely.")?,
+        process_identity: recorded.clone(),
+    })
 }
 
 fn read_verified_guest_result_file_after_stopped_session(
     stopped_session: &VerifiedStoppedSandboxSession,
     result_directory: &Path,
-    expected_snapshot_id: &str,
-    expected_operation: GuestRunOperation,
-    max_output_bytes: u64,
-    max_duration_ms: u64,
 ) -> Result<GuestRunResult, String> {
     validate_sandbox_process_identity(&stopped_session.process_identity)?;
-    if !stopped_session.process_identity.session_id.eq_ignore_ascii_case(&stopped_session.run_id) {
-        return Err("The stopped Sandbox proof is detached from its recorded run identity.".into());
+    if !stopped_session.process_identity.session_id.eq_ignore_ascii_case(&stopped_session.run_id)
+        || !valid_snapshot_id(&stopped_session.snapshot_id)
+        || stopped_session.max_output_bytes == 0
+        || stopped_session.max_output_bytes > MAX_GUEST_REQUEST_OUTPUT_BYTES
+        || stopped_session.max_duration_ms == 0
+        || stopped_session.max_duration_ms > MAX_GUEST_RESULT_DURATION_MS
+    {
+        return Err("The stopped Sandbox proof is detached from its approved run contract.".into());
     }
-    read_verified_guest_result_file(result_directory, &stopped_session.run_id, expected_snapshot_id, expected_operation, max_output_bytes, max_duration_ms)
+    read_verified_guest_result_file(
+        result_directory,
+        &stopped_session.run_id,
+        &stopped_session.snapshot_id,
+        stopped_session.operation,
+        stopped_session.max_output_bytes,
+        stopped_session.max_duration_ms,
+    )
 }
 fn validate_guest_result_json_with_limit(
     bytes: &[u8],
@@ -9974,12 +9995,21 @@ mod tests {
     fn guest_result_collection_requires_exact_verified_stopped_session() {
         let run_id = "0123456789abcdef0123456789abcdef";
         let journal = stopped_sandbox_journal_fixture(run_id, true);
-        let proof = authorize_guest_result_collection_after_sandbox_stop(&journal, run_id).unwrap();
+        let approved_run = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let proof = authorize_guest_result_collection_after_sandbox_stop(&journal, &approved_run).unwrap();
         assert_eq!(proof.run_id, run_id);
+        assert_eq!(proof.snapshot_id, approved_run.snapshot_id);
+        assert_eq!(proof.operation, approved_run.operation);
+        assert_eq!(proof.max_output_bytes, approved_run.max_output_bytes);
+        assert_eq!(proof.max_duration_ms, approved_run.max_duration.as_millis() as u64);
         assert_eq!(proof.process_identity.process_id, 4321);
         let running = stopped_sandbox_journal_fixture(run_id, false);
-        assert!(authorize_guest_result_collection_after_sandbox_stop(&running, run_id).is_err());
-        assert!(authorize_guest_result_collection_after_sandbox_stop(&journal, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_err());
+        assert!(authorize_guest_result_collection_after_sandbox_stop(&running, &approved_run).is_err());
+        let mut mismatched_run = approved_run.clone();
+        mismatched_run.run_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
+        assert!(authorize_guest_result_collection_after_sandbox_stop(&journal, &mismatched_run).is_err());
         let mut tampered = journal.clone();
         tampered.entries.last_mut().unwrap().process_confirmed_stopped = false;
         assert!(authorize_guest_result_collection_after_sandbox_stop(&tampered, run_id).is_err());
@@ -9993,9 +10023,18 @@ mod tests {
         let running = stopped_sandbox_journal_fixture(run_id, false);
         assert!(authorize_guest_result_collection_after_sandbox_stop(&running, run_id).is_err());
         let stopped = stopped_sandbox_journal_fixture(run_id, true);
-        let proof = authorize_guest_result_collection_after_sandbox_stop(&stopped, run_id).unwrap();
-        let result = read_verified_guest_result_file_after_stopped_session(&proof, &directory, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64, MAX_GUEST_RESULT_DURATION_MS).unwrap();
+        let approved_run = build_guest_run_execution_plan(
+            parse_guest_run_request(&valid_guest_request_json()).unwrap(),
+        ).unwrap();
+        let proof = authorize_guest_result_collection_after_sandbox_stop(&stopped, &approved_run).unwrap();
+        let result = read_verified_guest_result_file_after_stopped_session(&proof, &directory).unwrap();
         assert_eq!(result.status, GuestRunStatus::Passed);
+        let mut tampered_proof = proof.clone();
+        tampered_proof.snapshot_id = "11111111111111111111111111111111".into();
+        assert!(read_verified_guest_result_file_after_stopped_session(&tampered_proof, &directory).is_err());
+        let mut invalid_limits = proof.clone();
+        invalid_limits.max_output_bytes = 0;
+        assert!(read_verified_guest_result_file_after_stopped_session(&invalid_limits, &directory).is_err());
         fs::remove_dir_all(directory).unwrap();
     }
     #[test]
