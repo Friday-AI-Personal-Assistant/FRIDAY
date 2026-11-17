@@ -38,6 +38,7 @@ pub(crate) enum GuestMemoryBudgetError {
     MissingOrInvalidSnapshot,
     HostBelowMinimumMemory,
     InsufficientAvailableMemory,
+    HostMemoryQueryFailed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,6 +127,29 @@ pub(crate) fn calculate_guest_memory_budget(
         total_job_memory_limit_bytes: job_limit,
         process_memory_limit_bytes: process_limit,
         reserved_available_memory_bytes: HOST_AVAILABLE_RESERVE_BYTES,
+    })
+}
+
+
+/// Query current physical-memory totals from Windows immediately before job creation.
+/// API failure is distinct from an invalid or insufficient snapshot and never falls
+/// back to a guessed device tier.
+#[cfg(windows)]
+pub(crate) fn query_host_memory_snapshot() -> Result<HostMemorySnapshot, GuestMemoryBudgetError> {
+    use std::mem::{size_of, zeroed};
+    use windows_sys::Win32::System::SystemInformation::{
+        GlobalMemoryStatusEx, MEMORYSTATUSEX,
+    };
+
+    let mut status: MEMORYSTATUSEX = unsafe { zeroed() };
+    status.dwLength = size_of::<MEMORYSTATUSEX>() as u32;
+    if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 {
+        return Err(GuestMemoryBudgetError::HostMemoryQueryFailed);
+    }
+
+    Ok(HostMemorySnapshot {
+        total_physical_bytes: status.ullTotalPhys,
+        available_physical_bytes: status.ullAvailPhys,
     })
 }
 
