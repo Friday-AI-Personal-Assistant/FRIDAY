@@ -13647,6 +13647,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
 
                 assert!(!provisioning.staging_root.exists(),
                     "markerless recovery must leave no staging root");
+                // Recovery must use the same pinned parent handle whose identity
+                // was authenticated before loading the journal history.
                 let latest = load_latest_guest_runtime_cleanup_journal_from_anchor(
                     &journal_root,
                     &root,
