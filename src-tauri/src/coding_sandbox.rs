@@ -13287,6 +13287,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
                 b"pinned-original",
             );
         }
+        drop(state);
+        drop(generation);
         drop(root_handle);
         fs::remove_dir_all(parent).unwrap();
     }
