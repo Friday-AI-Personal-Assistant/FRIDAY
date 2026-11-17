@@ -5967,7 +5967,8 @@ fn validate_windows_sandbox_cli_plan(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 enum WindowsSandboxCliSessionStatus {
     Running,
     Stopped,
@@ -6243,6 +6244,200 @@ fn verify_windows_sandbox_cli_stop_completion(
         Some(_) => Err("The exact FRIDAY-owned Windows Sandbox session is still reported Running after stop.".into()),
         None => Ok(WindowsSandboxCliStopCompletion::SessionAbsent),
     }
+}
+
+const WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_SCHEMA: u32 = 1;
+const MAX_WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_BYTES: usize = 4 * 1024;
+const WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_FILE: &str = "windows-sandbox-cli-ownership.json";
+
+/// Durable, bounded evidence of the exact CLI observations that created a
+/// run-bound Sandbox session. This is audit/recovery evidence, not a secret
+/// or a cryptographic attestation against a compromised same-user process.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WindowsSandboxCliOwnershipReceipt {
+    schema_version: u32,
+    run_id: String,
+    session_id: String,
+    start_response_id: String,
+    pre_launch_session_count: u32,
+    post_launch_session_count: u32,
+    post_launch_status: WindowsSandboxCliSessionStatus,
+}
+
+#[allow(dead_code)]
+fn build_windows_sandbox_cli_ownership_receipt(
+    run_id: &str,
+    start_response: &[u8],
+    pre_launch_sessions: &[WindowsSandboxCliSession],
+    post_launch_sessions: &[WindowsSandboxCliSession],
+) -> Result<WindowsSandboxCliOwnershipReceipt, String> {
+    let proof = prove_windows_sandbox_cli_session_ownership(
+        run_id, start_response, pre_launch_sessions, post_launch_sessions,
+    )?;
+    let receipt = WindowsSandboxCliOwnershipReceipt {
+        schema_version: WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_SCHEMA,
+        run_id: proof.run_id,
+        session_id: proof.session_id,
+        start_response_id: proof.start_response_id,
+        pre_launch_session_count: 0,
+        post_launch_session_count: 1,
+        post_launch_status: WindowsSandboxCliSessionStatus::Running,
+    };
+    validate_windows_sandbox_cli_ownership_receipt(&receipt)?;
+    Ok(receipt)
+}
+
+#[allow(dead_code)]
+fn validate_windows_sandbox_cli_ownership_receipt(
+    receipt: &WindowsSandboxCliOwnershipReceipt,
+) -> Result<(), String> {
+    if receipt.schema_version != WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_SCHEMA
+        || !valid_snapshot_id(&receipt.run_id)
+        || receipt.pre_launch_session_count != 0
+        || receipt.post_launch_session_count != 1
+        || receipt.post_launch_status != WindowsSandboxCliSessionStatus::Running
+    {
+        return Err("The Windows Sandbox CLI ownership receipt has an unsupported schema or incomplete inventory evidence.".into());
+    }
+    let expected_id = windows_sandbox_cli_id_from_run_id(&receipt.run_id)?;
+    if !valid_windows_sandbox_cli_id(&receipt.session_id)
+        || receipt.session_id != expected_id
+        || receipt.start_response_id != expected_id
+    {
+        return Err("The Windows Sandbox CLI ownership receipt does not bind the exact run-derived session and start acknowledgement.".into());
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn windows_sandbox_cli_ownership_proof_from_receipt(
+    receipt: &WindowsSandboxCliOwnershipReceipt,
+) -> Result<WindowsSandboxCliOwnershipProof, String> {
+    validate_windows_sandbox_cli_ownership_receipt(receipt)?;
+    Ok(WindowsSandboxCliOwnershipProof {
+        run_id: receipt.run_id.clone(),
+        session_id: receipt.session_id.clone(),
+        start_response_id: receipt.start_response_id.clone(),
+    })
+}
+
+#[allow(dead_code)]
+fn encode_windows_sandbox_cli_ownership_receipt(
+    receipt: &WindowsSandboxCliOwnershipReceipt,
+) -> Result<Vec<u8>, String> {
+    validate_windows_sandbox_cli_ownership_receipt(receipt)?;
+    let bytes = serde_json::to_vec(receipt)
+        .map_err(|_| "The Windows Sandbox CLI ownership receipt could not be encoded.".to_string())?;
+    if bytes.is_empty() || bytes.len() > MAX_WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_BYTES {
+        return Err("The Windows Sandbox CLI ownership receipt exceeds its fixed size limit.".into());
+    }
+    Ok(bytes)
+}
+
+#[allow(dead_code)]
+fn parse_windows_sandbox_cli_ownership_receipt(
+    bytes: &[u8],
+) -> Result<WindowsSandboxCliOwnershipReceipt, String> {
+    if bytes.is_empty() || bytes.len() > MAX_WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_BYTES {
+        return Err("The Windows Sandbox CLI ownership receipt is empty or oversized.".into());
+    }
+    let receipt: WindowsSandboxCliOwnershipReceipt = serde_json::from_slice(bytes)
+        .map_err(|_| "The Windows Sandbox CLI ownership receipt is malformed or contains unsupported fields.".to_string())?;
+    validate_windows_sandbox_cli_ownership_receipt(&receipt)?;
+    Ok(receipt)
+}
+
+/// Create the receipt exactly once relative to a held, verified private run
+/// directory. A partial write is preserved as ambiguous evidence; it is never
+/// overwritten or silently repaired. The completed file is flushed and read
+/// back through the same held directory handle before success is returned.
+#[allow(dead_code)]
+fn persist_windows_sandbox_cli_ownership_receipt(
+    root: &Path,
+    receipt: &WindowsSandboxCliOwnershipReceipt,
+) -> Result<(), String> {
+    let bytes = encode_windows_sandbox_cli_ownership_receipt(receipt)?;
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The Windows Sandbox ownership receipt directory could not be opened safely.".to_string())?;
+    let metadata = root_handle.metadata()
+        .map_err(|_| "The Windows Sandbox ownership receipt directory identity could not be inspected.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("The Windows Sandbox ownership receipt root is not an ordinary directory.".into());
+    }
+    let mut file = crate::coding_sandbox_fs::create_destination_entry(
+        &root_handle, OsStr::new(WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_FILE), false,
+    ).map_err(|_| "The Windows Sandbox ownership receipt already exists or could not be created exclusively.".to_string())?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|_| "The Windows Sandbox ownership receipt write was incomplete; evidence was preserved.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "The Windows Sandbox ownership receipt could not be flushed; evidence was preserved.".to_string())?;
+    drop(file);
+
+    let read_back = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &root_handle, WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_FILE,
+        MAX_WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_BYTES as u64,
+    ).map_err(|_| "The persisted Windows Sandbox ownership receipt could not be safely read back.".to_string())?;
+    let verified = parse_windows_sandbox_cli_ownership_receipt(&read_back)?;
+    if verified != *receipt {
+        return Err("The persisted Windows Sandbox ownership receipt failed exact read-back verification.".into());
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn load_windows_sandbox_cli_ownership_receipt(
+    root: &Path,
+) -> Result<WindowsSandboxCliOwnershipReceipt, String> {
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The Windows Sandbox ownership receipt directory could not be opened safely.".to_string())?;
+    let metadata = root_handle.metadata()
+        .map_err(|_| "The Windows Sandbox ownership receipt directory identity could not be inspected.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("The Windows Sandbox ownership receipt root is not an ordinary directory.".into());
+    }
+    let bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &root_handle, WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_FILE,
+        MAX_WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_BYTES as u64,
+    ).map_err(|_| "The Windows Sandbox ownership receipt is missing or unsafe.".to_string())?;
+    parse_windows_sandbox_cli_ownership_receipt(&bytes)
+}
+
+/// Stop planning can consume only a receipt recovered from disk and bound to
+/// the same durable session journal. This remains a pure plan builder: it does
+/// not invoke wsb stop or change the Sandbox session.
+#[allow(dead_code)]
+fn prepare_authorized_windows_sandbox_stop_plan_from_receipt(
+    executable_path: &str,
+    journal: &SandboxSessionJournal,
+    receipt_root: &Path,
+    sessions: &[WindowsSandboxCliSession],
+) -> Result<WindowsSandboxCliPlan, String> {
+    let receipt = load_windows_sandbox_cli_ownership_receipt(receipt_root)?;
+    if receipt.run_id != journal.run_id {
+        return Err("The persisted Windows Sandbox ownership receipt belongs to a different FRIDAY run.".into());
+    }
+    let proof = windows_sandbox_cli_ownership_proof_from_receipt(&receipt)?;
+    prepare_authorized_windows_sandbox_stop_plan(executable_path, journal, &proof, sessions)
+}
+
+#[allow(dead_code)]
+fn verify_windows_sandbox_cli_stop_completion_from_receipt(
+    receipt_root: &Path,
+    run_id: &str,
+    command_succeeded: bool,
+    post_stop_sessions: &[WindowsSandboxCliSession],
+) -> Result<WindowsSandboxCliStopCompletion, String> {
+    let receipt = load_windows_sandbox_cli_ownership_receipt(receipt_root)?;
+    if receipt.run_id != run_id {
+        return Err("The persisted Windows Sandbox ownership receipt belongs to a different FRIDAY run.".into());
+    }
+    let proof = windows_sandbox_cli_ownership_proof_from_receipt(&receipt)?;
+    verify_windows_sandbox_cli_stop_completion(
+        &proof, run_id, command_succeeded, post_stop_sessions,
+    )
 }
 
 
@@ -12611,6 +12806,131 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert!(verify_windows_sandbox_cli_stop_completion(
             &substituted, run_id, true, &[],
         ).is_err());
+    }
+
+    #[test]
+    fn windows_sandbox_cli_ownership_receipt_is_bounded_strict_and_run_bound() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let session_id = windows_sandbox_cli_id_from_run_id(run_id).unwrap();
+        let running = WindowsSandboxCliSession {
+            id: session_id.clone(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        let response = format!(r#"{{"Id":"{}"}}"#, session_id);
+        let receipt = build_windows_sandbox_cli_ownership_receipt(
+            run_id, response.as_bytes(), &[], &[running],
+        ).unwrap();
+        assert_eq!(receipt.pre_launch_session_count, 0);
+        assert_eq!(receipt.post_launch_session_count, 1);
+        assert_eq!(receipt.post_launch_status, WindowsSandboxCliSessionStatus::Running);
+        let encoded = encode_windows_sandbox_cli_ownership_receipt(&receipt).unwrap();
+        assert_eq!(parse_windows_sandbox_cli_ownership_receipt(&encoded).unwrap(), receipt);
+        assert_eq!(
+            windows_sandbox_cli_ownership_proof_from_receipt(&receipt).unwrap().session_id,
+            session_id,
+        );
+
+        let mut invalid = receipt.clone();
+        invalid.pre_launch_session_count = 1;
+        assert!(validate_windows_sandbox_cli_ownership_receipt(&invalid).is_err());
+        invalid = receipt.clone();
+        invalid.post_launch_session_count = 2;
+        assert!(validate_windows_sandbox_cli_ownership_receipt(&invalid).is_err());
+        invalid = receipt.clone();
+        invalid.post_launch_status = WindowsSandboxCliSessionStatus::Stopped;
+        assert!(validate_windows_sandbox_cli_ownership_receipt(&invalid).is_err());
+        invalid = receipt.clone();
+        invalid.run_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
+        assert!(validate_windows_sandbox_cli_ownership_receipt(&invalid).is_err());
+        invalid = receipt.clone();
+        invalid.start_response_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into();
+        assert!(validate_windows_sandbox_cli_ownership_receipt(&invalid).is_err());
+
+        assert!(parse_windows_sandbox_cli_ownership_receipt(b"").is_err());
+        assert!(parse_windows_sandbox_cli_ownership_receipt(
+            &vec![b'x'; MAX_WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_BYTES + 1],
+        ).is_err());
+        let mut unknown = encoded.clone();
+        unknown.pop();
+        unknown.extend_from_slice(br#", "unexpected":true}"#);
+        assert!(parse_windows_sandbox_cli_ownership_receipt(&unknown).is_err());
+    }
+
+    #[test]
+    fn windows_sandbox_cli_ownership_receipt_persists_once_and_gates_stop_planning() {
+        let root = make_test_directory("wsb-ownership-receipt");
+        secure_private_workspace_directory(&root).unwrap();
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let session_id = windows_sandbox_cli_id_from_run_id(run_id).unwrap();
+        let running = WindowsSandboxCliSession {
+            id: session_id.clone(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        let response = format!(r#"{{"Id":"{}"}}"#, session_id);
+        let receipt = build_windows_sandbox_cli_ownership_receipt(
+            run_id, response.as_bytes(), &[], &[running.clone()],
+        ).unwrap();
+
+        persist_windows_sandbox_cli_ownership_receipt(&root, &receipt).unwrap();
+        assert_eq!(load_windows_sandbox_cli_ownership_receipt(&root).unwrap(), receipt);
+        assert!(persist_windows_sandbox_cli_ownership_receipt(&root, &receipt).is_err(),
+            "an existing receipt must never be overwritten");
+
+        let identity = SandboxProcessIdentity {
+            session_id: run_id.into(),
+            process_id: 4321,
+            process_creation_time: 987654,
+            image_path: r"C:\Windows\System32\WindowsSandbox.exe".into(),
+        };
+        let mut journal = SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: run_id.into(),
+            entries: Vec::new(),
+        };
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::RequestLaunch, None, false, false,
+        ).unwrap();
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::ObserveProcess, Some(&identity), false, false,
+        ).unwrap();
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::ConfirmSession, Some(&identity), true, false,
+        ).unwrap();
+        journal = append_sandbox_session_journal_entry(
+            &journal, SandboxSessionEvent::ConfirmRunning, Some(&identity), true, false,
+        ).unwrap();
+
+        let plan = prepare_authorized_windows_sandbox_stop_plan_from_receipt(
+            r"C:\Program Files\WindowsApps\wsb.exe",
+            &journal, &root, &[running.clone()],
+        ).unwrap();
+        assert_eq!(plan.arguments, vec!["stop", "--raw", "--id", session_id.as_str()]);
+        assert_eq!(
+            verify_windows_sandbox_cli_stop_completion_from_receipt(&root, run_id, true, &[]).unwrap(),
+            WindowsSandboxCliStopCompletion::SessionAbsent,
+        );
+        assert!(prepare_authorized_windows_sandbox_stop_plan_from_receipt(
+            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &root, &[],
+        ).is_err(), "a fresh inventory without the owned session cannot authorize stop");
+
+        let mut wrong_journal = journal.clone();
+        wrong_journal.run_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
+        assert!(prepare_authorized_windows_sandbox_stop_plan_from_receipt(
+            r"C:\Program Files\WindowsApps\wsb.exe", &wrong_journal, &root, &[running],
+        ).is_err(), "a receipt cannot be paired with another run journal");
+
+        let receipt_path = root.join(WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_FILE);
+        let mut tampered = fs::read(&receipt_path).unwrap();
+        tampered.pop();
+        tampered.extend_from_slice(br#", "preLaunchSessionCount":1}"#);
+        fs::write(&receipt_path, &tampered).unwrap();
+        assert!(load_windows_sandbox_cli_ownership_receipt(&root).is_err(),
+            "tampered durable evidence must fail closed");
+        assert!(verify_windows_sandbox_cli_stop_completion_from_receipt(
+            &root, run_id, true, &[],
+        ).is_err(), "tampered receipt cannot authorize stop completion");
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
