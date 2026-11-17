@@ -26,8 +26,12 @@ A result below 256 MiB is rejected as insufficient. This avoids starting a guest
 
 The absolute ceilings are 4 GiB per Job Object and 2 GiB per process, regardless of host RAM. More powerful machines therefore do not receive unbounded guest memory.
 
-## Important integration boundary
+## Windows Job Object integration boundary
 
-The existing fixed Job Object policy remains unchanged at this stage. This new adaptive calculator is not yet wired into that plan or to Windows memory detection. The next implementation work must connect a Windows GlobalMemoryStatusEx-backed snapshot provider, handle API failure without optimistic defaults, combine the calculated memory values with the existing CPU/process/output/watchdog policy, and enforce/read back the final limits before guest execution. Physical Windows acceptance must include low-memory, memory-pressure, detection-failure, and Job Object configuration-failure cases.
+The Windows resource module now queries physical memory through `GlobalMemoryStatusEx` immediately before creating a guest Job Object. API failure returns an explicit error; there is no guessed tier or fallback budget. The injected snapshot is passed through the same pure calculator described above.
 
-The profile numbers are conservative initial policy ceilings, not measured performance guarantees or a promise that every 4 GB PC can run every supported test workload. CPU, storage, Windows edition, background applications, and runtime requirements still affect whether a run can proceed.
+The resulting job and per-process memory values are converted into the Windows Job Object policy. A second validation boundary rejects values below the minimum useful job budget, above the 4 GiB job / 2 GiB process absolute ceilings, or where the per-process limit exceeds the aggregate job limit. The existing fixed active-process ceiling and CPU hard cap are retained unchanged. The Job Object configuration path then applies and reads back every required kernel limit before a caller can assign a suspended process.
+
+This is still a resource-containment primitive, not an enabled guest launcher: no new guest process is created by the memory provider, and this change does not authorize or resume guest execution. A future launcher must call the adaptive creation path and must not resume an untrusted process unless Job Object creation, configuration, readback, and process assignment all succeed.
+
+Windows CI now exercises the live memory query and adaptive-policy conversion. Physical Windows acceptance is still required for low-memory devices, memory pressure, API failure, Job Object configuration failure, and the full guest lifecycle. The profile numbers are conservative initial policy ceilings, not measured performance guarantees or a promise that every 4 GB PC can run every supported test workload. CPU, storage, Windows edition, background applications, and runtime requirements still affect whether a run can proceed.
