@@ -3441,6 +3441,57 @@ fn read_verified_guest_result_file(
     )
 }
 
+/// Private proof that the exact FRIDAY-owned Windows Sandbox session recorded
+/// for a run reached Stopped with positive process-exit and ownership evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifiedStoppedSandboxSession {
+    run_id: String,
+    process_identity: SandboxProcessIdentity,
+}
+
+fn authorize_guest_result_collection_after_sandbox_stop(
+    journal: &SandboxSessionJournal,
+    expected_run_id: &str,
+) -> Result<VerifiedStoppedSandboxSession, String> {
+    if !valid_snapshot_id(expected_run_id)
+        || journal.run_id != expected_run_id
+        || validate_sandbox_session_journal(journal)? != SandboxSessionState::Stopped
+    {
+        return Err("Guest result collection requires the matching FRIDAY run to have a verified stopped Sandbox session.".into());
+    }
+    let final_entry = journal.entries.last()
+        .ok_or("The Sandbox session journal has no stop confirmation.")?;
+    let recorded = final_entry.identity.as_ref()
+        .ok_or("The stopped Sandbox journal has no recorded process identity.")?;
+    let observed = final_entry.observed_identity.as_ref()
+        .ok_or("The stopped Sandbox journal has no final process observation.")?;
+    if final_entry.event != SandboxSessionEvent::ConfirmStopped
+        || final_entry.next_state != SandboxSessionState::Stopped
+        || !final_entry.ownership_verified
+        || !final_entry.process_confirmed_stopped
+        || recorded != observed
+        || !recorded.session_id.eq_ignore_ascii_case(expected_run_id)
+    {
+        return Err("The Sandbox stop confirmation does not prove the exact FRIDAY-owned process stopped.".into());
+    }
+    validate_sandbox_process_identity(recorded)?;
+    Ok(VerifiedStoppedSandboxSession { run_id: expected_run_id.to_string(), process_identity: recorded.clone() })
+}
+
+fn read_verified_guest_result_file_after_stopped_session(
+    stopped_session: &VerifiedStoppedSandboxSession,
+    result_directory: &Path,
+    expected_snapshot_id: &str,
+    expected_operation: GuestRunOperation,
+    max_output_bytes: u64,
+    max_duration_ms: u64,
+) -> Result<GuestRunResult, String> {
+    validate_sandbox_process_identity(&stopped_session.process_identity)?;
+    if !stopped_session.process_identity.session_id.eq_ignore_ascii_case(&stopped_session.run_id) {
+        return Err("The stopped Sandbox proof is detached from its recorded run identity.".into());
+    }
+    read_verified_guest_result_file(result_directory, &stopped_session.run_id, expected_snapshot_id, expected_operation, max_output_bytes, max_duration_ms)
+}
 fn validate_guest_result_json_with_limit(
     bytes: &[u8],
     expected_run_id: &str,
@@ -9900,6 +9951,53 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    fn stopped_sandbox_journal_fixture(run_id: &str, stop_confirmed: bool) -> SandboxSessionJournal {
+        let identity = SandboxProcessIdentity {
+            session_id: run_id.to_string(),
+            process_id: 4321,
+            process_creation_time: 123456,
+            image_path: r"C:\Windows\System32\WindowsSandbox.exe".into(),
+        };
+        let mut journal = SandboxSessionJournal { schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA, run_id: run_id.to_string(), entries: Vec::new() };
+        journal = append_sandbox_session_journal_entry(&journal, SandboxSessionEvent::RequestLaunch, None, false, false).unwrap();
+        journal = append_sandbox_session_journal_entry(&journal, SandboxSessionEvent::ObserveProcess, Some(&identity), false, false).unwrap();
+        journal = append_sandbox_session_journal_entry(&journal, SandboxSessionEvent::ConfirmSession, Some(&identity), true, false).unwrap();
+        journal = append_sandbox_session_journal_entry(&journal, SandboxSessionEvent::ConfirmRunning, Some(&identity), true, false).unwrap();
+        if stop_confirmed {
+            journal = append_sandbox_session_journal_entry(&journal, SandboxSessionEvent::RequestStop, Some(&identity), true, false).unwrap();
+            journal = append_sandbox_session_journal_entry(&journal, SandboxSessionEvent::ConfirmStopped, Some(&identity), true, true).unwrap();
+        }
+        journal
+    }
+
+    #[test]
+    fn guest_result_collection_requires_exact_verified_stopped_session() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let journal = stopped_sandbox_journal_fixture(run_id, true);
+        let proof = authorize_guest_result_collection_after_sandbox_stop(&journal, run_id).unwrap();
+        assert_eq!(proof.run_id, run_id);
+        assert_eq!(proof.process_identity.process_id, 4321);
+        let running = stopped_sandbox_journal_fixture(run_id, false);
+        assert!(authorize_guest_result_collection_after_sandbox_stop(&running, run_id).is_err());
+        assert!(authorize_guest_result_collection_after_sandbox_stop(&journal, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_err());
+        let mut tampered = journal.clone();
+        tampered.entries.last_mut().unwrap().process_confirmed_stopped = false;
+        assert!(authorize_guest_result_collection_after_sandbox_stop(&tampered, run_id).is_err());
+    }
+
+    #[test]
+    fn guest_result_file_collection_entrypoint_requires_stop_proof() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let directory = make_test_directory("guest-result-stop-proof");
+        fs::write(directory.join(GUEST_RESULT_FILE_NAME), guest_result_json("passed", r#",\"exitCode\":0"#)).unwrap();
+        let running = stopped_sandbox_journal_fixture(run_id, false);
+        assert!(authorize_guest_result_collection_after_sandbox_stop(&running, run_id).is_err());
+        let stopped = stopped_sandbox_journal_fixture(run_id, true);
+        let proof = authorize_guest_result_collection_after_sandbox_stop(&stopped, run_id).unwrap();
+        let result = read_verified_guest_result_file_after_stopped_session(&proof, &directory, "abcdef0123456789abcdef0123456789", GuestRunOperation::RustCargoTest, MAX_GUEST_RESULT_BYTES as u64, MAX_GUEST_RESULT_DURATION_MS).unwrap();
+        assert_eq!(result.status, GuestRunStatus::Passed);
+        fs::remove_dir_all(directory).unwrap();
+    }
     #[test]
     fn guest_result_file_reader_accepts_only_bounded_regular_result_file() {
         let directory = make_test_directory("guest-result");

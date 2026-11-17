@@ -2194,3 +2194,10 @@ toolchain versions, enumerate each complete dependency closure, generate
 immutable build-time digests from reviewed bundles, and provision only those
 bundles. No files are downloaded, installed, or launched by this change;
 guest execution remains disabled.
+
+
+## Result collection requires verified Sandbox stop evidence
+
+The result-file collection entrypoint now requires a private proof derived from the Sandbox session journal. The journal must validate to the exact `Stopped` state, match the expected run ID, and end with a `ConfirmStopped` transition whose recorded and freshly observed process identities match and whose ownership and positive process-exit evidence are both present. A running, recovery-required, mismatched, or tampered journal cannot authorize collection.
+
+The bounded result reader remains a lower-level filesystem/contract primitive; the new orchestration entrypoint is the intended collection boundary. Regression tests cover a valid stop proof, collection from a still-running session, run-ID substitution, and missing positive stop evidence. This does not execute the Sandbox stop command or connect a production runner. Physical Windows session-ownership acceptance remains mandatory before guest execution can be enabled.
