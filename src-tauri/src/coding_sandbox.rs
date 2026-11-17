@@ -12952,10 +12952,49 @@ mod tests {
             GuestResultStorageState::Mounted,
         );
         verify_guest_result_volume_mount(&plan, &root, &volume_path).unwrap();
-        let marker = mount_directory.join("mount-roundtrip.txt");
-        fs::write(&marker, b"FRIDAY result volume mount verification").unwrap();
-        assert_eq!(fs::read(&marker).unwrap(), b"FRIDAY result volume mount verification");
-        fs::remove_file(&marker).unwrap();
+        // Exercise the actual fixed-capacity boundary, not merely a marker
+        // round-trip. Keep writes bounded by a test ceiling so a broken or
+        // unexpectedly large virtual disk cannot consume unbounded CI storage.
+        use std::io::Write;
+        let vhdx_size_before = fs::metadata(&created).unwrap().len();
+        let fill_path = mount_directory.join("capacity-boundary-test.bin");
+        let mut fill = OpenOptions::new().write(true).create_new(true).open(&fill_path).unwrap();
+        let chunk = vec![0xA5u8; 1024 * 1024];
+        let mut written = 0u64;
+        let mut reached_disk_full = false;
+        for _ in 0..128 {
+            match fill.write_all(&chunk) {
+                Ok(()) => {
+                    written += chunk.len() as u64;
+                    if let Err(error) = fill.sync_all() {
+                        assert!(
+                            matches!(error.raw_os_error(), Some(39) | Some(112)),
+                            "unexpected error while filling the bounded result volume: {error}",
+                        );
+                        reached_disk_full = true;
+                        break;
+                    }
+                }
+                Err(error) => {
+                    assert!(
+                        matches!(error.raw_os_error(), Some(39) | Some(112)),
+                        "unexpected error while filling the bounded result volume: {error}",
+                    );
+                    reached_disk_full = true;
+                    break;
+                }
+            }
+        }
+        assert!(reached_disk_full, "the 64 MiB result volume did not reach its hard capacity within the 128 MiB test ceiling");
+        assert!(written > 0 && written <= GUEST_RESULT_VOLUME_CAPACITY_BYTES);
+        fill.flush().unwrap();
+        drop(fill);
+        assert_eq!(
+            fs::metadata(&created).unwrap().len(),
+            vhdx_size_before,
+            "guest-writable filesystem activity must not grow the fixed-capacity VHDX",
+        );
+        fs::remove_file(&fill_path).unwrap();
         unmount_guest_result_volume_from_private_directory(&plan, &root, &volume_path).unwrap();
         assert_eq!(
             verify_guest_result_host_mount_directory(&plan, &root).unwrap(),
