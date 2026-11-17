@@ -5852,7 +5852,8 @@ struct WindowsSandboxCliPreparedTransaction {
     journal: SandboxSessionJournal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 enum WindowsSandboxCliRecoveryIntent {
     Launch,
     Stop,
@@ -6708,6 +6709,12 @@ fn preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
         persisted
     };
 
+    let recovery_receipt_sequence = persist_windows_sandbox_cli_recovery_observation(
+        root, expected_run_id, &expected_session_id, intent, interrupted_state,
+        observed_target_status, observed_sessions.len() as u32,
+        unrelated_session_count as u32,
+    )?;
+
     Ok(WindowsSandboxCliRecoveryAssessment {
         run_id: expected_run_id.to_string(),
         expected_session_id,
@@ -6716,11 +6723,7 @@ fn preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
         observed_target_status,
         observed_session_count: observed_sessions.len() as u32,
         unrelated_session_count: unrelated_session_count as u32,
-        recovery_receipt_sequence: persist_windows_sandbox_cli_recovery_observation(
-            root, expected_run_id, &expected_session_id, intent, interrupted_state,
-            observed_target_status, observed_sessions.len() as u32,
-            unrelated_session_count as u32,
-        )?,
+        recovery_receipt_sequence,
         journal: recovered,
     })
 }
