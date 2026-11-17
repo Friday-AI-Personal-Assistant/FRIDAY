@@ -3474,7 +3474,7 @@ fn authorize_guest_result_collection_after_sandbox_stop(
         || !final_entry.ownership_verified
         || !final_entry.process_confirmed_stopped
         || recorded != observed
-        || !recorded.session_id.eq_ignore_ascii_case(expected_run_id)
+        || !recorded.session_id.eq_ignore_ascii_case(&approved_run.run_id)
     {
         return Err("The Sandbox stop confirmation does not prove the exact FRIDAY-owned process stopped.".into());
     }
@@ -10012,7 +10012,7 @@ mod tests {
         assert!(authorize_guest_result_collection_after_sandbox_stop(&journal, &mismatched_run).is_err());
         let mut tampered = journal.clone();
         tampered.entries.last_mut().unwrap().process_confirmed_stopped = false;
-        assert!(authorize_guest_result_collection_after_sandbox_stop(&tampered, run_id).is_err());
+        assert!(authorize_guest_result_collection_after_sandbox_stop(&tampered, &approved_run).is_err());
     }
 
     #[test]
@@ -10021,7 +10021,7 @@ mod tests {
         let directory = make_test_directory("guest-result-stop-proof");
         fs::write(directory.join(GUEST_RESULT_FILE_NAME), guest_result_json("passed", r#","exitCode":0"#)).unwrap();
         let running = stopped_sandbox_journal_fixture(run_id, false);
-        assert!(authorize_guest_result_collection_after_sandbox_stop(&running, run_id).is_err());
+        assert!(authorize_guest_result_collection_after_sandbox_stop(&running, &approved_run).is_err());
         let stopped = stopped_sandbox_journal_fixture(run_id, true);
         let approved_run = build_guest_run_execution_plan(
             parse_guest_run_request(&valid_guest_request_json()).unwrap(),
