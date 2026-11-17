@@ -40,7 +40,7 @@ pub(crate) enum GuestMemoryBudgetError {
     InsufficientAvailableMemory,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ProfileLimits {
     tier: GuestMemoryProfileTier,
     minimum_total_bytes: u64,
