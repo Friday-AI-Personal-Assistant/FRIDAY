@@ -2281,5 +2281,5 @@ exited or that a session may be adopted, stopped, or cleaned up. They do not
 authorize automatic recovery, execute the Windows Sandbox CLI, or enable guest
 execution. A crash after the journal preservation but before the first receipt
 is recoverable by a later assessment, which can append the missing first
-observation. Windows/Linux CI and hands-on physical Windows interruption
-acceptance remain required.
+observation. Run #897 passed both Windows and Linux CI. Hands-on physical Windows interruption
+acceptance remains required.
