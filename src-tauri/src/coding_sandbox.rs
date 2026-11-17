@@ -4445,7 +4445,7 @@ fn validate_guest_result_volume_plan(
 
 
 const GUEST_RESULT_VOLUME_OWNER_MARKER: &str = ".friday-result-volume-owner.json";
-const GUEST_RESULT_VOLUME_OWNER_SCHEMA: u32 = 1;
+const GUEST_RESULT_VOLUME_OWNER_SCHEMA: u32 = 2;
 
 const GUEST_RESULT_VHDX_OWNER_MARKER: &str = ".friday-result-vhdx-owner.json";
 const GUEST_RESULT_VHDX_OWNER_SCHEMA: u32 = 1;
@@ -4486,10 +4486,10 @@ fn write_guest_result_vhdx_ownership_marker(
     trusted_storage_root: &Path,
     identifier: &str,
 ) -> Result<(), String> {
-    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
     if !valid_guest_vhdx_identifier(identifier) {
         return Err("The result VHDX identifier is invalid; ownership was not recorded.".into());
     }
+    let verified = open_verified_guest_result_volume_directory(plan, trusted_storage_root)?;
     let marker = GuestResultVhdxOwnershipMarker {
         schema_version: GUEST_RESULT_VHDX_OWNER_SCHEMA,
         run_id: plan.run_id.clone(),
@@ -4499,15 +4499,28 @@ fn write_guest_result_vhdx_ownership_marker(
     };
     let bytes = serde_json::to_vec(&marker)
         .map_err(|_| "FRIDAY could not prepare VHDX ownership metadata.".to_string())?;
-    let marker_path = plan.run_directory.join(GUEST_RESULT_VHDX_OWNER_MARKER);
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&marker_path)
-        .map_err(|_| "FRIDAY could not exclusively create VHDX ownership metadata.".to_string())?;
+    let mut file = crate::coding_sandbox_fs::create_destination_entry(
+        &verified.run_directory_handle, OsStr::new(GUEST_RESULT_VHDX_OWNER_MARKER), false,
+    ).map_err(|_| "FRIDAY could not exclusively create VHDX ownership metadata; existing evidence was preserved.".to_string())?;
     use std::io::Write;
     file.write_all(&bytes)
-        .map_err(|_| "FRIDAY could not write VHDX ownership metadata.".to_string())?;
+        .map_err(|_| "FRIDAY could not write VHDX ownership metadata; the run directory was preserved.".to_string())?;
     file.sync_all()
-        .map_err(|_| "FRIDAY could not persist VHDX ownership metadata.".to_string())?;
-    verify_guest_result_vhdx_ownership_marker(plan, trusted_storage_root, Some(identifier))?;
+        .map_err(|_| "FRIDAY could not persist VHDX ownership metadata; the run directory was preserved.".to_string())?;
+    drop(file);
+
+    let read_back = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &verified.run_directory_handle, GUEST_RESULT_VHDX_OWNER_MARKER, 1024,
+    ).map_err(|_| "VHDX ownership evidence could not be read back through its held directory handle.".to_string())?;
+    if read_back != bytes {
+        return Err("VHDX ownership evidence failed exact handle-relative read-back verification.".into());
+    }
+    let read_back_marker: GuestResultVhdxOwnershipMarker = serde_json::from_slice(&read_back)
+        .map_err(|_| "VHDX ownership evidence read-back was malformed.".to_string())?;
+    validate_guest_result_vhdx_ownership_marker(
+        &read_back_marker, &plan.run_id, Some(identifier),
+    )?;
+    recheck_guest_result_volume_directory_handles(plan, &verified)?;
     Ok(())
 }
 
@@ -4516,29 +4529,14 @@ fn verify_guest_result_vhdx_ownership_marker(
     trusted_storage_root: &Path,
     expected_identifier: Option<&str>,
 ) -> Result<String, String> {
-    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
-    let marker_path = plan.run_directory.join(GUEST_RESULT_VHDX_OWNER_MARKER);
-    let metadata = fs::symlink_metadata(&marker_path)
-        .map_err(|_| "VHDX ownership evidence is missing; the resource was preserved.".to_string())?;
-    if !metadata.is_file() || is_reparse_or_symlink(&metadata) || metadata.len() == 0 || metadata.len() > 1024 {
-        return Err("VHDX ownership evidence is not a bounded ordinary file.".into());
-    }
-    let mut file = open_source_file(&marker_path)
-        .map_err(|_| "VHDX ownership evidence could not be opened without following links.".to_string())?;
-    let opened = file.metadata()
-        .map_err(|_| "VHDX ownership evidence could not be verified.".to_string())?;
-    if !opened.is_file() || is_reparse_or_symlink(&opened) || opened.len() != metadata.len() || opened.len() > 1024 {
-        return Err("VHDX ownership evidence changed while being opened.".into());
-    }
-    let mut bytes = Vec::new();
-    file.take(1025).read_to_end(&mut bytes)
-        .map_err(|_| "VHDX ownership evidence could not be read.".to_string())?;
-    if bytes.is_empty() || bytes.len() > 1024 {
-        return Err("VHDX ownership evidence exceeded its read limit.".into());
-    }
+    let verified = open_verified_guest_result_volume_directory(plan, trusted_storage_root)?;
+    let bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &verified.run_directory_handle, GUEST_RESULT_VHDX_OWNER_MARKER, 1024,
+    ).map_err(|_| "VHDX ownership evidence is missing, unsafe, or oversized; the resource was preserved.".to_string())?;
     let marker: GuestResultVhdxOwnershipMarker = serde_json::from_slice(&bytes)
         .map_err(|_| "VHDX ownership evidence is malformed or contains unsupported fields.".to_string())?;
     validate_guest_result_vhdx_ownership_marker(&marker, &plan.run_id, expected_identifier)?;
+    recheck_guest_result_volume_directory_handles(plan, &verified)?;
     Ok(marker.identifier)
 }
 
@@ -5231,6 +5229,90 @@ struct GuestResultVolumeOwnershipMarker {
     schema_version: u32,
     run_id: String,
     owner: String,
+    storage_root_identity_volume: u64,
+    storage_root_identity_file: u64,
+    run_directory_identity_volume: u64,
+    run_directory_identity_file: u64,
+}
+
+fn validate_guest_result_volume_ownership_marker(
+    marker: &GuestResultVolumeOwnershipMarker,
+    expected_run_id: &str,
+    expected_storage_root_identity: (u64, u64),
+    expected_run_directory_identity: (u64, u64),
+) -> Result<(), String> {
+    if marker.schema_version != GUEST_RESULT_VOLUME_OWNER_SCHEMA
+        || marker.run_id != expected_run_id
+        || marker.owner != "FRIDAY-CodingAssistant-ResultVolume"
+        || (marker.storage_root_identity_volume, marker.storage_root_identity_file)
+            != expected_storage_root_identity
+        || (marker.run_directory_identity_volume, marker.run_directory_identity_file)
+            != expected_run_directory_identity
+    {
+        return Err("Result-volume ownership evidence does not match this exact storage root and run-directory identity.".into());
+    }
+    Ok(())
+}
+
+struct VerifiedGuestResultVolumeDirectory {
+    storage_root_handle: File,
+    run_directory_handle: File,
+    storage_root_identity: (u64, u64),
+    run_directory_identity: (u64, u64),
+}
+
+fn open_verified_guest_result_volume_directory(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<VerifiedGuestResultVolumeDirectory, String> {
+    validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
+    let storage_root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&plan.storage_root)
+        .map_err(|_| "The trusted result-volume storage root could not be opened safely.".to_string())?;
+    let storage_root_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.storage_root, &storage_root_handle,
+    ).map_err(|_| "The trusted result-volume storage-root identity could not be verified.".to_string())?;
+    let run_directory_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+        &storage_root_handle, OsStr::new(&plan.run_id),
+    ).map_err(|_| "The result-volume run directory could not be opened relative to its verified storage root.".to_string())?;
+    let run_directory_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.run_directory, &run_directory_handle,
+    ).map_err(|_| "The result-volume run directory does not match its held handle.".to_string())?;
+
+    let marker_bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &run_directory_handle, GUEST_RESULT_VOLUME_OWNER_MARKER, 1024,
+    ).map_err(|_| "Result-volume ownership evidence is missing, unsafe, or oversized; the directory was preserved.".to_string())?;
+    let marker: GuestResultVolumeOwnershipMarker = serde_json::from_slice(&marker_bytes)
+        .map_err(|_| "Result-volume ownership evidence is malformed.".to_string())?;
+    validate_guest_result_volume_ownership_marker(
+        &marker, &plan.run_id, storage_root_identity, run_directory_identity,
+    )?;
+
+    let verified = VerifiedGuestResultVolumeDirectory {
+        storage_root_handle,
+        run_directory_handle,
+        storage_root_identity,
+        run_directory_identity,
+    };
+    recheck_guest_result_volume_directory_handles(plan, &verified)?;
+    Ok(verified)
+}
+
+fn recheck_guest_result_volume_directory_handles(
+    plan: &GuestResultVolumePlan,
+    verified: &VerifiedGuestResultVolumeDirectory,
+) -> Result<(), String> {
+    let storage_root_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.storage_root, &verified.storage_root_handle,
+    ).map_err(|_| "The result-volume storage-root path no longer identifies its held directory.".to_string())?;
+    let run_directory_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.run_directory, &verified.run_directory_handle,
+    ).map_err(|_| "The result-volume run-directory path no longer identifies its held directory.".to_string())?;
+    if storage_root_identity != verified.storage_root_identity
+        || run_directory_identity != verified.run_directory_identity
+    {
+        return Err("A result-volume directory identity changed while ownership evidence was being checked.".into());
+    }
+    Ok(())
 }
 
 /// Atomically reserves a new per-run directory and writes its ownership record.
@@ -5272,6 +5354,10 @@ fn reserve_guest_result_volume_directory(
         schema_version: GUEST_RESULT_VOLUME_OWNER_SCHEMA,
         run_id: plan.run_id.clone(),
         owner: "FRIDAY-CodingAssistant-ResultVolume".to_string(),
+        storage_root_identity_volume: storage_root_identity.0,
+        storage_root_identity_file: storage_root_identity.1,
+        run_directory_identity_volume: run_directory_identity.0,
+        run_directory_identity_file: run_directory_identity.1,
     };
     let bytes = serde_json::to_vec(&marker)
         .map_err(|_| "FRIDAY could not prepare result-volume ownership metadata.".to_string())?;
@@ -5293,12 +5379,9 @@ fn reserve_guest_result_volume_directory(
     }
     let verified_marker: GuestResultVolumeOwnershipMarker = serde_json::from_slice(&read_back)
         .map_err(|_| "The result-volume ownership marker read-back was malformed.".to_string())?;
-    if verified_marker.schema_version != GUEST_RESULT_VOLUME_OWNER_SCHEMA
-        || verified_marker.run_id != plan.run_id
-        || verified_marker.owner != "FRIDAY-CodingAssistant-ResultVolume"
-    {
-        return Err("The result-volume ownership marker does not match the exact FRIDAY run.".into());
-    }
+    validate_guest_result_volume_ownership_marker(
+        &verified_marker, &plan.run_id, storage_root_identity, run_directory_identity,
+    )?;
 
     if crate::coding_sandbox_fs::verified_directory_identity(
         &plan.run_directory, &run_directory_handle,
@@ -5360,56 +5443,15 @@ fn verify_guest_result_host_mount_directory(
     Ok(canonical)
 }
 
-/// Verifies the exact per-run child directory and its no-follow ownership marker.
-/// This does not authorize disk detach or recursive deletion.
+/// Verifies the exact per-run child directory and its identity-bound ownership marker.
+/// The marker is read relative to a held directory handle; copied marker bytes in a
+/// replacement directory cannot authorize that replacement.
 fn verify_guest_result_volume_directory(
     plan: &GuestResultVolumePlan,
     trusted_storage_root: &Path,
 ) -> Result<PathBuf, String> {
-    validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
-    let root = fs::canonicalize(trusted_storage_root)
-        .map_err(|_| "The trusted result-volume root could not be reverified.".to_string())?;
-    let metadata = fs::symlink_metadata(&plan.run_directory)
-        .map_err(|_| "The result-volume run directory is unavailable.".to_string())?;
-    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
-        return Err("The result-volume run directory is not an ordinary directory.".into());
-    }
-    let canonical = fs::canonicalize(&plan.run_directory)
-        .map_err(|_| "The result-volume run directory could not be canonicalized.".to_string())?;
-    if canonical.parent() != Some(root.as_path())
-        || canonical.file_name().and_then(OsStr::to_str) != Some(plan.run_id.as_str())
-    {
-        return Err("The result-volume run directory failed its exact-child ownership check.".into());
-    }
-
-    let marker_path = canonical.join(GUEST_RESULT_VOLUME_OWNER_MARKER);
-    let marker_metadata = fs::symlink_metadata(&marker_path)
-        .map_err(|_| "Result-volume ownership evidence is missing; the directory was preserved.".to_string())?;
-    if !marker_metadata.is_file() || is_reparse_or_symlink(&marker_metadata) || marker_metadata.len() > 1024 {
-        return Err("Result-volume ownership evidence is not a small regular file.".into());
-    }
-    let mut marker_file = open_source_file(&marker_path)
-        .map_err(|_| "Result-volume ownership evidence could not be opened without following links.".to_string())?;
-    let opened_metadata = marker_file.metadata()
-        .map_err(|_| "Result-volume ownership evidence could not be verified.".to_string())?;
-    if !opened_metadata.is_file() || is_reparse_or_symlink(&opened_metadata) || opened_metadata.len() > 1024 {
-        return Err("Result-volume ownership evidence changed or exceeded its size limit.".into());
-    }
-    let mut bytes = Vec::new();
-    marker_file.take(1025).read_to_end(&mut bytes)
-        .map_err(|_| "Result-volume ownership evidence could not be read.".to_string())?;
-    if bytes.len() > 1024 {
-        return Err("Result-volume ownership evidence exceeded its read limit.".into());
-    }
-    let marker: GuestResultVolumeOwnershipMarker = serde_json::from_slice(&bytes)
-        .map_err(|_| "Result-volume ownership evidence is malformed.".to_string())?;
-    if marker.schema_version != GUEST_RESULT_VOLUME_OWNER_SCHEMA
-        || marker.run_id != plan.run_id
-        || marker.owner != "FRIDAY-CodingAssistant-ResultVolume"
-    {
-        return Err("Result-volume ownership evidence does not match this FRIDAY run.".into());
-    }
-    Ok(canonical)
+    let _verified = open_verified_guest_result_volume_directory(plan, trusted_storage_root)?;
+    Ok(plan.run_directory.clone())
 }
 
 
@@ -11530,6 +11572,29 @@ mod tests {
         assert_eq!(marker.owner, "FRIDAY-CodingAssistant-ResultVolume");
         assert_eq!(verify_guest_result_volume_directory(&plan, &root).unwrap(), reserved);
         assert!(reserve_guest_result_volume_directory(&plan, &root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn result_volume_directory_rejects_replacement_with_copied_ownership_marker() {
+        let root = make_test_directory("result-volume-replaced-root");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        let original = reserve_guest_result_volume_directory(&plan, &root).unwrap();
+        let marker_path = original.join(GUEST_RESULT_VOLUME_OWNER_MARKER);
+        let marker_bytes = fs::read(&marker_path).unwrap();
+        let displaced = root.join("displaced-original-run");
+        fs::rename(&original, &displaced).unwrap();
+
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join(GUEST_RESULT_VOLUME_OWNER_MARKER), &marker_bytes).unwrap();
+        fs::write(original.join("replacement-evidence.txt"), b"preserve replacement").unwrap();
+
+        assert!(verify_guest_result_volume_directory(&plan, &root).is_err(),
+            "copying a valid marker must not authorize a different directory object");
+        assert_eq!(fs::read(original.join(GUEST_RESULT_VOLUME_OWNER_MARKER)).unwrap(), marker_bytes);
+        assert_eq!(fs::read(original.join("replacement-evidence.txt")).unwrap(), b"preserve replacement");
+        assert_eq!(fs::read(displaced.join(GUEST_RESULT_VOLUME_OWNER_MARKER)).unwrap(), marker_bytes);
         fs::remove_dir_all(root).unwrap();
     }
 
