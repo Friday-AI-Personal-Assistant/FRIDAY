@@ -876,7 +876,7 @@ fn validate_guest_runtime_staging_cleanup_plan(
     Ok(())
 }
 
-const GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA: u32 = 1;
+const GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA: u32 = 2;
 const MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_BYTES: usize = 16 * 1024;
 const MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES: usize = 4;
 
@@ -907,6 +907,8 @@ struct GuestRuntimeCleanupJournal {
     staging_root_path: String,
     parent_identity_volume: u64,
     parent_identity_file: u64,
+    journal_root_identity_volume: u64,
+    journal_root_identity_file: u64,
     root_identity_volume: u64,
     root_identity_file: u64,
     entries: Vec<GuestRuntimeCleanupJournalEntry>,
@@ -927,6 +929,8 @@ fn validate_guest_runtime_cleanup_journal(
         || journal.staging_root_path.len() > 32_768
         || journal.parent_identity_volume == 0
         || journal.parent_identity_file == 0
+        || journal.journal_root_identity_volume == 0
+        || journal.journal_root_identity_file == 0
         || journal.root_identity_volume == 0
         || journal.root_identity_file == 0
         || journal.parent_path == journal.staging_root_path
@@ -1050,6 +1054,13 @@ fn guest_runtime_cleanup_journal_generation_path(root: &Path, generation: usize)
     root.join(format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_GENERATION_PREFIX}{generation:02}"))
 }
 
+fn guest_runtime_cleanup_journal_root_identity(root: &Path) -> Result<(u64, u64), String> {
+    let handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The guest runtime cleanup journal root could not be opened safely.".to_string())?;
+    crate::coding_sandbox_fs::verified_directory_identity(root, &handle)
+        .map_err(|_| "The guest runtime cleanup journal root identity could not be verified.".to_string())
+}
+
 fn validate_guest_runtime_cleanup_journal_location(
     root: &Path,
     journal: &GuestRuntimeCleanupJournal,
@@ -1103,10 +1114,9 @@ fn persist_guest_runtime_cleanup_journal(
     if generation == 0 || generation > MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
         return Err("Only a non-empty bounded guest runtime cleanup journal can be persisted.".into());
     }
-    let root_metadata = fs::symlink_metadata(root)
-        .map_err(|_| "The guest runtime cleanup journal root is unavailable.".to_string())?;
-    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
-        return Err("The guest runtime cleanup journal root must be an ordinary directory.".into());
+    let root_identity = guest_runtime_cleanup_journal_root_identity(root)?;
+    if root_identity != (journal.journal_root_identity_volume, journal.journal_root_identity_file) {
+        return Err("The guest runtime cleanup journal root differs from its recorded directory identity.".into());
     }
     if generation > 1 {
         let previous = read_guest_runtime_cleanup_journal_generation(root, generation - 1)?;
@@ -1117,6 +1127,8 @@ fn persist_guest_runtime_cleanup_journal(
             || previous.staging_root_path != journal.staging_root_path
             || previous.parent_identity_volume != journal.parent_identity_volume
             || previous.parent_identity_file != journal.parent_identity_file
+            || previous.journal_root_identity_volume != journal.journal_root_identity_volume
+            || previous.journal_root_identity_file != journal.journal_root_identity_file
             || previous.root_identity_volume != journal.root_identity_volume
             || previous.root_identity_file != journal.root_identity_file
             || previous.entries != journal.entries[..generation - 1]
@@ -1164,6 +1176,7 @@ fn load_latest_guest_runtime_cleanup_journal(
     if root != expected_root {
         return Err("The cleanup journal location differs from the authenticated bundle identity.".into());
     }
+    let journal_root_identity = guest_runtime_cleanup_journal_root_identity(root)?;
     let mut latest: Option<GuestRuntimeCleanupJournal> = None;
     let mut gap_seen = false;
     for generation in 1..=MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
@@ -1181,6 +1194,7 @@ fn load_latest_guest_runtime_cleanup_journal(
                     || current.staging_root_path != authorization.staging_root.to_string_lossy()
                     || current.parent_identity_volume != authorization.parent_identity.0
                     || current.parent_identity_file != authorization.parent_identity.1
+                    || (current.journal_root_identity_volume, current.journal_root_identity_file) != journal_root_identity
                     || current.root_identity_volume != authorization.root_identity.0
                     || current.root_identity_file != authorization.root_identity.1
                 {
@@ -1224,6 +1238,8 @@ fn begin_guest_runtime_cleanup_journal(
         staging_root_path: authorization.staging_root.to_string_lossy().into_owned(),
         parent_identity_volume: authorization.parent_identity.0,
         parent_identity_file: authorization.parent_identity.1,
+        journal_root_identity_volume: guest_runtime_cleanup_journal_root_identity(&root)?.0,
+        journal_root_identity_file: guest_runtime_cleanup_journal_root_identity(&root)?.1,
         root_identity_volume: authorization.root_identity.0,
         root_identity_file: authorization.root_identity.1,
         entries: vec![GuestRuntimeCleanupJournalEntry {
@@ -1261,10 +1277,9 @@ fn load_guest_runtime_cleanup_journal(
 ) -> Result<GuestRuntimeCleanupJournal, String> {
     validate_guest_runtime_cleanup_journal(expected)?;
     validate_guest_runtime_cleanup_journal_location(root, expected)?;
-    let root_metadata = fs::symlink_metadata(root)
-        .map_err(|_| "The guest runtime cleanup journal root is unavailable.".to_string())?;
-    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
-        return Err("The guest runtime cleanup journal root must be an ordinary directory.".into());
+    let root_identity = guest_runtime_cleanup_journal_root_identity(root)?;
+    if root_identity != (expected.journal_root_identity_volume, expected.journal_root_identity_file) {
+        return Err("The guest runtime cleanup journal root was replaced after its identity was recorded.".into());
     }
     let mut latest: Option<GuestRuntimeCleanupJournal> = None;
     let mut gap_seen = false;
@@ -1968,6 +1983,7 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
                     || current.staging_root_path != provisioning.staging_root.to_string_lossy()
                     || current.parent_identity_volume != parent_identity.0
                     || current.parent_identity_file != parent_identity.1
+                    || (current.journal_root_identity_volume, current.journal_root_identity_file) != guest_runtime_cleanup_journal_root_identity(root)?
                     || current.root_identity_volume == 0
                     || current.root_identity_file == 0
                     || current.entries.len() != generation
@@ -1994,6 +2010,7 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
         || journal.staging_root_path != provisioning.staging_root.to_string_lossy()
         || journal.parent_identity_volume != parent_identity.0
         || journal.parent_identity_file != parent_identity.1
+        || (journal.journal_root_identity_volume, journal.journal_root_identity_file) != guest_runtime_cleanup_journal_root_identity(root)?
     {
         return Err("The latest cleanup journal differs from the authenticated runtime plan.".into());
     }
@@ -12854,6 +12871,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             staging_root_path: "C:\\FRIDAY\\runtime\\.friday-node.staging".into(),
             parent_identity_volume: 7,
             parent_identity_file: 11,
+            journal_root_identity_volume: 7,
+            journal_root_identity_file: 13,
             root_identity_volume: 7,
             root_identity_file: 12,
             entries: vec![GuestRuntimeCleanupJournalEntry {
@@ -13022,6 +13041,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             staging_root_path: staging.to_string_lossy().into_owned(),
             parent_identity_volume: 7,
             parent_identity_file: 11,
+            journal_root_identity_volume: guest_runtime_cleanup_journal_root_identity(&root).unwrap().0,
+            journal_root_identity_file: guest_runtime_cleanup_journal_root_identity(&root).unwrap().1,
             root_identity_volume: 7,
             root_identity_file: 12,
             entries: vec![GuestRuntimeCleanupJournalEntry {
@@ -13089,6 +13110,8 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             staging_root_path: staging.to_string_lossy().into_owned(),
             parent_identity_volume: 7,
             parent_identity_file: 21,
+            journal_root_identity_volume: guest_runtime_cleanup_journal_root_identity(&root).unwrap().0,
+            journal_root_identity_file: guest_runtime_cleanup_journal_root_identity(&root).unwrap().1,
             root_identity_volume: 7,
             root_identity_file: 22,
             entries: vec![GuestRuntimeCleanupJournalEntry {
