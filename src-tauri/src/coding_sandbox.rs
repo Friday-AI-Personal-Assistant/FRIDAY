@@ -13201,6 +13201,65 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
 
     #[cfg(windows)]
     #[test]
+    fn markerless_runtime_recovery_rejects_replaced_staging_root_and_preserves_it() {
+        use GuestRuntimeCleanupJournalPhase as Phase;
+
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("markerless-runtime-replaced-root");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, root.join("published-runtime"),
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![(
+            PathBuf::from("bin/cargo.exe"),
+            b"cargo-fixture".to_vec(),
+        )];
+        let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &provisioning, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let authorization = authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning,
+        ).unwrap();
+        let (journal_root, mut journal) =
+            begin_guest_runtime_cleanup_journal(&authorization).unwrap();
+
+        // Complete payload and marker removal, then simulate an attacker or
+        // concurrent actor replacing the now-empty staging directory at the
+        // same pathname before recovery observes it.
+        drop(staging_handle);
+        fs::remove_file(provisioning.staging_root.join("bin").join("cargo.exe")).unwrap();
+        fs::remove_dir(provisioning.staging_root.join("bin")).unwrap();
+        journal = advance_guest_runtime_cleanup_journal(
+            &journal_root, &journal, Phase::PayloadsRemoved,
+        ).unwrap();
+        fs::remove_file(provisioning.staging_root.join(".friday-runtime-owner.json")).unwrap();
+        fs::remove_dir(&provisioning.staging_root).unwrap();
+        fs::create_dir(&provisioning.staging_root).unwrap();
+        let replacement_payload = provisioning.staging_root.join("replacement.txt");
+        fs::write(&replacement_payload, b"must-preserve").unwrap();
+
+        let recovery = recover_markerless_guest_runtime_staging_root(
+            &root, &parent, &manifest, &anchor, &provisioning,
+        );
+        assert!(recovery.is_err(),
+            "a replacement directory must not inherit cleanup authority from the old root identity");
+        assert_eq!(fs::read(&replacement_payload).unwrap(), b"must-preserve",
+            "recovery must preserve all content in a substituted staging root");
+        assert!(provisioning.staging_root.is_dir(),
+            "the substituted staging root must remain present");
+
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn markerless_runtime_recovery_rejects_prepared_and_unexpected_content_without_deletion() {
         use GuestRuntimeCleanupJournalPhase as Phase;
 
