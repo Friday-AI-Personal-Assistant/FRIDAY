@@ -12962,6 +12962,48 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
                 "phase={phase:?}, observation={observation:?}",
             );
         }
+
+        // Exhaustively cover the full phase/observation product. This guards
+        // against a future enum addition accidentally becoming an implicit
+        // authorization path because a new state was not added to a test list.
+        let phases = [
+            Phase::Prepared,
+            Phase::PayloadsRemoved,
+            Phase::OwnershipMarkerRemoved,
+            Phase::StagingRootRemoved,
+        ];
+        let observations = [
+            Observation::AuthenticatedPayloadsRemain,
+            Observation::OwnershipMarkerOnly,
+            Observation::EmptyMarkerlessRoot,
+            Observation::StagingRootAbsent,
+            Observation::UnexpectedOrUnverified,
+        ];
+        let allowed = [
+            (Phase::Prepared, Observation::AuthenticatedPayloadsRemain, Action::ResumeAuthenticatedPayloadRemoval),
+            (Phase::Prepared, Observation::OwnershipMarkerOnly, Action::RemoveAuthenticatedOwnershipMarker),
+            (Phase::PayloadsRemoved, Observation::OwnershipMarkerOnly, Action::RemoveAuthenticatedOwnershipMarker),
+            (Phase::PayloadsRemoved, Observation::EmptyMarkerlessRoot, Action::RemoveAuthenticatedEmptyRoot),
+            (Phase::PayloadsRemoved, Observation::StagingRootAbsent, Action::RecordCompletedRootRemoval),
+            (Phase::OwnershipMarkerRemoved, Observation::EmptyMarkerlessRoot, Action::RemoveAuthenticatedEmptyRoot),
+            (Phase::OwnershipMarkerRemoved, Observation::StagingRootAbsent, Action::RecordCompletedRootRemoval),
+            (Phase::StagingRootRemoved, Observation::StagingRootAbsent, Action::AlreadyComplete),
+        ];
+        for phase in phases {
+            for observation in observations {
+                let expected = allowed.iter()
+                    .find(|(allowed_phase, allowed_observation, _)| {
+                        *allowed_phase == phase && *allowed_observation == observation
+                    })
+                    .map(|(_, _, action)| *action)
+                    .unwrap_or(Action::Reject);
+                assert_eq!(
+                    guest_runtime_cleanup_recovery_action(phase, observation),
+                    expected,
+                    "exhaustive recovery matrix: phase={phase:?}, observation={observation:?}",
+                );
+            }
+        }
     }
 
     #[test]
