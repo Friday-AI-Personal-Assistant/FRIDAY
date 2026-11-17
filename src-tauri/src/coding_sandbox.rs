@@ -1150,6 +1150,56 @@ fn persist_guest_runtime_cleanup_journal(
     Ok(())
 }
 
+/// Load the latest contiguous cleanup journal generation while binding every
+/// immutable record to the independently authenticated cleanup authorization.
+/// This is used only after the journal directory itself has been located from
+/// the fixed parent path and bundle identifier.
+fn load_latest_guest_runtime_cleanup_journal(
+    root: &Path,
+    authorization: &GuestRuntimeStagingCleanupAuthorization,
+) -> Result<GuestRuntimeCleanupJournal, String> {
+    let expected_root = guest_runtime_cleanup_journal_root_path(
+        &authorization.parent_path, &authorization.bundle_id,
+    )?;
+    if root != expected_root {
+        return Err("The cleanup journal location differs from the authenticated bundle identity.".into());
+    }
+    let mut latest: Option<GuestRuntimeCleanupJournal> = None;
+    let mut gap_seen = false;
+    for generation in 1..=MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
+        let path = guest_runtime_cleanup_journal_generation_path(root, generation);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => gap_seen = true,
+            Err(_) => return Err("A cleanup journal generation could not be inspected.".into()),
+            Ok(_) if gap_seen => return Err("The cleanup journal contains a generation gap.".into()),
+            Ok(_) => {
+                let current = read_guest_runtime_cleanup_journal_generation(root, generation)?;
+                if current.operation != authorization.operation
+                    || current.bundle_id != authorization.bundle_id
+                    || current.manifest_sha256 != authorization.manifest_sha256
+                    || current.parent_path != authorization.parent_path.to_string_lossy()
+                    || current.staging_root_path != authorization.staging_root.to_string_lossy()
+                    || current.parent_identity_volume != authorization.parent_identity.0
+                    || current.parent_identity_file != authorization.parent_identity.1
+                    || current.root_identity_volume != authorization.root_identity.0
+                    || current.root_identity_file != authorization.root_identity.1
+                {
+                    return Err("The cleanup journal is bound to a different runtime identity.".into());
+                }
+                if let Some(previous) = &latest {
+                    if current.entries.len() != previous.entries.len() + 1
+                        || current.entries[..previous.entries.len()] != previous.entries
+                    {
+                        return Err("The cleanup journal history is not a contiguous append-only sequence.".into());
+                    }
+                }
+                latest = Some(current);
+            }
+        }
+    }
+    latest.ok_or_else(|| "No authenticated runtime cleanup journal is available for recovery.".into())
+}
+
 /// Load every immutable generation and require a contiguous append-only history.
 /// A gap, extra entry, incomplete generation, changed identity, or foreign run
 /// makes the journal unusable for recovery.
@@ -1624,6 +1674,20 @@ fn execute_verified_guest_runtime_staging_cleanup_progress(
     let plan = &preflight.cleanup;
     let root_name = plan.staging_root.file_name()
         .ok_or("The authenticated runtime staging root has no final path component.")?;
+    let journal_root = guest_runtime_cleanup_journal_root_path(
+        parent_path, &authorization.bundle_id,
+    )?;
+    let mut journal = load_latest_guest_runtime_cleanup_journal(
+        &journal_root, authorization,
+    )?;
+    let mut journal_phase = validate_guest_runtime_cleanup_journal(&journal)?;
+    if !matches!(
+        journal_phase,
+        GuestRuntimeCleanupJournalPhase::Prepared
+            | GuestRuntimeCleanupJournalPhase::PayloadsRemoved
+    ) {
+        return Err("The cleanup journal phase requires a dedicated markerless/root-absent recovery path; no mutation was attempted.".into());
+    }
 
     let check_identities = || -> Result<(), String> {
         let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
@@ -1689,6 +1753,13 @@ fn execute_verified_guest_runtime_staging_cleanup_progress(
         ).map_err(|_| "A remaining runtime cleanup directory was not safely removable and empty.".to_string())?;
     }
 
+    if journal_phase == GuestRuntimeCleanupJournalPhase::Prepared {
+        journal = advance_guest_runtime_cleanup_journal(
+            &journal_root, &journal, GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+        )?;
+        journal_phase = GuestRuntimeCleanupJournalPhase::PayloadsRemoved;
+    }
+
     check_identities()?;
     let (remaining_files, remaining_directories) =
         crate::coding_sandbox_fs::collect_runtime_tree_inventory(&staging_root, 32, 1281)
@@ -1714,12 +1785,19 @@ fn execute_verified_guest_runtime_staging_cleanup_progress(
         return Err("Runtime staging root is not empty after authenticated recovery cleanup.".into());
     }
 
+    journal = advance_guest_runtime_cleanup_journal(
+        &journal_root, &journal, GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
+    )?;
+
     check_identities()?;
     drop(check_identities);
     drop(staging_root);
     crate::coding_sandbox_fs::remove_verified_runtime_root_directory(
         parent_handle, root_name, authorization.parent_identity, authorization.root_identity,
     ).map_err(|_| "The authenticated empty runtime staging root could not be safely removed.".to_string())?;
+    let _journal = advance_guest_runtime_cleanup_journal(
+        &journal_root, &journal, GuestRuntimeCleanupJournalPhase::StagingRootRemoved,
+    )?;
     Ok(())
 }
 
@@ -12830,6 +12908,12 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let cleanup = build_guest_runtime_staging_cleanup_plan(
             &authorization, &manifest, &anchor, &provisioning,
         ).unwrap();
+
+        // Persist the initial cleanup intent before simulating an interrupted
+        // deletion. Recovery must refuse to proceed without this authenticated
+        // journal, then resume only from its recorded Prepared phase.
+        let (journal_root, _journal) = begin_guest_runtime_cleanup_journal(&authorization).unwrap();
+        assert!(journal_root.exists());
 
         // Simulate a previous cleanup attempt that removed one authenticated
         // payload before interruption. Recovery must verify the remaining
