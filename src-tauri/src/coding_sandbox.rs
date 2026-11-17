@@ -978,6 +978,180 @@ fn parse_guest_runtime_cleanup_journal(
     Ok(journal)
 }
 
+const GUEST_RUNTIME_CLEANUP_JOURNAL_DIR_PREFIX: &str = ".friday-runtime-cleanup-";
+const GUEST_RUNTIME_CLEANUP_JOURNAL_GENERATION_PREFIX: &str = "generation-";
+const GUEST_RUNTIME_CLEANUP_JOURNAL_FILE: &str = "state.json";
+
+fn guest_runtime_cleanup_journal_root_path(parent: &Path, bundle_id: &str) -> Result<PathBuf, String> {
+    if !parent.is_absolute()
+        || bundle_id.is_empty()
+        || bundle_id.len() > 96
+        || !bundle_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("The guest runtime cleanup journal location is invalid.".into());
+    }
+    Ok(parent.join(format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_DIR_PREFIX}{bundle_id}")))
+}
+
+fn guest_runtime_cleanup_journal_generation_path(root: &Path, generation: usize) -> PathBuf {
+    root.join(format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_GENERATION_PREFIX}{generation:02}"))
+}
+
+fn validate_guest_runtime_cleanup_journal_location(
+    root: &Path,
+    journal: &GuestRuntimeCleanupJournal,
+) -> Result<(), String> {
+    let parent = PathBuf::from(&journal.parent_path);
+    let staging = PathBuf::from(&journal.staging_root_path);
+    let expected = guest_runtime_cleanup_journal_root_path(&parent, &journal.bundle_id)?;
+    if root != expected || staging.parent() != Some(parent.as_path()) {
+        return Err("The guest runtime cleanup journal is not stored beside its authenticated staging root.".into());
+    }
+    Ok(())
+}
+
+fn read_guest_runtime_cleanup_journal_generation(
+    root: &Path,
+    generation: usize,
+) -> Result<GuestRuntimeCleanupJournal, String> {
+    if generation == 0 || generation > MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
+        return Err("The guest runtime cleanup journal generation is outside its fixed limit.".into());
+    }
+    let directory = guest_runtime_cleanup_journal_generation_path(root, generation);
+    let metadata = fs::symlink_metadata(&directory)
+        .map_err(|_| "A guest runtime cleanup journal generation is missing or unavailable.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("A guest runtime cleanup journal generation is not an ordinary directory.".into());
+    }
+    let bytes = crate::coding_sandbox_fs::read_single_bounded_file_from_directory(
+        &directory, OsStr::new(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE),
+        MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_BYTES as u64,
+    ).map_err(|_| "A guest runtime cleanup journal generation is incomplete or unsafe.".to_string())?;
+    let journal = parse_guest_runtime_cleanup_journal(&bytes)?;
+    if journal.entries.len() != generation {
+        return Err("A guest runtime cleanup journal generation does not match its sequence.".into());
+    }
+    validate_guest_runtime_cleanup_journal_location(root, &journal)?;
+    Ok(journal)
+}
+
+/// Persist one immutable cleanup phase. Generation directories and state files
+/// are exclusively created, secured before use, flushed, and read back exactly.
+/// An incomplete generation is retained as ambiguous evidence and is never
+/// overwritten or silently adopted by a later attempt.
+#[allow(dead_code)]
+fn persist_guest_runtime_cleanup_journal(
+    root: &Path,
+    journal: &GuestRuntimeCleanupJournal,
+) -> Result<(), String> {
+    validate_guest_runtime_cleanup_journal(journal)?;
+    validate_guest_runtime_cleanup_journal_location(root, journal)?;
+    let generation = journal.entries.len();
+    if generation == 0 || generation > MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
+        return Err("Only a non-empty bounded guest runtime cleanup journal can be persisted.".into());
+    }
+    let root_metadata = fs::symlink_metadata(root)
+        .map_err(|_| "The guest runtime cleanup journal root is unavailable.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The guest runtime cleanup journal root must be an ordinary directory.".into());
+    }
+    if generation > 1 {
+        let previous = read_guest_runtime_cleanup_journal_generation(root, generation - 1)?;
+        if previous.operation != journal.operation
+            || previous.bundle_id != journal.bundle_id
+            || previous.manifest_sha256 != journal.manifest_sha256
+            || previous.parent_path != journal.parent_path
+            || previous.staging_root_path != journal.staging_root_path
+            || previous.parent_identity_volume != journal.parent_identity_volume
+            || previous.parent_identity_file != journal.parent_identity_file
+            || previous.root_identity_volume != journal.root_identity_volume
+            || previous.root_identity_file != journal.root_identity_file
+            || previous.entries != journal.entries[..generation - 1]
+        {
+            return Err("The next guest runtime cleanup journal generation does not extend persisted history.".into());
+        }
+    } else if fs::symlink_metadata(guest_runtime_cleanup_journal_generation_path(root, 1)).is_ok() {
+        return Err("The initial guest runtime cleanup journal generation already exists.".into());
+    }
+
+    let directory = guest_runtime_cleanup_journal_generation_path(root, generation);
+    fs::create_dir(&directory)
+        .map_err(|_| "FRIDAY could not exclusively create the guest runtime cleanup journal generation.".to_string())?;
+    secure_private_workspace_directory(&directory)
+        .map_err(|_| "FRIDAY could not secure the new cleanup journal generation; it was preserved.".to_string())?;
+    let bytes = encode_guest_runtime_cleanup_journal(journal)?;
+    let file_path = directory.join(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE);
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&file_path)
+        .map_err(|_| "FRIDAY could not exclusively create the cleanup journal file; the generation was preserved.".to_string())?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|_| "FRIDAY could not write the cleanup journal; the generation was preserved.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "FRIDAY could not flush the cleanup journal; the generation was preserved.".to_string())?;
+    drop(file);
+
+    let verified = read_guest_runtime_cleanup_journal_generation(root, generation)?;
+    if verified != *journal {
+        return Err("The persisted guest runtime cleanup journal failed exact read-back verification.".into());
+    }
+    Ok(())
+}
+
+/// Load every immutable generation and require a contiguous append-only history.
+/// A gap, extra entry, incomplete generation, changed identity, or foreign run
+/// makes the journal unusable for recovery.
+#[allow(dead_code)]
+fn load_guest_runtime_cleanup_journal(
+    root: &Path,
+    expected: &GuestRuntimeCleanupJournal,
+) -> Result<GuestRuntimeCleanupJournal, String> {
+    validate_guest_runtime_cleanup_journal(expected)?;
+    validate_guest_runtime_cleanup_journal_location(root, expected)?;
+    let root_metadata = fs::symlink_metadata(root)
+        .map_err(|_| "The guest runtime cleanup journal root is unavailable.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The guest runtime cleanup journal root must be an ordinary directory.".into());
+    }
+    let mut latest: Option<GuestRuntimeCleanupJournal> = None;
+    let mut gap_seen = false;
+    for generation in 1..=MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
+        let path = guest_runtime_cleanup_journal_generation_path(root, generation);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => gap_seen = true,
+            Err(_) => return Err("A guest runtime cleanup journal generation could not be inspected.".into()),
+            Ok(_) if gap_seen => return Err("The guest runtime cleanup journal contains a generation gap.".into()),
+            Ok(_) => {
+                let current = read_guest_runtime_cleanup_journal_generation(root, generation)?;
+                if current.operation != expected.operation
+                    || current.bundle_id != expected.bundle_id
+                    || current.manifest_sha256 != expected.manifest_sha256
+                    || current.parent_path != expected.parent_path
+                    || current.staging_root_path != expected.staging_root_path
+                    || current.parent_identity_volume != expected.parent_identity_volume
+                    || current.parent_identity_file != expected.parent_identity_file
+                    || current.root_identity_volume != expected.root_identity_volume
+                    || current.root_identity_file != expected.root_identity_file
+                {
+                    return Err("The guest runtime cleanup journal identity changed between generations.".into());
+                }
+                if let Some(previous) = &latest {
+                    if current.entries[..generation - 1] != previous.entries {
+                        return Err("The guest runtime cleanup journal history is not append-only.".into());
+                    }
+                }
+                latest = Some(current);
+            }
+        }
+    }
+    let latest = latest.ok_or_else(|| "No complete guest runtime cleanup journal generation is available.".to_string())?;
+    if latest.entries.len() != expected.entries.len()
+        || latest.entries != expected.entries
+    {
+        return Err("The loaded guest runtime cleanup journal differs from the expected authenticated phase.".into());
+    }
+    Ok(latest)
+}
+
 /// A short-lived, read-only capability proving that the authenticated cleanup
 /// plan and both held directory identities were revalidated together. This
 /// object does not authorize deletion by itself and exposes no mutation API.
@@ -12335,6 +12509,97 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         tampered_bytes.push(b' ');
         assert!(parse_guest_runtime_cleanup_journal(&tampered_bytes).is_err());
         assert!(parse_guest_runtime_cleanup_journal(&vec![b'x'; MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn guest_runtime_cleanup_journal_persists_immutable_private_generations_and_rejects_tampering() {
+        let parent = make_test_directory("runtime-cleanup-journal-parent");
+        let staging = parent.join(".friday-node.staging");
+        let root = guest_runtime_cleanup_journal_root_path(&parent, "node-test-bundle").unwrap();
+        fs::create_dir(&root).unwrap();
+        secure_private_workspace_directory(&root).unwrap();
+        let base = GuestRuntimeCleanupJournal {
+            schema_version: GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA,
+            operation: GuestRunOperation::NodeNpmTest,
+            bundle_id: "node-test-bundle".into(),
+            manifest_sha256: "a".repeat(64),
+            parent_path: parent.to_string_lossy().into_owned(),
+            staging_root_path: staging.to_string_lossy().into_owned(),
+            parent_identity_volume: 7,
+            parent_identity_file: 11,
+            root_identity_volume: 7,
+            root_identity_file: 12,
+            entries: vec![GuestRuntimeCleanupJournalEntry {
+                sequence: 1,
+                phase: GuestRuntimeCleanupJournalPhase::Prepared,
+            }],
+        };
+
+        persist_guest_runtime_cleanup_journal(&root, &base).unwrap();
+        assert_eq!(load_guest_runtime_cleanup_journal(&root, &base).unwrap(), base);
+        assert!(persist_guest_runtime_cleanup_journal(&root, &base).is_err(),
+            "immutable generation one must never be overwritten");
+
+        let mut marker_removed = base.clone();
+        marker_removed.entries.push(GuestRuntimeCleanupJournalEntry {
+            sequence: 2,
+            phase: GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
+        });
+        persist_guest_runtime_cleanup_journal(&root, &marker_removed).unwrap();
+        assert_eq!(load_guest_runtime_cleanup_journal(&root, &marker_removed).unwrap(), marker_removed);
+
+        let state = guest_runtime_cleanup_journal_generation_path(&root, 2)
+            .join(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE);
+        let valid = fs::read(&state).unwrap();
+        fs::write(&state, b"{tampered").unwrap();
+        assert!(load_guest_runtime_cleanup_journal(&root, &marker_removed).is_err());
+        fs::write(&state, valid).unwrap();
+
+        fs::write(guest_runtime_cleanup_journal_generation_path(&root, 2).join("unexpected.bin"), b"keep").unwrap();
+        assert!(load_guest_runtime_cleanup_journal(&root, &marker_removed).is_err(),
+            "a generation with extra files must not be trusted");
+        assert_eq!(fs::read(guest_runtime_cleanup_journal_generation_path(&root, 2).join("unexpected.bin")).unwrap(), b"keep");
+
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn guest_runtime_cleanup_journal_rejects_generation_gaps_and_identity_substitution() {
+        let parent = make_test_directory("runtime-cleanup-journal-gap");
+        let staging = parent.join(".friday-node.staging");
+        let root = guest_runtime_cleanup_journal_root_path(&parent, "node-test-bundle").unwrap();
+        fs::create_dir(&root).unwrap();
+        secure_private_workspace_directory(&root).unwrap();
+        let base = GuestRuntimeCleanupJournal {
+            schema_version: GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA,
+            operation: GuestRunOperation::NodeNpmTest,
+            bundle_id: "node-test-bundle".into(),
+            manifest_sha256: "b".repeat(64),
+            parent_path: parent.to_string_lossy().into_owned(),
+            staging_root_path: staging.to_string_lossy().into_owned(),
+            parent_identity_volume: 7,
+            parent_identity_file: 21,
+            root_identity_volume: 7,
+            root_identity_file: 22,
+            entries: vec![GuestRuntimeCleanupJournalEntry {
+                sequence: 1,
+                phase: GuestRuntimeCleanupJournalPhase::Prepared,
+            }],
+        };
+        persist_guest_runtime_cleanup_journal(&root, &base).unwrap();
+        let mut final_phase = base.clone();
+        final_phase.entries.extend([
+            GuestRuntimeCleanupJournalEntry { sequence: 2, phase: GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved },
+            GuestRuntimeCleanupJournalEntry { sequence: 3, phase: GuestRuntimeCleanupJournalPhase::StagingRootRemoved },
+        ]);
+        fs::create_dir(guest_runtime_cleanup_journal_generation_path(&root, 3)).unwrap();
+        assert!(load_guest_runtime_cleanup_journal(&root, &final_phase).is_err(),
+            "a missing generation two must be detected");
+
+        let mut substituted = base.clone();
+        substituted.root_identity_file += 1;
+        assert!(load_guest_runtime_cleanup_journal(&root, &substituted).is_err());
+        fs::remove_dir_all(parent).unwrap();
     }
 
     #[cfg(windows)]
