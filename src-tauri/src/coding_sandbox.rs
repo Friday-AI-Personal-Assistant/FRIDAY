@@ -13247,8 +13247,12 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
                 secure_private_workspace_directory(&root).unwrap();
                 true
             }
-            Err(error) if cfg!(windows) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            Err(_error) if cfg!(windows) => {
+                // Windows may map the native sharing violation to
+                // ErrorKind::Uncategorized. The invariant is that the held
+                // handle prevents replacement, not Rust's error mapping.
+                assert!(root.is_dir(), "the pinned journal root must remain in place");
+                assert!(!moved.exists(), "the pinned journal root must not be renamed");
                 false
             }
             Err(error) => panic!("could not replace pinned journal root in regression test: {error}"),
