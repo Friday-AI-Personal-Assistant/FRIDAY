@@ -1564,6 +1564,227 @@ pub(crate) fn remove_verified_snapshot_file(
     Ok(())
 }
 
+
+/// Unix runtime-file deletion is deliberately unavailable until FRIDAY has a
+/// race-safe, handle-bound unlink primitive and a reviewed same-user threat
+/// model. Never fall back to name-based unlinkat for authenticated runtime data.
+#[cfg(unix)]
+#[allow(dead_code)]
+pub(crate) fn remove_verified_runtime_file(
+    _parent: &File,
+    _name: &OsStr,
+    _expected_size: u64,
+    _expected_sha256: &str,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "authenticated runtime cleanup is not supported on this platform",
+    ))
+}
+
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn remove_verified_runtime_file(
+    parent: &File,
+    name: &OsStr,
+    expected_size: u64,
+    expected_sha256: &str,
+) -> io::Result<()> {
+    use std::{
+        mem,
+        os::windows::{ffi::OsStrExt, io::{AsRawHandle, FromRawHandle}},
+        ptr,
+    };
+
+    if !is_single_normal_component(name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime cleanup requires one normal filename component"));
+    }
+
+    let wide: Vec<u16> = name.encode_wide().collect();
+    if wide.is_empty() || wide.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid runtime filename"));
+    }
+    let byte_len = wide.len().checked_mul(mem::size_of::<u16>())
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "runtime filename is too long"))?;
+
+    #[repr(C)]
+    struct UnicodeString { length: u16, maximum_length: u16, buffer: *mut u16 }
+    #[repr(C)]
+    struct ObjectAttributes {
+        length: u32,
+        root_directory: *mut std::ffi::c_void,
+        object_name: *mut UnicodeString,
+        attributes: u32,
+        security_descriptor: *mut std::ffi::c_void,
+        security_quality_of_service: *mut std::ffi::c_void,
+    }
+    #[repr(C)]
+    union IoStatusValue { status: i32, pointer: *mut std::ffi::c_void }
+    #[repr(C)]
+    struct IoStatusBlock { status: IoStatusValue, information: usize }
+    #[repr(C)]
+    struct FileDispositionInfoEx { flags: u32 }
+
+    const OBJ_CASE_INSENSITIVE: u32 = 0x0000_0040;
+    const OBJ_DONT_REPARSE: u32 = 0x0000_1000;
+    const DELETE: u32 = 0x0001_0000;
+    const FILE_READ_DATA: u32 = 0x0000_0001;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+    const FILE_DISPOSITION_INFO_EX_CLASS: i32 = 21;
+    const FILE_DISPOSITION_FLAG_DELETE: u32 = 0x0000_0001;
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut *mut std::ffi::c_void,
+            desired_access: u32,
+            object_attributes: *const ObjectAttributes,
+            io_status_block: *mut IoStatusBlock,
+            allocation_size: *const i64,
+            file_attributes: u32,
+            share_access: u32,
+            create_disposition: u32,
+            create_options: u32,
+            ea_buffer: *const std::ffi::c_void,
+            ea_length: u32,
+        ) -> i32;
+    }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtQueryDirectoryFile(
+            file_handle: *mut std::ffi::c_void,
+            event: *mut std::ffi::c_void,
+            apc_routine: *mut std::ffi::c_void,
+            apc_context: *mut std::ffi::c_void,
+            io_status_block: *mut IoStatusBlock,
+            file_information: *mut std::ffi::c_void,
+            length: u32,
+            information_class: i32,
+            return_single_entry: u8,
+            file_name: *mut UnicodeString,
+            restart_scan: u8,
+        ) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetFileInformationByHandle(
+            file: *mut std::ffi::c_void,
+            information_class: i32,
+            information: *const std::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+
+    let mut unicode_name = UnicodeString {
+        length: byte_len,
+        maximum_length: byte_len,
+        buffer: wide.as_ptr() as *mut u16,
+    };
+    let attributes = ObjectAttributes {
+        length: mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: parent.as_raw_handle(),
+        object_name: &mut unicode_name,
+        attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        security_descriptor: ptr::null_mut(),
+        security_quality_of_service: ptr::null_mut(),
+    };
+    let mut io_status = IoStatusBlock { status: IoStatusValue { status: 0 }, information: 0 };
+    let mut raw_handle = ptr::null_mut();
+    let status = unsafe {
+        NtCreateFile(
+            &mut raw_handle,
+            DELETE | FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            &attributes,
+            &mut io_status,
+            ptr::null(),
+            0,
+            FILE_SHARE_READ,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            ptr::null(),
+            0,
+        )
+    };
+    if status < 0 || raw_handle.is_null() {
+        // STATUS_OBJECT_NAME_NOT_FOUND is the expected result when a prior
+        // cleanup attempt already removed this inventoried entry. Preserve
+        // that distinction so the retry-safe orchestrator can continue.
+        let kind = if status as u32 == 0xC000_0034 {
+            io::ErrorKind::NotFound
+        } else {
+            io::ErrorKind::PermissionDenied
+        };
+        return Err(io::Error::new(
+            kind,
+            format!("handle-relative runtime delete open failed (NTSTATUS 0x{:08X})", status as u32),
+        ));
+    }
+
+    let file = unsafe { File::from_raw_handle(raw_handle) };
+    let metadata = file.metadata()?;
+    use std::os::windows::fs::MetadataExt;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || (metadata.file_attributes() & 0x0000_0400 != 0)
+        || metadata.len() != expected_size
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime file does not match its expected type or size"));
+    }
+
+    // The handle denies concurrent write/delete sharing. Hash the exact bytes
+    // through this same handle before applying its delete disposition.
+    if expected_sha256.len() != 64
+        || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime cleanup requires an exact SHA-256 digest"));
+    }
+    use std::io::Read;
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    let mut remaining = expected_size;
+    let mut buffer = [0u8; 64 * 1024];
+    while remaining > 0 {
+        let chunk_len = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "runtime cleanup size is not representable"))?;
+        let read = (&file).read(&mut buffer[..chunk_len])?;
+        if read == 0 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "runtime payload ended before its authenticated size"));
+        }
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    let mut extra = [0u8; 1];
+    if (&file).read(&mut extra)? != 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime payload exceeds its authenticated size"));
+    }
+    let actual_sha256 = format!("{:x}", hasher.finalize());
+    if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime payload digest does not match its authenticated inventory"));
+    }
+
+    let disposition = FileDispositionInfoEx { flags: FILE_DISPOSITION_FLAG_DELETE };
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FILE_DISPOSITION_INFO_EX_CLASS,
+            &disposition as *const _ as *const std::ffi::c_void,
+            mem::size_of::<FileDispositionInfoEx>() as u32,
+        )
+    } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    drop(file);
+    Ok(())
+}
+
+
 /// Remove one verified empty directory relative to a held parent directory handle.
 ///
 /// Unix rmdir via unlinkat is name-based and retains a same-user rename race
@@ -3688,6 +3909,40 @@ mod tests {
         assert_eq!(fs::read(workspace_path.join("unknown.txt")).unwrap(), b"keep me");
         assert!(remove_verified_snapshot_file(&parent, OsStr::new("unknown.txt"), 1).is_err());
 
+        drop(parent);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_file_cleanup_fails_closed_without_race_safe_unlink() {
+        use std::ffi::OsStr;
+        let workspace_path = make_test_directory("runtime-cleanup-unix-fail-closed");
+        fs::write(workspace_path.join("payload.bin"), b"authenticated payload").unwrap();
+        let parent = open_test_root(&workspace_path);
+        let error = remove_verified_runtime_file(
+            &parent, OsStr::new("payload.bin"), 22,
+            "5682cf8bc4b549d2f5f79101d03dbe613127ce4161a9bce7829dd1630a8f66d8",
+        ).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(fs::read(workspace_path.join("payload.bin")).unwrap(), b"authenticated payload");
+        drop(parent);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_runtime_file_cleanup_requires_exact_size_and_sha256() {
+        use std::ffi::OsStr;
+        let workspace_path = make_test_directory("windows-runtime-cleanup-digest");
+        fs::write(workspace_path.join("payload.bin"), b"authenticated payload").unwrap();
+        let parent = open_test_root(&workspace_path);
+        let digest = "5682cf8bc4b549d2f5f79101d03dbe613127ce4161a9bce7829dd1630a8f66d8";
+        assert!(remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 1, digest).is_err());
+        assert!(remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 22, "0".repeat(64).as_str()).is_err());
+        assert_eq!(fs::read(workspace_path.join("payload.bin")).unwrap(), b"authenticated payload");
+        remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 22, digest).unwrap();
+        assert!(!workspace_path.join("payload.bin").exists());
         drop(parent);
         fs::remove_dir_all(workspace_path).unwrap();
     }
