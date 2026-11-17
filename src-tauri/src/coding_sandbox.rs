@@ -12670,17 +12670,17 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         persist_guest_runtime_cleanup_journal(&root, &marker_removed).unwrap();
         assert_eq!(load_guest_runtime_cleanup_journal(&root, &marker_removed).unwrap(), marker_removed);
 
-        let state = guest_runtime_cleanup_journal_generation_path(&root, 2)
+        let state = guest_runtime_cleanup_journal_generation_path(&root, 3)
             .join(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE);
         let valid = fs::read(&state).unwrap();
         fs::write(&state, b"{tampered").unwrap();
         assert!(load_guest_runtime_cleanup_journal(&root, &marker_removed).is_err());
         fs::write(&state, valid).unwrap();
 
-        fs::write(guest_runtime_cleanup_journal_generation_path(&root, 2).join("unexpected.bin"), b"keep").unwrap();
+        fs::write(guest_runtime_cleanup_journal_generation_path(&root, 3).join("unexpected.bin"), b"keep").unwrap();
         assert!(load_guest_runtime_cleanup_journal(&root, &marker_removed).is_err(),
             "a generation with extra files must not be trusted");
-        assert_eq!(fs::read(guest_runtime_cleanup_journal_generation_path(&root, 2).join("unexpected.bin")).unwrap(), b"keep");
+        assert_eq!(fs::read(guest_runtime_cleanup_journal_generation_path(&root, 3).join("unexpected.bin")).unwrap(), b"keep");
 
         fs::remove_dir_all(parent).unwrap();
     }
