@@ -1087,8 +1087,8 @@ fn read_guest_runtime_cleanup_journal_generation_from_handle(
     if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
         return Err("The held cleanup journal root is not an ordinary directory.".into());
     }
-    let generation_name = OsStr::new(&format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_GENERATION_PREFIX}{generation:02}"));
-    let directory = crate::coding_sandbox_fs::open_child_directory_nofollow(root_handle, generation_name)
+    let generation_name = format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_GENERATION_PREFIX}{generation:02}");
+    let directory = crate::coding_sandbox_fs::open_child_directory_nofollow(root_handle, OsStr::new(&generation_name))
         .map_err(|_| "A cleanup journal generation is missing or is not an ordinary directory.".to_string())?;
     let (files, directories) = crate::coding_sandbox_fs::collect_runtime_tree_inventory(&directory, 1, 2)
         .map_err(|_| "A cleanup journal generation could not be safely inventoried.".to_string())?;
