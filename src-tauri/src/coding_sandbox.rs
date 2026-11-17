@@ -1947,7 +1947,7 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
     if root != expected_root || provisioning.staging_root.parent() != Some(parent_path) {
         return Err("The cleanup journal is not at the authenticated provisioning location.".into());
     }
-    let mut latest = None;
+    let mut latest: Option<GuestRuntimeCleanupJournal> = None;
     let mut gap_seen = false;
     for generation in 1..=MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
         let path = guest_runtime_cleanup_journal_generation_path(root, generation);
