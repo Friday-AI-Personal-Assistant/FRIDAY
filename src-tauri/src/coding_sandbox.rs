@@ -10020,12 +10020,12 @@ mod tests {
         let run_id = "0123456789abcdef0123456789abcdef";
         let directory = make_test_directory("guest-result-stop-proof");
         fs::write(directory.join(GUEST_RESULT_FILE_NAME), guest_result_json("passed", r#","exitCode":0"#)).unwrap();
-        let running = stopped_sandbox_journal_fixture(run_id, false);
-        assert!(authorize_guest_result_collection_after_sandbox_stop(&running, &approved_run).is_err());
-        let stopped = stopped_sandbox_journal_fixture(run_id, true);
         let approved_run = build_guest_run_execution_plan(
             parse_guest_run_request(&valid_guest_request_json()).unwrap(),
         ).unwrap();
+        let running = stopped_sandbox_journal_fixture(run_id, false);
+        assert!(authorize_guest_result_collection_after_sandbox_stop(&running, &approved_run).is_err());
+        let stopped = stopped_sandbox_journal_fixture(run_id, true);
         let proof = authorize_guest_result_collection_after_sandbox_stop(&stopped, &approved_run).unwrap();
         let result = read_verified_guest_result_file_after_stopped_session(&proof, &directory).unwrap();
         assert_eq!(result.status, GuestRunStatus::Passed);
