@@ -6721,11 +6721,6 @@ fn preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
             observed_target_status, observed_sessions.len() as u32,
             unrelated_session_count as u32,
         )?,
-        recovery_receipt_sequence: persist_windows_sandbox_cli_recovery_observation(
-            root, expected_run_id, &expected_session_id, intent, interrupted_state,
-            observed_target_status, observed_sessions.len() as u32,
-            unrelated_session_count as u32,
-        )?,
         journal: recovered,
     })
 }
@@ -14022,6 +14017,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let executable = r"C:\Program Files\WindowsApps\wsb.exe";
         prepare_and_persist_windows_sandbox_cli_start_transaction(executable, config, &root, &initial, &[]).unwrap();
         preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[]).unwrap();
+        fs::remove_file(root.join(windows_sandbox_cli_recovery_receipt_file_name(1))).unwrap();
         let outside = root.join("outside-recovery-receipt.json");
         fs::write(&outside, b"do-not-follow").unwrap();
         symlink(&outside, root.join(windows_sandbox_cli_recovery_receipt_file_name(1))).unwrap();
