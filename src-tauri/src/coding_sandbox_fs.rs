@@ -2198,6 +2198,213 @@ pub(crate) fn remove_verified_runtime_empty_directory(
 }
 
 
+/// Remove the staging root only when the held parent and freshly opened
+/// root handles match the identities captured by the authenticated cleanup
+/// authorization. The directory must be empty; Windows checks and deletes
+/// through the same restrictive handle. Unix remains fail-closed.
+#[cfg(unix)]
+#[allow(dead_code)]
+pub(crate) fn remove_verified_runtime_root_directory(
+    _parent: &File,
+    name: &OsStr,
+    expected_parent_identity: (u64, u64),
+    expected_root_identity: (u64, u64),
+) -> io::Result<()> {
+    if !is_single_normal_component(name)
+        || name == OsStr::new(".friday-snapshot-owner.json")
+        || expected_parent_identity == (0, 0)
+        || expected_root_identity == (0, 0)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime root cleanup requires a normal name and nonzero authenticated identities"));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "authenticated runtime root cleanup is not supported on this platform",
+    ))
+}
+
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn remove_verified_runtime_root_directory(
+    parent: &File,
+    name: &OsStr,
+    expected_parent_identity: (u64, u64),
+    expected_root_identity: (u64, u64),
+) -> io::Result<()> {
+    use std::{
+        mem,
+        os::windows::{ffi::OsStrExt, fs::MetadataExt, io::{AsRawHandle, FromRawHandle}},
+        ptr,
+    };
+    if !is_single_normal_component(name)
+        || name == OsStr::new(".friday-snapshot-owner.json")
+        || expected_parent_identity == (0, 0)
+        || expected_root_identity == (0, 0)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime cleanup requires one normal directory component"));
+    }
+    let actual_parent_identity = handle_identity(parent)?;
+    if (actual_parent_identity.0 as u64, actual_parent_identity.1) != expected_parent_identity {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime cleanup parent handle identity changed"));
+    }
+    let wide: Vec<u16> = name.encode_wide().collect();
+    if wide.is_empty() || wide.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid runtime directory name"));
+    }
+    let byte_len = wide.len().checked_mul(2)
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "runtime directory name is too long"))?;
+    #[repr(C)] struct UnicodeString { length: u16, maximum_length: u16, buffer: *mut u16 }
+    #[repr(C)] struct ObjectAttributes {
+        length: u32, root_directory: *mut std::ffi::c_void,
+        object_name: *mut UnicodeString, attributes: u32,
+        security_descriptor: *mut std::ffi::c_void,
+        security_quality_of_service: *mut std::ffi::c_void,
+    }
+    #[repr(C)] union IoStatusValue { status: i32, pointer: *mut std::ffi::c_void }
+    #[repr(C)] struct IoStatusBlock { status: IoStatusValue, information: usize }
+    #[repr(C)] struct FileDispositionInfoEx { flags: u32 }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut *mut std::ffi::c_void, desired_access: u32,
+            object_attributes: *const ObjectAttributes, io_status_block: *mut IoStatusBlock,
+            allocation_size: *const i64, file_attributes: u32, share_access: u32,
+            create_disposition: u32, create_options: u32,
+            ea_buffer: *const std::ffi::c_void, ea_length: u32,
+        ) -> i32;
+        fn NtQueryDirectoryFile(
+            file_handle: *mut std::ffi::c_void,
+            event: *mut std::ffi::c_void,
+            apc_routine: *mut std::ffi::c_void,
+            apc_context: *mut std::ffi::c_void,
+            io_status_block: *mut IoStatusBlock,
+            file_information: *mut std::ffi::c_void,
+            length: u32,
+            information_class: i32,
+            return_single_entry: u8,
+            file_name: *mut UnicodeString,
+            restart_scan: u8,
+        ) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetFileInformationByHandle(
+            file: *mut std::ffi::c_void, information_class: i32,
+            information: *const std::ffi::c_void, size: u32,
+        ) -> i32;
+    }
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    const OBJ_DONT_REPARSE: u32 = 0x1000;
+    const DELETE: u32 = 0x0001_0000;
+    const FILE_LIST_DIRECTORY: u32 = 0x1;
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_OPEN: u32 = 1;
+    const FILE_DIRECTORY_FILE: u32 = 1;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
+    const FILE_DISPOSITION_INFO_EX_CLASS: i32 = 21;
+    const FILE_DISPOSITION_FLAG_DELETE: u32 = 1;
+
+    let mut unicode_name = UnicodeString {
+        length: byte_len, maximum_length: byte_len, buffer: wide.as_ptr() as *mut u16,
+    };
+    let attributes = ObjectAttributes {
+        length: mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: parent.as_raw_handle(),
+        object_name: &mut unicode_name,
+        attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        security_descriptor: ptr::null_mut(),
+        security_quality_of_service: ptr::null_mut(),
+    };
+    let mut io_status = IoStatusBlock { status: IoStatusValue { status: 0 }, information: 0 };
+    let mut raw_handle = ptr::null_mut();
+    let status = unsafe {
+        NtCreateFile(
+            &mut raw_handle, DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            &attributes, &mut io_status, ptr::null(), 0,
+            FILE_SHARE_READ, FILE_OPEN,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            ptr::null(), 0,
+        )
+    };
+    if status < 0 || raw_handle.is_null() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+            format!("handle-relative runtime root delete open failed (NTSTATUS 0x{:08X})", status as u32)));
+    }
+    let directory = unsafe { File::from_raw_handle(raw_handle) };
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink()
+        || (metadata.file_attributes() & 0x400 != 0)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime entry is not an ordinary directory"));
+    }
+    let actual_root_identity = handle_identity(&directory)?;
+    if (actual_root_identity.0 as u64, actual_root_identity.1) != expected_root_identity {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime cleanup root handle identity changed"));
+    }
+    // Enumerate through this exact restrictive handle. cap_std::read_dir
+    // opens a second handle; with FILE_SHARE_READ only that second open gets
+    // ERROR_SHARING_VIOLATION and cannot provide an emptiness check.
+    let mut directory_buffer = [0u64; 8192];
+    let mut restart_scan = 1u8;
+    loop {
+        let mut query_status = IoStatusBlock {
+            status: IoStatusValue { status: 0 }, information: 0,
+        };
+        let query = unsafe {
+            NtQueryDirectoryFile(
+                directory.as_raw_handle(),
+                ptr::null_mut(), ptr::null_mut(), ptr::null_mut(),
+                &mut query_status,
+                directory_buffer.as_mut_ptr() as *mut std::ffi::c_void,
+                mem::size_of_val(&directory_buffer) as u32,
+                1, // FileDirectoryInformation
+                1, // ReturnSingleEntry
+                ptr::null_mut(),
+                restart_scan,
+            )
+        };
+        restart_scan = 0;
+        if query as u32 == 0x8000_0006 { break; } // STATUS_NO_MORE_FILES
+        if query < 0 {
+            return Err(io::Error::new(io::ErrorKind::Other,
+                format!("handle-relative runtime directory enumeration failed (NTSTATUS 0x{:08X})", query as u32)));
+        }
+        let bytes = query_status.information;
+        if bytes < 64 || bytes > mem::size_of_val(&directory_buffer) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime directory enumeration returned an invalid record length"));
+        }
+        let record = directory_buffer.as_ptr() as *const u8;
+        let name_length = unsafe { ptr::read_unaligned(record.add(60) as *const u32) } as usize;
+        if name_length % 2 != 0 || 64usize.checked_add(name_length).map_or(true, |end| end > bytes) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime directory enumeration returned an invalid name"));
+        }
+        let name_ptr = unsafe { record.add(64) as *const u16 };
+        let name = unsafe { std::slice::from_raw_parts(name_ptr, name_length / 2) };
+        if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] {
+            return Err(io::Error::new(io::ErrorKind::DirectoryNotEmpty, "runtime directory is not empty"));
+        }
+    }
+    let disposition = FileDispositionInfoEx { flags: FILE_DISPOSITION_FLAG_DELETE };
+    if unsafe {
+        SetFileInformationByHandle(
+            directory.as_raw_handle(), FILE_DISPOSITION_INFO_EX_CLASS,
+            &disposition as *const _ as *const std::ffi::c_void,
+            mem::size_of::<FileDispositionInfoEx>() as u32,
+        )
+    } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    drop(directory);
+    Ok(())
+}
+
+
+
+
 
 /// Remove one complete schema-2 snapshot using only its validated inventory.
 ///
@@ -4198,6 +4405,64 @@ mod tests {
             &parent, OsStr::new(".friday-runtime-owner.json"), marker.len() as u64, &digest,
         ).unwrap();
         assert!(!workspace_path.join(".friday-runtime-owner.json").exists());
+        drop(parent);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_root_cleanup_fails_closed_and_requires_authenticated_identities() {
+        use std::ffi::OsStr;
+        let workspace_path = make_test_directory("runtime-root-unix-fail-closed");
+        fs::create_dir(workspace_path.join("staging-root")).unwrap();
+        let parent = open_test_root(&workspace_path);
+        let error = remove_verified_runtime_root_directory(
+            &parent, OsStr::new("staging-root"), (1, 1), (2, 2),
+        ).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(workspace_path.join("staging-root").is_dir());
+        assert!(remove_verified_runtime_root_directory(
+            &parent, OsStr::new("../outside"), (1, 1), (2, 2),
+        ).is_err());
+        drop(parent);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_runtime_root_cleanup_binds_parent_root_identity_and_emptiness() {
+        use std::ffi::OsStr;
+        let workspace_path = make_test_directory("windows-runtime-root-cleanup");
+        fs::create_dir(workspace_path.join("staging-root")).unwrap();
+        fs::create_dir(workspace_path.join("nonempty-root")).unwrap();
+        fs::write(workspace_path.join("nonempty-root").join("keep.bin"), b"keep").unwrap();
+        let parent = open_test_root(&workspace_path);
+        let parent_id = handle_identity(&parent).unwrap();
+        let root = open_child_directory_nofollow(&parent, OsStr::new("staging-root")).unwrap();
+        let root_id = handle_identity(&root).unwrap();
+        drop(root);
+
+        assert!(remove_verified_runtime_root_directory(
+            &parent, OsStr::new("staging-root"), (parent_id.0 as u64, parent_id.1),
+            (root_id.0 as u64 + 1, root_id.1),
+        ).is_err());
+        assert!(workspace_path.join("staging-root").is_dir());
+        assert!(remove_verified_runtime_root_directory(
+            &parent, OsStr::new("staging-root"), (parent_id.0 as u64 + 1, parent_id.1),
+            (root_id.0 as u64, root_id.1),
+        ).is_err());
+        assert!(workspace_path.join("staging-root").is_dir());
+        assert!(remove_verified_runtime_root_directory(
+            &parent, OsStr::new("nonempty-root"), (parent_id.0 as u64, parent_id.1),
+            (root_id.0 as u64, root_id.1),
+        ).is_err());
+        assert!(workspace_path.join("nonempty-root").join("keep.bin").exists());
+        remove_verified_runtime_root_directory(
+            &parent, OsStr::new("staging-root"), (parent_id.0 as u64, parent_id.1),
+            (root_id.0 as u64, root_id.1),
+        ).unwrap();
+        assert!(!workspace_path.join("staging-root").exists());
+        assert!(workspace_path.join("nonempty-root").is_dir());
         drop(parent);
         fs::remove_dir_all(workspace_path).unwrap();
     }
