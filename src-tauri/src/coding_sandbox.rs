@@ -13237,9 +13237,22 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         secure_private_workspace_directory(&root).unwrap();
         let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
 
-        fs::rename(&root, &moved).unwrap();
-        fs::create_dir(&root).unwrap();
-        secure_private_workspace_directory(&root).unwrap();
+        // Unix permits renaming an open directory; Windows intentionally
+        // denies it because the verified directory handle does not share delete.
+        // Exercise replacement redirection where the platform permits it and
+        // assert the stronger rename denial on Windows.
+        let replacement_possible = match fs::rename(&root, &moved) {
+            Ok(()) => {
+                fs::create_dir(&root).unwrap();
+                secure_private_workspace_directory(&root).unwrap();
+                true
+            }
+            Err(error) if cfg!(windows) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                false
+            }
+            Err(error) => panic!("could not replace pinned journal root in regression test: {error}"),
+        };
 
         let generation = crate::coding_sandbox_fs::create_destination_entry(
             &root_handle, OsStr::new("generation-01"), true,
@@ -13251,18 +13264,25 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         state.write_all(b"pinned-original").unwrap();
         state.sync_all().unwrap();
 
-        assert_eq!(
-            fs::read(moved.join("generation-01").join("state.json")).unwrap(),
-            b"pinned-original",
-        );
-        assert!(
-            !root.join("generation-01").exists(),
-            "a replacement at the original path must not receive journal writes",
-        );
-        assert!(
-            fs::read_dir(&root).unwrap().next().is_none(),
-            "the replacement journal root must remain untouched",
-        );
+        if replacement_possible {
+            assert_eq!(
+                fs::read(moved.join("generation-01").join("state.json")).unwrap(),
+                b"pinned-original",
+            );
+            assert!(
+                !root.join("generation-01").exists(),
+                "a replacement at the original path must not receive journal writes",
+            );
+            assert!(
+                fs::read_dir(&root).unwrap().next().is_none(),
+                "the replacement journal root must remain untouched",
+            );
+        } else {
+            assert_eq!(
+                fs::read(root.join("generation-01").join("state.json")).unwrap(),
+                b"pinned-original",
+            );
+        }
         drop(root_handle);
         fs::remove_dir_all(parent).unwrap();
     }
