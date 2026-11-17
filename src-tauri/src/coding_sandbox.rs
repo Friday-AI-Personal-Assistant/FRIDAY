@@ -13136,6 +13136,59 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         fs::remove_dir_all(parent).unwrap();
     }
 
+    #[test]
+    fn guest_runtime_cleanup_journal_rejects_replaced_root_even_with_copied_generations() {
+        let parent = make_test_directory("runtime-cleanup-journal-root-replacement");
+        let staging = parent.join(".friday-node.staging");
+        let root = guest_runtime_cleanup_journal_root_path(&parent, "node-test-bundle").unwrap();
+        fs::create_dir(&root).unwrap();
+        secure_private_workspace_directory(&root).unwrap();
+        let base = GuestRuntimeCleanupJournal {
+            schema_version: GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA,
+            operation: GuestRunOperation::NodeNpmTest,
+            bundle_id: "node-test-bundle".into(),
+            manifest_sha256: "c".repeat(64),
+            parent_path: parent.to_string_lossy().into_owned(),
+            staging_root_path: staging.to_string_lossy().into_owned(),
+            parent_identity_volume: 7,
+            parent_identity_file: 31,
+            journal_root_identity_volume: guest_runtime_cleanup_journal_root_identity(&root).unwrap().0,
+            journal_root_identity_file: guest_runtime_cleanup_journal_root_identity(&root).unwrap().1,
+            root_identity_volume: 7,
+            root_identity_file: 32,
+            entries: vec![GuestRuntimeCleanupJournalEntry {
+                sequence: 1,
+                phase: GuestRuntimeCleanupJournalPhase::Prepared,
+            }],
+        };
+        persist_guest_runtime_cleanup_journal(&root, &base).unwrap();
+
+        let displaced = parent.join(".friday-node.cleanup-displaced");
+        fs::rename(&root, &displaced).unwrap();
+        fs::create_dir(&root).unwrap();
+        secure_private_workspace_directory(&root).unwrap();
+
+        // Copying the exact generation bytes into a replacement directory must
+        // not make that new directory inherit the old directory's identity.
+        let old_generation = guest_runtime_cleanup_journal_generation_path(&displaced, 1);
+        let new_generation = guest_runtime_cleanup_journal_generation_path(&root, 1);
+        fs::create_dir(&new_generation).unwrap();
+        fs::copy(
+            old_generation.join(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE),
+            new_generation.join(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE),
+        ).unwrap();
+
+        assert!(load_guest_runtime_cleanup_journal(&root, &base).is_err(),
+            "copied journal bytes in a replacement root must not satisfy the recorded directory identity");
+        assert!(persist_guest_runtime_cleanup_journal(&root, &base).is_err(),
+            "a replacement journal root must never accept another generation");
+        assert!(displaced.exists(), "the original journal evidence must be preserved");
+        assert!(new_generation.join(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE).exists(),
+            "recovery rejection must not delete replacement journal evidence");
+
+        fs::remove_dir_all(parent).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn markerless_runtime_recovery_finishes_empty_and_absent_root_crash_windows() {
