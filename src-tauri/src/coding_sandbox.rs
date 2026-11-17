@@ -11892,7 +11892,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         ).unwrap();
 
         execute_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &staging, &root, &parent, &provisioning.staging_root, staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).unwrap();
 
