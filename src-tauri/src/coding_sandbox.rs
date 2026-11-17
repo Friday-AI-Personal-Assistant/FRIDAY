@@ -1801,6 +1801,201 @@ fn execute_verified_guest_runtime_staging_cleanup_progress(
     Ok(())
 }
 
+/// Finish cleanup after the ownership marker has already been removed.
+/// The journal and parent identity are authenticated first. A present staging
+/// root is opened relative to the held parent without following reparse points,
+/// checked against its journaled file identity, and required to be empty before
+/// removal. An absent root is only recorded as complete for the two phases in
+/// which marker removal may already have happened.
+#[cfg(unix)]
+#[allow(dead_code)]
+fn recover_markerless_guest_runtime_staging_root(
+    _parent_path: &Path,
+    _parent_handle: &File,
+    _manifest: &GuestRuntimeArtifactManifest,
+    _anchor: &GuestRuntimeManifestTrustAnchor,
+    _provisioning: &GuestRuntimeProvisioningPlan,
+) -> Result<(), String> {
+    Err("Authenticated guest runtime cleanup recovery is not supported on this platform.".into())
+}
+
+#[cfg(windows)]
+#[allow(dead_code)]
+fn recover_markerless_guest_runtime_staging_root(
+    parent_path: &Path,
+    parent_handle: &File,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+) -> Result<(), String> {
+    authenticate_guest_runtime_manifest(anchor.operation, manifest, anchor)?;
+    validate_guest_runtime_provisioning_plan_with_final_root(
+        manifest, anchor, provisioning, provisioning.final_root.clone(),
+    )?;
+    let staging_root_path = &provisioning.staging_root;
+    if staging_root_path.parent() != Some(parent_path)
+        || !staging_root_path.is_absolute()
+    {
+        return Err("Markerless runtime recovery path differs from the authenticated provisioning plan.".into());
+    }
+    let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        parent_path, parent_handle,
+    ).map_err(|_| "Markerless runtime recovery could not verify its held parent directory.".to_string())?;
+    if parent_identity == (0, 0) {
+        return Err("Markerless runtime recovery encountered an invalid parent identity.".into());
+    }
+
+    let journal_root = guest_runtime_cleanup_journal_root_path(parent_path, &anchor.bundle_id)?;
+    let mut journal = load_latest_guest_runtime_cleanup_journal_from_anchor(
+        &journal_root, parent_path, parent_identity, manifest, anchor, provisioning,
+    )?;
+    let mut phase = validate_guest_runtime_cleanup_journal(&journal)?;
+    if !matches!(
+        phase,
+        GuestRuntimeCleanupJournalPhase::PayloadsRemoved
+            | GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved
+    ) {
+        return Err("The journal phase does not authorize markerless staging-root recovery.".into());
+    }
+
+    let root_name = staging_root_path.file_name()
+        .ok_or("The authenticated staging root has no final path component.")?;
+    match fs::symlink_metadata(staging_root_path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let parent_recheck = crate::coding_sandbox_fs::verified_directory_identity(
+                parent_path, parent_handle,
+            ).map_err(|_| "Markerless recovery could not recheck its parent identity.".to_string())?;
+            if parent_recheck != parent_identity {
+                return Err("The runtime cleanup parent identity changed during absent-root verification.".into());
+            }
+            if phase == GuestRuntimeCleanupJournalPhase::PayloadsRemoved {
+                journal = advance_guest_runtime_cleanup_journal(
+                    &journal_root, &journal, GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
+                )?;
+                phase = GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved;
+            }
+            if phase == GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved {
+                let _completed = advance_guest_runtime_cleanup_journal(
+                    &journal_root, &journal, GuestRuntimeCleanupJournalPhase::StagingRootRemoved,
+                )?;
+                return Ok(());
+            }
+            Err("The absent staging root is inconsistent with its cleanup journal.".into())
+        }
+        Err(_) => Err("The staging-root state could not be safely inspected during recovery.".into()),
+        Ok(metadata) => {
+            if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+                return Err("Markerless recovery found a non-directory or reparse staging root; it was preserved.".into());
+            }
+            let root_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+                parent_handle, root_name,
+            ).map_err(|_| "The markerless staging root could not be opened safely relative to its held parent.".to_string())?;
+            let root_identity = crate::coding_sandbox_fs::verified_directory_identity(
+                staging_root_path, &root_handle,
+            ).map_err(|_| "Markerless recovery could not verify the staging-root handle.".to_string())?;
+            let expected_root_identity = (
+                journal.root_identity_volume,
+                journal.root_identity_file,
+            );
+            if root_identity != expected_root_identity {
+                return Err("The markerless staging-root identity differs from its authenticated cleanup journal.".into());
+            }
+            let (files, directories) =
+                crate::coding_sandbox_fs::collect_runtime_tree_inventory(&root_handle, 32, 1281)
+                    .map_err(|_| "Markerless recovery could not safely inventory the staging root.".to_string())?;
+            if !files.is_empty() || !directories.is_empty() {
+                return Err("Markerless recovery found unexpected content in the staging root; it was preserved.".into());
+            }
+            let parent_recheck = crate::coding_sandbox_fs::verified_directory_identity(
+                parent_path, parent_handle,
+            ).map_err(|_| "Markerless recovery could not recheck its held parent.".to_string())?;
+            let root_recheck = crate::coding_sandbox_fs::verified_directory_identity(
+                staging_root_path, &root_handle,
+            ).map_err(|_| "Markerless recovery could not recheck its held staging root.".to_string())?;
+            if parent_recheck != parent_identity || root_recheck != expected_root_identity {
+                return Err("A runtime cleanup directory identity changed during markerless recovery.".into());
+            }
+            drop(root_handle);
+            crate::coding_sandbox_fs::remove_verified_runtime_root_directory(
+                parent_handle, root_name, parent_identity, expected_root_identity,
+            ).map_err(|_| "The authenticated empty markerless staging root could not be safely removed.".to_string())?;
+            if phase == GuestRuntimeCleanupJournalPhase::PayloadsRemoved {
+                journal = advance_guest_runtime_cleanup_journal(
+                    &journal_root, &journal, GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
+                )?;
+            }
+            let _completed = advance_guest_runtime_cleanup_journal(
+                &journal_root, &journal, GuestRuntimeCleanupJournalPhase::StagingRootRemoved,
+            )?;
+            Ok(())
+        }
+    }
+}
+
+/// Load the journal using only the supplied authenticated provisioning inputs
+/// and a freshly verified parent identity; no staging-root marker is required.
+#[cfg(windows)]
+fn load_latest_guest_runtime_cleanup_journal_from_anchor(
+    root: &Path,
+    parent_path: &Path,
+    parent_identity: (u64, u64),
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+) -> Result<GuestRuntimeCleanupJournal, String> {
+    let expected_root = guest_runtime_cleanup_journal_root_path(parent_path, &anchor.bundle_id)?;
+    if root != expected_root || provisioning.staging_root.parent() != Some(parent_path) {
+        return Err("The cleanup journal is not at the authenticated provisioning location.".into());
+    }
+    let mut latest = None;
+    let mut gap_seen = false;
+    for generation in 1..=MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
+        let path = guest_runtime_cleanup_journal_generation_path(root, generation);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => gap_seen = true,
+            Err(_) => return Err("A cleanup journal generation could not be inspected.".into()),
+            Ok(_) if gap_seen => return Err("The cleanup journal contains a generation gap.".into()),
+            Ok(_) => {
+                let current = read_guest_runtime_cleanup_journal_generation(root, generation)?;
+                if current.operation != anchor.operation
+                    || current.bundle_id != anchor.bundle_id
+                    || current.manifest_sha256 != anchor.manifest_sha256.to_ascii_lowercase()
+                    || current.parent_path != parent_path.to_string_lossy()
+                    || current.staging_root_path != provisioning.staging_root.to_string_lossy()
+                    || current.parent_identity_volume != parent_identity.0
+                    || current.parent_identity_file != parent_identity.1
+                    || current.root_identity_volume == 0
+                    || current.root_identity_file == 0
+                    || current.entries.len() != generation
+                {
+                    return Err("The cleanup journal does not match the authenticated runtime identity.".into());
+                }
+                if let Some(previous) = &latest {
+                    if current.entries.len() != previous.entries.len() + 1
+                        || current.entries[..previous.entries.len()] != previous.entries
+                    {
+                        return Err("The cleanup journal history is not contiguous and append-only.".into());
+                    }
+                }
+                latest = Some(current);
+            }
+        }
+    }
+    let journal = latest.ok_or_else(|| "No complete cleanup journal is available for markerless recovery.".to_string())?;
+    validate_guest_runtime_cleanup_journal(&journal)?;
+    if journal.operation != anchor.operation
+        || journal.bundle_id != anchor.bundle_id
+        || journal.manifest_sha256 != anchor.manifest_sha256.to_ascii_lowercase()
+        || journal.parent_path != parent_path.to_string_lossy()
+        || journal.staging_root_path != provisioning.staging_root.to_string_lossy()
+        || journal.parent_identity_volume != parent_identity.0
+        || journal.parent_identity_file != parent_identity.1
+    {
+        return Err("The latest cleanup journal differs from the authenticated runtime plan.".into());
+    }
+    Ok(journal)
+}
+
 /// A non-executing, no-overwrite publication intent derived only from a
 /// verified staging proof and the authenticated provisioning plan. This is
 /// not a filesystem rename and does not make the staged bundle executable.
