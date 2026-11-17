@@ -32,13 +32,61 @@ pub(crate) const GUEST_JOB_POLICY: GuestJobPolicy = GuestJobPolicy {
     cpu_rate: 2_000,
 };
 
+impl GuestJobPolicy {
+    /// Combine the adaptive memory budget with the fixed CPU and process ceilings.
+    /// The calculator is the only source of memory values; this conversion adds
+    /// a second defensive validation boundary before Win32 configuration.
+    fn from_memory_budget(
+        budget: crate::coding_sandbox_resources::GuestMemoryBudget,
+    ) -> Result<Self, String> {
+        const MIB: u64 = 1024 * 1024;
+        const MAX_JOB_BYTES: u64 = 4 * 1024 * MIB;
+        const MAX_PROCESS_BYTES: u64 = 2 * 1024 * MIB;
+        const MIN_JOB_BYTES: u64 = 256 * MIB;
+
+        let job_memory_bytes = usize::try_from(budget.total_job_memory_limit_bytes)
+            .map_err(|_| "The guest memory budget exceeds this host's addressable limits; execution is refused.".to_string())?;
+        let per_process_memory_bytes = usize::try_from(budget.process_memory_limit_bytes)
+            .map_err(|_| "The guest process memory budget exceeds this host's addressable limits; execution is refused.".to_string())?;
+
+        if budget.total_job_memory_limit_bytes < MIN_JOB_BYTES
+            || budget.total_job_memory_limit_bytes > MAX_JOB_BYTES
+            || budget.process_memory_limit_bytes == 0
+            || budget.process_memory_limit_bytes > MAX_PROCESS_BYTES
+            || budget.process_memory_limit_bytes > budget.total_job_memory_limit_bytes
+        {
+            return Err("The adaptive guest memory budget violates the independent Job Object safety bounds; execution is refused.".into());
+        }
+
+        Ok(Self {
+            active_process_limit: GUEST_JOB_POLICY.active_process_limit,
+            per_process_memory_bytes,
+            job_memory_bytes,
+            cpu_rate: GUEST_JOB_POLICY.cpu_rate,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct OwnedGuestJob { handle: HANDLE }
 
 impl OwnedGuestJob {
-    /// Create an unnamed job, apply all mandatory limits, and verify kernel state.
+    /// Query live host memory, derive the approved tier budget, then create and
+    /// verify a Job Object with those limits. Any query or policy failure refuses
+    /// job creation; callers must not launch or resume a guest process.
     pub(crate) fn create() -> Result<Self, String> {
-        Self::create_with_policy(GUEST_JOB_POLICY)
+        use crate::coding_sandbox_resources::{
+            calculate_guest_memory_budget, query_host_memory_snapshot,
+        };
+
+        let snapshot = query_host_memory_snapshot().map_err(|error| {
+            format!("FRIDAY could not query current host memory ({error:?}); guest execution is refused.")
+        })?;
+        let budget = calculate_guest_memory_budget(snapshot).map_err(|error| {
+            format!("FRIDAY could not calculate a safe guest memory budget ({error:?}); guest execution is refused.")
+        })?;
+        let policy = GuestJobPolicy::from_memory_budget(budget)?;
+        Self::create_with_policy(policy)
     }
 
     fn create_with_policy(policy: GuestJobPolicy) -> Result<Self, String> {
@@ -204,6 +252,63 @@ mod tests {
         assert!(GUEST_JOB_POLICY.cpu_rate > 0 && GUEST_JOB_POLICY.cpu_rate <= 10_000);
     }
 
+
+    #[test]
+    fn adaptive_memory_budget_maps_to_job_object_without_weakening_fixed_limits() {
+        use crate::coding_sandbox_resources::{
+            GuestMemoryBudget, GuestMemoryProfileTier,
+        };
+        let budget = GuestMemoryBudget {
+            tier: GuestMemoryProfileTier::Balanced8GiB,
+            total_job_memory_limit_bytes: 1536 * 1024 * 1024,
+            process_memory_limit_bytes: 768 * 1024 * 1024,
+            reserved_available_memory_bytes: 512 * 1024 * 1024,
+        };
+        let policy = GuestJobPolicy::from_memory_budget(budget).expect("valid adaptive budget");
+        assert_eq!(policy.job_memory_bytes, 1536 * 1024 * 1024);
+        assert_eq!(policy.per_process_memory_bytes, 768 * 1024 * 1024);
+        assert_eq!(policy.active_process_limit, GUEST_JOB_POLICY.active_process_limit);
+        assert_eq!(policy.cpu_rate, GUEST_JOB_POLICY.cpu_rate);
+    }
+
+    #[test]
+    fn adaptive_memory_budget_rejects_zero_oversized_and_inconsistent_values() {
+        use crate::coding_sandbox_resources::{
+            GuestMemoryBudget, GuestMemoryProfileTier,
+        };
+        let invalid = [
+            GuestMemoryBudget {
+                tier: GuestMemoryProfileTier::Constrained4GiB,
+                total_job_memory_limit_bytes: 0,
+                process_memory_limit_bytes: 0,
+                reserved_available_memory_bytes: 512 * 1024 * 1024,
+            },
+            GuestMemoryBudget {
+                tier: GuestMemoryProfileTier::Performance16GiB,
+                total_job_memory_limit_bytes: 5 * 1024 * 1024 * 1024,
+                process_memory_limit_bytes: 1024 * 1024 * 1024,
+                reserved_available_memory_bytes: 512 * 1024 * 1024,
+            },
+            GuestMemoryBudget {
+                tier: GuestMemoryProfileTier::Balanced8GiB,
+                total_job_memory_limit_bytes: 1024 * 1024 * 1024,
+                process_memory_limit_bytes: 2 * 1024 * 1024 * 1024,
+                reserved_available_memory_bytes: 512 * 1024 * 1024,
+            },
+        ];
+        for budget in invalid {
+            assert!(GuestJobPolicy::from_memory_budget(budget).is_err());
+        }
+    }
+
+    #[test]
+    fn windows_memory_snapshot_provider_returns_consistent_physical_memory() {
+        use crate::coding_sandbox_resources::query_host_memory_snapshot;
+        let snapshot = query_host_memory_snapshot().expect("Windows physical-memory query");
+        assert!(snapshot.total_physical_bytes > 0);
+        assert!(snapshot.available_physical_bytes > 0);
+        assert!(snapshot.available_physical_bytes <= snapshot.total_physical_bytes);
+    }
 
     #[test]
     fn job_limit_readback_rejects_missing_required_flags() {
