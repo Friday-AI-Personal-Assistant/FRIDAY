@@ -22,14 +22,14 @@ pub(crate) struct GuestJobPolicy {
     pub(crate) active_process_limit: u32,
     pub(crate) per_process_memory_bytes: usize,
     pub(crate) job_memory_bytes: usize,
-    /// CPU hard cap in 1/100th-percent units (1000 = 10%).
+    /// CPU hard cap in 1/100th-percent units (5000 = 50%).
     pub(crate) cpu_rate: u32,
 }
 pub(crate) const GUEST_JOB_POLICY: GuestJobPolicy = GuestJobPolicy {
-    active_process_limit: 16,
+    active_process_limit: 64,
     per_process_memory_bytes: 256 * 1024 * 1024,
     job_memory_bytes: 512 * 1024 * 1024,
-    cpu_rate: 2_000,
+    cpu_rate: 5_000,
 };
 
 impl GuestJobPolicy {
@@ -265,10 +265,10 @@ mod tests {
     use super::*;
     #[test]
     fn guest_job_policy_is_fixed_and_bounded() {
-        assert_eq!(GUEST_JOB_POLICY.active_process_limit, 16);
+        assert_eq!(GUEST_JOB_POLICY.active_process_limit, 64);
         assert_eq!(GUEST_JOB_POLICY.per_process_memory_bytes, 256 * 1024 * 1024);
         assert_eq!(GUEST_JOB_POLICY.job_memory_bytes, 512 * 1024 * 1024);
-        assert_eq!(GUEST_JOB_POLICY.cpu_rate, 2_000);
+        assert_eq!(GUEST_JOB_POLICY.cpu_rate, 5_000);
         assert!(GUEST_JOB_POLICY.per_process_memory_bytes <= GUEST_JOB_POLICY.job_memory_bytes);
         assert!(GUEST_JOB_POLICY.active_process_limit > 0);
         assert!(GUEST_JOB_POLICY.cpu_rate > 0 && GUEST_JOB_POLICY.cpu_rate <= 10_000);
@@ -1857,7 +1857,7 @@ mod native_windows_process_integration_tests {
     fn real_windows_job_enforces_cpu_hard_cap_under_parallel_load() {
         use windows_sys::Win32::Foundation::FILETIME;
         use windows_sys::Win32::System::Threading::{GetProcessTimes, WaitForSingleObject};
-        let policy = GuestJobPolicy { cpu_rate: 2_000, ..GUEST_JOB_POLICY };
+        let policy = GuestJobPolicy { cpu_rate: 5_000, ..GUEST_JOB_POLICY };
         let job = OwnedGuestJob::create_with_policy(policy).expect("create CPU-capped test job");
         let process = launch_test_binary_in_job(
             &job,
@@ -1889,10 +1889,10 @@ mod native_windows_process_integration_tests {
             .unwrap_or(1)
             .min(256)
             .max(1) as f64;
-        // A 20% Job Object hard cap allows at most 0.2 * logical processors
+        // A 50% Job Object hard cap allows at most 0.5 * logical processors
         // worth of CPU time. Add 1.0 CPU-second for scheduler/accounting slack;
         // this tolerance affects only measurement, never the Job Object cap.
-        let allowed_cpu_seconds = wall * processors * 0.20 + 1.0;
+        let allowed_cpu_seconds = wall * processors * 0.50 + 1.0;
         assert!(
             cpu_seconds <= allowed_cpu_seconds,
             "Job Object CPU hard cap was exceeded: helper used {cpu_seconds:.2}s CPU over {wall:.2}s wall time on {processors:.0} logical processors (allowance {allowed_cpu_seconds:.2}s)",
@@ -1904,7 +1904,7 @@ mod native_windows_process_integration_tests {
     #[test]
     fn active_process_limit_refuses_a_second_process_in_a_real_windows_job() {
         // Use a stricter test-only policy so exhaustion is deterministic and
-        // does not require spawning the production ceiling of sixteen images.
+        // does not require spawning the production ceiling of sixty-four images.
         let policy = GuestJobPolicy {
             active_process_limit: 1,
             ..GUEST_JOB_POLICY

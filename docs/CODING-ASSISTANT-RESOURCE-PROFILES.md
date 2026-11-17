@@ -26,11 +26,15 @@ A result below 256 MiB is rejected as insufficient. This avoids starting a guest
 
 The absolute ceilings are 4 GiB per Job Object and 2 GiB per process, regardless of host RAM. More powerful machines therefore do not receive unbounded guest memory.
 
+## Fixed CPU and process-tree ceilings
+
+The adaptive memory tiers do not change the original fixed execution envelope: the Windows Job Object enforces a **50% CPU hard cap** and a maximum of **64 active processes** across the contained process tree. The memory limits adapt by host tier and current available memory as described above. Kill-on-job-close remains mandatory, and process breakaway remains disabled. The host watchdog independently enforces the wall-clock deadline; the Job Object CPU cap is not a substitute for that deadline.
+
 ## Windows Job Object integration boundary
 
 The Windows resource module now queries physical memory through `GlobalMemoryStatusEx` immediately before creating a guest Job Object. API failure returns an explicit error; there is no guessed tier or fallback budget. The injected snapshot is passed through the same pure calculator described above.
 
-The resulting job and per-process memory values are converted into the Windows Job Object policy. A second validation boundary independently re-checks the declared 4 GB / 8 GB / 16 GB tier ceilings, the fixed 512 MiB host reserve, the minimum useful job budget, the absolute 4 GiB job / 2 GiB process ceilings, and the relationship between per-process and aggregate job limits. A budget cannot claim a smaller tier while carrying a larger tier's limits, or substitute a different reserve. The existing fixed active-process ceiling and CPU hard cap are retained unchanged. The Job Object configuration path then applies and reads back every required kernel limit before a caller can assign a suspended process.
+The resulting job and per-process memory values are converted into the Windows Job Object policy. A second validation boundary independently re-checks the declared 4 GB / 8 GB / 16 GB tier ceilings, the fixed 512 MiB host reserve, the minimum useful job budget, the absolute 4 GiB job / 2 GiB process ceilings, and the relationship between per-process and aggregate job limits. A budget cannot claim a smaller tier while carrying a larger tier's limits, or substitute a different reserve. The original fixed 64-process ceiling and 50% CPU hard cap are retained unchanged. The Job Object configuration path then applies and reads back every required kernel limit before a caller can assign a suspended process.
 
 This is still a resource-containment primitive, not an enabled guest launcher: no new guest process is created by the memory provider, and this change does not authorize or resume guest execution. A future launcher must call the adaptive creation path and must not resume an untrusted process unless Job Object creation, configuration, readback, and process assignment all succeed.
 
