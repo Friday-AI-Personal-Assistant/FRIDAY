@@ -1252,9 +1252,14 @@ fn load_latest_guest_runtime_cleanup_journal(
         .map_err(|_| "The cleanup journal root identity could not be verified for recovery.".to_string())?;
     let mut latest: Option<GuestRuntimeCleanupJournal> = None;
     let generations = guest_runtime_cleanup_journal_generations_from_handle(&journal_root_handle)?;
-    for generation in generations {
+    for (index, generation) in generations.iter().copied().enumerate() {
+        if generation != index + 1 {
+            return Err("The cleanup journal inventory is not a contiguous generation sequence.".into());
+        }
         let current = read_guest_runtime_cleanup_journal_generation_from_handle(root, &journal_root_handle, generation)?;
-        if current.operation != authorization.operation
+        validate_guest_runtime_cleanup_journal(&current)?;
+        if current.entries.len() != generation
+            || current.operation != authorization.operation
             || current.bundle_id != authorization.bundle_id
             || current.manifest_sha256 != authorization.manifest_sha256
             || current.parent_path != authorization.parent_path.to_string_lossy()
@@ -1265,7 +1270,7 @@ fn load_latest_guest_runtime_cleanup_journal(
             || current.root_identity_volume != authorization.root_identity.0
             || current.root_identity_file != authorization.root_identity.1
         {
-            return Err("The cleanup journal is bound to a different runtime identity.".into());
+            return Err("The cleanup journal is bound to a different runtime identity or generation.".into());
         }
         if let Some(previous) = &latest {
             if current.entries.len() != previous.entries.len() + 1
@@ -1276,7 +1281,14 @@ fn load_latest_guest_runtime_cleanup_journal(
         }
         latest = Some(current);
     }
-    latest.ok_or_else(|| "No authenticated runtime cleanup journal is available for recovery.".into())
+    let latest = latest.ok_or_else(|| "No authenticated runtime cleanup journal is available for recovery.".to_string())?;
+    validate_guest_runtime_cleanup_journal(&latest)?;
+    let final_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &journal_root_handle)
+        .map_err(|_| "The cleanup journal root changed while recovery history was being loaded.".to_string())?;
+    if final_identity != journal_root_identity {
+        return Err("The cleanup journal root identity changed while recovery history was being loaded.".into());
+    }
+    Ok(latest)
 }
 
 /// Load every immutable generation and require a contiguous append-only history.
@@ -2066,8 +2078,12 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
         .map_err(|_| "The cleanup journal root identity could not be verified for recovery.".to_string())?;
     let mut latest: Option<GuestRuntimeCleanupJournal> = None;
     let generations = guest_runtime_cleanup_journal_generations_from_handle(&journal_root_handle)?;
-    for generation in generations {
+    for (index, generation) in generations.iter().copied().enumerate() {
+        if generation != index + 1 {
+            return Err("The cleanup journal inventory is not a contiguous generation sequence.".into());
+        }
         let current = read_guest_runtime_cleanup_journal_generation_from_handle(root, &journal_root_handle, generation)?;
+        validate_guest_runtime_cleanup_journal(&current)?;
         if current.operation != anchor.operation
             || current.bundle_id != anchor.bundle_id
             || current.manifest_sha256 != anchor.manifest_sha256.to_ascii_lowercase()
