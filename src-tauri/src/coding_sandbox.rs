@@ -9310,7 +9310,7 @@ fn initialize_guest_result_gpt(
 
 
 /// Bounded report returned by the fixed Windows Storage-module formatting script.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GuestResultNtfsFormatReport {
     disk_number: u32,
