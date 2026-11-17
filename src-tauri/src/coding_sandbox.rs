@@ -5661,6 +5661,40 @@ fn verify_guest_result_host_mount_directory_for_mount(
     Ok(plan.host_mount_directory.clone())
 }
 
+/// After a volume unmount (or rollback), prove that the original host directory
+/// has reappeared. A failed volume-name lookup alone is not sufficient: the
+/// fixed child must also reopen without following reparse points and match its
+/// identity-bound owner marker while remaining private and empty.
+#[cfg(windows)]
+fn verify_guest_result_host_mount_directory_restored(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<(), String> {
+    let run_directory = verify_guest_result_volume_directory(plan, trusted_storage_root)?;
+    let mount_directory = run_directory.join("result-mount");
+    if plan.host_mount_directory != mount_directory {
+        return Err("The restored result mount directory differs from FRIDAY's fixed per-run child.".into());
+    }
+    let mount_path = format!("{}\\", mount_directory.to_string_lossy().trim_end_matches(['\\', '/']));
+    let mount_wide = windows_wide_null(&mount_path)?;
+    let mut observed = [0u16; 1024];
+    if unsafe {
+        GetVolumeNameForVolumeMountPointW(
+            mount_wide.as_ptr(),
+            observed.as_mut_ptr(),
+            observed.len() as u32,
+        )
+    } != 0 {
+        return Err("Windows still reports a volume mounted at FRIDAY's private result directory; recovery is required.".into());
+    }
+
+    verify_guest_result_host_mount_directory(plan, trusted_storage_root)
+        .map_err(|error| format!(
+            "The original identity-bound result mount directory was not restored as a private empty directory: {error}"
+        ))?;
+    Ok(())
+}
+
 /// Mounts only the verified NTFS volume GUID at FRIDAY's reserved private directory.
 /// This primitive is not wired to guest execution or Sandbox folder sharing.
 #[cfg(windows)]
@@ -5690,6 +5724,13 @@ fn mount_guest_result_volume_at_private_directory(
         // verified, preserve the directory and surface the ambiguity to recovery.
         if unsafe { DeleteVolumeMountPointW(mount_wide.as_ptr()) } == 0 {
             return Err(format!("{error} Windows could not revoke the unverified mount; the result volume requires recovery."));
+        }
+        if let Err(restore_error) =
+            verify_guest_result_host_mount_directory_restored(plan, trusted_storage_root)
+        {
+            return Err(format!(
+                "{error} Windows removed the unverified mapping, but the original mount directory could not be re-established safely: {restore_error} The result volume requires recovery."
+            ));
         }
         return Err(error);
     }
@@ -5781,11 +5822,7 @@ fn unmount_guest_result_volume_from_private_directory(
     if unsafe { DeleteVolumeMountPointW(mount_wide.as_ptr()) } == 0 {
         return Err("Windows refused to unmount FRIDAY's verified private result-volume directory.".into());
     }
-    let mut observed = [0u16; 1024];
-    if unsafe { GetVolumeNameForVolumeMountPointW(mount_wide.as_ptr(), observed.as_mut_ptr(), observed.len() as u32) } != 0 {
-        return Err("Windows still reports a volume mounted at FRIDAY's private result directory; recovery is required.".into());
-    }
-    Ok(())
+    verify_guest_result_host_mount_directory_restored(plan, trusted_storage_root)
 }
 
 const SANDBOX_EXECUTABLE_FILE_NAME: &str = "WindowsSandbox.exe";
@@ -11805,6 +11842,11 @@ mod tests {
         assert_eq!(fs::read(&marker).unwrap(), b"FRIDAY result volume mount verification");
         fs::remove_file(&marker).unwrap();
         unmount_guest_result_volume_from_private_directory(&plan, &root, &volume_path).unwrap();
+        assert_eq!(
+            verify_guest_result_host_mount_directory(&plan, &root).unwrap(),
+            mount_directory,
+            "unmount must restore the exact originally reserved private empty directory",
+        );
         let mount_path = format!("{}\\", mount_directory.to_string_lossy().trim_end_matches(['\\', '/']));
         let mount_wide = windows_wide_null(&mount_path).unwrap();
         let mut observed_volume = [0u16; 1024];

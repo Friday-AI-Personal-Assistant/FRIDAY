@@ -2203,3 +2203,13 @@ The result-file collection entrypoint requires a private proof derived from the 
 The private proof carries the approved snapshot ID, operation, output-byte limit, and duration limit alongside the run and process identities. The collection entrypoint no longer accepts those contract fields as caller-supplied arguments: it reads them only from the proof, preventing a valid stop proof from being paired with a different snapshot, operation, or looser resource limits. A running, recovery-required, mismatched, or tampered journal or proof cannot authorize collection.
 
 The bounded result reader remains a lower-level filesystem/contract primitive; the new orchestration entrypoint is the intended collection boundary. Regression tests cover a valid stop proof, collection from a still-running session, run-ID substitution, missing positive stop evidence, altered snapshot binding, and invalid proof limits. This does not execute the Sandbox stop command or connect a production runner. Physical Windows session-ownership acceptance remains mandatory before guest execution can be enabled.
+## Post-unmount restoration of the original result mount directory
+
+A successful `DeleteVolumeMountPointW` call is not, by itself, sufficient evidence that the host mount point has safely returned to its original state. After unmounting—and also after rolling back a mount whose post-mount verification failed—FRIDAY now performs two postconditions:
+
+1. Windows must no longer report a volume mounted at the fixed per-run mount path.
+2. The original host-side directory must reopen through the held run-directory handle without following reparse points, match the exact directory identity recorded in its ownership marker, and remain a private empty ordinary directory.
+
+This second check prevents a replacement directory at the same pathname, a redirected/reparse-point entry, or unexpected host-side contents from being accepted as a successful unmount. The journaled unmount can reach `Unmounted` only after both checks succeed. If the volume mapping is removed but the original directory cannot be re-established and verified, FRIDAY preserves the result volume and records recovery-required rather than retrying or deleting anything.
+
+The Windows VHDX lifecycle regression now verifies the identity-bound directory again after unmount. This is CI coverage of the native Windows path; physical Windows acceptance, including interruption and crash recovery, remains required. Guest execution remains disabled.
