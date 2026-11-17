@@ -8544,6 +8544,72 @@ mod tests {
 
 
     #[test]
+    fn authenticated_runtime_provision_publish_and_final_revalidation_work_for_every_profile() {
+        for operation in [
+            GuestRunOperation::RustCargoTest,
+            GuestRunOperation::NodeNpmTest,
+            GuestRunOperation::PythonUnittest,
+        ] {
+            let manifest = test_runtime_manifest(operation);
+            let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+            let parent_path = make_test_directory("runtime-full-provision-publish");
+            let final_root = parent_path.join("published-runtime");
+            let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+                &manifest, &anchor, final_root.clone(),
+            ).unwrap();
+            let parent_handle =
+                crate::coding_sandbox_fs::open_verified_root_directory(&parent_path).unwrap();
+
+            let sources = manifest.artifacts.iter().map(|artifact| {
+                let bytes = match artifact.relative_path.as_str() {
+                    "bin\\cargo.exe" => b"cargo-fixture".to_vec(),
+                    "node.exe" => b"node-fixture".to_vec(),
+                    "node_modules\\npm\\bin\\npm-cli.js" => b"npm-fixture".to_vec(),
+                    "python.exe" => b"python-fixture".to_vec(),
+                    other => panic!("unexpected runtime fixture path: {other}"),
+                };
+                (
+                    PathBuf::from(artifact.relative_path.replace('\\', "/")),
+                    bytes,
+                )
+            }).collect::<Vec<_>>();
+
+            let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+                &parent_path, &parent_handle, &manifest, &anchor, &provisioning, &sources,
+            ).unwrap();
+            assert_eq!(staging.operation, operation);
+            assert_eq!(staging.artifact_count, manifest.artifacts.len());
+
+            let staging_name = provisioning.staging_root.file_name().unwrap();
+            let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+                &parent_handle, staging_name,
+            ).unwrap();
+            let published = publish_authenticated_guest_runtime_bundle_with_final_root(
+                &staging, &manifest, &anchor, &provisioning,
+                &parent_path, &parent_handle, staging_handle, final_root.clone(),
+            ).unwrap();
+
+            assert_eq!(published.operation, operation);
+            assert_eq!(published.root_path, final_root);
+            assert_eq!(published.bundle_id, anchor.bundle_id);
+            assert_eq!(published.manifest_sha256, anchor.manifest_sha256.to_ascii_lowercase());
+            assert_eq!(published.artifact_count, manifest.artifacts.len());
+            assert!(!provisioning.staging_root.exists());
+            assert!(final_root.is_dir());
+
+            let final_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+                &parent_handle, final_root.file_name().unwrap(),
+            ).unwrap();
+            validate_verified_guest_runtime_bundle_root(
+                &published, &final_root, &final_handle,
+            ).unwrap();
+            drop(final_handle);
+            drop(parent_handle);
+            fs::remove_dir_all(parent_path).unwrap();
+        }
+    }
+
+    #[test]
     fn authenticated_runtime_provisioner_stages_only_exact_digest_verified_sources() {
         let operation = GuestRunOperation::RustCargoTest;
         let manifest = test_runtime_manifest(operation);
