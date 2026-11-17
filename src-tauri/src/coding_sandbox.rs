@@ -14045,7 +14045,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             serde_json::json!("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
         let mut wrong_count = original_value.clone();
         wrong_count["observedSessionCount"] = serde_json::json!(1);
-        wrong_count["unrelatedSessionCount"] = serde_json::json!(1);
+        wrong_count["unrelatedSessionCount"] = serde_json::json!(0);
         let mut wrong_schema = original_value.clone();
         wrong_schema["schemaVersion"] = serde_json::json!(99);
         let mut wrong_sequence = original_value.clone();
@@ -14072,6 +14072,22 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             assert_eq!(load_sandbox_session_journal(&root, run_id).unwrap(), journal_before,
                 "a corrupt receipt must not mutate the already-preserved journal");
         }
+
+        // A manually duplicated adjacent observation is invalid even when its
+        // sequence number is adjusted to make the filenames contiguous.
+        fs::write(&receipt_path, &original).unwrap();
+        let mut duplicate = original_value.clone();
+        duplicate["sequence"] = serde_json::json!(2);
+        let second_path = root.join(windows_sandbox_cli_recovery_receipt_file_name(2));
+        let duplicate_bytes = serde_json::to_vec(&duplicate).unwrap();
+        fs::write(&second_path, &duplicate_bytes).unwrap();
+        assert!(load_windows_sandbox_cli_recovery_receipts(&root, run_id).is_err());
+        assert!(preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
+            &root, run_id, &[],
+        ).is_err());
+        assert_eq!(fs::read(&receipt_path).unwrap(), original);
+        assert_eq!(fs::read(&second_path).unwrap(), duplicate_bytes);
+        assert_eq!(load_sandbox_session_journal(&root, run_id).unwrap(), journal_before);
 
         fs::remove_dir_all(root).unwrap();
     }
