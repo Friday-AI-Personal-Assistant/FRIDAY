@@ -12892,6 +12892,144 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    fn valid_test_ntfs_format_report() -> (
+        GuestResultNtfsFormatReport,
+        GuestResultGptMetadata,
+        GuestResultPartitionPlan,
+    ) {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let partition = build_guest_result_partition_plan(
+            run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, GUEST_RESULT_GPT_SECTOR_BYTES as u32,
+        ).unwrap();
+        let metadata = build_guest_result_gpt_metadata(&partition).unwrap();
+        let offset = partition.first_lba * GUEST_RESULT_GPT_SECTOR_BYTES;
+        let size = (partition.last_lba - partition.first_lba + 1) * GUEST_RESULT_GPT_SECTOR_BYTES;
+        let volume_size = size - 128 * 1024;
+        (
+            GuestResultNtfsFormatReport {
+                disk_number: 7,
+                disk_guid: metadata.disk_guid.clone(),
+                partition_guid: partition.partition_unique_guid.clone(),
+                partition_offset: offset,
+                partition_size: size,
+                file_system: "NTFS".into(),
+                file_system_label: GUEST_RESULT_FILESYSTEM_LABEL.into(),
+                volume_path: r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}\".into(),
+                volume_size,
+                size_remaining: volume_size - 4096,
+                drive_letter: None,
+            },
+            metadata,
+            partition,
+        )
+    }
+
+    #[test]
+    fn ntfs_format_report_accepts_only_the_exact_bounded_result_volume() {
+        let (report, metadata, partition) = valid_test_ntfs_format_report();
+        validate_guest_result_ntfs_format_report(&report, 7, &metadata, &partition).unwrap();
+
+        let mut empty_drive_letter = report;
+        empty_drive_letter.drive_letter = Some("  ".into());
+        validate_guest_result_ntfs_format_report(&empty_drive_letter, 7, &metadata, &partition).unwrap();
+    }
+
+    #[test]
+    fn ntfs_format_report_rejects_identity_geometry_and_filesystem_substitution() {
+        let (valid, metadata, partition) = valid_test_ntfs_format_report();
+        let mut changed = valid.clone();
+        changed.disk_number += 1;
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.disk_guid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA".into();
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.partition_guid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA".into();
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.partition_offset += GUEST_RESULT_GPT_SECTOR_BYTES;
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.partition_size -= GUEST_RESULT_GPT_SECTOR_BYTES;
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.file_system = "exFAT".into();
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid;
+        changed.file_system_label = "OTHER".into();
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+    }
+
+    #[test]
+    fn ntfs_format_report_rejects_unbounded_volume_paths_sizes_and_drive_letters() {
+        let (valid, metadata, partition) = valid_test_ntfs_format_report();
+
+        for path in [
+            "",
+            r"C:\\",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF01234567Z}\\",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}\\extra",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1",
+        ] {
+            let mut changed = valid.clone();
+            changed.volume_path = path.into();
+            assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err(),
+                "unexpected volume path was accepted: {path:?}");
+        }
+
+        for volume_size in [
+            0,
+            valid.partition_size + 1,
+            valid.partition_size - 1024 * 1024 - 1,
+        ] {
+            let mut changed = valid.clone();
+            changed.volume_size = volume_size;
+            assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err(),
+                "unexpected volume size was accepted: {volume_size}");
+        }
+
+        let mut changed = valid.clone();
+        changed.size_remaining = changed.volume_size + 1;
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.drive_letter = Some("R".into());
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+    }
+
+    #[test]
+    fn ntfs_format_report_deserialization_rejects_unknown_fields() {
+        let (report, _, _) = valid_test_ntfs_format_report();
+        let mut value = serde_json::json!({
+            "diskNumber": report.disk_number,
+            "diskGuid": report.disk_guid,
+            "partitionGuid": report.partition_guid,
+            "partitionOffset": report.partition_offset,
+            "partitionSize": report.partition_size,
+            "fileSystem": report.file_system,
+            "fileSystemLabel": report.file_system_label,
+            "volumePath": report.volume_path,
+            "volumeSize": report.volume_size,
+            "sizeRemaining": report.size_remaining,
+            "driveLetter": report.drive_letter,
+        });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let parsed: GuestResultNtfsFormatReport = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed.volume_path, report.volume_path);
+
+        value["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_slice::<GuestResultNtfsFormatReport>(
+            &serde_json::to_vec(&value).unwrap()
+        ).is_err());
+    }
+
     #[cfg(windows)]
     #[test]
     fn native_result_vhdx_creation_produces_fixed_private_vhdx_and_refuses_reuse() {
