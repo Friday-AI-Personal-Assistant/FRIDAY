@@ -7661,14 +7661,14 @@ fn guest_result_storage_capability_message(
     }
 
     match mapped_folders_policy {
+        "Allowed" => {}
         "Blocked" => blockers.push("Windows policy blocks mapped folders"),
-        "Unknown" => blockers.push("the mapped-folder policy could not be verified"),
-        _ => {}
+        _ => blockers.push("the mapped-folder policy is not explicitly allowed or could not be verified"),
     }
     match mapped_folder_write_policy {
+        "Allowed" => {}
         "Blocked" => blockers.push("Windows policy blocks writable mapped folders"),
-        "Unknown" => blockers.push("the writable mapped-folder policy could not be verified"),
-        _ => {}
+        _ => blockers.push("the writable mapped-folder policy is not explicitly allowed or could not be verified"),
     }
 
     if blockers.is_empty() {
@@ -12540,6 +12540,50 @@ mod tests {
         assert!(message.contains("does not prove safe guest result transfer"));
         assert!(message.contains("bounded VHDX mapping"));
         assert!(message.contains("remain disabled"));
+    }
+
+    #[test]
+    fn result_storage_preflight_requires_explicit_allow_for_both_mapping_policies() {
+        for policy in ["Not configured", "Unknown", "Not applicable", "", "Allowed "] {
+            let mapped_blocked = guest_result_storage_capability_message(
+                true, true, policy, "Allowed",
+            );
+            assert!(
+                mapped_blocked.contains("mapped-folder policy is not explicitly allowed"),
+                "mapped-folder state {policy:?} must not be treated as allowed",
+            );
+
+            let write_blocked = guest_result_storage_capability_message(
+                true, true, "Allowed", policy,
+            );
+            assert!(
+                write_blocked.contains("writable mapped-folder policy is not explicitly allowed"),
+                "writable mapped-folder state {policy:?} must not be treated as allowed",
+            );
+            assert!(mapped_blocked.contains("remain disabled"));
+            assert!(write_blocked.contains("remain disabled"));
+        }
+    }
+
+    #[test]
+    fn result_storage_preflight_accepts_only_two_explicit_allowed_policy_states() {
+        let allowed = guest_result_storage_capability_message(
+            true, true, "Allowed", "Allowed",
+        );
+        assert!(allowed.contains("detectable host prerequisites appear available"));
+
+        for (mapped, writable) in [
+            ("Allowed", "Not configured"),
+            ("Not configured", "Allowed"),
+            ("Blocked", "Allowed"),
+            ("Allowed", "Blocked"),
+        ] {
+            let message = guest_result_storage_capability_message(
+                true, true, mapped, writable,
+            );
+            assert!(message.contains("Result storage is not ready"));
+            assert!(message.contains("remain disabled"));
+        }
     }
 
     #[test]
