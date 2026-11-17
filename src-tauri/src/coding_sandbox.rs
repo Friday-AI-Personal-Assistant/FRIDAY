@@ -7633,15 +7633,24 @@ mod tests {
             &authorization, &manifest, &anchor, &provisioning,
         ).unwrap();
 
-        let moved = root.join("moved-staging");
-        fs::rename(&provisioning.staging_root, &moved).unwrap();
+        // Windows directory handles intentionally deny delete sharing, so
+        // renaming the held staging directory is not a portable race fixture.
+        // Supply a separately opened sibling directory handle instead: the
+        // preflight must reject its identity even though the authorized path
+        // and authenticated staging tree remain unchanged.
+        let decoy_path = root.join("decoy-staging");
+        fs::create_dir(&decoy_path).unwrap();
+        let decoy_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, decoy_path.file_name().unwrap(),
+        ).unwrap();
         assert!(authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &staging, &root, &parent, &provisioning.staging_root, &decoy_handle,
             &manifest, &anchor, &provisioning, &cleanup,
-        ).is_err(), "preflight must reject a staging directory moved away from its authorized name");
-        fs::rename(&moved, &provisioning.staging_root).unwrap();
+        ).is_err(), "preflight must reject a sibling directory handle with a stale identity");
 
-        assert!(provisioning.staging_root.exists(), "identity failure must not remove the moved staging data");
+        assert!(provisioning.staging_root.exists(), "identity failure must preserve the authenticated staging data");
+        assert!(decoy_path.exists(), "identity failure must preserve the substituted directory");
+        drop(decoy_handle);
         drop(staging_handle);
         drop(parent);
         fs::remove_dir_all(root).unwrap();
