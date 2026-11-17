@@ -10852,7 +10852,7 @@ mod tests {
     #[test]
     fn result_storage_journal_preserves_interrupted_generation_for_recovery() {
         let root = make_test_directory("result-journal-interrupted");
-        let first = valid_result_storage_journal();
+        let first = valid_result_storage_journal_for_root(&root);
         persist_guest_result_storage_journal(&root, &first).unwrap();
         let interrupted = guest_result_storage_journal_generation_path(&root, 2);
         fs::create_dir(&interrupted).unwrap();
@@ -10867,7 +10867,7 @@ mod tests {
     #[test]
     fn result_storage_journal_rejects_generation_gaps_and_identity_substitution() {
         let root = make_test_directory("result-journal-gap");
-        let first = valid_result_storage_journal();
+        let first = valid_result_storage_journal_for_root(&root);
         persist_guest_result_storage_journal(&root, &first).unwrap();
         let later = guest_result_storage_journal_generation_path(&root, 3);
         fs::create_dir(&later).unwrap();
@@ -10884,12 +10884,11 @@ mod tests {
     #[test]
     fn result_storage_journal_appends_only_from_latest_persisted_state() {
         let root = make_test_directory("result-journal-append-gateway");
-        let empty = GuestResultStorageJournal {
-            schema_version: GUEST_RESULT_STORAGE_JOURNAL_SCHEMA,
-            run_id: "0123456789abcdef0123456789abcdef".into(),
-            vhdx_identifier: "12345678-1234-5678-9abc-def012345678".into(),
-            entries: Vec::new(),
-        };
+        let empty = new_guest_result_storage_journal(
+            &root,
+            "0123456789abcdef0123456789abcdef",
+            "12345678-1234-5678-9abc-def012345678",
+        ).unwrap();
         let created = append_and_persist_guest_result_storage_transition(
             &root, &empty, GuestResultStorageEvent::CreateVerified, true, false,
         ).unwrap();
@@ -10913,12 +10912,11 @@ mod tests {
     #[test]
     fn result_storage_journal_append_gateway_refuses_preexisting_incomplete_generation() {
         let root = make_test_directory("result-journal-append-incomplete");
-        let empty = GuestResultStorageJournal {
-            schema_version: GUEST_RESULT_STORAGE_JOURNAL_SCHEMA,
-            run_id: "0123456789abcdef0123456789abcdef".into(),
-            vhdx_identifier: "12345678-1234-5678-9abc-def012345678".into(),
-            entries: Vec::new(),
-        };
+        let empty = new_guest_result_storage_journal(
+            &root,
+            "0123456789abcdef0123456789abcdef",
+            "12345678-1234-5678-9abc-def012345678",
+        ).unwrap();
         let interrupted = guest_result_storage_journal_generation_path(&root, 1);
         fs::create_dir(&interrupted).unwrap();
         secure_private_workspace_directory(&interrupted).unwrap();
