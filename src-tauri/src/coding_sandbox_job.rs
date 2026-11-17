@@ -68,7 +68,10 @@ impl GuestJobPolicy {
 }
 
 #[derive(Debug)]
-pub(crate) struct OwnedGuestJob { handle: HANDLE }
+pub(crate) struct OwnedGuestJob {
+    handle: HANDLE,
+    policy: GuestJobPolicy,
+}
 
 impl OwnedGuestJob {
     /// Query live host memory, derive the approved tier budget, then create and
@@ -94,7 +97,7 @@ impl OwnedGuestJob {
         if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             return Err(last_error("create the private guest Job Object"));
         }
-        let job = Self { handle };
+        let job = Self { handle, policy };
         job.configure_and_verify(policy)?;
         Ok(job)
     }
@@ -375,16 +378,16 @@ mod tests {
         let flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
             | JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY;
         assert_eq!(actual.BasicLimitInformation.LimitFlags & flags, flags);
-        assert_eq!(actual.BasicLimitInformation.ActiveProcessLimit, GUEST_JOB_POLICY.active_process_limit);
-        assert_eq!(actual.ProcessMemoryLimit, GUEST_JOB_POLICY.per_process_memory_bytes);
-        assert_eq!(actual.JobMemoryLimit, GUEST_JOB_POLICY.job_memory_bytes);
+        assert_eq!(actual.BasicLimitInformation.ActiveProcessLimit, job.policy.active_process_limit);
+        assert_eq!(actual.ProcessMemoryLimit, job.policy.per_process_memory_bytes);
+        assert_eq!(actual.JobMemoryLimit, job.policy.job_memory_bytes);
         let mut cpu: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION = unsafe { zeroed() };
         query_info(job.handle, JobObjectCpuRateControlInformation,
             &mut cpu as *mut _ as *mut c_void,
             size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>(), "read back test CPU limits").unwrap();
         let expected = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
         assert_eq!(cpu.ControlFlags & expected, expected);
-        assert_eq!(unsafe { cpu.Anonymous.CpuRate }, GUEST_JOB_POLICY.cpu_rate);
+        assert_eq!(unsafe { cpu.Anonymous.CpuRate }, job.policy.cpu_rate);
     }
 }
 
