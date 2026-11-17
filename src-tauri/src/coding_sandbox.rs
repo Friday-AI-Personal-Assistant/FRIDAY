@@ -6868,15 +6868,14 @@ fn load_windows_sandbox_cli_recovery_receipts(
     let mut gap_seen = false;
     for sequence in 1..=MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS {
         let file_name = windows_sandbox_cli_recovery_receipt_file_name(sequence);
-        match fs::symlink_metadata(root.join(&file_name)) {
-            Ok(file_metadata) => {
-                if gap_seen || !file_metadata.is_file() || is_reparse_or_symlink(&file_metadata) {
-                    return Err("The Windows Sandbox recovery receipt history contains a gap, directory, or reparse point.".into());
+        match crate::coding_sandbox_fs::read_bounded_relative_file(
+            &root_handle, &file_name,
+            MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_BYTES as u64,
+        ) {
+            Ok(bytes) => {
+                if gap_seen {
+                    return Err("The Windows Sandbox recovery receipt history contains a missing generation.".into());
                 }
-                let bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
-                    &root_handle, &file_name,
-                    MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_BYTES as u64,
-                ).map_err(|_| "A Windows Sandbox recovery receipt is missing or unsafe.".to_string())?;
                 let receipt = parse_windows_sandbox_cli_recovery_receipt(&bytes)?;
                 if receipt.sequence != sequence
                     || receipt.run_id != expected_run_id
@@ -6893,12 +6892,16 @@ fn load_windows_sandbox_cli_recovery_receipts(
                 receipts.push(receipt);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => gap_seen = true,
-            Err(_) => return Err("The Windows Sandbox recovery receipt history could not be inspected safely.".into()),
+            Err(_) => return Err("A Windows Sandbox recovery receipt is missing or unsafe.".into()),
         }
     }
-    match fs::symlink_metadata(root.join(windows_sandbox_cli_recovery_receipt_file_name(
+    let next_file = windows_sandbox_cli_recovery_receipt_file_name(
         MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS + 1,
-    ))) {
+    );
+    match crate::coding_sandbox_fs::read_bounded_relative_file(
+        &root_handle, &next_file,
+        MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_BYTES as u64,
+    ) {
         Ok(_) => return Err("The Windows Sandbox recovery receipt history exceeds its fixed generation limit.".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err("The Windows Sandbox recovery receipt limit could not be checked safely.".into()),
@@ -14005,6 +14008,114 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         symlink(&outside, root.join(windows_sandbox_cli_recovery_receipt_file_name(1))).unwrap();
         assert!(load_windows_sandbox_cli_recovery_receipts(&root, run_id).is_err());
         assert_eq!(fs::read(outside).unwrap(), b"do-not-follow");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_sandbox_cli_recovery_receipts_reject_tampering_without_mutation() {
+        let root = make_test_directory("wsb-recovery-receipt-tampering");
+        secure_private_workspace_directory(&root).unwrap();
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let initial = SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: run_id.into(),
+            entries: Vec::new(),
+        };
+        let config = safe_sandbox_config_with_result_fixture(
+            r"C:\FRIDAY\snapshot",
+            r"C:\FRIDAY\result-mount",
+        );
+        let executable = r"C:\Program Files\WindowsApps\wsb.exe";
+        prepare_and_persist_windows_sandbox_cli_start_transaction(
+            executable, &config, &root, &initial, &[],
+        ).unwrap();
+        preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[]).unwrap();
+
+        let receipt_path = root.join(windows_sandbox_cli_recovery_receipt_file_name(1));
+        let original = fs::read(&receipt_path).unwrap();
+        let journal_before = load_sandbox_session_journal(&root, run_id).unwrap();
+        let original_value: serde_json::Value = serde_json::from_slice(&original).unwrap();
+
+        let mut unknown_field = original_value.clone();
+        unknown_field.as_object_mut().unwrap().insert(
+            "unexpected".into(), serde_json::json!(true),
+        );
+        let mut wrong_session = original_value.clone();
+        wrong_session["expectedSessionId"] =
+            serde_json::json!("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        let mut wrong_count = original_value.clone();
+        wrong_count["observedSessionCount"] = serde_json::json!(1);
+        wrong_count["unrelatedSessionCount"] = serde_json::json!(1);
+        let mut wrong_schema = original_value.clone();
+        wrong_schema["schemaVersion"] = serde_json::json!(99);
+        let mut wrong_sequence = original_value.clone();
+        wrong_sequence["sequence"] = serde_json::json!(0);
+
+        let mutations = vec![
+            serde_json::to_vec(&unknown_field).unwrap(),
+            serde_json::to_vec(&wrong_session).unwrap(),
+            serde_json::to_vec(&wrong_count).unwrap(),
+            serde_json::to_vec(&wrong_schema).unwrap(),
+            serde_json::to_vec(&wrong_sequence).unwrap(),
+            b"{malformed-json".to_vec(),
+            vec![b'x'; MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_BYTES + 1],
+        ];
+        for mutated in mutations {
+            fs::write(&receipt_path, &mutated).unwrap();
+            let preserved_bytes = fs::read(&receipt_path).unwrap();
+            assert!(load_windows_sandbox_cli_recovery_receipts(&root, run_id).is_err());
+            assert!(preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
+                &root, run_id, &[],
+            ).is_err(), "a corrupt history must block reassessment and receipt appends");
+            assert_eq!(fs::read(&receipt_path).unwrap(), preserved_bytes,
+                "failed recovery must preserve the exact corrupt receipt for manual review");
+            assert_eq!(load_sandbox_session_journal(&root, run_id).unwrap(), journal_before,
+                "a corrupt receipt must not mutate the already-preserved journal");
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_sandbox_cli_recovery_receipts_reject_directories_and_extra_generations() {
+        let root = make_test_directory("wsb-recovery-receipt-entry-types");
+        secure_private_workspace_directory(&root).unwrap();
+        let run_id = "fedcba9876543210fedcba9876543210";
+        let initial = SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: run_id.into(),
+            entries: Vec::new(),
+        };
+        let config = safe_sandbox_config_with_result_fixture(
+            r"C:\FRIDAY\snapshot",
+            r"C:\FRIDAY\result-mount",
+        );
+        let executable = r"C:\Program Files\WindowsApps\wsb.exe";
+        prepare_and_persist_windows_sandbox_cli_start_transaction(
+            executable, &config, &root, &initial, &[],
+        ).unwrap();
+        preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[]).unwrap();
+
+        let first_path = root.join(windows_sandbox_cli_recovery_receipt_file_name(1));
+        let valid_receipt = fs::read(&first_path).unwrap();
+        fs::remove_file(&first_path).unwrap();
+        fs::create_dir(&first_path).unwrap();
+        assert!(load_windows_sandbox_cli_recovery_receipts(&root, run_id).is_err(),
+            "a directory at a receipt filename must not be treated as a missing generation");
+        fs::remove_dir(&first_path).unwrap();
+
+        fs::write(&first_path, vec![b'x'; MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_BYTES + 1]).unwrap();
+        assert!(load_windows_sandbox_cli_recovery_receipts(&root, run_id).is_err(),
+            "oversized receipt files must be rejected by the handle-relative bounded reader");
+        fs::write(&first_path, valid_receipt).unwrap();
+
+        let ninth_path = root.join(windows_sandbox_cli_recovery_receipt_file_name(
+            MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS + 1,
+        ));
+        fs::write(&ninth_path, b"{}").unwrap();
+        assert!(load_windows_sandbox_cli_recovery_receipts(&root, run_id).is_err(),
+            "a ninth generation must be rejected even when the first generation is valid");
+
         fs::remove_dir_all(root).unwrap();
     }
 
