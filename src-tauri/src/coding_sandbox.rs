@@ -1077,7 +1077,7 @@ fn guest_runtime_cleanup_journal_generations_from_handle(
     let mut expected_files = BTreeSet::new();
     for generation in 1..=directory_set.len() {
         let directory = format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_GENERATION_PREFIX}{generation:02}");
-        let file = format!("{directory}\\\\{GUEST_RUNTIME_CLEANUP_JOURNAL_FILE}");
+        let file = format!("{directory}\\{GUEST_RUNTIME_CLEANUP_JOURNAL_FILE}");
         if !directory_set.contains(&directory) || !file_set.contains(&file) {
             return Err("The cleanup journal contains a generation gap or unexpected entry.".into());
         }
@@ -13139,6 +13139,52 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert_eq!(fs::read(guest_runtime_cleanup_journal_generation_path(&root, 3).join("unexpected.bin")).unwrap(), b"keep");
 
         fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn cleanup_journal_inventory_uses_pinned_handle_and_rejects_unexpected_entries() {
+        let root_path = make_test_directory("cleanup-journal-handle-inventory");
+        let root = crate::coding_sandbox_fs::open_verified_root_directory(&root_path).unwrap();
+
+        assert_eq!(
+            guest_runtime_cleanup_journal_generations_from_handle(&root).unwrap(),
+            Vec::<usize>::new(),
+        );
+
+        let generation_one = root_path.join("generation-01");
+        fs::create_dir(&generation_one).unwrap();
+        fs::write(generation_one.join(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE), b"state").unwrap();
+        assert_eq!(
+            guest_runtime_cleanup_journal_generations_from_handle(&root).unwrap(),
+            vec![1],
+        );
+
+        let generation_three = root_path.join("generation-03");
+        fs::create_dir(&generation_three).unwrap();
+        fs::write(generation_three.join(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE), b"state").unwrap();
+        assert!(
+            guest_runtime_cleanup_journal_generations_from_handle(&root).is_err(),
+            "a generation gap must be rejected from the pinned-handle inventory",
+        );
+        fs::remove_dir_all(&generation_three).unwrap();
+
+        fs::write(root_path.join("unexpected.json"), b"preserve").unwrap();
+        assert!(
+            guest_runtime_cleanup_journal_generations_from_handle(&root).is_err(),
+            "unexpected root-level files must not be ignored",
+        );
+        assert_eq!(fs::read(root_path.join("unexpected.json")).unwrap(), b"preserve");
+
+        fs::remove_file(root_path.join("unexpected.json")).unwrap();
+        fs::create_dir(generation_one.join("nested")).unwrap();
+        assert!(
+            guest_runtime_cleanup_journal_generations_from_handle(&root).is_err(),
+            "nested directories inside a generation must be rejected",
+        );
+        assert!(generation_one.join("nested").exists());
+
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
     }
 
     #[test]
