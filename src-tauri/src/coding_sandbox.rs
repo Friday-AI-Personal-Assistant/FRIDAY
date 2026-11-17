@@ -12526,9 +12526,19 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let encoded = encode_guest_runtime_cleanup_journal(&base).unwrap();
         assert_eq!(parse_guest_runtime_cleanup_journal(&encoded).unwrap(), base);
 
-        let mut marker_removed = base.clone();
-        marker_removed.entries.push(GuestRuntimeCleanupJournalEntry {
+        let mut payloads_removed = base.clone();
+        payloads_removed.entries.push(GuestRuntimeCleanupJournalEntry {
             sequence: 2,
+            phase: GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+        });
+        assert_eq!(
+            validate_guest_runtime_cleanup_journal(&payloads_removed).unwrap(),
+            GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+        );
+
+        let mut marker_removed = payloads_removed.clone();
+        marker_removed.entries.push(GuestRuntimeCleanupJournalEntry {
+            sequence: 3,
             phase: GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
         });
         assert_eq!(
@@ -12642,9 +12652,19 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         assert!(persist_guest_runtime_cleanup_journal(&root, &base).is_err(),
             "immutable generation one must never be overwritten");
 
-        let mut marker_removed = base.clone();
-        marker_removed.entries.push(GuestRuntimeCleanupJournalEntry {
+        let mut payloads_removed = base.clone();
+        payloads_removed.entries.push(GuestRuntimeCleanupJournalEntry {
             sequence: 2,
+            phase: GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+        });
+        assert_eq!(
+            validate_guest_runtime_cleanup_journal(&payloads_removed).unwrap(),
+            GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+        );
+
+        let mut marker_removed = payloads_removed.clone();
+        marker_removed.entries.push(GuestRuntimeCleanupJournalEntry {
+            sequence: 3,
             phase: GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
         });
         persist_guest_runtime_cleanup_journal(&root, &marker_removed).unwrap();
@@ -12691,8 +12711,9 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         persist_guest_runtime_cleanup_journal(&root, &base).unwrap();
         let mut final_phase = base.clone();
         final_phase.entries.extend([
-            GuestRuntimeCleanupJournalEntry { sequence: 2, phase: GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved },
-            GuestRuntimeCleanupJournalEntry { sequence: 3, phase: GuestRuntimeCleanupJournalPhase::StagingRootRemoved },
+            GuestRuntimeCleanupJournalEntry { sequence: 2, phase: GuestRuntimeCleanupJournalPhase::PayloadsRemoved },
+            GuestRuntimeCleanupJournalEntry { sequence: 3, phase: GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved },
+            GuestRuntimeCleanupJournalEntry { sequence: 4, phase: GuestRuntimeCleanupJournalPhase::StagingRootRemoved },
         ]);
         fs::create_dir(guest_runtime_cleanup_journal_generation_path(&root, 3)).unwrap();
         assert!(load_guest_runtime_cleanup_journal(&root, &final_phase).is_err(),
