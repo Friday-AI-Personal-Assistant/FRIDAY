@@ -1357,6 +1357,8 @@ fn load_guest_runtime_cleanup_journal(
                     || current.staging_root_path != expected.staging_root_path
                     || current.parent_identity_volume != expected.parent_identity_volume
                     || current.parent_identity_file != expected.parent_identity_file
+                    || current.journal_root_identity_volume != expected.journal_root_identity_volume
+                    || current.journal_root_identity_file != expected.journal_root_identity_file
                     || current.root_identity_volume != expected.root_identity_volume
                     || current.root_identity_file != expected.root_identity_file
                 {
@@ -13200,6 +13202,22 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         );
         assert!(!guest_runtime_cleanup_journal_generation_path(&root, 2).exists());
         assert!(gap.exists(), "ambiguous evidence must be preserved");
+        fs::remove_dir_all(&gap).unwrap();
+
+        // A later generation must retain the identity of the pinned journal
+        // root, not merely the staging and parent identities.
+        persist_guest_runtime_cleanup_journal(&root, &next).unwrap();
+        let generation_two = guest_runtime_cleanup_journal_generation_path(&root, 2)
+            .join(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE);
+        let mut tampered: serde_json::Value =
+            serde_json::from_slice(&fs::read(&generation_two).unwrap()).unwrap();
+        tampered["journalRootIdentityVolume"] = serde_json::Value::from(999u64);
+        tampered["journalRootIdentityFile"] = serde_json::Value::from(1000u64);
+        fs::write(&generation_two, serde_json::to_vec(&tampered).unwrap()).unwrap();
+        assert!(
+            load_guest_runtime_cleanup_journal(&root, &next).is_err(),
+            "a generation that substitutes the journal-root identity must be rejected",
+        );
 
         fs::remove_dir_all(parent).unwrap();
     }
