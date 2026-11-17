@@ -12522,8 +12522,8 @@ mod tests {
             "Unknown",
             "Unknown",
         );
-        assert!(message.contains("mapped-folder policy could not be verified"));
-        assert!(message.contains("writable mapped-folder policy could not be verified"));
+        assert!(message.contains("mapped-folder policy is not explicitly allowed or could not be verified"));
+        assert!(message.contains("writable mapped-folder policy is not explicitly allowed or could not be verified"));
         assert!(message.contains("Physical Windows acceptance"));
         assert!(message.contains("remain disabled"));
     }
