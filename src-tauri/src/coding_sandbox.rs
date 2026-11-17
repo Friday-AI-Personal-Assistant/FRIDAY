@@ -1290,10 +1290,34 @@ fn begin_guest_runtime_cleanup_journal(
     let root = guest_runtime_cleanup_journal_root_path(
         &authorization.parent_path, &authorization.bundle_id,
     )?;
-    fs::create_dir(&root)
-        .map_err(|_| "FRIDAY could not exclusively create the private runtime cleanup journal.".to_string())?;
+    // Create the journal directory relative to the already-authorized parent
+    // handle. A path-based create_dir here could be redirected if the parent
+    // path changed after cleanup authorization.
+    let parent_handle = crate::coding_sandbox_fs::open_verified_root_directory(
+        &authorization.parent_path,
+    ).map_err(|_| "The runtime cleanup journal parent could not be opened safely.".to_string())?;
+    let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &authorization.parent_path, &parent_handle,
+    ).map_err(|_| "The runtime cleanup journal parent identity could not be verified.".to_string())?;
+    if parent_identity != authorization.parent_identity {
+        return Err("The runtime cleanup journal parent differs from its authenticated identity.".into());
+    }
+    let root_name = root.file_name()
+        .ok_or_else(|| "The runtime cleanup journal has no safe directory name.".to_string())?;
+    let journal_root_handle = crate::coding_sandbox_fs::create_destination_entry(
+        &parent_handle, root_name, true,
+    ).map_err(|_| "FRIDAY could not exclusively create the private runtime cleanup journal.".to_string())?;
     secure_private_workspace_directory(&root)
         .map_err(|_| "FRIDAY could not secure the runtime cleanup journal; no cleanup was started.".to_string())?;
+    let journal_root_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &root, &journal_root_handle,
+    ).map_err(|_| "The newly created cleanup journal root identity could not be verified.".to_string())?;
+    let final_parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &authorization.parent_path, &parent_handle,
+    ).map_err(|_| "The runtime cleanup journal parent changed during creation.".to_string())?;
+    if final_parent_identity != authorization.parent_identity {
+        return Err("The runtime cleanup journal parent changed during creation; the directory was preserved.".into());
+    }
     let journal = GuestRuntimeCleanupJournal {
         schema_version: GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA,
         operation: authorization.operation,
@@ -1303,8 +1327,8 @@ fn begin_guest_runtime_cleanup_journal(
         staging_root_path: authorization.staging_root.to_string_lossy().into_owned(),
         parent_identity_volume: authorization.parent_identity.0,
         parent_identity_file: authorization.parent_identity.1,
-        journal_root_identity_volume: guest_runtime_cleanup_journal_root_identity(&root)?.0,
-        journal_root_identity_file: guest_runtime_cleanup_journal_root_identity(&root)?.1,
+        journal_root_identity_volume: journal_root_identity.0,
+        journal_root_identity_file: journal_root_identity.1,
         root_identity_volume: authorization.root_identity.0,
         root_identity_file: authorization.root_identity.1,
         entries: vec![GuestRuntimeCleanupJournalEntry {
@@ -1312,7 +1336,10 @@ fn begin_guest_runtime_cleanup_journal(
             phase: GuestRuntimeCleanupJournalPhase::Prepared,
         }],
     };
+    // Keep the newly-created directory handle alive through initial persistence
+    // so Windows cannot redirect the journal root between creation and use.
     persist_guest_runtime_cleanup_journal(&root, &journal)?;
+    drop(journal_root_handle);
     Ok((root, journal))
 }
 
