@@ -3921,8 +3921,8 @@ mod tests {
         fs::write(workspace_path.join("payload.bin"), b"authenticated payload").unwrap();
         let parent = open_test_root(&workspace_path);
         let error = remove_verified_runtime_file(
-            &parent, OsStr::new("payload.bin"), 22,
-            "5682cf8bc4b549d2f5f79101d03dbe613127ce4161a9bce7829dd1630a8f66d8",
+            &parent, OsStr::new("payload.bin"), 21,
+            "d2f75693596e4fea04f110826bed8e76b2514463ca783f9a5150f7901c2bf92a",
         ).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert_eq!(fs::read(workspace_path.join("payload.bin")).unwrap(), b"authenticated payload");
@@ -3937,11 +3937,11 @@ mod tests {
         let workspace_path = make_test_directory("windows-runtime-cleanup-digest");
         fs::write(workspace_path.join("payload.bin"), b"authenticated payload").unwrap();
         let parent = open_test_root(&workspace_path);
-        let digest = "5682cf8bc4b549d2f5f79101d03dbe613127ce4161a9bce7829dd1630a8f66d8";
+        let digest = "d2f75693596e4fea04f110826bed8e76b2514463ca783f9a5150f7901c2bf92a";
         assert!(remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 1, digest).is_err());
-        assert!(remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 22, "0".repeat(64).as_str()).is_err());
+        assert!(remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 21, "0".repeat(64).as_str()).is_err());
         assert_eq!(fs::read(workspace_path.join("payload.bin")).unwrap(), b"authenticated payload");
-        remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 22, digest).unwrap();
+        remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 21, digest).unwrap();
         assert!(!workspace_path.join("payload.bin").exists());
         drop(parent);
         fs::remove_dir_all(workspace_path).unwrap();
