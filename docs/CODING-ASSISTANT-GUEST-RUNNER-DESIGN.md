@@ -2213,3 +2213,18 @@ A successful `DeleteVolumeMountPointW` call is not, by itself, sufficient eviden
 This second check prevents a replacement directory at the same pathname, a redirected/reparse-point entry, or unexpected host-side contents from being accepted as a successful unmount. The journaled unmount can reach `Unmounted` only after both checks succeed. If the volume mapping is removed but the original directory cannot be re-established and verified, FRIDAY preserves the result volume and records recovery-required rather than retrying or deleting anything.
 
 The Windows VHDX lifecycle regression now verifies the identity-bound directory again after unmount. This is CI coverage of the native Windows path; physical Windows acceptance, including interruption and crash recovery, remains required. Guest execution remains disabled.
+## Run-bound Windows Sandbox CLI ownership and stop-completion proof
+
+Microsoft documents that wsb start creates a new Sandbox and returns its unique Sandbox ID, wsb list reports the current user's session IDs and Running/Stopped state, and wsb stop --id stops the specified session and releases its resources. FRIDAY now has a strict host-side proof contract around those documented semantics:
+
+1. The pre-launch CLI inventory must be empty. Existing sessions are never adopted or stopped.
+2. The bounded start --raw response must contain exactly the supported Id field, and that ID must equal the GUID deterministically derived from FRIDAY's run ID.
+3. A fresh post-launch inventory must contain exactly one session: that same ID in Running state. Missing, stopped, substituted, duplicated, or additional sessions fail closed.
+4. A stop plan requires the run-bound ownership proof plus a fresh exclusive Running inventory for that exact ID.
+5. Stop completion requires a successful CLI command and a fresh inventory in which the exact owned ID is either absent or explicitly Stopped. A still-Running owned session is not considered stopped. Other sessions are left untouched; their presence does not authorize FRIDAY to stop them.
+
+The proof parser rejects empty/oversized output, malformed identifiers, unknown fields, and schema substitutions. Regression tests cover pre-existing sessions, mismatched start IDs, missing or stopped post-launch sessions, extra sessions, proof substitution, failed stop commands, and foreign sessions that must remain untouched.
+
+This is an authorization and observation contract, not a production launch/stop transaction. The native wsb start and wsb stop invocations are still not wired to the journal or UI, the proof is not yet persisted as a complete launch receipt across app restarts, and physical Windows acceptance is still required. The separate WindowsSandbox.exe process identity observer remains supplementary; process-name/PID observations alone do not establish Sandbox session ownership. Guest execution remains disabled.
+
+Microsoft reference: https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-cli

@@ -6146,6 +6146,105 @@ fn require_exclusive_windows_sandbox_cli_session(
         .map_err(|_| "The Windows Sandbox inventory does not contain FRIDAY's exact session in the required state.".into())
 }
 
+/// The raw start response is the first provider-issued acknowledgement of the
+/// exact Sandbox ID requested by FRIDAY. Keep this schema deliberately strict.
+const MAX_WINDOWS_SANDBOX_CLI_START_RESPONSE_BYTES: usize = 4 * 1024;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+struct WindowsSandboxCliStartResponse {
+    id: String,
+}
+
+fn parse_windows_sandbox_cli_start_response(bytes: &[u8]) -> Result<String, String> {
+    if bytes.is_empty() || bytes.len() > MAX_WINDOWS_SANDBOX_CLI_START_RESPONSE_BYTES {
+        return Err("The Windows Sandbox CLI start response is empty or exceeds its fixed output limit.".into());
+    }
+    let response: WindowsSandboxCliStartResponse = serde_json::from_slice(bytes)
+        .map_err(|_| "The Windows Sandbox CLI start response is malformed or has an unsupported schema.".to_string())?;
+    if !valid_windows_sandbox_cli_id(&response.id) {
+        return Err("The Windows Sandbox CLI start response contains an invalid session identifier.".into());
+    }
+    Ok(response.id.to_ascii_lowercase())
+}
+
+/// Private, run-bound evidence that the supported CLI created the session
+/// FRIDAY requested. It is issued only after an empty pre-launch inventory,
+/// an exact start-response ID, and a sole matching Running post-launch entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowsSandboxCliOwnershipProof {
+    run_id: String,
+    session_id: String,
+    start_response_id: String,
+}
+
+fn prove_windows_sandbox_cli_session_ownership(
+    run_id: &str,
+    start_response: &[u8],
+    pre_launch_sessions: &[WindowsSandboxCliSession],
+    post_launch_sessions: &[WindowsSandboxCliSession],
+) -> Result<WindowsSandboxCliOwnershipProof, String> {
+    if !valid_snapshot_id(run_id) {
+        return Err("The FRIDAY run identifier is invalid for Sandbox ownership proof.".into());
+    }
+    require_empty_windows_sandbox_cli_inventory(pre_launch_sessions)?;
+    let expected_id = windows_sandbox_cli_id_from_run_id(run_id)?;
+    let returned_id = parse_windows_sandbox_cli_start_response(start_response)?;
+    if !returned_id.eq_ignore_ascii_case(&expected_id) {
+        return Err("The Windows Sandbox CLI returned a different session ID than FRIDAY requested.".into());
+    }
+    require_exclusive_windows_sandbox_cli_session(
+        post_launch_sessions, &expected_id, WindowsSandboxCliSessionStatus::Running,
+    )?;
+    Ok(WindowsSandboxCliOwnershipProof {
+        run_id: run_id.to_string(),
+        session_id: expected_id,
+        start_response_id: returned_id,
+    })
+}
+
+fn validate_windows_sandbox_cli_ownership_proof(
+    proof: &WindowsSandboxCliOwnershipProof,
+    run_id: &str,
+) -> Result<String, String> {
+    if !valid_snapshot_id(run_id) || proof.run_id != run_id {
+        return Err("The Windows Sandbox ownership proof belongs to a different FRIDAY run.".into());
+    }
+    let expected_id = windows_sandbox_cli_id_from_run_id(run_id)?;
+    if proof.session_id != expected_id || proof.start_response_id != expected_id {
+        return Err("The Windows Sandbox ownership proof does not bind the exact run-derived CLI session ID.".into());
+    }
+    Ok(expected_id)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsSandboxCliStopCompletion {
+    SessionAbsent,
+    SessionStopped,
+}
+
+/// The documented stop command is synchronous. FRIDAY still requires a
+/// successful command exit and a fresh inventory showing this exact ID absent
+/// or Stopped; unrelated sessions are never acted on or treated as ours.
+fn verify_windows_sandbox_cli_stop_completion(
+    proof: &WindowsSandboxCliOwnershipProof,
+    run_id: &str,
+    command_succeeded: bool,
+    post_stop_sessions: &[WindowsSandboxCliSession],
+) -> Result<WindowsSandboxCliStopCompletion, String> {
+    let expected_id = validate_windows_sandbox_cli_ownership_proof(proof, run_id)?;
+    if !command_succeeded {
+        return Err("The Windows Sandbox CLI stop command did not complete successfully; session shutdown is unverified.".into());
+    }
+    match post_stop_sessions.iter().find(|session| session.id.eq_ignore_ascii_case(&expected_id)) {
+        Some(session) if session.status == WindowsSandboxCliSessionStatus::Stopped => {
+            Ok(WindowsSandboxCliStopCompletion::SessionStopped)
+        }
+        Some(_) => Err("The exact FRIDAY-owned Windows Sandbox session is still reported Running after stop.".into()),
+        None => Ok(WindowsSandboxCliStopCompletion::SessionAbsent),
+    }
+}
+
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WindowsSandboxLaunchPlan {
@@ -6565,12 +6664,13 @@ fn verify_reobserved_sandbox_process_for_stop(
 fn prepare_authorized_windows_sandbox_stop_plan(
     executable_path: &str,
     journal: &SandboxSessionJournal,
+    ownership_proof: &WindowsSandboxCliOwnershipProof,
     sessions: &[WindowsSandboxCliSession],
 ) -> Result<WindowsSandboxCliPlan, String> {
     if validate_sandbox_session_journal(journal)? != SandboxSessionState::Running {
         return Err("The Sandbox journal does not authorize stopping from its current state.".into());
     }
-    let expected_id = windows_sandbox_cli_id_from_run_id(&journal.run_id)?;
+    let expected_id = validate_windows_sandbox_cli_ownership_proof(ownership_proof, &journal.run_id)?;
     let recorded_identity = journal.entries.iter()
         .rev()
         .find(|entry| entry.event == SandboxSessionEvent::ObserveProcess)
@@ -12352,15 +12452,20 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             id: session_id.clone(),
             status: WindowsSandboxCliSessionStatus::Running,
         }];
-        let plan = prepare_authorized_windows_sandbox_stop_plan(
-            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &inventory,
+        let start_response = format!(r#"{{"Id":"{}"}}"#, session_id);
+        let ownership_proof = prove_windows_sandbox_cli_session_ownership(
+            run_id, start_response.as_bytes(), &[], &inventory,
         ).unwrap();
+        let plan = prepare_authorized_windows_sandbox_stop_plan(
+            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &ownership_proof, &inventory,
+        ).unwrap();
+
         assert_eq!(plan.arguments, vec![
             "stop", "--raw", "--id", session_id.as_str(),
         ]);
 
         assert!(prepare_authorized_windows_sandbox_stop_plan(
-            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &[],
+            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &ownership_proof, &[],
         ).is_err());
         let foreign = vec![
             inventory[0].clone(),
@@ -12370,25 +12475,141 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             },
         ];
         assert!(prepare_authorized_windows_sandbox_stop_plan(
-            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &foreign,
+            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &ownership_proof, &foreign,
         ).is_err());
         let stopped = vec![WindowsSandboxCliSession {
             id: session_id,
             status: WindowsSandboxCliSessionStatus::Stopped,
         }];
         assert!(prepare_authorized_windows_sandbox_stop_plan(
-            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &stopped,
+            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &ownership_proof, &stopped,
+        ).is_err());
+
+        let mut wrong_proof = ownership_proof.clone();
+        wrong_proof.run_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
+        assert!(prepare_authorized_windows_sandbox_stop_plan(
+            r"C:\Program Files\WindowsApps\wsb.exe", &journal, &wrong_proof, &inventory,
         ).is_err());
 
         let mut not_running = journal.clone();
         not_running.entries.pop();
         assert!(prepare_authorized_windows_sandbox_stop_plan(
-            r"C:\Program Files\WindowsApps\wsb.exe", &not_running, &inventory,
+            r"C:\Program Files\WindowsApps\wsb.exe", &not_running, &ownership_proof, &inventory,
         ).is_err());
         let mut mismatched = journal.clone();
         mismatched.run_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
         assert!(prepare_authorized_windows_sandbox_stop_plan(
-            r"C:\Program Files\WindowsApps\wsb.exe", &mismatched, &inventory,
+            r"C:\Program Files\WindowsApps\wsb.exe", &mismatched, &ownership_proof, &inventory,
+        ).is_err());
+    }
+
+    #[test]
+    fn windows_sandbox_cli_start_response_requires_exact_bounded_id_schema() {
+        let valid = br#"{"Id":"01234567-89ab-cdef-0123-456789abcdef"}"#;
+        assert_eq!(
+            parse_windows_sandbox_cli_start_response(valid).unwrap(),
+            "01234567-89ab-cdef-0123-456789abcdef",
+        );
+        assert!(parse_windows_sandbox_cli_start_response(b"").is_err());
+        assert!(parse_windows_sandbox_cli_start_response(&vec![b'x'; MAX_WINDOWS_SANDBOX_CLI_START_RESPONSE_BYTES + 1]).is_err());
+        assert!(parse_windows_sandbox_cli_start_response(br#"{"Id":"not-a-guid"}"#).is_err());
+        assert!(parse_windows_sandbox_cli_start_response(br#"{"Id":"01234567-89ab-cdef-0123-456789abcdef","Pid":4321}"#).is_err());
+        assert!(parse_windows_sandbox_cli_start_response(br#"{"id":"01234567-89ab-cdef-0123-456789abcdef"}"#).is_err());
+        assert!(parse_windows_sandbox_cli_start_response(br#"{"Id":"01234567-89ab-cdef-0123-456789abcde"}"#).is_err());
+    }
+
+    #[test]
+    fn windows_sandbox_cli_ownership_requires_causal_start_id_and_exclusive_inventory() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let expected_id = windows_sandbox_cli_id_from_run_id(run_id).unwrap();
+        let expected = WindowsSandboxCliSession {
+            id: expected_id.clone(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        let response = format!(r#"{{"Id":"{}"}}"#, expected_id);
+        let proof = prove_windows_sandbox_cli_session_ownership(
+            run_id, response.as_bytes(), &[], &[expected.clone()],
+        ).unwrap();
+        assert_eq!(proof.run_id, run_id);
+        assert_eq!(proof.session_id, expected_id);
+        assert_eq!(proof.start_response_id, proof.session_id);
+        assert_eq!(
+            validate_windows_sandbox_cli_ownership_proof(&proof, run_id).unwrap(),
+            proof.session_id,
+        );
+
+        assert!(prove_windows_sandbox_cli_session_ownership(
+            run_id, response.as_bytes(), &[expected.clone()], &[expected.clone()],
+        ).is_err(), "a pre-existing session must never be adopted");
+        assert!(prove_windows_sandbox_cli_session_ownership(
+            run_id, br#"{"Id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}"#, &[], &[expected.clone()],
+        ).is_err(), "the CLI start response must echo the exact run-derived ID");
+        assert!(prove_windows_sandbox_cli_session_ownership(
+            run_id, response.as_bytes(), &[], &[],
+        ).is_err(), "a missing post-launch session is not proof of launch");
+        assert!(prove_windows_sandbox_cli_session_ownership(
+            run_id, response.as_bytes(), &[], &[WindowsSandboxCliSession {
+                id: expected_id.clone(),
+                status: WindowsSandboxCliSessionStatus::Stopped,
+            }],
+        ).is_err(), "a stopped session is not proof of successful launch");
+        assert!(prove_windows_sandbox_cli_session_ownership(
+            run_id, response.as_bytes(), &[], &[
+                expected.clone(),
+                WindowsSandboxCliSession {
+                    id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+                    status: WindowsSandboxCliSessionStatus::Running,
+                },
+            ],
+        ).is_err(), "an additional session makes ownership ambiguous");
+        assert!(prove_windows_sandbox_cli_session_ownership(
+            "invalid-run-id", response.as_bytes(), &[], &[expected],
+        ).is_err());
+    }
+
+    #[test]
+    fn windows_sandbox_cli_stop_completion_requires_success_and_exact_session_shutdown() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let session_id = windows_sandbox_cli_id_from_run_id(run_id).unwrap();
+        let running = WindowsSandboxCliSession {
+            id: session_id.clone(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        let response = format!(r#"{{"Id":"{}"}}"#, session_id);
+        let proof = prove_windows_sandbox_cli_session_ownership(
+            run_id, response.as_bytes(), &[], &[running.clone()],
+        ).unwrap();
+
+        assert_eq!(
+            verify_windows_sandbox_cli_stop_completion(&proof, run_id, true, &[]).unwrap(),
+            WindowsSandboxCliStopCompletion::SessionAbsent,
+        );
+        assert_eq!(
+            verify_windows_sandbox_cli_stop_completion(&proof, run_id, true, &[WindowsSandboxCliSession {
+                id: session_id.clone(),
+                status: WindowsSandboxCliSessionStatus::Stopped,
+            }]).unwrap(),
+            WindowsSandboxCliStopCompletion::SessionStopped,
+        );
+        assert!(verify_windows_sandbox_cli_stop_completion(
+            &proof, run_id, false, &[],
+        ).is_err(), "a failed stop command cannot be treated as success");
+        assert!(verify_windows_sandbox_cli_stop_completion(
+            &proof, run_id, true, &[running],
+        ).is_err(), "the owned session must not remain Running");
+        let foreign = WindowsSandboxCliSession {
+            id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        assert_eq!(
+            verify_windows_sandbox_cli_stop_completion(&proof, run_id, true, &[foreign]).unwrap(),
+            WindowsSandboxCliStopCompletion::SessionAbsent,
+            "FRIDAY verifies only its own session and never stops an unrelated session",
+        );
+        let mut substituted = proof.clone();
+        substituted.session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into();
+        assert!(verify_windows_sandbox_cli_stop_completion(
+            &substituted, run_id, true, &[],
         ).is_err());
     }
 
