@@ -1785,6 +1785,32 @@ pub(crate) fn remove_verified_runtime_file(
 }
 
 
+/// Remove only FRIDAY's authenticated runtime ownership marker. The caller
+/// supplies the expected size and SHA-256 from the freshly verified manifest;
+/// this wrapper fixes the filename and delegates same-handle content
+/// verification to the runtime-file primitive. Ordering (marker last) remains
+/// the responsibility of the higher-level immutable cleanup plan.
+#[allow(dead_code)]
+pub(crate) fn remove_verified_runtime_owner_marker(
+    parent: &File,
+    name: &OsStr,
+    expected_size: u64,
+    expected_sha256: &str,
+) -> io::Result<()> {
+    if name != OsStr::new(".friday-runtime-owner.json")
+        || expected_size == 0
+        || expected_size > 16 * 1024
+        || expected_sha256.len() != 64
+        || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "runtime owner-marker cleanup requires its exact reserved name and authenticated bounded digest",
+        ));
+    }
+    remove_verified_runtime_file(parent, name, expected_size, expected_sha256)
+}
+
 /// Remove one verified empty directory relative to a held parent directory handle.
 ///
 /// Unix rmdir via unlinkat is name-based and retains a same-user rename race
@@ -4125,6 +4151,53 @@ mod tests {
         assert_eq!(fs::read(workspace_path.join("payload.bin")).unwrap(), b"authenticated payload");
         remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 21, digest).unwrap();
         assert!(!workspace_path.join("payload.bin").exists());
+        drop(parent);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_owner_marker_cleanup_rejects_substitution_and_fails_closed() {
+        use std::ffi::OsStr;
+        let workspace_path = make_test_directory("runtime-owner-marker-unix");
+        let marker = br#"{\"schemaVersion\":1,\"bundleId\":\"fixture\"}"#;
+        fs::write(workspace_path.join(".friday-runtime-owner.json"), marker).unwrap();
+        let parent = open_test_root(&workspace_path);
+        assert!(remove_verified_runtime_owner_marker(
+            &parent, OsStr::new("other.json"), marker.len() as u64,
+            "0".repeat(64).as_str(),
+        ).is_err());
+        let error = remove_verified_runtime_owner_marker(
+            &parent, OsStr::new(".friday-runtime-owner.json"), marker.len() as u64,
+            "0".repeat(64).as_str(),
+        ).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(fs::read(workspace_path.join(".friday-runtime-owner.json")).unwrap(), marker);
+        drop(parent);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_runtime_owner_marker_cleanup_requires_exact_reserved_name_size_and_digest() {
+        use std::ffi::OsStr;
+        use sha2::{Digest, Sha256};
+        let workspace_path = make_test_directory("windows-runtime-owner-marker");
+        let marker = br#"{\"schemaVersion\":1,\"bundleId\":\"fixture\"}"#;
+        fs::write(workspace_path.join(".friday-runtime-owner.json"), marker).unwrap();
+        let parent = open_test_root(&workspace_path);
+        let digest = format!("{:x}", Sha256::digest(marker));
+        assert!(remove_verified_runtime_owner_marker(
+            &parent, OsStr::new("other.json"), marker.len() as u64, &digest,
+        ).is_err());
+        assert!(remove_verified_runtime_owner_marker(
+            &parent, OsStr::new(".friday-runtime-owner.json"), marker.len() as u64 + 1, &digest,
+        ).is_err());
+        assert_eq!(fs::read(workspace_path.join(".friday-runtime-owner.json")).unwrap(), marker);
+        remove_verified_runtime_owner_marker(
+            &parent, OsStr::new(".friday-runtime-owner.json"), marker.len() as u64, &digest,
+        ).unwrap();
+        assert!(!workspace_path.join(".friday-runtime-owner.json").exists());
         drop(parent);
         fs::remove_dir_all(workspace_path).unwrap();
     }
