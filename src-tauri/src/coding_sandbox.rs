@@ -1395,6 +1395,57 @@ fn advance_guest_runtime_cleanup_journal(
     Ok(loaded)
 }
 
+/// Append a cleanup transition while the authenticated parent and journal-root
+/// directory handles remain pinned. This prevents a path substitution between
+/// markerless recovery's journal authentication and its durable state update.
+#[cfg(windows)]
+fn advance_guest_runtime_cleanup_journal_from_parent_handle(
+    root: &Path,
+    parent_path: &Path,
+    parent_handle: &File,
+    parent_identity: (u64, u64),
+    current: &GuestRuntimeCleanupJournal,
+    phase: GuestRuntimeCleanupJournalPhase,
+) -> Result<GuestRuntimeCleanupJournal, String> {
+    validate_guest_runtime_cleanup_journal_location(root, current)?;
+    if Path::new(&current.parent_path) != parent_path
+        || current.parent_identity_volume != parent_identity.0
+        || current.parent_identity_file != parent_identity.1
+    {
+        return Err("The cleanup journal transition is not bound to the authenticated parent.".into());
+    }
+    let held_parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        parent_path, parent_handle,
+    ).map_err(|_| "The held cleanup journal parent could not be reverified before append.".to_string())?;
+    if held_parent_identity != parent_identity {
+        return Err("The held cleanup journal parent identity changed before append.".into());
+    }
+    let root_name = root.file_name()
+        .ok_or("The authenticated cleanup journal root has no final path component.")?;
+    let root_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+        parent_handle, root_name,
+    ).map_err(|_| "The cleanup journal root could not be reopened relative to its authenticated parent.".to_string())?;
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The pinned cleanup journal root identity could not be verified before append.".to_string())?;
+    if root_identity != (current.journal_root_identity_volume, current.journal_root_identity_file) {
+        return Err("The cleanup journal root was replaced before its authenticated transition.".into());
+    }
+
+    // Keep both handles alive while the existing append/read-back transaction
+    // runs. The journal root cannot be exchanged for another directory during
+    // the operation on Windows because the held directory handle denies delete
+    // sharing; the identity checks below independently confirm both anchors.
+    let updated = advance_guest_runtime_cleanup_journal(root, current, phase)?;
+    let final_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The pinned cleanup journal root could not be reverified after append.".to_string())?;
+    let final_parent_identity = crate::coding_sandbox_fs::verified_directory_identity(parent_path, parent_handle)
+        .map_err(|_| "The pinned cleanup journal parent could not be reverified after append.".to_string())?;
+    if final_root_identity != root_identity || final_parent_identity != parent_identity {
+        return Err("A cleanup journal directory identity changed during its authenticated transition.".into());
+    }
+    Ok(updated)
+}
+
 #[allow(dead_code)]
 fn load_guest_runtime_cleanup_journal(
     root: &Path,
@@ -2014,14 +2065,16 @@ fn recover_markerless_guest_runtime_staging_root(
                 return Err("The runtime cleanup parent identity changed during absent-root verification.".into());
             }
             if phase == GuestRuntimeCleanupJournalPhase::PayloadsRemoved {
-                journal = advance_guest_runtime_cleanup_journal(
-                    &journal_root, &journal, GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
+                journal = advance_guest_runtime_cleanup_journal_from_parent_handle(
+                    &journal_root, parent_path, parent_handle, parent_identity, &journal,
+                    GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
                 )?;
                 phase = GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved;
             }
             if phase == GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved {
-                let _completed = advance_guest_runtime_cleanup_journal(
-                    &journal_root, &journal, GuestRuntimeCleanupJournalPhase::StagingRootRemoved,
+                let _completed = advance_guest_runtime_cleanup_journal_from_parent_handle(
+                    &journal_root, parent_path, parent_handle, parent_identity, &journal,
+                    GuestRuntimeCleanupJournalPhase::StagingRootRemoved,
                 )?;
                 return Ok(());
             }
@@ -2059,12 +2112,14 @@ fn recover_markerless_guest_runtime_staging_root(
                 parent_handle, root_name, parent_identity, expected_root_identity,
             ).map_err(|_| "The authenticated empty markerless staging root could not be safely removed.".to_string())?;
             if phase == GuestRuntimeCleanupJournalPhase::PayloadsRemoved {
-                journal = advance_guest_runtime_cleanup_journal(
-                    &journal_root, &journal, GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
+                journal = advance_guest_runtime_cleanup_journal_from_parent_handle(
+                    &journal_root, parent_path, parent_handle, parent_identity, &journal,
+                    GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
                 )?;
             }
-            let _completed = advance_guest_runtime_cleanup_journal(
-                &journal_root, &journal, GuestRuntimeCleanupJournalPhase::StagingRootRemoved,
+            let _completed = advance_guest_runtime_cleanup_journal_from_parent_handle(
+                &journal_root, parent_path, parent_handle, parent_identity, &journal,
+                GuestRuntimeCleanupJournalPhase::StagingRootRemoved,
             )?;
             Ok(())
         }
@@ -13463,11 +13518,18 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             }],
         };
         persist_guest_runtime_cleanup_journal(&root, &journal).unwrap();
-        drop(parent_handle);
 
         let moved = parent.with_extension("original");
         fs::rename(&parent, &moved).unwrap();
         fs::create_dir(&parent).unwrap();
+        assert!(
+            advance_guest_runtime_cleanup_journal_from_parent_handle(
+                &root, &parent, &parent_handle, parent_identity, &journal,
+                GuestRuntimeCleanupJournalPhase::PayloadsRemoved,
+            ).is_err(),
+            "an authenticated transition must refuse to append through a replaced parent path",
+        );
+        drop(parent_handle);
         assert!(
             load_latest_guest_runtime_cleanup_journal(&root, &authorization).is_err(),
             "recovery must reject a replacement parent even when the original journal still exists elsewhere",
