@@ -744,8 +744,21 @@ pub(crate) fn read_single_bounded_file_from_directory(
     }
 
     let directory = open_verified_root_directory(directory_path)?;
+    read_single_bounded_file_from_handle(directory_path, &directory, expected_name, max_bytes)
+}
+
+/// The caller supplies the already-open result-directory capability. The path
+/// is used only to prove that it still names that exact held directory before
+/// and after enumeration/read; all child operations remain handle-relative.
+fn read_single_bounded_file_from_handle(
+    directory_path: &Path,
+    directory: &File,
+    expected_name: &OsStr,
+    max_bytes: u64,
+) -> io::Result<Vec<u8>> {
+    let initial_identity = verified_directory_identity(directory_path, directory)?;
     let mut found: Option<Vec<u8>> = None;
-    for entry in read_dir(&directory, Path::new("."))? {
+    for entry in read_dir(directory, Path::new("."))? {
         let entry = entry?;
         let name = entry.file_name();
         if name != expected_name || found.is_some() {
@@ -762,20 +775,27 @@ pub(crate) fn read_single_bounded_file_from_directory(
             ));
         }
 
-        let mut file = open_file_nofollow(&directory, &name)?;
+        let mut file = open_file_nofollow(directory, &name)?;
         let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_bytes {
+        if !metadata.is_file() || is_reparse_or_symlink(&metadata)
+            || metadata.len() == 0 || metadata.len() > max_bytes
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "result file is empty, non-regular, or exceeds its byte limit",
             ));
         }
         let expected_length = metadata.len();
-        let mut contents = Vec::with_capacity(expected_length as usize);
+        let capacity = usize::try_from(expected_length).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "result file size cannot be represented")
+        })?;
+        let mut contents = Vec::with_capacity(capacity);
         file.by_ref().take(max_bytes.saturating_add(1)).read_to_end(&mut contents)?;
+        let after = file.metadata()?;
         if contents.is_empty()
             || contents.len() as u64 > max_bytes
             || contents.len() as u64 != expected_length
+            || after.len() != expected_length
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -785,10 +805,41 @@ pub(crate) fn read_single_bounded_file_from_directory(
         found = Some(contents);
     }
 
-    found.ok_or_else(|| io::Error::new(
+    let contents = found.ok_or_else(|| io::Error::new(
         io::ErrorKind::NotFound,
         "result directory does not contain the expected file",
-    ))
+    ))?;
+
+    // Recheck the named directory and exact one-file inventory after reading.
+    // A concurrent path replacement or unexpected entry must invalidate the
+    // read rather than allowing a result from a detached directory to escape.
+    let final_identity = verified_directory_identity(directory_path, directory)?;
+    if final_identity != initial_identity {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "result directory identity changed while reading",
+        ));
+    }
+    let mut final_entries = read_dir(directory, Path::new("."))?;
+    let first = final_entries.next().transpose()?;
+    let second = final_entries.next().transpose()?;
+    if first.as_ref().map(|entry| entry.file_name()).as_deref() != Some(expected_name)
+        || second.is_some()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "result directory inventory changed while reading",
+        ));
+    }
+    let first = first.expect("the first result entry was checked above");
+    let first_type = first.file_type()?;
+    if !first_type.is_file() || first_type.is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "result entry is no longer an ordinary regular file",
+        ));
+    }
+    Ok(contents)
 }
 
 
@@ -3380,6 +3431,33 @@ mod tests {
             &directory, OsStr::new("result.json"), 4,
         ).is_err());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_single_file_reader_rejects_replaced_directory_path() {
+        let parent = make_test_directory("bounded-result-root-replacement");
+        let original = parent.join("result-root");
+        let moved = parent.join("moved-result-root");
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("result.json"), b"original").unwrap();
+        let held = open_verified_root_directory(&original).unwrap();
+
+        fs::rename(&original, &moved).unwrap();
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("result.json"), b"replacement").unwrap();
+
+        assert!(
+            read_single_bounded_file_from_handle(
+                &original, &held, OsStr::new("result.json"), 128,
+            ).is_err(),
+            "a path that now names a replacement directory must not be accepted"
+        );
+        assert_eq!(fs::read(moved.join("result.json")).unwrap(), b"original");
+        assert_eq!(fs::read(original.join("result.json")).unwrap(), b"replacement");
+
+        drop(held);
+        fs::remove_dir_all(parent).unwrap();
     }
 
     #[cfg(unix)]
