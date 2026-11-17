@@ -7639,6 +7639,48 @@ fn privilege_output_has_enabled(output: &str, privilege: &str) -> bool {
     })
 }
 
+/*
+ * This is intentionally a diagnostic gate, not a readiness calculation.
+ * Even when every detectable prerequisite is present, FRIDAY still requires
+ * physical-Windows acceptance of the complete bounded-volume and Sandbox
+ * lifecycle before result storage or guest execution can be enabled.
+ */
+fn guest_result_storage_capability_message(
+    virtual_disk_api_available: bool,
+    manage_volume_privilege_enabled: bool,
+    mapped_folders_policy: &str,
+    mapped_folder_write_policy: &str,
+) -> String {
+    let mut blockers = Vec::new();
+
+    if !virtual_disk_api_available {
+        blockers.push("the Windows Virtual Disk API (virtdisk.dll) is unavailable");
+    }
+    if !manage_volume_privilege_enabled {
+        blockers.push("SeManageVolumePrivilege is not enabled in the current process token");
+    }
+
+    match mapped_folders_policy {
+        "Blocked" => blockers.push("Windows policy blocks mapped folders"),
+        "Unknown" => blockers.push("the mapped-folder policy could not be verified"),
+        _ => {}
+    }
+    match mapped_folder_write_policy {
+        "Blocked" => blockers.push("Windows policy blocks writable mapped folders"),
+        "Unknown" => blockers.push("the writable mapped-folder policy could not be verified"),
+        _ => {}
+    }
+
+    if blockers.is_empty() {
+        "The detectable host prerequisites appear available, but this does not prove safe guest result transfer. Physical Windows acceptance of bounded VHDX mapping, disk-full behavior, ACL isolation, session ownership, interruption recovery and cleanup is still outstanding. Result storage and guest execution remain disabled.".into()
+    } else {
+        format!(
+            "Result storage is not ready: {}. FRIDAY will not elevate or substitute an ordinary writable host folder. Physical Windows acceptance remains required; result storage and guest execution remain disabled.",
+            blockers.join("; ")
+        )
+    }
+}
+
 #[tauri::command]
 pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String> {
     let _project_root = crate::coding_assistant::selected_project_root_for_sandbox()?;
@@ -7659,12 +7701,18 @@ pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String
         let runtime_ready = detected && edition_supported
             && feature.eq_ignore_ascii_case("Enabled") && cli_runtime_supported
             && virtualization == Some(true) && !active;
+        let storage_message = guest_result_storage_capability_message(
+            virtual_disk_api,
+            manage_volume_privilege,
+            &mapped_folders_policy,
+            &mapped_folder_write_policy,
+        );
         let message = if active {
-            "A Windows Sandbox process is already running. FRIDAY will not attach to or stop a session it did not create. Execution remains disabled.".to_string()
+            format!("A Windows Sandbox process is already running. FRIDAY will not attach to or stop a session it did not create. {storage_message}")
         } else if runtime_ready {
-            "Windows Sandbox prerequisites appear present. This is detection only, not a launch test. Result-storage readiness is not established; execution remains disabled until storage, command restrictions, resource enforcement, cancellation and result validation are verified.".to_string()
+            format!("Windows Sandbox prerequisites appear present. This is detection only, not a launch test. {storage_message}")
         } else {
-            "Windows Sandbox is not yet confirmed ready. Review the detected edition, feature, CLI, virtualization and result-storage capability details. Unknown values are treated as unverified. FRIDAY will not elevate or fall back to host execution.".to_string()
+            format!("Windows Sandbox is not yet confirmed ready. Unknown values are treated as unverified; FRIDAY will not elevate or fall back to host execution. {storage_message}")
         };
         Ok(CodingSandboxPreflight {
             platform_supported: true, runtime_detected: detected,
@@ -12448,6 +12496,50 @@ mod tests {
         assert!(!privilege_output_has_enabled(disabled, "SeManageVolumePrivilege"));
         assert!(!privilege_output_has_enabled(enabled, "SeBackupPrivilege"));
         assert!(!privilege_output_has_enabled("", "SeManageVolumePrivilege"));
+    }
+
+    #[test]
+    fn result_storage_preflight_reports_missing_non_elevated_prerequisites() {
+        let message = guest_result_storage_capability_message(
+            false,
+            false,
+            "Blocked",
+            "Blocked",
+        );
+        assert!(message.contains("virtdisk.dll"));
+        assert!(message.contains("SeManageVolumePrivilege"));
+        assert!(message.contains("blocks mapped folders"));
+        assert!(message.contains("blocks writable mapped folders"));
+        assert!(message.contains("will not elevate"));
+        assert!(message.contains("remain disabled"));
+    }
+
+    #[test]
+    fn result_storage_preflight_treats_unknown_policy_as_unverified() {
+        let message = guest_result_storage_capability_message(
+            true,
+            true,
+            "Unknown",
+            "Unknown",
+        );
+        assert!(message.contains("mapped-folder policy could not be verified"));
+        assert!(message.contains("writable mapped-folder policy could not be verified"));
+        assert!(message.contains("Physical Windows acceptance"));
+        assert!(message.contains("remain disabled"));
+    }
+
+    #[test]
+    fn result_storage_preflight_never_equates_detected_capabilities_with_readiness() {
+        let message = guest_result_storage_capability_message(
+            true,
+            true,
+            "Allowed",
+            "Allowed",
+        );
+        assert!(message.contains("detectable host prerequisites appear available"));
+        assert!(message.contains("does not prove safe guest result transfer"));
+        assert!(message.contains("bounded VHDX mapping"));
+        assert!(message.contains("remain disabled"));
     }
 
     #[test]
