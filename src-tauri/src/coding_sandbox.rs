@@ -10784,10 +10784,23 @@ mod tests {
             schema_version: GUEST_RESULT_STORAGE_JOURNAL_SCHEMA,
             run_id: "0123456789abcdef0123456789abcdef".into(),
             vhdx_identifier: "12345678-1234-5678-9abc-def012345678".into(),
+            journal_root_identity_volume: 1,
+            journal_root_identity_file: 1,
             entries: Vec::new(),
         };
         append_guest_result_storage_journal_entry(
             &journal, GuestResultStorageEvent::CreateVerified, true, false,
+        ).unwrap()
+    }
+
+    fn valid_result_storage_journal_for_root(root: &Path) -> GuestResultStorageJournal {
+        let empty = new_guest_result_storage_journal(
+            root,
+            "0123456789abcdef0123456789abcdef",
+            "12345678-1234-5678-9abc-def012345678",
+        ).unwrap();
+        append_guest_result_storage_journal_entry(
+            &empty, GuestResultStorageEvent::CreateVerified, true, false,
         ).unwrap()
     }
 
@@ -10822,7 +10835,7 @@ mod tests {
     #[test]
     fn result_storage_journal_persists_immutable_generations_and_recovers_latest() {
         let root = make_test_directory("result-journal-durable");
-        let first = valid_result_storage_journal();
+        let first = valid_result_storage_journal_for_root(&root);
         persist_guest_result_storage_journal(&root, &first).unwrap();
         let second = append_guest_result_storage_journal_entry(
             &first, GuestResultStorageEvent::PreserveForRecovery, true, false,
@@ -10913,6 +10926,60 @@ mod tests {
             &root, &empty, GuestResultStorageEvent::CreateVerified, true, false,
         ).is_err());
         assert!(interrupted.exists(), "uncertain recovery evidence must be preserved");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn result_storage_journal_rejects_replaced_root_with_copied_generations() {
+        let parent = make_test_directory("result-journal-root-replacement");
+        let original = parent.join("journal");
+        fs::create_dir(&original).unwrap();
+        secure_private_workspace_directory(&original).unwrap();
+        let first = valid_result_storage_journal_for_root(&original);
+        persist_guest_result_storage_journal(&original, &first).unwrap();
+
+        let displaced = parent.join("journal-displaced");
+        fs::rename(&original, &displaced).unwrap();
+        fs::create_dir(&original).unwrap();
+        secure_private_workspace_directory(&original).unwrap();
+        let old_generation = guest_result_storage_journal_generation_path(&displaced, 1);
+        let new_generation = guest_result_storage_journal_generation_path(&original, 1);
+        fs::create_dir(&new_generation).unwrap();
+        fs::copy(
+            old_generation.join(GUEST_RESULT_STORAGE_JOURNAL_FILE),
+            new_generation.join(GUEST_RESULT_STORAGE_JOURNAL_FILE),
+        ).unwrap();
+
+        assert!(load_guest_result_storage_journal(
+            &original, &first.run_id, &first.vhdx_identifier,
+        ).is_err(), "copied journal bytes in a replacement root must not inherit the original identity");
+        assert!(persist_guest_result_storage_journal(&original, &first).is_err(),
+            "a replacement journal root must never accept another generation");
+        assert!(displaced.exists(), "the original journal evidence must be preserved");
+        assert!(new_generation.join(GUEST_RESULT_STORAGE_JOURNAL_FILE).exists(),
+            "recovery rejection must preserve copied evidence for inspection");
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn result_storage_journal_inventory_rejects_unexpected_files_and_nested_entries() {
+        let root = make_test_directory("result-journal-inventory");
+        let first = valid_result_storage_journal_for_root(&root);
+        persist_guest_result_storage_journal(&root, &first).unwrap();
+        let held = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+
+        fs::write(root.join("unexpected.json"), b"preserve").unwrap();
+        assert!(guest_result_storage_journal_generations_from_handle(&held).is_err(),
+            "unexpected root-level files must not be ignored");
+        assert_eq!(fs::read(root.join("unexpected.json")).unwrap(), b"preserve");
+        fs::remove_file(root.join("unexpected.json")).unwrap();
+
+        let nested = guest_result_storage_journal_generation_path(&root, 1).join("nested");
+        fs::create_dir(&nested).unwrap();
+        assert!(guest_result_storage_journal_generations_from_handle(&held).is_err(),
+            "nested directories inside a generation must be rejected");
+        assert!(nested.exists(), "unexpected nested evidence must be preserved");
+        drop(held);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -11444,12 +11511,9 @@ mod tests {
         let journal_root = root.join("journal");
         fs::create_dir(&journal_root).unwrap();
         secure_private_workspace_directory(&journal_root).unwrap();
-        let empty_journal = GuestResultStorageJournal {
-            schema_version: GUEST_RESULT_STORAGE_JOURNAL_SCHEMA,
-            run_id: run_id.into(),
-            vhdx_identifier: identifier.clone(),
-            entries: Vec::new(),
-        };
+        let empty_journal = new_guest_result_storage_journal(
+            &journal_root, run_id, &identifier,
+        ).unwrap();
         let created_journal = append_and_persist_guest_result_storage_transition(
             &journal_root, &empty_journal, GuestResultStorageEvent::CreateVerified, true, false,
         ).unwrap();
