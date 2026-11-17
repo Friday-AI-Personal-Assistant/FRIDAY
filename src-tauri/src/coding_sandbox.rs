@@ -12174,6 +12174,64 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
 
     #[cfg(windows)]
     #[test]
+    fn runtime_staging_cleanup_progress_executor_resumes_authenticated_partial_bundle() {
+        let operation = GuestRunOperation::NodeNpmTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-cleanup-progress-executor");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, root.join("published-runtime"),
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![
+            (PathBuf::from("node.exe"), b"node-fixture".to_vec()),
+            (PathBuf::from("node_modules/npm/bin/npm-cli.js"), b"npm-fixture".to_vec()),
+        ];
+        let _staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &provisioning, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let authorization = GuestRuntimeStagingCleanupAuthorization {
+            operation,
+            parent_path: root.clone(),
+            parent_identity: crate::coding_sandbox_fs::verified_directory_identity(&root, &parent).unwrap(),
+            staging_root: provisioning.staging_root.clone(),
+            root_identity: crate::coding_sandbox_fs::verified_directory_identity(
+                &provisioning.staging_root, &staging_handle,
+            ).unwrap(),
+            bundle_id: anchor.bundle_id.clone(),
+            manifest_sha256: anchor.manifest_sha256.to_ascii_lowercase(),
+            artifact_count: manifest.artifacts.len(),
+        };
+        let cleanup = build_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &provisioning,
+        ).unwrap();
+
+        // Simulate a previous cleanup attempt that removed one authenticated
+        // payload before interruption. Recovery must verify the remaining
+        // subset, skip the absent file, and finish marker-last cleanup.
+        drop(staging_handle);
+        fs::remove_file(provisioning.staging_root.join("node.exe")).unwrap();
+        let recovered_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        execute_verified_guest_runtime_staging_cleanup_progress(
+            &root, &parent, &provisioning.staging_root, recovered_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).unwrap();
+
+        assert!(!provisioning.staging_root.exists(),
+            "successful recovery must remove the authenticated staging root");
+        assert!(!root.join("published-runtime").exists(),
+            "recovery cleanup must not create or modify the final runtime destination");
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn runtime_staging_cleanup_executor_removes_only_authenticated_complete_bundle() {
         let operation = GuestRunOperation::RustCargoTest;
         let manifest = test_runtime_manifest(operation);
