@@ -43,19 +43,38 @@ impl GuestJobPolicy {
         const MAX_JOB_BYTES: u64 = 4 * 1024 * MIB;
         const MAX_PROCESS_BYTES: u64 = 2 * 1024 * MIB;
         const MIN_JOB_BYTES: u64 = 256 * MIB;
+        const HOST_RESERVE_BYTES: u64 = 512 * MIB;
+
+        // Re-check the selected tier independently at the Win32 boundary. This
+        // prevents a malformed or internally substituted budget from claiming a
+        // smaller tier while carrying ceilings intended for a larger machine.
+        let (tier_job_ceiling, tier_process_ceiling) = match budget.tier {
+            crate::coding_sandbox_resources::GuestMemoryProfileTier::Constrained4GiB => {
+                (1024 * MIB, 512 * MIB)
+            }
+            crate::coding_sandbox_resources::GuestMemoryProfileTier::Balanced8GiB => {
+                (2 * 1024 * MIB, 1024 * MIB)
+            }
+            crate::coding_sandbox_resources::GuestMemoryProfileTier::Performance16GiB => {
+                (4 * 1024 * MIB, 2 * 1024 * MIB)
+            }
+        };
 
         let job_memory_bytes = usize::try_from(budget.total_job_memory_limit_bytes)
             .map_err(|_| "The guest memory budget exceeds this host's addressable limits; execution is refused.".to_string())?;
         let per_process_memory_bytes = usize::try_from(budget.process_memory_limit_bytes)
             .map_err(|_| "The guest process memory budget exceeds this host's addressable limits; execution is refused.".to_string())?;
 
-        if budget.total_job_memory_limit_bytes < MIN_JOB_BYTES
+        if budget.reserved_available_memory_bytes != HOST_RESERVE_BYTES
+            || budget.total_job_memory_limit_bytes < MIN_JOB_BYTES
             || budget.total_job_memory_limit_bytes > MAX_JOB_BYTES
+            || budget.total_job_memory_limit_bytes > tier_job_ceiling
             || budget.process_memory_limit_bytes == 0
             || budget.process_memory_limit_bytes > MAX_PROCESS_BYTES
+            || budget.process_memory_limit_bytes > tier_process_ceiling
             || budget.process_memory_limit_bytes > budget.total_job_memory_limit_bytes
         {
-            return Err("The adaptive guest memory budget violates the independent Job Object safety bounds; execution is refused.".into());
+            return Err("The adaptive guest memory budget violates the independent tier, reserve, or Job Object safety bounds; execution is refused.".into());
         }
 
         Ok(Self {
@@ -302,6 +321,50 @@ mod tests {
         for budget in invalid {
             assert!(GuestJobPolicy::from_memory_budget(budget).is_err());
         }
+    }
+
+    #[test]
+    fn adaptive_memory_budget_enforces_the_declared_tier_ceilings() {
+        use crate::coding_sandbox_resources::{GuestMemoryBudget, GuestMemoryProfileTier};
+        let cases = [
+            (GuestMemoryProfileTier::Constrained4GiB, 1024 * 1024 * 1024u64, 512 * 1024 * 1024u64),
+            (GuestMemoryProfileTier::Balanced8GiB, 2 * 1024 * 1024 * 1024u64, 1024 * 1024 * 1024u64),
+            (GuestMemoryProfileTier::Performance16GiB, 4 * 1024 * 1024 * 1024u64, 2 * 1024 * 1024 * 1024u64),
+        ];
+
+        for (tier, job_ceiling, process_ceiling) in cases {
+            let valid = GuestMemoryBudget {
+                tier,
+                total_job_memory_limit_bytes: job_ceiling,
+                process_memory_limit_bytes: process_ceiling,
+                reserved_available_memory_bytes: 512 * 1024 * 1024,
+            };
+            assert!(GuestJobPolicy::from_memory_budget(valid).is_ok());
+
+            let oversized_job = GuestMemoryBudget {
+                total_job_memory_limit_bytes: job_ceiling + 1,
+                ..valid
+            };
+            assert!(GuestJobPolicy::from_memory_budget(oversized_job).is_err());
+
+            let oversized_process = GuestMemoryBudget {
+                process_memory_limit_bytes: process_ceiling + 1,
+                ..valid
+            };
+            assert!(GuestJobPolicy::from_memory_budget(oversized_process).is_err());
+        }
+    }
+
+    #[test]
+    fn adaptive_memory_budget_rejects_a_forged_host_reserve() {
+        use crate::coding_sandbox_resources::{GuestMemoryBudget, GuestMemoryProfileTier};
+        let budget = GuestMemoryBudget {
+            tier: GuestMemoryProfileTier::Constrained4GiB,
+            total_job_memory_limit_bytes: 512 * 1024 * 1024,
+            process_memory_limit_bytes: 256 * 1024 * 1024,
+            reserved_available_memory_bytes: 0,
+        };
+        assert!(GuestJobPolicy::from_memory_budget(budget).is_err());
     }
 
     #[test]
