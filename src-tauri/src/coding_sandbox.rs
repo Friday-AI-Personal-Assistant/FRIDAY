@@ -5261,6 +5261,101 @@ struct VerifiedGuestResultVolumeDirectory {
     run_directory_identity: (u64, u64),
 }
 
+const GUEST_RESULT_HOST_MOUNT_OWNER_MARKER: &str = ".friday-result-mount-owner.json";
+const GUEST_RESULT_HOST_MOUNT_OWNER_SCHEMA: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestResultHostMountOwnershipMarker {
+    schema_version: u32,
+    run_id: String,
+    owner: String,
+    storage_root_identity_volume: u64,
+    storage_root_identity_file: u64,
+    run_directory_identity_volume: u64,
+    run_directory_identity_file: u64,
+    mount_directory_identity_volume: u64,
+    mount_directory_identity_file: u64,
+}
+
+fn validate_guest_result_host_mount_ownership_marker(
+    marker: &GuestResultHostMountOwnershipMarker,
+    expected_run_id: &str,
+    storage_root_identity: (u64, u64),
+    run_directory_identity: (u64, u64),
+    mount_directory_identity: (u64, u64),
+) -> Result<(), String> {
+    if marker.schema_version != GUEST_RESULT_HOST_MOUNT_OWNER_SCHEMA
+        || marker.run_id != expected_run_id
+        || marker.owner != "FRIDAY-CodingAssistant-ResultMount"
+        || (marker.storage_root_identity_volume, marker.storage_root_identity_file)
+            != storage_root_identity
+        || (marker.run_directory_identity_volume, marker.run_directory_identity_file)
+            != run_directory_identity
+        || (marker.mount_directory_identity_volume, marker.mount_directory_identity_file)
+            != mount_directory_identity
+    {
+        return Err("Result-volume mount ownership evidence does not match this exact storage root, run directory, and mount directory identity.".into());
+    }
+    Ok(())
+}
+
+struct VerifiedGuestResultHostMountDirectory {
+    volume_directory: VerifiedGuestResultVolumeDirectory,
+    mount_directory_handle: File,
+    mount_directory_identity: (u64, u64),
+}
+
+fn open_verified_guest_result_host_mount_directory(
+    plan: &GuestResultVolumePlan,
+    trusted_storage_root: &Path,
+) -> Result<VerifiedGuestResultHostMountDirectory, String> {
+    let volume_directory = open_verified_guest_result_volume_directory(plan, trusted_storage_root)?;
+    let mount_directory_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+        &volume_directory.run_directory_handle, OsStr::new("result-mount"),
+    ).map_err(|_| "The result-volume mount directory could not be opened relative to its verified run directory.".to_string())?;
+    let mount_metadata = mount_directory_handle.metadata()
+        .map_err(|_| "The held result-volume mount directory could not be inspected.".to_string())?;
+    if !mount_metadata.is_dir() || is_reparse_or_symlink(&mount_metadata) {
+        return Err("The held result-volume mount directory is not an ordinary directory.".into());
+    }
+    let mount_directory_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.host_mount_directory, &mount_directory_handle,
+    ).map_err(|_| "The result-volume mount directory path does not identify its held directory.".to_string())?;
+
+    let marker_bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &volume_directory.run_directory_handle, GUEST_RESULT_HOST_MOUNT_OWNER_MARKER, 1024,
+    ).map_err(|_| "Result-volume mount ownership evidence is missing, unsafe, or oversized.".to_string())?;
+    let marker: GuestResultHostMountOwnershipMarker = serde_json::from_slice(&marker_bytes)
+        .map_err(|_| "Result-volume mount ownership evidence is malformed.".to_string())?;
+    validate_guest_result_host_mount_ownership_marker(
+        &marker,
+        &plan.run_id,
+        volume_directory.storage_root_identity,
+        volume_directory.run_directory_identity,
+        mount_directory_identity,
+    )?;
+
+    let (files, directories) = crate::coding_sandbox_fs::collect_runtime_tree_inventory(
+        &mount_directory_handle, 1, 1,
+    ).map_err(|_| "The result-volume mount directory inventory could not be verified safely.".to_string())?;
+    if !files.is_empty() || !directories.is_empty() {
+        return Err("The result-volume host mount directory is not empty; mounting was refused.".into());
+    }
+    recheck_guest_result_volume_directory_handles(plan, &volume_directory)?;
+    let final_mount_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.host_mount_directory, &mount_directory_handle,
+    ).map_err(|_| "The result-volume mount directory path changed during verification.".to_string())?;
+    if final_mount_identity != mount_directory_identity {
+        return Err("The result-volume mount directory identity changed during verification.".into());
+    }
+    Ok(VerifiedGuestResultHostMountDirectory {
+        volume_directory,
+        mount_directory_handle,
+        mount_directory_identity,
+    })
+}
+
 fn open_verified_guest_result_volume_directory(
     plan: &GuestResultVolumePlan,
     trusted_storage_root: &Path,
@@ -5402,45 +5497,92 @@ fn reserve_guest_result_host_mount_directory(
     plan: &GuestResultVolumePlan,
     trusted_storage_root: &Path,
 ) -> Result<PathBuf, String> {
-    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
-    if plan.host_mount_directory != plan.run_directory.join("result-mount") {
+    if plan.host_mount_directory != plan.run_directory.join("result-mount")
+        || plan.host_mount_directory.parent() != Some(plan.run_directory.as_path())
+        || plan.host_mount_directory.file_name() != Some(OsStr::new("result-mount"))
+    {
         return Err("The result-volume host mount directory differs from FRIDAY's fixed per-run path.".into());
     }
-    match fs::symlink_metadata(&plan.host_mount_directory) {
-        Ok(_) => return Err("A result-volume host mount directory already exists; reuse is refused.".into()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err("The result-volume host mount directory could not be inspected safely.".into()),
+
+    // Keep creation, permission setup, marker persistence, and final checks
+    // anchored to the already-authenticated per-run directory handle.
+    let volume_directory = open_verified_guest_result_volume_directory(plan, trusted_storage_root)?;
+    let mount_directory_handle = crate::coding_sandbox_fs::create_destination_entry(
+        &volume_directory.run_directory_handle, OsStr::new("result-mount"), true,
+    ).map_err(|_| "FRIDAY could not exclusively create its private host mount directory; existing evidence was preserved.".to_string())?;
+    let mount_directory_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.host_mount_directory, &mount_directory_handle,
+    ).map_err(|_| "The newly created host mount directory does not match its held handle.".to_string())?;
+
+    secure_private_workspace_directory_handle(&plan.host_mount_directory, &mount_directory_handle)
+        .map_err(|_| "FRIDAY could not secure the exact host mount directory; it was preserved for recovery.".to_string())?;
+    let secured_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.host_mount_directory, &mount_directory_handle,
+    ).map_err(|_| "The host mount directory identity could not be rechecked after permission setup.".to_string())?;
+    if secured_identity != mount_directory_identity {
+        return Err("The host mount directory changed during permission setup; it was preserved for recovery.".into());
     }
-    fs::create_dir(&plan.host_mount_directory)
-        .map_err(|_| "FRIDAY could not exclusively create its private host mount directory.".to_string())?;
-    secure_private_workspace_directory(&plan.host_mount_directory)
-        .map_err(|_| "FRIDAY could not secure the host mount directory; it was preserved for recovery.".to_string())?;
-    verify_guest_result_host_mount_directory(plan, trusted_storage_root)
+
+    let (files, directories) = crate::coding_sandbox_fs::collect_runtime_tree_inventory(
+        &mount_directory_handle, 1, 1,
+    ).map_err(|_| "The newly reserved host mount directory could not be verified as empty.".to_string())?;
+    if !files.is_empty() || !directories.is_empty() {
+        return Err("The newly reserved host mount directory is not empty; mounting was refused.".into());
+    }
+
+    let marker = GuestResultHostMountOwnershipMarker {
+        schema_version: GUEST_RESULT_HOST_MOUNT_OWNER_SCHEMA,
+        run_id: plan.run_id.clone(),
+        owner: "FRIDAY-CodingAssistant-ResultMount".to_string(),
+        storage_root_identity_volume: volume_directory.storage_root_identity.0,
+        storage_root_identity_file: volume_directory.storage_root_identity.1,
+        run_directory_identity_volume: volume_directory.run_directory_identity.0,
+        run_directory_identity_file: volume_directory.run_directory_identity.1,
+        mount_directory_identity_volume: mount_directory_identity.0,
+        mount_directory_identity_file: mount_directory_identity.1,
+    };
+    let bytes = serde_json::to_vec(&marker)
+        .map_err(|_| "FRIDAY could not prepare host mount ownership metadata.".to_string())?;
+    let mut marker_file = crate::coding_sandbox_fs::create_destination_entry(
+        &volume_directory.run_directory_handle, OsStr::new(GUEST_RESULT_HOST_MOUNT_OWNER_MARKER), false,
+    ).map_err(|_| "FRIDAY could not exclusively create host mount ownership metadata; the directory was preserved.".to_string())?;
+    use std::io::Write;
+    marker_file.write_all(&bytes)
+        .map_err(|_| "FRIDAY could not write host mount ownership metadata; the directory was preserved.".to_string())?;
+    marker_file.sync_all()
+        .map_err(|_| "FRIDAY could not persist host mount ownership metadata; the directory was preserved.".to_string())?;
+    drop(marker_file);
+
+    let read_back = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &volume_directory.run_directory_handle, GUEST_RESULT_HOST_MOUNT_OWNER_MARKER, 1024,
+    ).map_err(|_| "Host mount ownership evidence could not be read back through its held parent handle.".to_string())?;
+    if read_back != bytes {
+        return Err("Host mount ownership evidence failed exact handle-relative read-back verification.".into());
+    }
+    let verified_marker: GuestResultHostMountOwnershipMarker = serde_json::from_slice(&read_back)
+        .map_err(|_| "Host mount ownership evidence read-back was malformed.".to_string())?;
+    validate_guest_result_host_mount_ownership_marker(
+        &verified_marker,
+        &plan.run_id,
+        volume_directory.storage_root_identity,
+        volume_directory.run_directory_identity,
+        mount_directory_identity,
+    )?;
+    recheck_guest_result_volume_directory_handles(plan, &volume_directory)?;
+    if crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.host_mount_directory, &mount_directory_handle,
+    ).map_err(|_| "The host mount directory path changed during reservation; evidence was preserved.".to_string())? != mount_directory_identity {
+        return Err("The host mount directory identity changed during reservation; evidence was preserved.".into());
+    }
+    Ok(plan.host_mount_directory.clone())
 }
 
 fn verify_guest_result_host_mount_directory(
     plan: &GuestResultVolumePlan,
     trusted_storage_root: &Path,
 ) -> Result<PathBuf, String> {
-    verify_guest_result_volume_directory(plan, trusted_storage_root)?;
-    let metadata = fs::symlink_metadata(&plan.host_mount_directory)
-        .map_err(|_| "The private result-volume host mount directory is unavailable.".to_string())?;
-    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
-        return Err("The result-volume host mount point is not an ordinary directory.".into());
-    }
-    let canonical = fs::canonicalize(&plan.host_mount_directory)
-        .map_err(|_| "The result-volume host mount directory could not be canonicalized.".to_string())?;
-    if canonical.parent() != Some(plan.run_directory.as_path())
-        || canonical.file_name() != Some(OsStr::new("result-mount"))
-    {
-        return Err("The result-volume host mount directory failed its exact-child ownership check.".into());
-    }
-    let mut entries = fs::read_dir(&canonical)
-        .map_err(|_| "The result-volume host mount directory could not be enumerated.".to_string())?;
-    if entries.next().is_some() {
-        return Err("The result-volume host mount directory is not empty; mounting was refused.".into());
-    }
-    Ok(canonical)
+    let _verified = open_verified_guest_result_host_mount_directory(plan, trusted_storage_root)?;
+    Ok(plan.host_mount_directory.clone())
 }
 
 /// Verifies the exact per-run child directory and its identity-bound ownership marker.
@@ -11688,8 +11830,42 @@ mod tests {
         let mount = reserve_guest_result_host_mount_directory(&plan, &root).unwrap();
         assert_eq!(mount, plan.run_directory.join("result-mount"));
         assert_eq!(verify_guest_result_host_mount_directory(&plan, &root).unwrap(), mount);
+
+        let marker_path = plan.run_directory.join(GUEST_RESULT_HOST_MOUNT_OWNER_MARKER);
+        let marker_bytes = fs::read(&marker_path).unwrap();
+        let marker: GuestResultHostMountOwnershipMarker = serde_json::from_slice(&marker_bytes).unwrap();
+        assert_eq!(marker.schema_version, GUEST_RESULT_HOST_MOUNT_OWNER_SCHEMA);
+        assert_eq!(marker.run_id, run_id);
+        assert_eq!(marker.owner, "FRIDAY-CodingAssistant-ResultMount");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::symlink_metadata(&mount).unwrap().permissions().mode() & 0o077, 0);
+        }
+
         fs::write(mount.join("unexpected.txt"), b"not empty").unwrap();
         assert!(verify_guest_result_host_mount_directory(&plan, &root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    
+    #[cfg(unix)]
+    #[test]
+    fn result_host_mount_directory_rejects_replacement_at_same_path() {
+        let root = make_test_directory("result-host-mount-replaced");
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
+        reserve_guest_result_volume_directory(&plan, &root).unwrap();
+        let original = reserve_guest_result_host_mount_directory(&plan, &root).unwrap();
+        let displaced = plan.run_directory.join("displaced-result-mount");
+        fs::rename(&original, &displaced).unwrap();
+
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("replacement-evidence.txt"), b"preserve replacement").unwrap();
+        assert!(verify_guest_result_host_mount_directory(&plan, &root).is_err(),
+            "a replacement directory at the same path must not inherit the original mount authorization");
+        assert_eq!(fs::read(original.join("replacement-evidence.txt")).unwrap(), b"preserve replacement");
+        assert!(displaced.is_dir());
+        assert!(plan.run_directory.join(GUEST_RESULT_HOST_MOUNT_OWNER_MARKER).is_file());
         fs::remove_dir_all(root).unwrap();
     }
 
