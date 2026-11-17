@@ -7553,6 +7553,101 @@ mod tests {
     }
 
     #[test]
+    fn runtime_staging_cleanup_preflight_rejects_filesystem_changes_after_initial_proof() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-cleanup-preflight-tamper");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, root.join("published-runtime"),
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
+        let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &provisioning, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let authorization = authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning,
+        ).unwrap();
+        let cleanup = build_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &provisioning,
+        ).unwrap();
+
+        let payload = provisioning.staging_root.join("bin/cargo.exe");
+        fs::write(&payload, b"changed-payload").unwrap();
+        assert!(authorize_guest_runtime_staging_cleanup_preflight(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).is_err(), "preflight must re-hash payload files instead of trusting the earlier proof");
+        fs::write(&payload, b"cargo-fixture").unwrap();
+
+        let unexpected = provisioning.staging_root.join("unexpected.bin");
+        fs::write(&unexpected, b"unlisted").unwrap();
+        assert!(authorize_guest_runtime_staging_cleanup_preflight(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).is_err(), "preflight must reject additions after the earlier proof");
+        fs::remove_file(&unexpected).unwrap();
+
+        let marker = provisioning.staging_root.join(".friday-runtime-owner.json");
+        let marker_bytes = fs::read(&marker).unwrap();
+        fs::write(&marker, b"invalid-owner-marker").unwrap();
+        assert!(authorize_guest_runtime_staging_cleanup_preflight(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).is_err(), "preflight must authenticate the ownership marker again");
+        fs::write(&marker, marker_bytes).unwrap();
+
+        assert!(provisioning.staging_root.exists(), "failed preflight must preserve all staging data");
+        drop(staging_handle);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_staging_cleanup_preflight_rejects_stale_directory_identity() {
+        let operation = GuestRunOperation::RustCargoTest;
+        let manifest = test_runtime_manifest(operation);
+        let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+        let root = make_test_directory("runtime-cleanup-preflight-identity");
+        let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+            &manifest, &anchor, root.join("published-runtime"),
+        ).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
+        let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+            &root, &parent, &manifest, &anchor, &provisioning, &files,
+        ).unwrap();
+        let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+            &parent, provisioning.staging_root.file_name().unwrap(),
+        ).unwrap();
+        let authorization = authorize_verified_guest_runtime_staging_cleanup(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning,
+        ).unwrap();
+        let cleanup = build_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &provisioning,
+        ).unwrap();
+
+        let moved = root.join("moved-staging");
+        fs::rename(&provisioning.staging_root, &moved).unwrap();
+        assert!(authorize_guest_runtime_staging_cleanup_preflight(
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+            &manifest, &anchor, &provisioning, &cleanup,
+        ).is_err(), "preflight must reject a staging directory moved away from its authorized name");
+        fs::rename(&moved, &provisioning.staging_root).unwrap();
+
+        assert!(provisioning.staging_root.exists(), "identity failure must not remove the moved staging data");
+        drop(staging_handle);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn runtime_staging_cleanup_plan_is_exact_ordered_and_marker_last() {
         let operation = GuestRunOperation::RustCargoTest;
         let manifest = test_runtime_manifest(operation);
