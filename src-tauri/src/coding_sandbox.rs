@@ -775,6 +775,8 @@ struct GuestRuntimeStagingCleanupPlan {
     payload_files: Vec<GuestRuntimeStagingCleanupFile>,
     directories: Vec<String>,
     ownership_marker: String,
+    ownership_marker_size: u64,
+    ownership_marker_sha256: String,
 }
 
 fn build_guest_runtime_staging_cleanup_plan(
@@ -826,6 +828,17 @@ fn build_guest_runtime_staging_cleanup_plan(
             .then_with(|| right.to_ascii_lowercase().cmp(&left.to_ascii_lowercase()))
     });
 
+    // The marker is not a payload artifact, so bind its exact authenticated
+    // bytes separately. The deletion primitive will verify these bytes through
+    // the same opened file handle before removing the marker last.
+    let marker_bytes = build_guest_runtime_staging_owner_marker(manifest, anchor)?;
+    if marker_bytes.is_empty() || marker_bytes.len() > 16 * 1024 {
+        return Err("The authenticated runtime ownership marker is empty or exceeds its cleanup limit.".into());
+    }
+    use sha2::{Digest, Sha256};
+    let ownership_marker_sha256 = Sha256::digest(&marker_bytes)
+        .iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
     Ok(GuestRuntimeStagingCleanupPlan {
         operation: authorization.operation,
         parent_path: authorization.parent_path.clone(),
@@ -837,6 +850,8 @@ fn build_guest_runtime_staging_cleanup_plan(
         payload_files,
         directories,
         ownership_marker: ".friday-runtime-owner.json".into(),
+        ownership_marker_size: marker_bytes.len() as u64,
+        ownership_marker_sha256,
     })
 }
 
@@ -7686,6 +7701,13 @@ mod tests {
         assert_eq!(cleanup.root_identity, staging.root_identity);
         assert_eq!(cleanup.payload_files.len(), manifest.artifacts.len());
         assert_eq!(cleanup.ownership_marker, ".friday-runtime-owner.json");
+        let expected_marker = build_guest_runtime_staging_owner_marker(&manifest, &anchor).unwrap();
+        assert_eq!(cleanup.ownership_marker_size, expected_marker.len() as u64);
+        use sha2::{Digest, Sha256};
+        let expected_marker_sha256 = Sha256::digest(&expected_marker)
+            .iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        assert_eq!(cleanup.ownership_marker_sha256, expected_marker_sha256);
+        assert!(cleanup.ownership_marker_size > 0 && cleanup.ownership_marker_size <= 16 * 1024);
         assert!(cleanup.payload_files.iter().all(|file| !file.relative_path.starts_with('.')));
         for (planned, authenticated) in cleanup.payload_files.iter().zip(&manifest.artifacts) {
             assert_eq!(planned.relative_path, authenticated.relative_path);
@@ -7758,6 +7780,16 @@ mod tests {
         assert!(validate_guest_runtime_staging_cleanup_plan(
             &authorization, &manifest, &anchor, &plan, &altered_plan,
         ).is_err());
+        let mut altered_plan = cleanup.clone();
+        altered_plan.ownership_marker_size = 1;
+        assert!(validate_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan, &altered_plan,
+        ).is_err(), "a weakened ownership-marker size must be rejected");
+        let mut altered_plan = cleanup.clone();
+        altered_plan.ownership_marker_sha256 = "0".repeat(64);
+        assert!(validate_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan, &altered_plan,
+        ).is_err(), "a substituted ownership-marker digest must be rejected");
         let mut altered_plan = cleanup.clone();
         altered_plan.root_identity.1 ^= 1;
         assert!(validate_guest_runtime_staging_cleanup_plan(
