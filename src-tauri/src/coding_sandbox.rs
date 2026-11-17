@@ -755,6 +755,13 @@ fn authorize_verified_guest_runtime_staging_cleanup(
 /// plan is not permission to delete; a future executor must revalidate the
 /// held parent/root identities and exact tree at the mutation boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct GuestRuntimeStagingCleanupFile {
+    relative_path: String,
+    sha256: String,
+    max_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct GuestRuntimeStagingCleanupPlan {
     operation: GuestRunOperation,
     parent_path: PathBuf,
@@ -763,7 +770,9 @@ struct GuestRuntimeStagingCleanupPlan {
     root_identity: (u64, u64),
     bundle_id: String,
     manifest_sha256: String,
-    payload_files: Vec<String>,
+    /// Authenticated per-file digest and size ceiling, not merely a path list.
+    /// A future executor must hash each opened file again before disposition.
+    payload_files: Vec<GuestRuntimeStagingCleanupFile>,
     directories: Vec<String>,
     ownership_marker: String,
 }
@@ -800,13 +809,17 @@ fn build_guest_runtime_staging_cleanup_plan(
         if !seen.insert(normalized) {
             return Err("Runtime cleanup manifest contains colliding artifact paths.".into());
         }
-        payload_files.push(artifact.relative_path.clone());
+        payload_files.push(GuestRuntimeStagingCleanupFile {
+            relative_path: artifact.relative_path.clone(),
+            sha256: artifact.sha256.to_ascii_lowercase(),
+            max_bytes: artifact.max_bytes,
+        });
         let components = artifact.relative_path.split('\\').collect::<Vec<_>>();
         for depth in 1..components.len() {
             directories.insert(components[..depth].join("\\"));
         }
     }
-    payload_files.sort_by_key(|path| path.to_ascii_lowercase());
+    payload_files.sort_by_key(|file| file.relative_path.to_ascii_lowercase());
     let mut directories = directories.into_iter().collect::<Vec<_>>();
     directories.sort_by(|left, right| {
         right.matches('\\').count().cmp(&left.matches('\\').count())
@@ -7462,7 +7475,12 @@ mod tests {
         assert_eq!(cleanup.root_identity, staging.root_identity);
         assert_eq!(cleanup.payload_files.len(), manifest.artifacts.len());
         assert_eq!(cleanup.ownership_marker, ".friday-runtime-owner.json");
-        assert!(cleanup.payload_files.iter().all(|path| !path.starts_with('.')));
+        assert!(cleanup.payload_files.iter().all(|file| !file.relative_path.starts_with('.')));
+        for (planned, authenticated) in cleanup.payload_files.iter().zip(&manifest.artifacts) {
+            assert_eq!(planned.relative_path, authenticated.relative_path);
+            assert_eq!(planned.sha256, authenticated.sha256.to_ascii_lowercase());
+            assert_eq!(planned.max_bytes, authenticated.max_bytes);
+        }
         assert!(cleanup.directories.iter().all(|path| !path.is_empty()));
         for pair in cleanup.directories.windows(2) {
             assert!(pair[0].matches('\\').count() >= pair[1].matches('\\').count());
@@ -7504,6 +7522,21 @@ mod tests {
         assert!(validate_guest_runtime_staging_cleanup_plan(
             &authorization, &manifest, &anchor, &plan, &altered_plan,
         ).is_err());
+        let mut altered_plan = cleanup.clone();
+        altered_plan.payload_files[0].sha256 = "0".repeat(64);
+        assert!(validate_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan, &altered_plan,
+        ).is_err(), "a substituted cleanup digest must be rejected");
+        let mut altered_plan = cleanup.clone();
+        altered_plan.payload_files[0].max_bytes = 1;
+        assert!(validate_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan, &altered_plan,
+        ).is_err(), "a weakened cleanup size ceiling must be rejected");
+        let mut altered_plan = cleanup.clone();
+        altered_plan.payload_files[0].relative_path = "bin/other.exe".into();
+        assert!(validate_guest_runtime_staging_cleanup_plan(
+            &authorization, &manifest, &anchor, &plan, &altered_plan,
+        ).is_err(), "a substituted cleanup path must be rejected");
         let mut altered_plan = cleanup.clone();
         altered_plan.directories.push("unexpected".into());
         assert!(validate_guest_runtime_staging_cleanup_plan(
