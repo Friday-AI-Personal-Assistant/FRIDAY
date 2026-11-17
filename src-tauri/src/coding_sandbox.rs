@@ -876,6 +876,108 @@ fn validate_guest_runtime_staging_cleanup_plan(
     Ok(())
 }
 
+const GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA: u32 = 1;
+const MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_BYTES: usize = 16 * 1024;
+const MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES: usize = 3;
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum GuestRuntimeCleanupJournalPhase {
+    Prepared,
+    OwnershipMarkerRemoved,
+    StagingRootRemoved,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestRuntimeCleanupJournalEntry {
+    sequence: u32,
+    phase: GuestRuntimeCleanupJournalPhase,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestRuntimeCleanupJournal {
+    schema_version: u32,
+    operation: GuestRunOperation,
+    bundle_id: String,
+    manifest_sha256: String,
+    parent_path: String,
+    staging_root_path: String,
+    parent_identity_volume: u64,
+    parent_identity_file: u64,
+    root_identity_volume: u64,
+    root_identity_file: u64,
+    entries: Vec<GuestRuntimeCleanupJournalEntry>,
+}
+
+fn validate_guest_runtime_cleanup_journal(
+    journal: &GuestRuntimeCleanupJournal,
+) -> Result<GuestRuntimeCleanupJournalPhase, String> {
+    if journal.schema_version != GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA
+        || journal.bundle_id.is_empty()
+        || journal.bundle_id.len() > 96
+        || !journal.bundle_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        || journal.manifest_sha256.len() != 64
+        || !journal.manifest_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || journal.parent_path.is_empty()
+        || journal.parent_path.len() > 32_768
+        || journal.staging_root_path.is_empty()
+        || journal.staging_root_path.len() > 32_768
+        || journal.parent_identity_volume == 0
+        || journal.parent_identity_file == 0
+        || journal.root_identity_volume == 0
+        || journal.root_identity_file == 0
+        || journal.parent_path == journal.staging_root_path
+    {
+        return Err("The guest runtime cleanup journal identity or schema is invalid.".into());
+    }
+    if journal.entries.is_empty()
+        || journal.entries.len() > MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES
+    {
+        return Err("The guest runtime cleanup journal has an invalid transition count.".into());
+    }
+    let expected = [
+        GuestRuntimeCleanupJournalPhase::Prepared,
+        GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
+        GuestRuntimeCleanupJournalPhase::StagingRootRemoved,
+    ];
+    for (index, entry) in journal.entries.iter().enumerate() {
+        if entry.sequence != index as u32 + 1 || entry.phase != expected[index] {
+            return Err("The guest runtime cleanup journal is not a valid append-only phase sequence.".into());
+        }
+    }
+    let encoded = serde_json::to_vec(journal)
+        .map_err(|_| "The guest runtime cleanup journal could not be encoded.".to_string())?;
+    if encoded.is_empty() || encoded.len() > MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_BYTES {
+        return Err("The guest runtime cleanup journal exceeds its fixed size limit.".into());
+    }
+    Ok(journal.entries.last().unwrap().phase)
+}
+
+fn encode_guest_runtime_cleanup_journal(
+    journal: &GuestRuntimeCleanupJournal,
+) -> Result<Vec<u8>, String> {
+    validate_guest_runtime_cleanup_journal(journal)?;
+    serde_json::to_vec(journal)
+        .map_err(|_| "The guest runtime cleanup journal could not be encoded.".to_string())
+}
+
+fn parse_guest_runtime_cleanup_journal(
+    bytes: &[u8],
+) -> Result<GuestRuntimeCleanupJournal, String> {
+    if bytes.is_empty() || bytes.len() > MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_BYTES {
+        return Err("The guest runtime cleanup journal is empty or exceeds its fixed size limit.".into());
+    }
+    let journal: GuestRuntimeCleanupJournal = serde_json::from_slice(bytes)
+        .map_err(|_| "The guest runtime cleanup journal is malformed or contains unknown fields.".to_string())?;
+    validate_guest_runtime_cleanup_journal(&journal)?;
+    if encode_guest_runtime_cleanup_journal(&journal)? != bytes {
+        return Err("The guest runtime cleanup journal is not in canonical serialized form.".into());
+    }
+    Ok(journal)
+}
+
 /// A short-lived, read-only capability proving that the authenticated cleanup
 /// plan and both held directory identities were revalidated together. This
 /// object does not authorize deletion by itself and exposes no mutation API.
@@ -12170,6 +12272,69 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         drop(recovered_handle);
         drop(parent);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn guest_runtime_cleanup_journal_accepts_only_ordered_bounded_phases() {
+        let base = GuestRuntimeCleanupJournal {
+            schema_version: GUEST_RUNTIME_CLEANUP_JOURNAL_SCHEMA,
+            operation: GuestRunOperation::NodeNpmTest,
+            bundle_id: "node-test-bundle".into(),
+            manifest_sha256: "a".repeat(64),
+            parent_path: "C:\\FRIDAY\\runtime".into(),
+            staging_root_path: "C:\\FRIDAY\\runtime\\.friday-node.staging".into(),
+            parent_identity_volume: 7,
+            parent_identity_file: 11,
+            root_identity_volume: 7,
+            root_identity_file: 12,
+            entries: vec![GuestRuntimeCleanupJournalEntry {
+                sequence: 1,
+                phase: GuestRuntimeCleanupJournalPhase::Prepared,
+            }],
+        };
+        assert_eq!(
+            validate_guest_runtime_cleanup_journal(&base).unwrap(),
+            GuestRuntimeCleanupJournalPhase::Prepared,
+        );
+        let encoded = encode_guest_runtime_cleanup_journal(&base).unwrap();
+        assert_eq!(parse_guest_runtime_cleanup_journal(&encoded).unwrap(), base);
+
+        let mut marker_removed = base.clone();
+        marker_removed.entries.push(GuestRuntimeCleanupJournalEntry {
+            sequence: 2,
+            phase: GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
+        });
+        assert_eq!(
+            validate_guest_runtime_cleanup_journal(&marker_removed).unwrap(),
+            GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
+        );
+
+        let mut skipped_phase = base.clone();
+        skipped_phase.entries.push(GuestRuntimeCleanupJournalEntry {
+            sequence: 2,
+            phase: GuestRuntimeCleanupJournalPhase::StagingRootRemoved,
+        });
+        assert!(validate_guest_runtime_cleanup_journal(&skipped_phase).is_err());
+
+        let mut duplicate = marker_removed.clone();
+        duplicate.entries.push(GuestRuntimeCleanupJournalEntry {
+            sequence: 3,
+            phase: GuestRuntimeCleanupJournalPhase::OwnershipMarkerRemoved,
+        });
+        assert!(validate_guest_runtime_cleanup_journal(&duplicate).is_err());
+
+        let mut zero_identity = base.clone();
+        zero_identity.root_identity_file = 0;
+        assert!(validate_guest_runtime_cleanup_journal(&zero_identity).is_err());
+
+        let mut unknown_bundle = base.clone();
+        unknown_bundle.bundle_id = "../untrusted".into();
+        assert!(validate_guest_runtime_cleanup_journal(&unknown_bundle).is_err());
+
+        let mut tampered_bytes = encoded;
+        tampered_bytes.push(b' ');
+        assert!(parse_guest_runtime_cleanup_journal(&tampered_bytes).is_err());
+        assert!(parse_guest_runtime_cleanup_journal(&vec![b'x'; MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_BYTES + 1]).is_err());
     }
 
     #[cfg(windows)]
