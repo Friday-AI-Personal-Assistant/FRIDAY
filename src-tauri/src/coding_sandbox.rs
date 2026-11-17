@@ -3987,7 +3987,7 @@ fn advance_guest_result_storage_state(
 }
 
 
-const GUEST_RESULT_STORAGE_JOURNAL_SCHEMA: u32 = 1;
+const GUEST_RESULT_STORAGE_JOURNAL_SCHEMA: u32 = 2;
 const MAX_GUEST_RESULT_STORAGE_JOURNAL_BYTES: usize = 16 * 1024;
 const MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES: usize = 20;
 
@@ -4008,7 +4008,31 @@ struct GuestResultStorageJournal {
     schema_version: u32,
     run_id: String,
     vhdx_identifier: String,
+    journal_root_identity_volume: u64,
+    journal_root_identity_file: u64,
     entries: Vec<GuestResultStorageJournalEntry>,
+}
+
+fn new_guest_result_storage_journal(
+    root: &Path,
+    run_id: &str,
+    vhdx_identifier: &str,
+) -> Result<GuestResultStorageJournal, String> {
+    if !valid_snapshot_id(run_id) || !valid_guest_vhdx_identifier(vhdx_identifier) {
+        return Err("The result-storage journal seed identity is invalid.".into());
+    }
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The result-storage journal root could not be opened safely.".to_string())?;
+    let (volume, file) = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The result-storage journal root identity could not be verified.".to_string())?;
+    Ok(GuestResultStorageJournal {
+        schema_version: GUEST_RESULT_STORAGE_JOURNAL_SCHEMA,
+        run_id: run_id.to_string(),
+        vhdx_identifier: vhdx_identifier.to_string(),
+        journal_root_identity_volume: volume,
+        journal_root_identity_file: file,
+        entries: Vec::new(),
+    })
 }
 
 fn validate_guest_result_storage_journal(
@@ -4094,21 +4118,62 @@ fn guest_result_storage_journal_generation_path(root: &Path, generation: usize) 
     root.join(format!("{GUEST_RESULT_STORAGE_JOURNAL_DIR_PREFIX}{generation:02}"))
 }
 
-fn read_guest_result_storage_journal_generation(
-    root: &Path,
+fn guest_result_storage_journal_generations_from_handle(
+    root_handle: &File,
+) -> Result<Vec<usize>, String> {
+    let (files, directories) = crate::coding_sandbox_fs::collect_runtime_tree_inventory(
+        root_handle,
+        2,
+        MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES * 2,
+    ).map_err(|_| "The result-storage journal root contains an unsafe or oversized entry layout.".to_string())?;
+    let directory_set = directories.into_iter().collect::<BTreeSet<_>>();
+    let file_set = files.into_iter().collect::<BTreeSet<_>>();
+    if directory_set.len() > MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES
+        || directory_set.len() != file_set.len()
+    {
+        return Err("The result-storage journal does not contain complete bounded generations.".into());
+    }
+    let mut generations = Vec::with_capacity(directory_set.len());
+    let mut expected_files = BTreeSet::new();
+    for generation in 1..=directory_set.len() {
+        let directory = format!("{}{generation:02}", GUEST_RESULT_STORAGE_JOURNAL_DIR_PREFIX);
+        let file = format!("{directory}\\{}", GUEST_RESULT_STORAGE_JOURNAL_FILE);
+        if !directory_set.contains(&directory) || !file_set.contains(&file) {
+            return Err("The result-storage journal contains a generation gap or unexpected entry.".into());
+        }
+        expected_files.insert(file);
+        generations.push(generation);
+    }
+    if expected_files != file_set || directory_set.len() != generations.len() {
+        return Err("The result-storage journal contains unexpected files or generation directories.".into());
+    }
+    Ok(generations)
+}
+
+fn read_guest_result_storage_journal_generation_from_handle(
+    root_handle: &File,
     generation: usize,
 ) -> Result<GuestResultStorageJournal, String> {
     if generation == 0 || generation > MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES {
         return Err("The result-storage journal generation is outside its fixed limit.".into());
     }
-    let directory = guest_result_storage_journal_generation_path(root, generation);
-    let metadata = fs::symlink_metadata(&directory)
-        .map_err(|_| "A result-storage journal generation is missing or unavailable.".to_string())?;
-    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
-        return Err("A result-storage journal generation is not an ordinary directory.".into());
+    let root_metadata = root_handle.metadata()
+        .map_err(|_| "The held result-storage journal root could not be inspected.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The held result-storage journal root is not an ordinary directory.".into());
     }
-    let bytes = crate::coding_sandbox_fs::read_single_bounded_file_from_directory(
-        &directory, OsStr::new(GUEST_RESULT_STORAGE_JOURNAL_FILE),
+    let generation_name = format!("{}{generation:02}", GUEST_RESULT_STORAGE_JOURNAL_DIR_PREFIX);
+    let directory = crate::coding_sandbox_fs::open_child_directory_nofollow(
+        root_handle, OsStr::new(&generation_name),
+    ).map_err(|_| "A result-storage journal generation is missing or is not an ordinary directory.".to_string())?;
+    let (files, directories) = crate::coding_sandbox_fs::collect_runtime_tree_inventory(&directory, 1, 2)
+        .map_err(|_| "A result-storage journal generation could not be safely inventoried.".to_string())?;
+    if !directories.is_empty() || files.len() != 1 || files[0] != GUEST_RESULT_STORAGE_JOURNAL_FILE {
+        return Err("A result-storage journal generation must contain exactly its state file.".into());
+    }
+    let bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &directory,
+        GUEST_RESULT_STORAGE_JOURNAL_FILE,
         MAX_GUEST_RESULT_STORAGE_JOURNAL_BYTES as u64,
     ).map_err(|_| "A result-storage journal generation is incomplete or unsafe.".to_string())?;
     let journal = parse_guest_result_storage_journal(&bytes)?;
@@ -4118,10 +4183,6 @@ fn read_guest_result_storage_journal_generation(
     Ok(journal)
 }
 
-/// Persist an immutable, create-new journal generation. Each generation is a
-/// separate private directory containing exactly one bounded, flushed file.
-/// Existing generations are never overwritten; an interrupted generation is
-/// retained and forces manual recovery instead of being silently repaired.
 fn persist_guest_result_storage_journal(
     root: &Path,
     journal: &GuestResultStorageJournal,
@@ -4131,50 +4192,55 @@ fn persist_guest_result_storage_journal(
     if generation == 0 || generation > MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES {
         return Err("Only a non-empty bounded result-storage journal can be persisted.".into());
     }
-    let root_metadata = fs::symlink_metadata(root)
-        .map_err(|_| "The result-storage journal root is unavailable.".to_string())?;
-    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
-        return Err("The result-storage journal root must be an ordinary directory.".into());
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The result-storage journal root could not be opened safely.".to_string())?;
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The result-storage journal root identity could not be verified.".to_string())?;
+    if root_identity != (journal.journal_root_identity_volume, journal.journal_root_identity_file) {
+        return Err("The result-storage journal root differs from its recorded directory identity.".into());
+    }
+    let existing_generations = guest_result_storage_journal_generations_from_handle(&root_handle)?;
+    let expected_generations = (1..generation).collect::<Vec<_>>();
+    if existing_generations != expected_generations {
+        return Err("The result-storage journal cannot be extended because its existing inventory is incomplete or unexpected.".into());
     }
     if generation > 1 {
-        let previous = read_guest_result_storage_journal_generation(root, generation - 1)?;
+        let previous = read_guest_result_storage_journal_generation_from_handle(&root_handle, generation - 1)?;
         if previous.run_id != journal.run_id
             || previous.vhdx_identifier != journal.vhdx_identifier
+            || previous.journal_root_identity_volume != journal.journal_root_identity_volume
+            || previous.journal_root_identity_file != journal.journal_root_identity_file
             || previous.entries != journal.entries[..generation - 1]
         {
-            return Err("The next result-storage journal generation does not extend the persisted history.".into());
-        }
-    } else {
-        let first = guest_result_storage_journal_generation_path(root, 1);
-        if fs::symlink_metadata(first).is_ok() {
-            return Err("The initial result-storage journal generation already exists.".into());
+            return Err("The next result-storage journal generation does not extend persisted history.".into());
         }
     }
-    let directory = guest_result_storage_journal_generation_path(root, generation);
-    fs::create_dir(&directory)
-        .map_err(|_| "FRIDAY could not exclusively create the next result-storage journal generation.".to_string())?;
-    secure_private_workspace_directory(&directory)
-        .map_err(|_| "FRIDAY could not secure the new journal generation; it was preserved for recovery.".to_string())?;
+    let generation_name = format!("{}{generation:02}", GUEST_RESULT_STORAGE_JOURNAL_DIR_PREFIX);
+    let directory = crate::coding_sandbox_fs::create_destination_entry(
+        &root_handle, OsStr::new(&generation_name), true,
+    ).map_err(|_| "FRIDAY could not exclusively create the next result-storage journal generation; it was preserved.".to_string())?;
+    let mut file = crate::coding_sandbox_fs::create_destination_entry(
+        &directory, OsStr::new(GUEST_RESULT_STORAGE_JOURNAL_FILE), false,
+    ).map_err(|_| "FRIDAY could not exclusively create the journal generation file; the directory was preserved.".to_string())?;
     let bytes = encode_guest_result_storage_journal(journal)?;
-    let file_path = directory.join(GUEST_RESULT_STORAGE_JOURNAL_FILE);
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&file_path)
-        .map_err(|_| "FRIDAY could not exclusively create the journal generation file; it was preserved.".to_string())?;
     use std::io::Write;
     file.write_all(&bytes)
-        .map_err(|_| "FRIDAY could not write the journal generation; it was preserved.".to_string())?;
+        .map_err(|_| "FRIDAY could not write the result-storage journal generation; it was preserved.".to_string())?;
     file.sync_all()
-        .map_err(|_| "FRIDAY could not flush the journal generation; it was preserved.".to_string())?;
+        .map_err(|_| "FRIDAY could not flush the result-storage journal generation; it was preserved.".to_string())?;
     drop(file);
-    let verified = read_guest_result_storage_journal_generation(root, generation)?;
+    let verified = read_guest_result_storage_journal_generation_from_handle(&root_handle, generation)?;
     if verified != *journal || validate_guest_result_storage_journal(&verified)? != state {
-        return Err("The persisted result-storage journal did not pass read-back verification.".into());
+        return Err("The persisted result-storage journal failed exact read-back verification.".into());
+    }
+    let final_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The result-storage journal root path changed during persistence; the generation was preserved.".to_string())?;
+    if final_identity != root_identity {
+        return Err("The result-storage journal root was replaced during persistence; the generation was preserved.".into());
     }
     Ok(())
 }
 
-/// Load the longest contiguous sequence of immutable journal generations.
-/// Gaps, malformed files, unexpected generation directories, and identity
-/// changes fail closed; callers must preserve the VHDX for manual recovery.
 fn load_guest_result_storage_journal(
     root: &Path,
     expected_run_id: &str,
@@ -4183,38 +4249,37 @@ fn load_guest_result_storage_journal(
     if !valid_snapshot_id(expected_run_id) || !valid_guest_vhdx_identifier(expected_vhdx_identifier) {
         return Err("The expected result-storage journal identity is invalid.".into());
     }
-    let root_metadata = fs::symlink_metadata(root)
-        .map_err(|_| "The result-storage journal root is unavailable.".to_string())?;
-    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
-        return Err("The result-storage journal root must be an ordinary directory.".into());
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The result-storage journal root could not be opened safely.".to_string())?;
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The result-storage journal root identity could not be verified.".to_string())?;
+    let generations = guest_result_storage_journal_generations_from_handle(&root_handle)?;
+    if generations.is_empty() {
+        return Err("No complete result-storage journal generation is available.".into());
     }
     let mut latest: Option<GuestResultStorageJournal> = None;
-    let mut gap_seen = false;
-    for generation in 1..=MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES {
-        let path = guest_result_storage_journal_generation_path(root, generation);
-        match fs::symlink_metadata(&path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                gap_seen = true;
-            }
-            Err(_) => return Err("A result-storage journal generation could not be inspected.".into()),
-            Ok(_) if gap_seen => return Err("The result-storage journal contains a generation gap.".into()),
-            Ok(_) => {
-                let current = read_guest_result_storage_journal_generation(root, generation)?;
-                if current.run_id != expected_run_id || current.vhdx_identifier != expected_vhdx_identifier {
-                    return Err("The result-storage journal belongs to a different run or VHDX.".into());
-                }
-                if let Some(previous) = &latest {
-                    if current.entries[..generation - 1] != previous.entries {
-                        return Err("The result-storage journal history is not append-only.".into());
-                    }
-                }
-                latest = Some(current);
+    for generation in generations {
+        let current = read_guest_result_storage_journal_generation_from_handle(&root_handle, generation)?;
+        if current.run_id != expected_run_id
+            || current.vhdx_identifier != expected_vhdx_identifier
+            || (current.journal_root_identity_volume, current.journal_root_identity_file) != root_identity
+        {
+            return Err("The result-storage journal belongs to a different run, VHDX, or journal directory.".into());
+        }
+        if let Some(previous) = &latest {
+            if current.entries[..generation - 1] != previous.entries {
+                return Err("The result-storage journal history is not append-only.".into());
             }
         }
+        latest = Some(current);
+    }
+    let final_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The result-storage journal root path changed during recovery; evidence was preserved.".to_string())?;
+    if final_identity != root_identity {
+        return Err("The result-storage journal root was replaced during recovery; evidence was preserved.".into());
     }
     latest.ok_or_else(|| "No complete result-storage journal generation is available.".into())
 }
-
 
 
 
@@ -4230,13 +4295,14 @@ fn append_and_persist_guest_result_storage_transition(
 ) -> Result<GuestResultStorageJournal, String> {
     validate_guest_result_storage_journal(current)?;
     if current.entries.is_empty() {
-        for generation in 1..=MAX_GUEST_RESULT_STORAGE_JOURNAL_ENTRIES {
-            let path = guest_result_storage_journal_generation_path(root, generation);
-            match fs::symlink_metadata(path) {
-                Ok(_) => return Err("An initial result-storage journal cannot be created over existing recovery evidence.".into()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err("Existing result-storage journal evidence could not be inspected.".into()),
-            }
+        let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+            .map_err(|_| "The result-storage journal root could not be opened safely.".to_string())?;
+        let root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+            .map_err(|_| "The result-storage journal root identity could not be verified.".to_string())?;
+        if root_identity != (current.journal_root_identity_volume, current.journal_root_identity_file)
+            || !guest_result_storage_journal_generations_from_handle(&root_handle)?.is_empty()
+        {
+            return Err("An initial result-storage journal cannot be created over a different root or existing recovery evidence.".into());
         }
     } else {
         let latest = load_guest_result_storage_journal(
