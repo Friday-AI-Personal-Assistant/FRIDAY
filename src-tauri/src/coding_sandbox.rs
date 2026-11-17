@@ -1398,7 +1398,6 @@ fn advance_guest_runtime_cleanup_journal(
 /// Append a cleanup transition while the authenticated parent and journal-root
 /// directory handles remain pinned. This prevents a path substitution between
 /// markerless recovery's journal authentication and its durable state update.
-#[cfg(windows)]
 fn advance_guest_runtime_cleanup_journal_from_parent_handle(
     root: &Path,
     parent_path: &Path,
