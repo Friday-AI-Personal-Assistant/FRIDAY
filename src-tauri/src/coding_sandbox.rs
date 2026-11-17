@@ -1074,29 +1074,46 @@ fn validate_guest_runtime_cleanup_journal_location(
     Ok(())
 }
 
-fn read_guest_runtime_cleanup_journal_generation(
-    root: &Path,
+fn read_guest_runtime_cleanup_journal_generation_from_handle(
+    root_path: &Path,
+    root_handle: &File,
     generation: usize,
 ) -> Result<GuestRuntimeCleanupJournal, String> {
     if generation == 0 || generation > MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
         return Err("The guest runtime cleanup journal generation is outside its fixed limit.".into());
     }
-    let directory = guest_runtime_cleanup_journal_generation_path(root, generation);
-    let metadata = fs::symlink_metadata(&directory)
-        .map_err(|_| "A guest runtime cleanup journal generation is missing or unavailable.".to_string())?;
-    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
-        return Err("A guest runtime cleanup journal generation is not an ordinary directory.".into());
+    let root_metadata = root_handle.metadata()
+        .map_err(|_| "The held cleanup journal root could not be inspected.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The held cleanup journal root is not an ordinary directory.".into());
     }
-    let bytes = crate::coding_sandbox_fs::read_single_bounded_file_from_directory(
-        &directory, OsStr::new(GUEST_RUNTIME_CLEANUP_JOURNAL_FILE),
+    let generation_name = OsStr::new(&format!("{GUEST_RUNTIME_CLEANUP_JOURNAL_GENERATION_PREFIX}{generation:02}"));
+    let directory = crate::coding_sandbox_fs::open_child_directory_nofollow(root_handle, generation_name)
+        .map_err(|_| "A cleanup journal generation is missing or is not an ordinary directory.".to_string())?;
+    let (files, directories) = crate::coding_sandbox_fs::collect_runtime_tree_inventory(&directory, 1, 2)
+        .map_err(|_| "A cleanup journal generation could not be safely inventoried.".to_string())?;
+    if !directories.is_empty() || files.len() != 1 || files[0] != GUEST_RUNTIME_CLEANUP_JOURNAL_FILE {
+        return Err("A cleanup journal generation must contain exactly its state file.".into());
+    }
+    let bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &directory, GUEST_RUNTIME_CLEANUP_JOURNAL_FILE,
         MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_BYTES as u64,
     ).map_err(|_| "A guest runtime cleanup journal generation is incomplete or unsafe.".to_string())?;
     let journal = parse_guest_runtime_cleanup_journal(&bytes)?;
     if journal.entries.len() != generation {
         return Err("A guest runtime cleanup journal generation does not match its sequence.".into());
     }
-    validate_guest_runtime_cleanup_journal_location(root, &journal)?;
+    validate_guest_runtime_cleanup_journal_location(root_path, &journal)?;
     Ok(journal)
+}
+
+fn read_guest_runtime_cleanup_journal_generation(
+    root: &Path,
+    generation: usize,
+) -> Result<GuestRuntimeCleanupJournal, String> {
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The guest runtime cleanup journal root could not be opened safely.".to_string())?;
+    read_guest_runtime_cleanup_journal_generation_from_handle(root, &root_handle, generation)
 }
 
 /// Persist one immutable cleanup phase. Generation directories and state files
@@ -1176,7 +1193,10 @@ fn load_latest_guest_runtime_cleanup_journal(
     if root != expected_root {
         return Err("The cleanup journal location differs from the authenticated bundle identity.".into());
     }
-    let journal_root_identity = guest_runtime_cleanup_journal_root_identity(root)?;
+    let journal_root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The cleanup journal root could not be opened safely for recovery.".to_string())?;
+    let journal_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &journal_root_handle)
+        .map_err(|_| "The cleanup journal root identity could not be verified for recovery.".to_string())?;
     let mut latest: Option<GuestRuntimeCleanupJournal> = None;
     let mut gap_seen = false;
     for generation in 1..=MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
@@ -1186,7 +1206,7 @@ fn load_latest_guest_runtime_cleanup_journal(
             Err(_) => return Err("A cleanup journal generation could not be inspected.".into()),
             Ok(_) if gap_seen => return Err("The cleanup journal contains a generation gap.".into()),
             Ok(_) => {
-                let current = read_guest_runtime_cleanup_journal_generation(root, generation)?;
+                let current = read_guest_runtime_cleanup_journal_generation_from_handle(root, &journal_root_handle, generation)?;
                 if current.operation != authorization.operation
                     || current.bundle_id != authorization.bundle_id
                     || current.manifest_sha256 != authorization.manifest_sha256
@@ -1277,7 +1297,10 @@ fn load_guest_runtime_cleanup_journal(
 ) -> Result<GuestRuntimeCleanupJournal, String> {
     validate_guest_runtime_cleanup_journal(expected)?;
     validate_guest_runtime_cleanup_journal_location(root, expected)?;
-    let root_identity = guest_runtime_cleanup_journal_root_identity(root)?;
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The guest runtime cleanup journal root could not be opened safely.".to_string())?;
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The guest runtime cleanup journal root identity could not be verified.".to_string())?;
     if root_identity != (expected.journal_root_identity_volume, expected.journal_root_identity_file) {
         return Err("The guest runtime cleanup journal root was replaced after its identity was recorded.".into());
     }
@@ -1290,7 +1313,7 @@ fn load_guest_runtime_cleanup_journal(
             Err(_) => return Err("A guest runtime cleanup journal generation could not be inspected.".into()),
             Ok(_) if gap_seen => return Err("The guest runtime cleanup journal contains a generation gap.".into()),
             Ok(_) => {
-                let current = read_guest_runtime_cleanup_journal_generation(root, generation)?;
+                let current = read_guest_runtime_cleanup_journal_generation_from_handle(root, &root_handle, generation)?;
                 if current.operation != expected.operation
                     || current.bundle_id != expected.bundle_id
                     || current.manifest_sha256 != expected.manifest_sha256
@@ -1966,6 +1989,10 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
     if root != expected_root || provisioning.staging_root.parent() != Some(parent_path) {
         return Err("The cleanup journal is not at the authenticated provisioning location.".into());
     }
+    let journal_root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The cleanup journal root could not be opened safely for recovery.".to_string())?;
+    let journal_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &journal_root_handle)
+        .map_err(|_| "The cleanup journal root identity could not be verified for recovery.".to_string())?;
     let mut latest: Option<GuestRuntimeCleanupJournal> = None;
     let mut gap_seen = false;
     for generation in 1..=MAX_GUEST_RUNTIME_CLEANUP_JOURNAL_ENTRIES {
@@ -1975,7 +2002,7 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
             Err(_) => return Err("A cleanup journal generation could not be inspected.".into()),
             Ok(_) if gap_seen => return Err("The cleanup journal contains a generation gap.".into()),
             Ok(_) => {
-                let current = read_guest_runtime_cleanup_journal_generation(root, generation)?;
+                let current = read_guest_runtime_cleanup_journal_generation_from_handle(root, &journal_root_handle, generation)?;
                 if current.operation != anchor.operation
                     || current.bundle_id != anchor.bundle_id
                     || current.manifest_sha256 != anchor.manifest_sha256.to_ascii_lowercase()
@@ -1983,7 +2010,7 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
                     || current.staging_root_path != provisioning.staging_root.to_string_lossy()
                     || current.parent_identity_volume != parent_identity.0
                     || current.parent_identity_file != parent_identity.1
-                    || (current.journal_root_identity_volume, current.journal_root_identity_file) != guest_runtime_cleanup_journal_root_identity(root)?
+                    || (current.journal_root_identity_volume, current.journal_root_identity_file) != journal_root_identity
                     || current.root_identity_volume == 0
                     || current.root_identity_file == 0
                     || current.entries.len() != generation
