@@ -1981,7 +1981,10 @@ fn recover_markerless_guest_runtime_staging_root(
 
     let root_name = staging_root_path.file_name()
         .ok_or("The authenticated staging root has no final path component.")?;
-    match fs::symlink_metadata(staging_root_path) {
+    // Inspect the staging entry relative to the already-held parent. A
+    // path-based symlink_metadata probe could observe a different parent tree
+    // from the one whose identity was authenticated above.
+    match crate::coding_sandbox_fs::open_child_directory_nofollow(parent_handle, root_name) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let parent_recheck = crate::coding_sandbox_fs::verified_directory_identity(
                 parent_path, parent_handle,
@@ -2003,14 +2006,8 @@ fn recover_markerless_guest_runtime_staging_root(
             }
             Err("The absent staging root is inconsistent with its cleanup journal.".into())
         }
-        Err(_) => Err("The staging-root state could not be safely inspected during recovery.".into()),
-        Ok(metadata) => {
-            if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
-                return Err("Markerless recovery found a non-directory or reparse staging root; it was preserved.".into());
-            }
-            let root_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
-                parent_handle, root_name,
-            ).map_err(|_| "The markerless staging root could not be opened safely relative to its held parent.".to_string())?;
+        Err(_) => Err("The staging-root state could not be safely inspected relative to its held parent.".into()),
+        Ok(root_handle) => {
             let root_identity = crate::coding_sandbox_fs::verified_directory_identity(
                 staging_root_path, &root_handle,
             ).map_err(|_| "Markerless recovery could not verify the staging-root handle.".to_string())?;
