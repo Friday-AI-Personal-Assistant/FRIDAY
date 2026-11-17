@@ -11,6 +11,7 @@ mod coding_assistant;
 mod coding_intelligence;
 mod coding_sandbox;
 mod coding_sandbox_fs;
+mod coding_sandbox_resources;
 #[cfg(windows)]
 mod coding_sandbox_job;
 
