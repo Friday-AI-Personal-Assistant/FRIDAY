@@ -5241,13 +5241,32 @@ fn reserve_guest_result_volume_directory(
     trusted_storage_root: &Path,
 ) -> Result<PathBuf, String> {
     validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
-    fs::create_dir(&plan.run_directory)
-        .map_err(|_| "FRIDAY could not exclusively reserve this result-volume run directory.".to_string())?;
-    // This is private host state, never a general guest share. Apply the same
-    // fail-closed owner/SYSTEM/Administrators boundary as the snapshot workspace
-    // before publishing any ownership metadata.
-    secure_private_workspace_directory(&plan.run_directory)
+
+    // Pin the trusted storage root once. The run directory and its marker are
+    // created relative to these held handles, never by re-resolving ambient
+    // child paths between validation and creation.
+    let storage_root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&plan.storage_root)
+        .map_err(|_| "The private result-volume storage root could not be opened safely.".to_string())?;
+    let storage_root_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.storage_root, &storage_root_handle,
+    ).map_err(|_| "The private result-volume storage-root identity could not be verified.".to_string())?;
+
+    let run_directory_handle = crate::coding_sandbox_fs::create_destination_entry(
+        &storage_root_handle, OsStr::new(&plan.run_id), true,
+    ).map_err(|_| "FRIDAY could not exclusively reserve this result-volume run directory; existing evidence was preserved.".to_string())?;
+    let run_directory_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.run_directory, &run_directory_handle,
+    ).map_err(|_| "The newly reserved result-volume directory does not match its held handle.".to_string())?;
+
+    // Apply the private owner/SYSTEM/Administrators policy to this exact
+    // authenticated directory object before writing ownership evidence.
+    secure_private_workspace_directory_handle(&plan.run_directory, &run_directory_handle)
         .map_err(|_| "FRIDAY could not restrict the reserved result-volume directory; it was preserved for recovery.".to_string())?;
+    if crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.run_directory, &run_directory_handle,
+    ).map_err(|_| "The result-volume directory identity could not be rechecked after ACL setup.".to_string())? != run_directory_identity {
+        return Err("The result-volume directory changed during permission setup; it was preserved for recovery.".into());
+    }
 
     let marker = GuestResultVolumeOwnershipMarker {
         schema_version: GUEST_RESULT_VOLUME_OWNER_SCHEMA,
@@ -5256,15 +5275,41 @@ fn reserve_guest_result_volume_directory(
     };
     let bytes = serde_json::to_vec(&marker)
         .map_err(|_| "FRIDAY could not prepare result-volume ownership metadata.".to_string())?;
-    let marker_path = plan.run_directory.join(GUEST_RESULT_VOLUME_OWNER_MARKER);
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&marker_path)
-        .map_err(|_| "FRIDAY could not exclusively create result-volume ownership metadata; the directory was preserved.".to_string())?;
+    let mut file = crate::coding_sandbox_fs::create_destination_entry(
+        &run_directory_handle, OsStr::new(GUEST_RESULT_VOLUME_OWNER_MARKER), false,
+    ).map_err(|_| "FRIDAY could not exclusively create result-volume ownership metadata; the directory was preserved.".to_string())?;
     use std::io::Write;
     file.write_all(&bytes)
         .map_err(|_| "FRIDAY could not write result-volume ownership metadata; the directory was preserved.".to_string())?;
     file.sync_all()
         .map_err(|_| "FRIDAY could not persist result-volume ownership metadata; the directory was preserved.".to_string())?;
-    verify_guest_result_volume_directory(plan, trusted_storage_root)
+    drop(file);
+
+    let read_back = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &run_directory_handle, GUEST_RESULT_VOLUME_OWNER_MARKER, 1024,
+    ).map_err(|_| "The result-volume ownership marker could not be read back through its held directory handle.".to_string())?;
+    if read_back != bytes {
+        return Err("The result-volume ownership marker failed exact read-back verification; the directory was preserved.".into());
+    }
+    let verified_marker: GuestResultVolumeOwnershipMarker = serde_json::from_slice(&read_back)
+        .map_err(|_| "The result-volume ownership marker read-back was malformed.".to_string())?;
+    if verified_marker.schema_version != GUEST_RESULT_VOLUME_OWNER_SCHEMA
+        || verified_marker.run_id != plan.run_id
+        || verified_marker.owner != "FRIDAY-CodingAssistant-ResultVolume"
+    {
+        return Err("The result-volume ownership marker does not match the exact FRIDAY run.".into());
+    }
+
+    if crate::coding_sandbox_fs::verified_directory_identity(
+        &plan.run_directory, &run_directory_handle,
+    ).map_err(|_| "The result-volume directory path changed during reservation; evidence was preserved.".to_string())? != run_directory_identity
+        || crate::coding_sandbox_fs::verified_directory_identity(
+            &plan.storage_root, &storage_root_handle,
+        ).map_err(|_| "The result-volume storage-root path changed during reservation; evidence was preserved.".to_string())? != storage_root_identity
+    {
+        return Err("A result-volume directory identity changed during reservation; all evidence was preserved.".into());
+    }
+    Ok(plan.run_directory.clone())
 }
 
 /// Reserves FRIDAY's exact empty host mount-point directory under the private
@@ -11478,6 +11523,11 @@ mod tests {
             assert_eq!(directory_metadata.permissions().mode() & 0o077, 0);
         }
         assert!(reserved.join(GUEST_RESULT_VOLUME_OWNER_MARKER).is_file());
+        let marker_bytes = fs::read(reserved.join(GUEST_RESULT_VOLUME_OWNER_MARKER)).unwrap();
+        let marker: GuestResultVolumeOwnershipMarker = serde_json::from_slice(&marker_bytes).unwrap();
+        assert_eq!(marker.schema_version, GUEST_RESULT_VOLUME_OWNER_SCHEMA);
+        assert_eq!(marker.run_id, run_id);
+        assert_eq!(marker.owner, "FRIDAY-CodingAssistant-ResultVolume");
         assert_eq!(verify_guest_result_volume_directory(&plan, &root).unwrap(), reserved);
         assert!(reserve_guest_result_volume_directory(&plan, &root).is_err());
         fs::remove_dir_all(root).unwrap();
