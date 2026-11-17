@@ -5846,6 +5846,12 @@ struct WindowsSandboxCliPlan {
     arguments: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowsSandboxCliPreparedTransaction {
+    plan: WindowsSandboxCliPlan,
+    journal: SandboxSessionJournal,
+}
+
 fn valid_windows_sandbox_cli_id(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 36
@@ -6521,6 +6527,80 @@ fn verify_windows_sandbox_cli_stop_completion_from_persisted_state(
     )
 }
 
+
+/// Persist the launch intent before a future caller is allowed to invoke wsb start.
+/// This function only prepares a fixed plan; it never starts Windows Sandbox.
+#[allow(dead_code)]
+fn prepare_and_persist_windows_sandbox_cli_start_transaction(
+    executable_path: &str,
+    config: &str,
+    root: &Path,
+    journal: &SandboxSessionJournal,
+    pre_launch_sessions: &[WindowsSandboxCliSession],
+) -> Result<WindowsSandboxCliPreparedTransaction, String> {
+    if !journal.entries.is_empty()
+        || validate_sandbox_session_journal(journal)? != SandboxSessionState::Planned
+    {
+        return Err("A Windows Sandbox launch intent can only be prepared from a new Planned run journal.".into());
+    }
+    require_empty_windows_sandbox_cli_inventory(pre_launch_sessions)?;
+    let plan = build_windows_sandbox_cli_plan(
+        executable_path, &journal.run_id, WindowsSandboxCliCommand::Start, Some(config),
+    )?;
+    validate_windows_sandbox_cli_plan(
+        &plan, executable_path, &journal.run_id, WindowsSandboxCliCommand::Start, Some(config),
+    )?;
+
+    let persisted = append_and_persist_sandbox_session_transition(
+        root, journal, SandboxSessionEvent::RequestLaunch, None, false, false,
+    )?;
+    let recovered = load_sandbox_session_journal(root, &journal.run_id)?;
+    if recovered != persisted
+        || validate_sandbox_session_journal(&recovered)? != SandboxSessionState::LaunchRequested
+    {
+        return Err("The durable Sandbox launch intent could not be recovered exactly; invocation remains blocked.".into());
+    }
+    Ok(WindowsSandboxCliPreparedTransaction { plan, journal: recovered })
+}
+
+/// Re-observe the exact process identity and persist RequestStop before a future
+/// caller may invoke wsb stop. A crash after this point is recovery-only: this
+/// helper deliberately does not execute the CLI command or retry it.
+#[allow(dead_code)]
+fn prepare_and_persist_windows_sandbox_cli_stop_transaction(
+    executable_path: &str,
+    root: &Path,
+    expected_run_id: &str,
+    sessions: &[WindowsSandboxCliSession],
+    observed_process_identity: &SandboxProcessIdentity,
+) -> Result<WindowsSandboxCliPreparedTransaction, String> {
+    let (journal, receipt) = load_windows_sandbox_cli_run_evidence(root, expected_run_id)?;
+    if validate_sandbox_session_journal(&journal)? != SandboxSessionState::Running {
+        return Err("A Windows Sandbox stop intent can only be prepared from the matching durable Running journal.".into());
+    }
+    verify_reobserved_sandbox_process_for_stop(&journal, observed_process_identity, true)?;
+    let proof = windows_sandbox_cli_ownership_proof_from_receipt(&receipt)?;
+    let plan = prepare_authorized_windows_sandbox_stop_plan(
+        executable_path, &journal, &proof, sessions,
+    )?;
+    validate_windows_sandbox_cli_plan(
+        &plan, executable_path, expected_run_id, WindowsSandboxCliCommand::Stop, None,
+    )?;
+
+    let stop_requested = append_and_persist_sandbox_session_transition(
+        root, &journal, SandboxSessionEvent::RequestStop,
+        Some(observed_process_identity), true, false,
+    )?;
+    let (recovered, recovered_receipt) =
+        load_windows_sandbox_cli_run_evidence(root, expected_run_id)?;
+    if recovered != stop_requested
+        || recovered_receipt != receipt
+        || validate_sandbox_session_journal(&recovered)? != SandboxSessionState::StopRequested
+    {
+        return Err("The durable Sandbox stop intent could not be recovered exactly; CLI invocation remains blocked.".into());
+    }
+    Ok(WindowsSandboxCliPreparedTransaction { plan, journal: recovered })
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WindowsSandboxLaunchPlan {
@@ -13113,6 +13193,156 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
 
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(alternate_root).unwrap();
+    }
+
+    #[test]
+    fn windows_sandbox_cli_launch_and_stop_intents_are_durable_before_execution() {
+        let start_root = make_test_directory("wsb-durable-start-intent");
+        secure_private_workspace_directory(&start_root).unwrap();
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let initial = SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: run_id.into(),
+            entries: Vec::new(),
+        };
+        let config = r#"<Configuration>
+  <VGpu>Disable</VGpu>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\FRIDAY\snapshot</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>C:\FRIDAY\result-mount</HostFolder>
+      <SandboxFolder>C:\FRIDAY\Results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#;
+        let executable = r"C:\Program Files\WindowsApps\wsb.exe";
+        let start = prepare_and_persist_windows_sandbox_cli_start_transaction(
+            executable, config, &start_root, &initial, &[],
+        ).unwrap();
+        assert_eq!(start.plan.arguments[0], "start");
+        assert_eq!(start.plan.arguments[2], "--id");
+        assert_eq!(start.plan.sandbox_id, windows_sandbox_cli_id_from_run_id(run_id).unwrap());
+        assert_eq!(
+            validate_sandbox_session_journal(&start.journal).unwrap(),
+            SandboxSessionState::LaunchRequested,
+        );
+        assert_eq!(load_sandbox_session_journal(&start_root, run_id).unwrap(), start.journal);
+        assert!(prepare_and_persist_windows_sandbox_cli_start_transaction(
+            executable, config, &start_root, &start.journal, &[],
+        ).is_err(), "a second launch intent cannot be issued for the same run");
+
+        let occupied_root = make_test_directory("wsb-existing-session-start-denied");
+        secure_private_workspace_directory(&occupied_root).unwrap();
+        let occupied_journal = SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            entries: Vec::new(),
+        };
+        let foreign = WindowsSandboxCliSession {
+            id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        assert!(prepare_and_persist_windows_sandbox_cli_start_transaction(
+            executable, config, &occupied_root, &occupied_journal, &[foreign],
+        ).is_err(), "a pre-existing session blocks launch before any durable intent is written");
+        assert_eq!(fs::read_dir(&occupied_root).unwrap().count(), 0);
+
+        let stop_root = make_test_directory("wsb-durable-stop-intent");
+        secure_private_workspace_directory(&stop_root).unwrap();
+        let stop_run_id = "fedcba9876543210fedcba9876543210";
+        let process_identity = SandboxProcessIdentity {
+            session_id: stop_run_id.into(),
+            process_id: 4321,
+            process_creation_time: 987654,
+            image_path: r"C:\Windows\System32\WindowsSandbox.exe".into(),
+        };
+        let mut running_journal = SandboxSessionJournal {
+            schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA,
+            run_id: stop_run_id.into(),
+            entries: Vec::new(),
+        };
+        running_journal = append_and_persist_sandbox_session_transition(
+            &stop_root, &running_journal, SandboxSessionEvent::RequestLaunch, None, false, false,
+        ).unwrap();
+        running_journal = append_and_persist_sandbox_session_transition(
+            &stop_root, &running_journal, SandboxSessionEvent::ObserveProcess,
+            Some(&process_identity), false, false,
+        ).unwrap();
+        running_journal = append_and_persist_sandbox_session_transition(
+            &stop_root, &running_journal, SandboxSessionEvent::ConfirmSession,
+            Some(&process_identity), true, false,
+        ).unwrap();
+        running_journal = append_and_persist_sandbox_session_transition(
+            &stop_root, &running_journal, SandboxSessionEvent::ConfirmRunning,
+            Some(&process_identity), true, false,
+        ).unwrap();
+
+        let session_id = windows_sandbox_cli_id_from_run_id(stop_run_id).unwrap();
+        let running_session = WindowsSandboxCliSession {
+            id: session_id.clone(),
+            status: WindowsSandboxCliSessionStatus::Running,
+        };
+        let response = format!(r#"{{"Id":"{}"}}"#, session_id);
+        let receipt = build_windows_sandbox_cli_ownership_receipt(
+            stop_run_id, response.as_bytes(), &[], &[running_session.clone()],
+        ).unwrap();
+        persist_windows_sandbox_cli_ownership_receipt_for_running_journal(
+            &stop_root, &running_journal, &receipt,
+        ).unwrap();
+
+        let mut substituted_identity = process_identity.clone();
+        substituted_identity.process_id += 1;
+        assert!(prepare_and_persist_windows_sandbox_cli_stop_transaction(
+            executable, &stop_root, stop_run_id, &[running_session.clone()], &substituted_identity,
+        ).is_err(), "a changed process identity cannot request stop");
+        assert_eq!(
+            validate_sandbox_session_journal(
+                &load_sandbox_session_journal(&stop_root, stop_run_id).unwrap(),
+            ).unwrap(),
+            SandboxSessionState::Running,
+            "a rejected stop attempt must not mutate the durable journal",
+        );
+
+        let stop = prepare_and_persist_windows_sandbox_cli_stop_transaction(
+            executable, &stop_root, stop_run_id, &[running_session.clone()], &process_identity,
+        ).unwrap();
+        assert_eq!(stop.plan.arguments, vec!["stop", "--raw", "--id", session_id.as_str()]);
+        assert_eq!(
+            validate_sandbox_session_journal(&stop.journal).unwrap(),
+            SandboxSessionState::StopRequested,
+        );
+        assert_eq!(load_sandbox_session_journal(&stop_root, stop_run_id).unwrap(), stop.journal);
+        assert!(prepare_and_persist_windows_sandbox_cli_stop_transaction(
+            executable, &stop_root, stop_run_id, &[running_session.clone()], &process_identity,
+        ).is_err(), "a persisted stop request cannot be replayed");
+        assert_eq!(
+            verify_windows_sandbox_cli_stop_completion_from_persisted_state(
+                &stop_root, stop_run_id, true, &[],
+            ).unwrap(),
+            WindowsSandboxCliStopCompletion::SessionAbsent,
+        );
+        assert!(verify_windows_sandbox_cli_stop_completion_from_persisted_state(
+            &stop_root, stop_run_id, false, &[],
+        ).is_err(), "a failed CLI stop cannot confirm the session stopped");
+        assert!(verify_windows_sandbox_cli_stop_completion_from_persisted_state(
+            &stop_root, stop_run_id, true, &[running_session],
+        ).is_err(), "a still-running owned session cannot confirm stop");
+
+        fs::remove_dir_all(start_root).unwrap();
+        fs::remove_dir_all(occupied_root).unwrap();
+        fs::remove_dir_all(stop_root).unwrap();
     }
 
     #[test]
