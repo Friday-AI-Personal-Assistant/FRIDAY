@@ -1943,6 +1943,10 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
     anchor: &GuestRuntimeManifestTrustAnchor,
     provisioning: &GuestRuntimeProvisioningPlan,
 ) -> Result<GuestRuntimeCleanupJournal, String> {
+    authenticate_guest_runtime_manifest(anchor.operation, manifest, anchor)?;
+    validate_guest_runtime_provisioning_plan_with_final_root(
+        manifest, anchor, provisioning, provisioning.final_root.clone(),
+    )?;
     let expected_root = guest_runtime_cleanup_journal_root_path(parent_path, &anchor.bundle_id)?;
     if root != expected_root || provisioning.staging_root.parent() != Some(parent_path) {
         return Err("The cleanup journal is not at the authenticated provisioning location.".into());
@@ -13065,6 +13069,179 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         substituted.root_identity_file += 1;
         assert!(load_guest_runtime_cleanup_journal(&root, &substituted).is_err());
         fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn markerless_runtime_recovery_finishes_empty_and_absent_root_crash_windows() {
+        use GuestRuntimeCleanupJournalPhase as Phase;
+
+        for phase in [Phase::PayloadsRemoved, Phase::OwnershipMarkerRemoved] {
+            for root_absent in [false, true] {
+                let operation = GuestRunOperation::RustCargoTest;
+                let manifest = test_runtime_manifest(operation);
+                let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+                let root = make_test_directory("markerless-runtime-recovery");
+                let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+                    &manifest, &anchor, root.join("published-runtime"),
+                ).unwrap();
+                let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+                let files = vec![(
+                    PathBuf::from("bin/cargo.exe"),
+                    b"cargo-fixture".to_vec(),
+                )];
+                let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+                    &root, &parent, &manifest, &anchor, &provisioning, &files,
+                ).unwrap();
+                let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+                    &parent, provisioning.staging_root.file_name().unwrap(),
+                ).unwrap();
+                let authorization = authorize_verified_guest_runtime_staging_cleanup(
+                    &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+                    &manifest, &anchor, &provisioning,
+                ).unwrap();
+                let (journal_root, mut journal) =
+                    begin_guest_runtime_cleanup_journal(&authorization).unwrap();
+
+                // Simulate a crash after all payloads and nested directories are
+                // removed. The marker is deliberately removed separately from
+                // the journal transition to cover the markerless crash window.
+                drop(staging_handle);
+                fs::remove_file(provisioning.staging_root.join("bin").join("cargo.exe")).unwrap();
+                fs::remove_dir(provisioning.staging_root.join("bin")).unwrap();
+                journal = advance_guest_runtime_cleanup_journal(
+                    &journal_root, &journal, Phase::PayloadsRemoved,
+                ).unwrap();
+                fs::remove_file(provisioning.staging_root.join(".friday-runtime-owner.json")).unwrap();
+                if phase == Phase::OwnershipMarkerRemoved {
+                    journal = advance_guest_runtime_cleanup_journal(
+                        &journal_root, &journal, Phase::OwnershipMarkerRemoved,
+                    ).unwrap();
+                }
+                if root_absent {
+                    fs::remove_dir(&provisioning.staging_root).unwrap();
+                }
+
+                recover_markerless_guest_runtime_staging_root(
+                    &root, &parent, &manifest, &anchor, &provisioning,
+                ).unwrap();
+
+                assert!(!provisioning.staging_root.exists(),
+                    "markerless recovery must leave no staging root");
+                let latest = load_latest_guest_runtime_cleanup_journal_from_anchor(
+                    &journal_root,
+                    &root,
+                    crate::coding_sandbox_fs::verified_directory_identity(&root, &parent).unwrap(),
+                    &manifest,
+                    &anchor,
+                    &provisioning,
+                ).unwrap();
+                assert_eq!(
+                    validate_guest_runtime_cleanup_journal(&latest).unwrap(),
+                    Phase::StagingRootRemoved,
+                );
+                assert_eq!(latest.entries.len(), 4);
+                assert_eq!(
+                    latest.entries.iter().map(|entry| entry.phase).collect::<Vec<_>>(),
+                    vec![
+                        Phase::Prepared,
+                        Phase::PayloadsRemoved,
+                        Phase::OwnershipMarkerRemoved,
+                        Phase::StagingRootRemoved,
+                    ],
+                );
+                assert!(!root.join("published-runtime").exists());
+                drop(parent);
+                fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn markerless_runtime_recovery_rejects_prepared_and_unexpected_content_without_deletion() {
+        use GuestRuntimeCleanupJournalPhase as Phase;
+
+        // A Prepared journal cannot authorize markerless recovery, even if the
+        // staging root is present and contains only an ownership marker.
+        {
+            let operation = GuestRunOperation::RustCargoTest;
+            let manifest = test_runtime_manifest(operation);
+            let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+            let root = make_test_directory("markerless-runtime-prepared-reject");
+            let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+                &manifest, &anchor, root.join("published-runtime"),
+            ).unwrap();
+            let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+            let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
+            let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+                &root, &parent, &manifest, &anchor, &provisioning, &files,
+            ).unwrap();
+            let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+                &parent, provisioning.staging_root.file_name().unwrap(),
+            ).unwrap();
+            let authorization = authorize_verified_guest_runtime_staging_cleanup(
+                &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+                &manifest, &anchor, &provisioning,
+            ).unwrap();
+            let (_journal_root, _journal) = begin_guest_runtime_cleanup_journal(&authorization).unwrap();
+            drop(staging_handle);
+            fs::remove_file(provisioning.staging_root.join(".friday-runtime-owner.json")).unwrap();
+            assert!(recover_markerless_guest_runtime_staging_root(
+                &root, &parent, &manifest, &anchor, &provisioning,
+            ).is_err());
+            assert!(provisioning.staging_root.join("bin").join("cargo.exe").exists());
+            assert!(provisioning.staging_root.exists());
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        // Even at PayloadsRemoved, an unexpected file prevents deletion and is
+        // preserved for inspection rather than being treated as owned content.
+        {
+            let operation = GuestRunOperation::RustCargoTest;
+            let manifest = test_runtime_manifest(operation);
+            let anchor = test_runtime_manifest_trust_anchor(operation, &manifest);
+            let root = make_test_directory("markerless-runtime-unexpected-reject");
+            let provisioning = build_guest_runtime_provisioning_plan_with_final_root(
+                &manifest, &anchor, root.join("published-runtime"),
+            ).unwrap();
+            let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+            let files = vec![(PathBuf::from("bin/cargo.exe"), b"cargo-fixture".to_vec())];
+            let staging = provision_authenticated_guest_runtime_bundle_from_bytes(
+                &root, &parent, &manifest, &anchor, &provisioning, &files,
+            ).unwrap();
+            let staging_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+                &parent, provisioning.staging_root.file_name().unwrap(),
+            ).unwrap();
+            let authorization = authorize_verified_guest_runtime_staging_cleanup(
+                &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
+                &manifest, &anchor, &provisioning,
+            ).unwrap();
+            let (journal_root, journal) = begin_guest_runtime_cleanup_journal(&authorization).unwrap();
+            drop(staging_handle);
+            fs::remove_file(provisioning.staging_root.join("bin").join("cargo.exe")).unwrap();
+            fs::remove_dir(provisioning.staging_root.join("bin")).unwrap();
+            let journal = advance_guest_runtime_cleanup_journal(
+                &journal_root, &journal, Phase::PayloadsRemoved,
+            ).unwrap();
+            fs::remove_file(provisioning.staging_root.join(".friday-runtime-owner.json")).unwrap();
+            let unexpected = provisioning.staging_root.join("unexpected.bin");
+            fs::write(&unexpected, b"preserve-me").unwrap();
+
+            assert!(recover_markerless_guest_runtime_staging_root(
+                &root, &parent, &manifest, &anchor, &provisioning,
+            ).is_err());
+            assert_eq!(fs::read(&unexpected).unwrap(), b"preserve-me");
+            assert!(provisioning.staging_root.exists());
+            assert_eq!(
+                validate_guest_runtime_cleanup_journal(&journal).unwrap(),
+                Phase::PayloadsRemoved,
+                "a rejected recovery must not advance the journal",
+            );
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[cfg(windows)]
