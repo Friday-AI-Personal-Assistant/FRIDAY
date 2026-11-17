@@ -13888,17 +13888,10 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         secure_private_workspace_directory(&root).unwrap();
         let run_id = "0123456789abcdef0123456789abcdef";
         let initial = SandboxSessionJournal { schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA, run_id: run_id.into(), entries: Vec::new() };
-        let config = r#"<Configuration>
-  <VGpu>Disable</VGpu><Networking>Disable</Networking>
-  <AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
-  <ClipboardRedirection>Disable</ClipboardRedirection><PrinterRedirection>Disable</PrinterRedirection>
-  <ProtectedClient>Enable</ProtectedClient>
-  <MappedFolders>
-    <MappedFolder><HostFolder>C:\FRIDAY\snapshot</HostFolder><SandboxFolder>C:\FRIDAY\Project</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
-    <MappedFolder><HostFolder>C:\FRIDAY\result-mount</HostFolder><SandboxFolder>C:\FRIDAY\Results</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
-  </MappedFolders>
-</Configuration>
-"#;
+        let config = safe_sandbox_config_with_result_fixture(
+            r"C:\FRIDAY\snapshot",
+            r"C:\FRIDAY\result-mount",
+        );
         let executable = r"C:\Program Files\WindowsApps\wsb.exe";
         prepare_and_persist_windows_sandbox_cli_start_transaction(executable, config, &root, &initial, &[]).unwrap();
         let target = WindowsSandboxCliSession { id: windows_sandbox_cli_id_from_run_id(run_id).unwrap(), status: WindowsSandboxCliSessionStatus::Running };
@@ -13931,17 +13924,10 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         secure_private_workspace_directory(&root).unwrap();
         let run_id = "fedcba9876543210fedcba9876543210";
         let initial = SandboxSessionJournal { schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA, run_id: run_id.into(), entries: Vec::new() };
-        let config = r#"<Configuration>
-  <VGpu>Disable</VGpu><Networking>Disable</Networking>
-  <AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
-  <ClipboardRedirection>Disable</ClipboardRedirection><PrinterRedirection>Disable</PrinterRedirection>
-  <ProtectedClient>Enable</ProtectedClient>
-  <MappedFolders>
-    <MappedFolder><HostFolder>C:\FRIDAY\snapshot</HostFolder><SandboxFolder>C:\FRIDAY\Project</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
-    <MappedFolder><HostFolder>C:\FRIDAY\result-mount</HostFolder><SandboxFolder>C:\FRIDAY\Results</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
-  </MappedFolders>
-</Configuration>
-"#;
+        let config = safe_sandbox_config_with_result_fixture(
+            r"C:\FRIDAY\snapshot",
+            r"C:\FRIDAY\result-mount",
+        );
         let executable = r"C:\Program Files\WindowsApps\wsb.exe";
         prepare_and_persist_windows_sandbox_cli_start_transaction(executable, config, &root, &initial, &[]).unwrap();
         let expected_id = windows_sandbox_cli_id_from_run_id(run_id).unwrap();
@@ -14006,17 +13992,10 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         secure_private_workspace_directory(&root).unwrap();
         let run_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let initial = SandboxSessionJournal { schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA, run_id: run_id.into(), entries: Vec::new() };
-        let config = r#"<Configuration>
-  <VGpu>Disable</VGpu><Networking>Disable</Networking>
-  <AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
-  <ClipboardRedirection>Disable</ClipboardRedirection><PrinterRedirection>Disable</PrinterRedirection>
-  <ProtectedClient>Enable</ProtectedClient>
-  <MappedFolders>
-    <MappedFolder><HostFolder>C:\FRIDAY\snapshot</HostFolder><SandboxFolder>C:\FRIDAY\Project</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
-    <MappedFolder><HostFolder>C:\FRIDAY\result-mount</HostFolder><SandboxFolder>C:\FRIDAY\Results</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
-  </MappedFolders>
-</Configuration>
-"#;
+        let config = safe_sandbox_config_with_result_fixture(
+            r"C:\FRIDAY\snapshot",
+            r"C:\FRIDAY\result-mount",
+        );
         let executable = r"C:\Program Files\WindowsApps\wsb.exe";
         prepare_and_persist_windows_sandbox_cli_start_transaction(executable, config, &root, &initial, &[]).unwrap();
         preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[]).unwrap();
