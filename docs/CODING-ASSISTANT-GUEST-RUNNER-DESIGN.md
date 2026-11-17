@@ -2255,3 +2255,31 @@ A process restart can occur after FRIDAY persists RequestLaunch or RequestStop b
 Regardless of whether the expected session is Running, Stopped, or absent, the pending intent is durably advanced to RecoveryRequired. An absent/stopped CLI entry after an interrupted stop is not positive process-exit evidence; a matching Running entry after an interrupted launch is not by itself sufficient to adopt the session. The recovery path never starts or stops a Sandbox, never adopts or removes a session, never appends ConfirmSession/ConfirmRunning/ConfirmStopped, and never deletes storage. Repeated assessment of an already-preserved interrupted launch/stop is read-only and does not append duplicate journal generations. Invalid or duplicate inventory entries fail before journal mutation.
 
 This is a conservative recovery-state gate, not an automatic recovery engine. The user/operator must resolve ambiguous Windows Sandbox state through a separately reviewed recovery procedure. Production wsb start/stop integration, authoritative session-to-process association, physical Windows interruption testing, and guest execution remain disabled.
+
+
+## Durable Windows Sandbox CLI recovery assessment receipts — #893
+
+Interrupted CLI launch/stop recovery now records each distinct observation in a
+bounded append-only receipt history beneath the private run directory. Each
+strict schema-v1 receipt is bound to the FRIDAY run ID, deterministic Sandbox
+session ID, original interrupted intent/state, observed target status, total
+session count, unrelated-session count, and its immutable sequence number.
+
+The journal must already be durably in RecoveryRequired with the matching
+PreserveForRecovery transition before a receipt can be written. Each receipt
+is created exclusively relative to an opened verified directory handle,
+flushed, reopened without following reparse points, parsed, and compared
+exactly. The loader validates contiguous generations, sequence/run/intent
+binding, count consistency, and rejects malformed, redirected, cross-run,
+out-of-order, or duplicate-adjacent observations. Identical consecutive
+observations are idempotent; changed observations append a new generation and
+never overwrite prior evidence. The history is capped at eight receipts of at
+most 4 KiB each.
+
+These receipts are an audit/recovery aid, not proof that a Sandbox process has
+exited or that a session may be adopted, stopped, or cleaned up. They do not
+authorize automatic recovery, execute the Windows Sandbox CLI, or enable guest
+execution. A crash after the journal preservation but before the first receipt
+is recoverable by a later assessment, which can append the missing first
+observation. Windows/Linux CI and hands-on physical Windows interruption
+acceptance remain required.

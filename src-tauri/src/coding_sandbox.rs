@@ -5867,6 +5867,7 @@ struct WindowsSandboxCliRecoveryAssessment {
     observed_target_status: Option<WindowsSandboxCliSessionStatus>,
     observed_session_count: u32,
     unrelated_session_count: u32,
+    recovery_receipt_sequence: u32,
     journal: SandboxSessionJournal,
 }
 
@@ -6715,8 +6716,261 @@ fn preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
         observed_target_status,
         observed_session_count: observed_sessions.len() as u32,
         unrelated_session_count: unrelated_session_count as u32,
+        recovery_receipt_sequence: persist_windows_sandbox_cli_recovery_observation(
+            root, expected_run_id, &expected_session_id, intent, interrupted_state,
+            observed_target_status, observed_sessions.len() as u32,
+            unrelated_session_count as u32,
+        )?,
+        recovery_receipt_sequence: persist_windows_sandbox_cli_recovery_observation(
+            root, expected_run_id, &expected_session_id, intent, interrupted_state,
+            observed_target_status, observed_sessions.len() as u32,
+            unrelated_session_count as u32,
+        )?,
         journal: recovered,
     })
+}
+
+
+const WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_SCHEMA: u32 = 1;
+const MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS: u32 = 8;
+const MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_BYTES: usize = 4 * 1024;
+const WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_PREFIX: &str = "windows-sandbox-cli-recovery-";
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WindowsSandboxCliRecoveryReceipt {
+    schema_version: u32,
+    sequence: u32,
+    run_id: String,
+    expected_session_id: String,
+    intent: WindowsSandboxCliRecoveryIntent,
+    interrupted_state: SandboxSessionState,
+    observed_target_status: Option<WindowsSandboxCliSessionStatus>,
+    observed_session_count: u32,
+    unrelated_session_count: u32,
+}
+
+fn windows_sandbox_cli_recovery_receipt_file_name(sequence: u32) -> String {
+    format!("{WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_PREFIX}{sequence:02}.json")
+}
+
+fn validate_windows_sandbox_cli_recovery_receipt(
+    receipt: &WindowsSandboxCliRecoveryReceipt,
+) -> Result<(), String> {
+    if receipt.schema_version != WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_SCHEMA
+        || receipt.sequence == 0
+        || receipt.sequence > MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS
+        || !valid_snapshot_id(&receipt.run_id)
+    {
+        return Err("The Windows Sandbox recovery receipt has an unsupported schema, sequence, or run identifier.".into());
+    }
+    if receipt.expected_session_id != windows_sandbox_cli_id_from_run_id(&receipt.run_id)? {
+        return Err("The Windows Sandbox recovery receipt is not bound to the exact run-derived session identifier.".into());
+    }
+    match (receipt.intent, receipt.interrupted_state) {
+        (WindowsSandboxCliRecoveryIntent::Launch, SandboxSessionState::LaunchRequested)
+        | (WindowsSandboxCliRecoveryIntent::Stop, SandboxSessionState::StopRequested) => {}
+        _ => return Err("The Windows Sandbox recovery receipt intent does not match its interrupted journal state.".into()),
+    }
+    let target_count = if receipt.observed_target_status.is_some() { 1 } else { 0 };
+    if receipt.observed_session_count as usize > MAX_WINDOWS_SANDBOX_CLI_SESSIONS
+        || receipt.unrelated_session_count as usize > MAX_WINDOWS_SANDBOX_CLI_SESSIONS
+        || receipt.observed_session_count != receipt.unrelated_session_count + target_count
+    {
+        return Err("The Windows Sandbox recovery receipt contains inconsistent or excessive session counts.".into());
+    }
+    Ok(())
+}
+
+fn encode_windows_sandbox_cli_recovery_receipt(
+    receipt: &WindowsSandboxCliRecoveryReceipt,
+) -> Result<Vec<u8>, String> {
+    validate_windows_sandbox_cli_recovery_receipt(receipt)?;
+    let bytes = serde_json::to_vec(receipt)
+        .map_err(|_| "The Windows Sandbox recovery receipt could not be encoded.".to_string())?;
+    if bytes.is_empty() || bytes.len() > MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_BYTES {
+        return Err("The Windows Sandbox recovery receipt exceeds its fixed size limit.".into());
+    }
+    Ok(bytes)
+}
+
+fn parse_windows_sandbox_cli_recovery_receipt(
+    bytes: &[u8],
+) -> Result<WindowsSandboxCliRecoveryReceipt, String> {
+    if bytes.is_empty() || bytes.len() > MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_BYTES {
+        return Err("The Windows Sandbox recovery receipt is empty or exceeds its fixed size limit.".into());
+    }
+    let receipt: WindowsSandboxCliRecoveryReceipt = serde_json::from_slice(bytes)
+        .map_err(|_| "The Windows Sandbox recovery receipt is malformed or has an unsupported schema.".to_string())?;
+    validate_windows_sandbox_cli_recovery_receipt(&receipt)?;
+    Ok(receipt)
+}
+
+fn windows_sandbox_cli_recovery_receipts_have_same_observation(
+    left: &WindowsSandboxCliRecoveryReceipt,
+    right: &WindowsSandboxCliRecoveryReceipt,
+) -> bool {
+    left.schema_version == right.schema_version
+        && left.run_id == right.run_id
+        && left.expected_session_id == right.expected_session_id
+        && left.intent == right.intent
+        && left.interrupted_state == right.interrupted_state
+        && left.observed_target_status == right.observed_target_status
+        && left.observed_session_count == right.observed_session_count
+        && left.unrelated_session_count == right.unrelated_session_count
+}
+
+fn windows_sandbox_cli_recovery_journal_context(
+    root: &Path,
+    expected_run_id: &str,
+) -> Result<(SandboxSessionJournal, WindowsSandboxCliRecoveryIntent, SandboxSessionState), String> {
+    if !valid_snapshot_id(expected_run_id) {
+        return Err("The expected Windows Sandbox recovery run identifier is invalid.".into());
+    }
+    let journal = load_sandbox_session_journal(root, expected_run_id)?;
+    if validate_sandbox_session_journal(&journal)? != SandboxSessionState::RecoveryRequired {
+        return Err("Durable Windows Sandbox recovery receipts require a RecoveryRequired session journal.".into());
+    }
+    let last = journal.entries.last()
+        .ok_or_else(|| "The Windows Sandbox recovery journal has no preservation transition.".to_string())?;
+    if last.event != SandboxSessionEvent::PreserveForRecovery
+        || last.next_state != SandboxSessionState::RecoveryRequired
+    {
+        return Err("The Windows Sandbox recovery journal does not end with a durable preservation transition.".into());
+    }
+    let (intent, interrupted_state) = match last.previous_state {
+        SandboxSessionState::LaunchRequested => (
+            WindowsSandboxCliRecoveryIntent::Launch,
+            SandboxSessionState::LaunchRequested,
+        ),
+        SandboxSessionState::StopRequested => (
+            WindowsSandboxCliRecoveryIntent::Stop,
+            SandboxSessionState::StopRequested,
+        ),
+        _ => return Err("The Windows Sandbox recovery journal does not preserve an interrupted CLI launch or stop.".into()),
+    };
+    Ok((journal, intent, interrupted_state))
+}
+
+#[allow(dead_code)]
+fn load_windows_sandbox_cli_recovery_receipts(
+    root: &Path,
+    expected_run_id: &str,
+) -> Result<Vec<WindowsSandboxCliRecoveryReceipt>, String> {
+    let (_journal, intent, interrupted_state) =
+        windows_sandbox_cli_recovery_journal_context(root, expected_run_id)?;
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The Windows Sandbox recovery receipt directory could not be opened safely.".to_string())?;
+    let metadata = root_handle.metadata()
+        .map_err(|_| "The Windows Sandbox recovery receipt directory identity could not be inspected.".to_string())?;
+    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
+        return Err("The Windows Sandbox recovery receipt root is not an ordinary directory.".into());
+    }
+    let mut receipts = Vec::new();
+    let mut gap_seen = false;
+    for sequence in 1..=MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS {
+        let file_name = windows_sandbox_cli_recovery_receipt_file_name(sequence);
+        match fs::symlink_metadata(root.join(&file_name)) {
+            Ok(file_metadata) => {
+                if gap_seen || !file_metadata.is_file() || is_reparse_or_symlink(&file_metadata) {
+                    return Err("The Windows Sandbox recovery receipt history contains a gap, directory, or reparse point.".into());
+                }
+                let bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
+                    &root_handle, &file_name,
+                    MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_BYTES as u64,
+                ).map_err(|_| "A Windows Sandbox recovery receipt is missing or unsafe.".to_string())?;
+                let receipt = parse_windows_sandbox_cli_recovery_receipt(&bytes)?;
+                if receipt.sequence != sequence
+                    || receipt.run_id != expected_run_id
+                    || receipt.intent != intent
+                    || receipt.interrupted_state != interrupted_state
+                {
+                    return Err("A Windows Sandbox recovery receipt does not match its immutable journal or sequence.".into());
+                }
+                if receipts.last().is_some_and(|previous|
+                    windows_sandbox_cli_recovery_receipts_have_same_observation(previous, &receipt))
+                {
+                    return Err("The Windows Sandbox recovery receipt history contains a duplicate adjacent observation.".into());
+                }
+                receipts.push(receipt);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => gap_seen = true,
+            Err(_) => return Err("The Windows Sandbox recovery receipt history could not be inspected safely.".into()),
+        }
+    }
+    match fs::symlink_metadata(root.join(windows_sandbox_cli_recovery_receipt_file_name(
+        MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS + 1,
+    ))) {
+        Ok(_) => return Err("The Windows Sandbox recovery receipt history exceeds its fixed generation limit.".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("The Windows Sandbox recovery receipt limit could not be checked safely.".into()),
+    }
+    Ok(receipts)
+}
+
+#[allow(dead_code)]
+fn persist_windows_sandbox_cli_recovery_observation(
+    root: &Path,
+    run_id: &str,
+    expected_session_id: &str,
+    intent: WindowsSandboxCliRecoveryIntent,
+    interrupted_state: SandboxSessionState,
+    observed_target_status: Option<WindowsSandboxCliSessionStatus>,
+    observed_session_count: u32,
+    unrelated_session_count: u32,
+) -> Result<u32, String> {
+    let (_journal, journal_intent, journal_interrupted_state) =
+        windows_sandbox_cli_recovery_journal_context(root, run_id)?;
+    if intent != journal_intent || interrupted_state != journal_interrupted_state {
+        return Err("The recovery observation does not match the durable interrupted CLI intent.".into());
+    }
+    let mut candidate = WindowsSandboxCliRecoveryReceipt {
+        schema_version: WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_SCHEMA,
+        sequence: 1,
+        run_id: run_id.to_string(),
+        expected_session_id: expected_session_id.to_string(),
+        intent,
+        interrupted_state,
+        observed_target_status,
+        observed_session_count,
+        unrelated_session_count,
+    };
+    validate_windows_sandbox_cli_recovery_receipt(&candidate)?;
+    let existing = load_windows_sandbox_cli_recovery_receipts(root, run_id)?;
+    if let Some(previous) = existing.last() {
+        if windows_sandbox_cli_recovery_receipts_have_same_observation(previous, &candidate) {
+            return Ok(previous.sequence);
+        }
+    }
+    if existing.len() >= MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS as usize {
+        return Err("The Windows Sandbox recovery observation history reached its fixed receipt limit.".into());
+    }
+    candidate.sequence = existing.len() as u32 + 1;
+    let bytes = encode_windows_sandbox_cli_recovery_receipt(&candidate)?;
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The Windows Sandbox recovery receipt directory could not be reopened safely.".to_string())?;
+    let file_name = windows_sandbox_cli_recovery_receipt_file_name(candidate.sequence);
+    let mut file = crate::coding_sandbox_fs::create_destination_entry(
+        &root_handle, OsStr::new(&file_name), false,
+    ).map_err(|_| "The next Windows Sandbox recovery receipt already exists or could not be created exclusively.".to_string())?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|_| "The Windows Sandbox recovery receipt write was incomplete; existing evidence was preserved.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "The Windows Sandbox recovery receipt could not be flushed; existing evidence was preserved.".to_string())?;
+    drop(file);
+    let read_back = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &root_handle, &file_name,
+        MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_BYTES as u64,
+    ).map_err(|_| "The new Windows Sandbox recovery receipt could not be safely read back.".to_string())?;
+    if parse_windows_sandbox_cli_recovery_receipt(&read_back)? != candidate {
+        return Err("The new Windows Sandbox recovery receipt failed exact read-back verification.".into());
+    }
+    let recovered = load_windows_sandbox_cli_recovery_receipts(root, run_id)?;
+    if recovered.last() != Some(&candidate) {
+        return Err("The Windows Sandbox recovery receipt history did not recover the exact appended generation.".into());
+    }
+    Ok(candidate.sequence)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13627,6 +13881,153 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         fs::remove_dir_all(launch_root).unwrap();
         fs::remove_dir_all(stop_root).unwrap();
         fs::remove_dir_all(invalid_root).unwrap();
+    }
+
+
+    #[test]
+    fn windows_sandbox_cli_recovery_receipts_are_durable_append_only_and_idempotent() {
+        let root = make_test_directory("wsb-recovery-receipt-history");
+        secure_private_workspace_directory(&root).unwrap();
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let initial = SandboxSessionJournal { schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA, run_id: run_id.into(), entries: Vec::new() };
+        let config = r#"<Configuration>
+  <VGpu>Disable</VGpu><Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection><PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder><HostFolder>C:\FRIDAY\snapshot</HostFolder><SandboxFolder>C:\FRIDAY\Project</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
+    <MappedFolder><HostFolder>C:\FRIDAY\result-mount</HostFolder><SandboxFolder>C:\FRIDAY\Results</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#;
+        let executable = r"C:\Program Files\WindowsApps\wsb.exe";
+        prepare_and_persist_windows_sandbox_cli_start_transaction(executable, config, &root, &initial, &[]).unwrap();
+        let target = WindowsSandboxCliSession { id: windows_sandbox_cli_id_from_run_id(run_id).unwrap(), status: WindowsSandboxCliSessionStatus::Running };
+        let first = preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[target.clone()]).unwrap();
+        assert_eq!(first.recovery_receipt_sequence, 1);
+        let original = load_windows_sandbox_cli_recovery_receipts(&root, run_id).unwrap();
+        assert_eq!(original.len(), 1);
+        let repeated = preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[target.clone()]).unwrap();
+        assert_eq!(repeated.recovery_receipt_sequence, 1);
+        assert_eq!(load_windows_sandbox_cli_recovery_receipts(&root, run_id).unwrap().len(), 1);
+
+        let unrelated = WindowsSandboxCliSession { id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(), status: WindowsSandboxCliSessionStatus::Stopped };
+        let changed = preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[target.clone(), unrelated]).unwrap();
+        assert_eq!(changed.recovery_receipt_sequence, 2);
+        let history = load_windows_sandbox_cli_recovery_receipts(&root, run_id).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0], original[0]);
+        assert_eq!(history[1].unrelated_session_count, 1);
+        let absent = preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[]).unwrap();
+        assert_eq!(absent.recovery_receipt_sequence, 3);
+        let final_history = load_windows_sandbox_cli_recovery_receipts(&root, run_id).unwrap();
+        assert_eq!(final_history.len(), 3);
+        assert_eq!(final_history[2].observed_target_status, None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_sandbox_cli_recovery_receipts_reject_wrong_intent_gaps_and_capacity_overflow() {
+        let root = make_test_directory("wsb-recovery-receipt-invalid");
+        secure_private_workspace_directory(&root).unwrap();
+        let run_id = "fedcba9876543210fedcba9876543210";
+        let initial = SandboxSessionJournal { schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA, run_id: run_id.into(), entries: Vec::new() };
+        let config = r#"<Configuration>
+  <VGpu>Disable</VGpu><Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection><PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder><HostFolder>C:\FRIDAY\snapshot</HostFolder><SandboxFolder>C:\FRIDAY\Project</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
+    <MappedFolder><HostFolder>C:\FRIDAY\result-mount</HostFolder><SandboxFolder>C:\FRIDAY\Results</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#;
+        let executable = r"C:\Program Files\WindowsApps\wsb.exe";
+        prepare_and_persist_windows_sandbox_cli_start_transaction(executable, config, &root, &initial, &[]).unwrap();
+        let expected_id = windows_sandbox_cli_id_from_run_id(run_id).unwrap();
+        let target = WindowsSandboxCliSession { id: expected_id.clone(), status: WindowsSandboxCliSessionStatus::Running };
+        preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[target.clone()]).unwrap();
+
+        let invalid = WindowsSandboxCliRecoveryReceipt {
+            schema_version: WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_SCHEMA, sequence: 2,
+            run_id: run_id.into(), expected_session_id: expected_id.clone(),
+            intent: WindowsSandboxCliRecoveryIntent::Stop, interrupted_state: SandboxSessionState::StopRequested,
+            observed_target_status: Some(WindowsSandboxCliSessionStatus::Running),
+            observed_session_count: 1, unrelated_session_count: 0,
+        };
+        let second_path = root.join(windows_sandbox_cli_recovery_receipt_file_name(2));
+        fs::write(&second_path, encode_windows_sandbox_cli_recovery_receipt(&invalid).unwrap()).unwrap();
+        assert!(load_windows_sandbox_cli_recovery_receipts(&root, run_id).is_err());
+        fs::remove_file(&second_path).unwrap();
+
+        let first_path = root.join(windows_sandbox_cli_recovery_receipt_file_name(1));
+        let backup_path = root.join("receipt-preserved-for-gap-test.json");
+        fs::rename(&first_path, &backup_path).unwrap();
+        let second = WindowsSandboxCliRecoveryReceipt {
+            schema_version: WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPT_SCHEMA, sequence: 2,
+            run_id: run_id.into(), expected_session_id: expected_id,
+            intent: WindowsSandboxCliRecoveryIntent::Launch, interrupted_state: SandboxSessionState::LaunchRequested,
+            observed_target_status: Some(WindowsSandboxCliSessionStatus::Running),
+            observed_session_count: 1, unrelated_session_count: 0,
+        };
+        fs::write(&second_path, encode_windows_sandbox_cli_recovery_receipt(&second).unwrap()).unwrap();
+        assert!(load_windows_sandbox_cli_recovery_receipts(&root, run_id).is_err());
+        fs::remove_file(&second_path).unwrap();
+        fs::rename(&backup_path, &first_path).unwrap();
+
+        let mut last_sequence = 1;
+        for count in 1..MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS {
+            let mut sessions = vec![target.clone()];
+            for index in 0..count {
+                sessions.push(WindowsSandboxCliSession {
+                    id: format!("{:08x}-0000-0000-0000-000000000000", index + 1),
+                    status: WindowsSandboxCliSessionStatus::Stopped,
+                });
+            }
+            last_sequence = preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &sessions)
+                .unwrap().recovery_receipt_sequence;
+        }
+        assert_eq!(last_sequence, MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS);
+        assert!(persist_windows_sandbox_cli_recovery_observation(
+            &root, run_id, &windows_sandbox_cli_id_from_run_id(run_id).unwrap(),
+            WindowsSandboxCliRecoveryIntent::Launch, SandboxSessionState::LaunchRequested,
+            Some(WindowsSandboxCliSessionStatus::Running), 2, 1,
+        ).is_err());
+        assert_eq!(load_windows_sandbox_cli_recovery_receipts(&root, run_id).unwrap().len(),
+            MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS as usize);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn windows_sandbox_cli_recovery_receipts_reject_reparse_point_entries() {
+        use std::os::unix::fs::symlink;
+        let root = make_test_directory("wsb-recovery-receipt-symlink");
+        secure_private_workspace_directory(&root).unwrap();
+        let run_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let initial = SandboxSessionJournal { schema_version: SANDBOX_SESSION_JOURNAL_SCHEMA, run_id: run_id.into(), entries: Vec::new() };
+        let config = r#"<Configuration>
+  <VGpu>Disable</VGpu><Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection><PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MappedFolders>
+    <MappedFolder><HostFolder>C:\FRIDAY\snapshot</HostFolder><SandboxFolder>C:\FRIDAY\Project</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
+    <MappedFolder><HostFolder>C:\FRIDAY\result-mount</HostFolder><SandboxFolder>C:\FRIDAY\Results</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
+  </MappedFolders>
+</Configuration>
+"#;
+        let executable = r"C:\Program Files\WindowsApps\wsb.exe";
+        prepare_and_persist_windows_sandbox_cli_start_transaction(executable, config, &root, &initial, &[]).unwrap();
+        preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(&root, run_id, &[]).unwrap();
+        let outside = root.join("outside-recovery-receipt.json");
+        fs::write(&outside, b"do-not-follow").unwrap();
+        symlink(&outside, root.join(windows_sandbox_cli_recovery_receipt_file_name(1))).unwrap();
+        assert!(load_windows_sandbox_cli_recovery_receipts(&root, run_id).is_err());
+        assert_eq!(fs::read(outside).unwrap(), b"do-not-follow");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
