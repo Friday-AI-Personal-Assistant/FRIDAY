@@ -9989,7 +9989,7 @@ mod tests {
     fn guest_result_file_collection_entrypoint_requires_stop_proof() {
         let run_id = "0123456789abcdef0123456789abcdef";
         let directory = make_test_directory("guest-result-stop-proof");
-        fs::write(directory.join(GUEST_RESULT_FILE_NAME), guest_result_json("passed", r#",\"exitCode\":0"#)).unwrap();
+        fs::write(directory.join(GUEST_RESULT_FILE_NAME), guest_result_json("passed", r#","exitCode":0"#)).unwrap();
         let running = stopped_sandbox_journal_fixture(run_id, false);
         assert!(authorize_guest_result_collection_after_sandbox_stop(&running, run_id).is_err());
         let stopped = stopped_sandbox_journal_fixture(run_id, true);
