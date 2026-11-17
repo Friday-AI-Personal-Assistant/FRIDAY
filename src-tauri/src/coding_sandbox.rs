@@ -1968,7 +1968,7 @@ fn recover_markerless_guest_runtime_staging_root(
 
     let journal_root = guest_runtime_cleanup_journal_root_path(parent_path, &anchor.bundle_id)?;
     let mut journal = load_latest_guest_runtime_cleanup_journal_from_anchor(
-        &journal_root, parent_path, parent_identity, manifest, anchor, provisioning,
+        &journal_root, parent_path, parent_handle, parent_identity, manifest, anchor, provisioning,
     )?;
     let mut phase = validate_guest_runtime_cleanup_journal(&journal)?;
     if !matches!(
@@ -2056,6 +2056,7 @@ fn recover_markerless_guest_runtime_staging_root(
 fn load_latest_guest_runtime_cleanup_journal_from_anchor(
     root: &Path,
     parent_path: &Path,
+    parent_handle: &File,
     parent_identity: (u64, u64),
     manifest: &GuestRuntimeArtifactManifest,
     anchor: &GuestRuntimeManifestTrustAnchor,
@@ -2069,8 +2070,19 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
     if root != expected_root || provisioning.staging_root.parent() != Some(parent_path) {
         return Err("The cleanup journal is not at the authenticated provisioning location.".into());
     }
-    let journal_root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
-        .map_err(|_| "The cleanup journal root could not be opened safely for recovery.".to_string())?;
+    // Bind journal discovery to the already-authenticated parent directory.
+    // Opening the journal by absolute path could follow a substituted parent.
+    let held_parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        parent_path, parent_handle,
+    ).map_err(|_| "The held cleanup journal parent could not be verified for recovery.".to_string())?;
+    if held_parent_identity != parent_identity {
+        return Err("The held cleanup journal parent differs from its authenticated identity.".into());
+    }
+    let journal_root_name = root.file_name()
+        .ok_or("The authenticated cleanup journal root has no final path component.")?;
+    let journal_root_handle = crate::coding_sandbox_fs::open_child_directory_nofollow(
+        parent_handle, journal_root_name,
+    ).map_err(|_| "The cleanup journal child could not be opened safely relative to its authenticated parent.".to_string())?;
     let journal_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &journal_root_handle)
         .map_err(|_| "The cleanup journal root identity could not be verified for recovery.".to_string())?;
     let mut latest: Option<GuestRuntimeCleanupJournal> = None;
@@ -2128,6 +2140,12 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
             .map_err(|_| "The cleanup journal root changed while markerless recovery history was being loaded.".to_string())?;
     if final_journal_root_identity != journal_root_identity {
         return Err("The cleanup journal root identity changed during markerless recovery history loading.".into());
+    }
+    let final_parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
+        parent_path, parent_handle,
+    ).map_err(|_| "The cleanup journal parent changed during markerless recovery history loading.".to_string())?;
+    if final_parent_identity != parent_identity {
+        return Err("The cleanup journal parent identity changed during markerless recovery history loading.".into());
     }
     Ok(journal)
 }
@@ -13632,6 +13650,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
                 let latest = load_latest_guest_runtime_cleanup_journal_from_anchor(
                     &journal_root,
                     &root,
+                    &parent,
                     crate::coding_sandbox_fs::verified_directory_identity(&root, &parent).unwrap(),
                     &manifest,
                     &anchor,
