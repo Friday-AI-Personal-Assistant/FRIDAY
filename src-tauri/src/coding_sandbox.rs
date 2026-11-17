@@ -7687,7 +7687,7 @@ mod tests {
             &parent, provisioning.staging_root.file_name().unwrap(),
         ).unwrap();
         let authorization = authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning,
         ).unwrap();
         let cleanup = build_guest_runtime_staging_cleanup_plan(
@@ -7695,7 +7695,7 @@ mod tests {
         ).unwrap();
 
         let preflight = authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).unwrap();
         assert_eq!(preflight.authorization, authorization);
@@ -7705,7 +7705,7 @@ mod tests {
         let mut altered_cleanup = cleanup.clone();
         altered_cleanup.payload_files[0].sha256 = "0".repeat(64);
         assert!(authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning, &altered_cleanup,
         ).is_err(), "preflight must reject a cleanup plan not derived from the authenticated manifest");
 
@@ -7742,7 +7742,7 @@ mod tests {
             &parent, provisioning.staging_root.file_name().unwrap(),
         ).unwrap();
         let authorization = authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning,
         ).unwrap();
         let cleanup = build_guest_runtime_staging_cleanup_plan(
@@ -7752,7 +7752,7 @@ mod tests {
         let payload = provisioning.staging_root.join("bin/cargo.exe");
         fs::write(&payload, b"changed-payload").unwrap();
         assert!(authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "preflight must re-hash payload files instead of trusting the earlier proof");
         fs::write(&payload, b"cargo-fixture").unwrap();
@@ -7760,7 +7760,7 @@ mod tests {
         let unexpected = provisioning.staging_root.join("unexpected.bin");
         fs::write(&unexpected, b"unlisted").unwrap();
         assert!(authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "preflight must reject additions after the earlier proof");
         fs::remove_file(&unexpected).unwrap();
@@ -7769,7 +7769,7 @@ mod tests {
         let marker_bytes = fs::read(&marker).unwrap();
         fs::write(&marker, b"invalid-owner-marker").unwrap();
         assert!(authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "preflight must authenticate the ownership marker again");
         fs::write(&marker, marker_bytes).unwrap();
@@ -7798,7 +7798,7 @@ mod tests {
             &parent, provisioning.staging_root.file_name().unwrap(),
         ).unwrap();
         let authorization = authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning,
         ).unwrap();
         let cleanup = build_guest_runtime_staging_cleanup_plan(
@@ -7816,7 +7816,7 @@ mod tests {
             &parent, decoy_path.file_name().unwrap(),
         ).unwrap();
         assert!(authorize_guest_runtime_staging_cleanup_preflight(
-            &staging, &root, &parent, &provisioning.staging_root, decoy_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &decoy_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "preflight must reject a sibling directory handle with a stale identity");
 
@@ -11419,7 +11419,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             &parent, provisioning.staging_root.file_name().unwrap(),
         ).unwrap();
         let staging = verify_staged_guest_runtime_bundle_with_final_root(
-            &provisioning.staging_root, staging_handle.try_clone().unwrap(), &manifest, &anchor,
+            &provisioning.staging_root, &staging_handle, &manifest, &anchor,
             &provisioning, final_root.clone(),
         ).unwrap();
 
@@ -11460,7 +11460,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             &parent, provisioning.staging_root.file_name().unwrap(),
         ).unwrap();
         let staging = verify_staged_guest_runtime_bundle_with_final_root(
-            &provisioning.staging_root, staging_handle.try_clone().unwrap(), &manifest, &anchor,
+            &provisioning.staging_root, &staging_handle, &manifest, &anchor,
             &provisioning, final_root.clone(),
         ).unwrap();
         fs::create_dir(&final_root).unwrap();
@@ -11884,7 +11884,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             &parent, provisioning.staging_root.file_name().unwrap(),
         ).unwrap();
         let authorization = authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle,
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning,
         ).unwrap();
         let cleanup = build_guest_runtime_staging_cleanup_plan(
@@ -11892,7 +11892,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         ).unwrap();
 
         execute_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).unwrap();
 
@@ -11926,7 +11926,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             &parent, provisioning.staging_root.file_name().unwrap(),
         ).unwrap();
         let authorization = authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning,
         ).unwrap();
         let cleanup = build_guest_runtime_staging_cleanup_plan(
@@ -11938,7 +11938,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let marker_bytes = fs::read(&marker).unwrap();
         fs::write(&payload, b"tampered-payload").unwrap();
         assert!(execute_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "tampered payload must be rejected before the first deletion");
         assert_eq!(fs::read(&payload).unwrap(), b"tampered-payload");
@@ -11949,7 +11949,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let unexpected = provisioning.staging_root.join("unexpected.bin");
         fs::write(&unexpected, b"unlisted-data").unwrap();
         assert!(execute_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "unexpected entries must be rejected before the first deletion");
         assert_eq!(fs::read(&payload).unwrap(), b"cargo-fixture");
@@ -11984,7 +11984,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             &parent, provisioning.staging_root.file_name().unwrap(),
         ).unwrap();
         let authorization = authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning,
         ).unwrap();
         let cleanup = build_guest_runtime_staging_cleanup_plan(
@@ -11997,7 +11997,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             &parent, decoy_path.file_name().unwrap(),
         ).unwrap();
         assert!(execute_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, decoy_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &decoy_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).is_err(), "a sibling directory handle must not authorize deletion of the staged bundle");
         assert_eq!(
@@ -12035,7 +12035,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
             &parent, provisioning.staging_root.file_name().unwrap(),
         ).unwrap();
         let authorization = authorize_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning,
         ).unwrap();
         let cleanup = build_guest_runtime_staging_cleanup_plan(
@@ -12043,7 +12043,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         ).unwrap();
 
         let error = execute_verified_guest_runtime_staging_cleanup(
-            &staging, &root, &parent, &provisioning.staging_root, staging_handle.try_clone().unwrap(),
+            &staging, &root, &parent, &provisioning.staging_root, &staging_handle,
             &manifest, &anchor, &provisioning, &cleanup,
         ).unwrap_err();
         assert!(error.contains("not supported"));
