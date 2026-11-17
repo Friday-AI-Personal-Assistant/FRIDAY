@@ -3862,8 +3862,10 @@ try {
 } catch {
   $policyReadFailed = $true
 }
-$mappedFoldersPolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sandboxPolicy -or $null -eq $sandboxPolicy.AllowMappedFolders) { $null } else { try { [int]$sandboxPolicy.AllowMappedFolders } catch { -1 } }
-$mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sandboxPolicy -or $null -eq $sandboxPolicy.AllowWriteToMappedFolders) { $null } else { try { [int]$sandboxPolicy.AllowWriteToMappedFolders } catch { -1 } }
+$mappedFoldersRaw = if ($null -eq $sandboxPolicy) { $null } else { $sandboxPolicy.AllowMappedFolders }
+$mappedFolderWriteRaw = if ($null -eq $sandboxPolicy) { $null } else { $sandboxPolicy.AllowWriteToMappedFolders }
+$mappedFoldersPolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sandboxPolicy -or $null -eq $mappedFoldersRaw) { $null } elseif (($mappedFoldersRaw -is [int]) -and ($mappedFoldersRaw -in @(0, 1))) { $mappedFoldersRaw } else { -1 }
+$mappedFolderWritePolicy = if ($policyReadFailed) { -1 } elseif ($null -eq $sandboxPolicy -or $null -eq $mappedFolderWriteRaw) { $null } elseif (($mappedFolderWriteRaw -is [int]) -and ($mappedFolderWriteRaw -in @(0, 1))) { $mappedFolderWriteRaw } else { -1 }
 [pscustomobject]@{
   edition = [string]$cv.EditionID
   build = [string]$cv.CurrentBuildNumber
@@ -12485,7 +12487,12 @@ mod tests {
         assert_eq!(sandbox_policy_state(Some(&serde_json::json!(0))), "Blocked");
         assert_eq!(sandbox_policy_state(Some(&serde_json::json!(1))), "Allowed");
         assert_eq!(sandbox_policy_state(Some(&serde_json::json!(2))), "Unknown");
+        assert_eq!(sandbox_policy_state(Some(&serde_json::json!(-1))), "Unknown");
+        assert_eq!(sandbox_policy_state(Some(&serde_json::json!(1.0))), "Unknown");
+        assert_eq!(sandbox_policy_state(Some(&serde_json::json!(true))), "Unknown");
         assert_eq!(sandbox_policy_state(Some(&serde_json::json!("1"))), "Unknown");
+        assert_eq!(sandbox_policy_state(Some(&serde_json::json!("Allowed"))), "Unknown");
+        assert_eq!(sandbox_policy_state(Some(&serde_json::json!([1]))), "Unknown");
     }
 
     #[test]
