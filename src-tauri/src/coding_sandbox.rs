@@ -2116,9 +2116,19 @@ fn load_latest_guest_runtime_cleanup_journal_from_anchor(
         || journal.staging_root_path != provisioning.staging_root.to_string_lossy()
         || journal.parent_identity_volume != parent_identity.0
         || journal.parent_identity_file != parent_identity.1
-        || (journal.journal_root_identity_volume, journal.journal_root_identity_file) != guest_runtime_cleanup_journal_root_identity(root)?
+        || journal.entries.len() != generations.len()
+        || journal.entries.last().map(|entry| entry.sequence) != Some(generations.len())
     {
         return Err("The latest cleanup journal differs from the authenticated runtime plan.".into());
+    }
+    // Revalidate the exact directory handle used to enumerate and read every
+    // generation. Reopening by path here could silently verify a replacement
+    // directory instead of the journal root whose contents were inspected.
+    let final_journal_root_identity =
+        crate::coding_sandbox_fs::verified_directory_identity(root, &journal_root_handle)
+            .map_err(|_| "The cleanup journal root changed while markerless recovery history was being loaded.".to_string())?;
+    if final_journal_root_identity != journal_root_identity {
+        return Err("The cleanup journal root identity changed during markerless recovery history loading.".into());
     }
     Ok(journal)
 }
