@@ -927,6 +927,159 @@ fn authorize_guest_runtime_staging_cleanup_preflight(
     })
 }
 
+/// Open the parent directory of one canonical manifest-relative path using
+/// only no-follow, handle-relative child opens. The returned handle is the
+/// only base used for the subsequent file disposition.
+#[cfg(windows)]
+fn open_runtime_cleanup_relative_parent(root: &File, relative_path: &str) -> io::Result<(File, String)> {
+    let components = relative_path.split('\\').collect::<Vec<_>>();
+    if components.is_empty() || components.len() > 32 || components.iter().any(|part| {
+        part.is_empty() || *part == "." || *part == ".."
+            || !part.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    }) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime cleanup path is not canonical"));
+    }
+    let mut parent = root.try_clone()?;
+    for component in &components[..components.len() - 1] {
+        parent = crate::coding_sandbox_fs::open_child_directory_nofollow(&parent, OsStr::new(component))?;
+    }
+    Ok((parent, components[components.len() - 1].to_string()))
+}
+
+/// Execute one freshly authenticated runtime cleanup plan. The entire original
+/// tree is verified before the first mutation. Each payload is read and hashed
+/// through no-follow handles, then the delete primitive repeats the digest
+/// check through the exact handle it marks for deletion. Directories are
+/// removed deepest-first, the owner marker is authenticated and removed last,
+/// and the root is removed only when empty and still bound to both identities.
+///
+/// This is intentionally Windows-only. An interruption may leave an
+/// incomplete, untrusted staging directory; automatic retry/recovery is not
+/// enabled by this function.
+#[cfg(unix)]
+#[allow(dead_code)]
+fn execute_verified_guest_runtime_staging_cleanup(
+    _staging: &VerifiedGuestRuntimeStaging,
+    _parent_path: &Path,
+    _parent_handle: &File,
+    _staging_root_path: &Path,
+    _staging_root: &File,
+    _manifest: &GuestRuntimeArtifactManifest,
+    _anchor: &GuestRuntimeManifestTrustAnchor,
+    _provisioning: &GuestRuntimeProvisioningPlan,
+    _cleanup: &GuestRuntimeStagingCleanupPlan,
+) -> Result<(), String> {
+    Err("Authenticated guest runtime cleanup is not supported on this platform.".into())
+}
+
+#[cfg(windows)]
+#[allow(dead_code)]
+fn execute_verified_guest_runtime_staging_cleanup(
+    staging: &VerifiedGuestRuntimeStaging,
+    parent_path: &Path,
+    parent_handle: &File,
+    staging_root_path: &Path,
+    staging_root: &File,
+    manifest: &GuestRuntimeArtifactManifest,
+    anchor: &GuestRuntimeManifestTrustAnchor,
+    provisioning: &GuestRuntimeProvisioningPlan,
+    cleanup: &GuestRuntimeStagingCleanupPlan,
+) -> Result<(), String> {
+    let preflight = authorize_guest_runtime_staging_cleanup_preflight(
+        staging, parent_path, parent_handle, staging_root_path, staging_root,
+        manifest, anchor, provisioning, cleanup,
+    )?;
+    let authorization = &preflight.authorization;
+    let plan = &preflight.cleanup;
+    let root_name = plan.staging_root.file_name()
+        .ok_or("The authenticated runtime staging root has no final path component.")?;
+
+    let check_identities = || -> Result<(), String> {
+        let parent_identity = crate::coding_sandbox_fs::verified_directory_identity(
+            parent_path, parent_handle,
+        ).map_err(|_| "Runtime cleanup could not revalidate its held parent directory.".to_string())?;
+        let root_identity = crate::coding_sandbox_fs::verified_directory_identity(
+            staging_root_path, staging_root,
+        ).map_err(|_| "Runtime cleanup could not revalidate its held staging directory.".to_string())?;
+        if parent_identity != authorization.parent_identity
+            || root_identity != authorization.root_identity
+        {
+            return Err("Runtime cleanup detected a changed parent or staging-root identity.".into());
+        }
+        Ok(())
+    };
+
+    // Payload files are deleted only after an independent bounded read and
+    // digest check. The native delete helper hashes the same opened file handle
+    // again immediately before setting its delete disposition.
+    for file in &plan.payload_files {
+        check_identities()?;
+        let bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
+            staging_root, &file.relative_path, file.max_bytes,
+        ).map_err(|_| "A runtime payload could not be safely re-read before cleanup.".to_string())?;
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(&bytes)
+            .iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        if digest != file.sha256 || bytes.is_empty() || bytes.len() as u64 > file.max_bytes {
+            return Err("A runtime payload no longer matches its authenticated cleanup inventory.".into());
+        }
+        let (file_parent, file_name) = open_runtime_cleanup_relative_parent(
+            staging_root, &file.relative_path,
+        ).map_err(|_| "A runtime payload parent could not be safely opened.".to_string())?;
+        check_identities()?;
+        crate::coding_sandbox_fs::remove_verified_runtime_file(
+            &file_parent, OsStr::new(&file_name), bytes.len() as u64, &file.sha256,
+        ).map_err(|_| "A runtime payload failed same-handle verification or safe deletion.".to_string())?;
+    }
+
+    // Directories are ordered deepest-first by the authenticated plan. Each
+    // directory helper opens relative to its held parent and deletes only the
+    // same handle after proving it is an ordinary empty directory.
+    for relative_directory in &plan.directories {
+        check_identities()?;
+        let (directory_parent, directory_name) = open_runtime_cleanup_relative_parent(
+            staging_root, relative_directory,
+        ).map_err(|_| "A runtime cleanup directory parent could not be safely opened.".to_string())?;
+        check_identities()?;
+        crate::coding_sandbox_fs::remove_verified_runtime_empty_directory(
+            &directory_parent, OsStr::new(&directory_name),
+        ).map_err(|_| "A runtime cleanup directory was not safely removable and empty.".to_string())?;
+    }
+
+    check_identities()?;
+    let (remaining_files, remaining_directories) =
+        crate::coding_sandbox_fs::collect_runtime_tree_inventory(staging_root, 32, 1281)
+            .map_err(|_| "Runtime cleanup could not verify the marker-only staging root.".to_string())?;
+    if !remaining_directories.is_empty()
+        || remaining_files.len() != 1
+        || remaining_files[0] != plan.ownership_marker
+    {
+        return Err("Runtime staging root contains unexpected entries; the ownership marker was preserved.".into());
+    }
+
+    // The owner marker is the final file and is checked against the exact
+    // authenticated byte length and digest captured in the cleanup plan.
+    check_identities()?;
+    crate::coding_sandbox_fs::remove_verified_runtime_owner_marker(
+        staging_root, OsStr::new(&plan.ownership_marker),
+        plan.ownership_marker_size, &plan.ownership_marker_sha256,
+    ).map_err(|_| "The authenticated runtime ownership marker could not be safely removed.".to_string())?;
+
+    check_identities()?;
+    let (remaining_files, remaining_directories) =
+        crate::coding_sandbox_fs::collect_runtime_tree_inventory(staging_root, 32, 1281)
+            .map_err(|_| "Runtime cleanup could not verify the empty staging root.".to_string())?;
+    if !remaining_files.is_empty() || !remaining_directories.is_empty() {
+        return Err("Runtime staging root is not empty after authenticated payload cleanup.".into());
+    }
+
+    check_identities()?;
+    crate::coding_sandbox_fs::remove_verified_runtime_root_directory(
+        parent_handle, root_name, authorization.parent_identity, authorization.root_identity,
+    ).map_err(|_| "The authenticated empty runtime staging root could not be safely removed.".to_string())?;
+    Ok(())
+}
+
 /// A non-executing, no-overwrite publication intent derived only from a
 /// verified staging proof and the authenticated provisioning plan. This is
 /// not a filesystem rename and does not make the staged bundle executable.
