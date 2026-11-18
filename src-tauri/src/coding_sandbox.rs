@@ -9341,6 +9341,82 @@ fn verify_guest_result_gpt_readback(
     Ok(())
 }
 
+/// Validates the on-disk NTFS BIOS parameter block read directly from the
+/// attached result disk. The Windows formatting report is useful evidence, but
+/// it is not a substitute for checking the bytes that will actually be mounted.
+fn validate_guest_result_ntfs_boot_sector(
+    sector: &[u8],
+    partition_size: u64,
+) -> Result<u64, String> {
+    if sector.len() != 512 || partition_size < 512
+        || partition_size % GUEST_RESULT_GPT_SECTOR_BYTES != 0
+        || &sector[3..11] != b"NTFS    "
+        || u16::from_le_bytes([sector[11], sector[12]]) as u64 != GUEST_RESULT_GPT_SECTOR_BYTES
+        || sector[21] != 0xF8
+        || sector[510] != 0x55 || sector[511] != 0xAA
+    {
+        return Err("The result partition does not contain a valid 512-byte NTFS boot sector.".into());
+    }
+    let sectors_per_cluster = sector[13];
+    if sectors_per_cluster == 0 || sectors_per_cluster > 128
+        || !sectors_per_cluster.is_power_of_two()
+    {
+        return Err("The NTFS boot sector reports an unsupported cluster geometry.".into());
+    }
+    let total_sectors = u64::from_le_bytes(
+        sector[40..48].try_into()
+            .map_err(|_| "The NTFS boot sector's volume size field is truncated.".to_string())?
+    );
+    let partition_sectors = partition_size / GUEST_RESULT_GPT_SECTOR_BYTES;
+    if total_sectors == 0 || total_sectors > partition_sectors
+        || partition_sectors - total_sectors > 2048
+    {
+        return Err("The NTFS boot sector's volume extent is outside the exact bounded partition.".into());
+    }
+    let mft_cluster = u64::from_le_bytes(sector[48..56].try_into()
+        .map_err(|_| "The NTFS master-file-table location is truncated.".to_string())?);
+    let mirror_cluster = u64::from_le_bytes(sector[56..64].try_into()
+        .map_err(|_| "The NTFS mirror-table location is truncated.".to_string())?);
+    if mft_cluster >= total_sectors / sectors_per_cluster as u64
+        || mirror_cluster >= total_sectors / sectors_per_cluster as u64
+    {
+        return Err("The NTFS boot sector points its metadata tables outside the volume.".into());
+    }
+    Ok(total_sectors)
+}
+
+#[cfg(windows)]
+fn verify_guest_result_ntfs_boot_sector_readback(
+    disk: &OwnedRawGuestDisk,
+    partition_plan: &GuestResultPartitionPlan,
+) -> Result<(), String> {
+    let partition_offset = partition_plan.first_lba.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+        .ok_or_else(|| "The NTFS partition offset overflowed.".to_string())?;
+    let partition_size = (partition_plan.last_lba - partition_plan.first_lba + 1)
+        .checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+        .ok_or_else(|| "The NTFS partition size overflowed.".to_string())?;
+    let mut primary = [0u8; 512];
+    disk.read_exact_at(partition_offset, &mut primary)?;
+    let total_sectors = validate_guest_result_ntfs_boot_sector(&primary, partition_size)?;
+    let backup_offset = partition_offset.checked_add(
+        total_sectors.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+            .ok_or_else(|| "The NTFS backup boot-sector offset overflowed.".to_string())?
+    ).and_then(|offset| offset.checked_sub(512))
+        .ok_or_else(|| "The NTFS backup boot-sector offset is invalid.".to_string())?;
+    let mut backup = [0u8; 512];
+    disk.read_exact_at(backup_offset, &mut backup)?;
+    let backup_sectors = validate_guest_result_ntfs_boot_sector(&backup, partition_size)?;
+    if backup_sectors != total_sectors
+        || primary[3..14] != backup[3..14]
+        || primary[40..64] != backup[40..64]
+        || primary[72..80] != backup[72..80]
+        || primary[510..512] != backup[510..512]
+    {
+        return Err("The NTFS primary and backup boot sectors do not describe the same bounded volume.".into());
+    }
+    Ok(())
+}
+
 /// Initializes only the verified FRIDAY-owned attached VHDX. It refuses any
 /// nonblank metadata region, journals intent before the first write, writes
 /// backup structures before primary structures, flushes each phase, and
@@ -9650,6 +9726,7 @@ $driveLetter = if ([string]::IsNullOrEmpty($volumeDriveLetter)) { $null } else {
         let raw_disk = OwnedRawGuestDisk::open_attached_device(attached)?;
         raw_disk.verify_fixed_geometry()?;
         raw_disk.verify_windows_partition_layout(&partition_plan, &metadata)?;
+        verify_guest_result_ntfs_boot_sector_readback(&raw_disk, &partition_plan)?;
         Ok(volume_path)
     })();
     let volume_path = match result {
@@ -13351,6 +13428,49 @@ mod tests {
         let mut changed = valid.clone();
         changed.drive_letter = Some("R".into());
         assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+    }
+
+    #[test]
+    fn ntfs_boot_sector_requires_exact_bounded_ntfs_geometry_and_matching_backup() {
+        let mut sector = [0u8; 512];
+        sector[3..11].copy_from_slice(b"NTFS    ");
+        sector[11..13].copy_from_slice(&512u16.to_le_bytes());
+        sector[13] = 8;
+        sector[21] = 0xF8;
+        sector[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        sector[48..56].copy_from_slice(&4u64.to_le_bytes());
+        sector[56..64].copy_from_slice(&8u64.to_le_bytes());
+        sector[510..512].copy_from_slice(&[0x55, 0xAA]);
+        let partition_size = 4096 * GUEST_RESULT_GPT_SECTOR_BYTES;
+        assert_eq!(
+            validate_guest_result_ntfs_boot_sector(&sector, partition_size).unwrap(),
+            4096
+        );
+
+        let mut changed = sector;
+        changed[3..11].copy_from_slice(b"FAT32   ");
+        assert!(validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err());
+
+        let mut changed = sector;
+        changed[11..13].copy_from_slice(&4096u16.to_le_bytes());
+        assert!(validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err());
+
+        let mut changed = sector;
+        changed[13] = 3;
+        assert!(validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err());
+
+        let mut changed = sector;
+        changed[40..48].copy_from_slice(&4097u64.to_le_bytes());
+        assert!(validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err());
+
+        let mut changed = sector;
+        changed[48..56].copy_from_slice(&4096u64.to_le_bytes());
+        assert!(validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err());
+
+        let mut changed = sector;
+        changed[510..512].copy_from_slice(&[0, 0]);
+        assert!(validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err());
+        assert!(validate_guest_result_ntfs_boot_sector(&sector, partition_size - 2049 * 512).is_err());
     }
 
     #[test]

@@ -2363,3 +2363,20 @@ The native Windows lifecycle test also exercises the attached-handle check.
 This remains storage-boundary hardening, not proof of a guest result-transfer
 channel or physical Windows Sandbox acceptance; guest execution remains
 disabled.
+
+
+## Raw NTFS boot-sector read-back before accepting format — #932
+
+After the fixed Windows NTFS formatting operation returns its bounded structured
+report, FRIDAY now independently reads the primary NTFS boot sector from the
+exact attached physical disk. It validates the NTFS OEM identifier, 512-byte
+sector size, supported cluster geometry, media descriptor, boot signature,
+volume extent, and in-volume MFT/MFT-mirror locations. It then reads the NTFS
+backup boot sector at the volume's declared final sector and verifies that its
+critical identity and geometry fields agree with the primary copy.
+
+The journal can advance to Formatted only after this raw-disk evidence, the
+existing VHDX identity checks, and the Windows partition-layout checks all
+succeed. Any mismatch preserves the disk for recovery. This verifies the
+filesystem metadata boundary; it does not provide a guest-to-host result
+channel or enable guest execution.
