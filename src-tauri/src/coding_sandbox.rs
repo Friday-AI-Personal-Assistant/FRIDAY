@@ -13945,7 +13945,7 @@ mod tests {
         assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
 
         let mut changed = valid.clone();
-        changed.size_remaining += 1;
+        changed.size_remaining = changed.volume_size + 1;
         assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
 
         let mut changed = valid;
