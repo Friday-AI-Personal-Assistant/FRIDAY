@@ -2762,3 +2762,18 @@ This strengthens coverage of the existing full-field comparison without
 changing production validation, storage limits, formatting behavior, result
 transfer, or guest execution policy. Physical Windows formatting and
 read-back acceptance remain separate requirements.
+
+
+## Exhaustive NTFS primary read-back disagreement matrix — #976
+
+Added a cross-platform regression test for the three-view NTFS read-back
+validator. It first confirms an identical valid volume-handle primary,
+raw-disk primary, and backup sector is accepted. It then independently flips
+each of the 512 bytes in the volume-handle view and raw-disk primary view;
+every disagreement must be rejected, including differences in boot-code and
+reserved regions outside the BPB.
+
+This is test and documentation coverage only. Production read-back behavior,
+storage limits, privilege boundaries, result-transfer design, and guest
+execution policy are unchanged. Physical Windows device-handle acceptance
+remains separate.

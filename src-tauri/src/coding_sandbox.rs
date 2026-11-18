@@ -14138,6 +14138,50 @@ mod tests {
         ).expect("identical valid primary and backup boot sectors must be accepted");
     }
 
+
+    #[test]
+    fn ntfs_readback_rejects_every_independent_primary_sector_byte_disagreement() {
+        let mut primary = [0u8; 512];
+        primary[3..11].copy_from_slice(b"NTFS    ");
+        primary[11..13].copy_from_slice(&512u16.to_le_bytes());
+        primary[13] = 8;
+        primary[21] = 0xF8;
+        primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        primary[48..56].copy_from_slice(&4u64.to_le_bytes());
+        primary[56..64].copy_from_slice(&8u64.to_le_bytes());
+        primary[64] = 0xF6;
+        primary[68] = 0xF4;
+        primary[510..512].copy_from_slice(&[0x55, 0xAA]);
+        let partition_size = 4096 * GUEST_RESULT_GPT_SECTOR_BYTES;
+
+        validate_guest_result_ntfs_boot_sector_readback(
+            &primary, &primary, &primary, partition_size,
+        ).expect("identical valid volume, raw-primary, and backup reads must pass");
+
+        // The volume handle and raw-disk primary read are independent views.
+        // Any single-byte difference anywhere in the 512-byte sector, including
+        // boot-code and reserved regions outside the BPB, must fail closed.
+        for offset in 0usize..512 {
+            let mut changed_raw = primary;
+            changed_raw[offset] ^= 0x01;
+            assert!(
+                validate_guest_result_ntfs_boot_sector_readback(
+                    &primary, &changed_raw, &primary, partition_size,
+                ).is_err(),
+                "raw-primary mismatch at byte {offset} must be rejected",
+            );
+
+            let mut changed_volume = primary;
+            changed_volume[offset] ^= 0x01;
+            assert!(
+                validate_guest_result_ntfs_boot_sector_readback(
+                    &changed_volume, &primary, &primary, partition_size,
+                ).is_err(),
+                "volume-primary mismatch at byte {offset} must be rejected",
+            );
+        }
+    }
+
     #[test]
     fn ntfs_metadata_record_size_encoding_covers_signed_and_cluster_boundaries() {
         // Negative encodings are base-2 exponents. The supported byte-size
