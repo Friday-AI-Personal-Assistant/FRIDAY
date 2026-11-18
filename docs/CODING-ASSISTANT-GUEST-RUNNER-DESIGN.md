@@ -2566,6 +2566,18 @@ synthetic validation coverage; it does not replace physical Windows formatting,
 mount/read-back acceptance, prove guest result transfer, or enable guest
 execution.
 
+## NTFS BPB volume-serial field offset correction — #963
+
+Corrected the documented and tested NTFS volume-serial-number byte range to
+`[72..80]`. Bytes `[68..72]` contain the index-buffer size encoding and must
+remain independently validated as an NTFS metadata field. The earlier test
+wrote the serial fixture over that encoding, which happened to leave a valid
+encoding but did not actually exercise the serial-number field. The production
+validator's field interpretation was already correct; this batch corrects the
+field annotation and regression fixture and adds a boundary matrix for signed
+byte-size and positive cluster-count encodings. No accepted storage policy or
+execution behavior changes.
+
 ## Validate NTFS-reserved and FAT-specific BPB fields — #959
 
 The NTFS boot-sector validator now rejects non-zero values in the legacy
@@ -2573,7 +2585,8 @@ FAT-specific and reserved BPB fields that NTFS defines as zero: reserved
 sectors, FAT count, root-entry count, legacy sector count, sectors-per-FAT,
 the legacy large-sector count, and the three reserved bytes following the
 MFT record-size encoding. It deliberately preserves meaningful CHS geometry,
-the hidden-sector partition offset, the NTFS volume serial number, and the
+the hidden-sector partition offset, the NTFS volume serial number at bytes
+`[72..80]`, and the
 NTFS-specific MFT/index record-size encodings. The existing fixed sector size, cluster geometry,
 volume extent, metadata bounds, and primary/backup agreement checks remain
 unchanged.

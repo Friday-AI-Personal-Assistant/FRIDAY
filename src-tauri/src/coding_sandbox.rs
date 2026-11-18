@@ -9517,7 +9517,7 @@ fn validate_guest_result_ntfs_boot_sector(
     }
     // NTFS requires these legacy FAT BPB fields and reserved bytes to be
     // zero. The hidden-sector field (28..32), CHS geometry (24..28), volume
-    // serial number (68..76), and other NTFS-specific fields are meaningful
+    // serial number (72..80), and other NTFS-specific fields are meaningful
     // and must not be mistaken for reserved bytes.
     if sector[14..21].iter().any(|byte| *byte != 0)
         || sector[22..24].iter().any(|byte| *byte != 0)
@@ -13964,6 +13964,58 @@ mod tests {
     }
 
     #[test]
+    fn ntfs_metadata_record_size_encoding_covers_signed_and_cluster_boundaries() {
+        // Negative encodings are base-2 exponents. The supported byte-size
+        // interval is 512 bytes through 2 MiB, inclusive.
+        for exponent in 9u8..=21 {
+            let encoded = (-(exponent as i8)) as u8;
+            assert_eq!(
+                validate_guest_result_ntfs_record_size_encoding(encoded, 8).unwrap(),
+                1u64 << exponent,
+                "negative NTFS encoding {encoded:#04x} must decode to 2^{exponent} bytes"
+            );
+        }
+        for exponent in 1u8..=8 {
+            let encoded = (-(exponent as i8)) as u8;
+            assert!(
+                validate_guest_result_ntfs_record_size_encoding(encoded, 8).is_err(),
+                "sub-sector NTFS encoding {encoded:#04x} must be rejected"
+            );
+        }
+        for exponent in 22u8..=127 {
+            let encoded = (-(exponent as i8)) as u8;
+            assert!(
+                validate_guest_result_ntfs_record_size_encoding(encoded, 8).is_err(),
+                "over-2-MiB NTFS encoding {encoded:#04x} must be rejected"
+            );
+        }
+        assert!(validate_guest_result_ntfs_record_size_encoding(0x80, 8).is_err());
+
+        // Positive encodings count allocation clusters. Only power-of-two
+        // counts produce power-of-two byte sizes under this fixed geometry.
+        for clusters in [1u8, 2, 4, 8, 16, 32, 64, 128] {
+            assert_eq!(
+                validate_guest_result_ntfs_record_size_encoding(clusters, 8).unwrap(),
+                clusters as u64 * 8 * GUEST_RESULT_GPT_SECTOR_BYTES
+            );
+        }
+        for clusters in [3u8, 5, 127] {
+            assert!(
+                validate_guest_result_ntfs_record_size_encoding(clusters, 8).is_err(),
+                "non-power-of-two cluster count {clusters} must be rejected"
+            );
+        }
+
+        // Exercise the largest supported cluster geometry at both sides of
+        // the 2-MiB ceiling.
+        assert_eq!(
+            validate_guest_result_ntfs_record_size_encoding(32, 128).unwrap(),
+            2 * 1024 * 1024
+        );
+        assert!(validate_guest_result_ntfs_record_size_encoding(64, 128).is_err());
+    }
+
+    #[test]
     fn ntfs_boot_sector_rejects_nonzero_reserved_and_fat_specific_bpb_bytes() {
         let mut sector = [0u8; 512];
         sector[3..11].copy_from_slice(b"NTFS    ");
@@ -14011,7 +14063,7 @@ mod tests {
         let mut meaningful_fields = sector;
         meaningful_fields[24..28].copy_from_slice(&[0x3F, 0x00, 0xFF, 0x00]);
         meaningful_fields[28..32].copy_from_slice(&1234u32.to_le_bytes());
-        meaningful_fields[68..76].copy_from_slice(&0x1234_5678_9ABC_DEF0u64.to_le_bytes());
+        meaningful_fields[72..80].copy_from_slice(&0x1234_5678_9ABC_DEF0u64.to_le_bytes());
         assert!(
             validate_guest_result_ntfs_boot_sector(&meaningful_fields, partition_size).is_ok(),
             "CHS geometry, hidden-sector offset, and NTFS volume serial must remain unrestricted"
