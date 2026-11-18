@@ -12114,7 +12114,7 @@ mod tests {
             parse_guest_run_request(&valid_guest_request_json()).unwrap(),
         ).unwrap();
         let proof = authorize_guest_result_collection_after_sandbox_stop(&journal, &approved_run).unwrap();
-        assert_eq!(proof.run_id);
+        assert_eq!(proof.run_id, run_id);
         assert_eq!(proof.snapshot_id, approved_run.snapshot_id);
         assert_eq!(proof.operation, approved_run.operation);
         assert_eq!(proof.max_output_bytes, approved_run.max_output_bytes);
@@ -12372,7 +12372,7 @@ mod tests {
             ).unwrap();
             assert_eq!(result.status, expected_status);
             assert_eq!(result.exit_code, exit_code);
-            assert_eq!(result.run_id);
+            assert_eq!(result.run_id, run_id);
             assert_eq!(result.snapshot_id, snapshot_id);
             assert!(result.truncated);
             assert_eq!(result.duration_ms, MAX_GUEST_RESULT_DURATION_MS);
@@ -13383,7 +13383,7 @@ mod tests {
 
         // Restoring the exact permitted layout restores journal readability;
         // no rejected sidecar evidence was deleted by the loader.
-        assert_eq!(load_sandbox_session_journal(&root, run_id).unwrap().run_id);
+        assert_eq!(load_sandbox_session_journal(&root, run_id).unwrap().run_id, run_id);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -13678,7 +13678,7 @@ mod tests {
         let root = make_test_directory("result-volume-plan");
         let run_id = "0123456789abcdef0123456789abcdef";
         let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
-        assert_eq!(plan.run_id);
+        assert_eq!(plan.run_id, run_id);
         assert_eq!(plan.storage_root, fs::canonicalize(&root).unwrap());
         assert_eq!(plan.run_directory, plan.storage_root.join(run_id));
         assert_eq!(plan.vhdx_path, plan.run_directory.join("result.vhdx"));
@@ -13748,7 +13748,7 @@ mod tests {
         let marker_bytes = fs::read(reserved.join(GUEST_RESULT_VOLUME_OWNER_MARKER)).unwrap();
         let marker: GuestResultVolumeOwnershipMarker = serde_json::from_slice(&marker_bytes).unwrap();
         assert_eq!(marker.schema_version, GUEST_RESULT_VOLUME_OWNER_SCHEMA);
-        assert_eq!(marker.run_id);
+        assert_eq!(marker.run_id, run_id);
         assert_eq!(marker.owner, "FRIDAY-CodingAssistant-ResultVolume");
         assert_eq!(verify_guest_result_volume_directory(&plan, &root).unwrap(), reserved);
         assert!(reserve_guest_result_volume_directory(&plan, &root).is_err());
@@ -15099,7 +15099,7 @@ mod tests {
         let marker_bytes = fs::read(&marker_path).unwrap();
         let marker: GuestResultHostMountOwnershipMarker = serde_json::from_slice(&marker_bytes).unwrap();
         assert_eq!(marker.schema_version, GUEST_RESULT_HOST_MOUNT_OWNER_SCHEMA);
-        assert_eq!(marker.run_id);
+        assert_eq!(marker.run_id, run_id);
         assert_eq!(marker.owner, "FRIDAY-CodingAssistant-ResultMount");
         #[cfg(unix)]
         {
@@ -15652,7 +15652,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let proof = prove_windows_sandbox_cli_session_ownership(
             run_id, response.as_bytes(), &[], &[expected.clone()],
         ).unwrap();
-        assert_eq!(proof.run_id);
+        assert_eq!(proof.run_id, run_id);
         assert_eq!(proof.session_id, expected_id);
         assert_eq!(proof.start_response_id, proof.session_id);
         assert_eq!(
