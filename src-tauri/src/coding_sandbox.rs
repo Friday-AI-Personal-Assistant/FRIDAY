@@ -13888,6 +13888,55 @@ mod tests {
     }
 
     #[test]
+    fn ntfs_format_report_rejects_each_independent_identity_and_extent_substitution() {
+        let (valid, metadata, partition) = valid_test_ntfs_format_report();
+
+        let mut changed = valid.clone();
+        changed.disk_number = valid.disk_number + 1;
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.disk_guid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into();
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.partition_guid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".into();
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.partition_offset = valid.partition_offset + GUEST_RESULT_GPT_SECTOR_BYTES;
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.partition_size = valid.partition_size - GUEST_RESULT_GPT_SECTOR_BYTES;
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.file_system = "exFAT".into();
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.file_system_label.push('X');
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.volume_path = r"\\?\Volume{aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}\\".into();
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.volume_size -= 1;
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid.clone();
+        changed.size_remaining += 1;
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+
+        let mut changed = valid;
+        changed.drive_letter = Some("R".into());
+        assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+    }
+
+    #[test]
     fn ntfs_format_report_rejects_unbounded_volume_paths_sizes_and_drive_letters() {
         let (valid, metadata, partition) = valid_test_ntfs_format_report();
 

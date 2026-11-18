@@ -2777,3 +2777,18 @@ This is test and documentation coverage only. Production read-back behavior,
 storage limits, privilege boundaries, result-transfer design, and guest
 execution policy are unchanged. Physical Windows device-handle acceptance
 remains separate.
+
+
+## Independent NTFS format-report identity and extent substitution matrix — #977
+
+Added cross-platform regression coverage that independently substitutes each
+field in the NTFS format report that binds the reported result volume to the
+approved disk and partition: disk number and GUID, partition GUID and byte
+extent, filesystem and label, canonical volume GUID path, volume size,
+remaining space, and drive-letter state. Every one-field substitution must be
+rejected while the valid report fixture remains the common baseline.
+
+This is test and documentation coverage only. It does not change report
+validation, storage limits, formatting behavior, result transfer, or guest
+execution policy. Physical Windows formatting and read-back acceptance remain
+separate requirements.
