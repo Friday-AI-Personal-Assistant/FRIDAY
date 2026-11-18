@@ -2530,3 +2530,20 @@ to require exact full-sector agreement. They remain synthetic byte-validation
 tests and do not replace physical Windows format/mount/read-back acceptance,
 prove guest result transfer, or enable guest execution.
 
+## Compare the complete NTFS BPB and extended BPB — #958
+
+Tightened the primary/backup NTFS boot-sector agreement check to compare the
+entire BIOS parameter block and extended BPB byte range (offsets 3 through
+83), plus the boot signature. The prior comparison checked the major geometry,
+extent, metadata, record-size, and serial-number ranges but omitted reserved
+bytes, additional geometry fields, and the BPB checksum. A one-sided change in
+any of those omitted bytes could therefore escape the primary/backup
+agreement check even though both sectors independently passed the basic
+validator.
+
+Expanded the exhaustive one-byte substitution test to cover every byte in the
+complete BPB/extended-BPB range and the boot signature. No accepted geometry,
+formatting allowance, privilege, or execution policy is changed. This remains
+synthetic byte-validation coverage and does not replace physical Windows
+format/mount/read-back acceptance or prove guest result transfer.
+

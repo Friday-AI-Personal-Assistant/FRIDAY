@@ -9545,11 +9545,10 @@ fn validate_guest_result_ntfs_boot_sector_pair(
     // OEM/sector/cluster geometry, media and disk geometry, volume extent,
     // metadata locations, record-size encodings, and volume serial number.
     if primary_sectors != backup_sectors
-        || primary[3..14] != backup[3..14]
-        || primary[21] != backup[21]
-        || primary[24..40] != backup[24..40]
-        || primary[40..64] != backup[40..64]
-        || primary[64..80] != backup[64..80]
+        // Require the complete NTFS BPB and extended BPB (including reserved
+        // bytes, disk-geometry fields, record-size encodings, serial number,
+        // and checksum) to agree, not just a selected subset of offsets.
+        || primary[3..84] != backup[3..84]
         || primary[510..512] != backup[510..512]
     {
         return Err("The NTFS primary and backup boot sectors do not describe the same bounded volume.".into());
@@ -14088,10 +14087,10 @@ mod tests {
         primary[510..512].copy_from_slice(&[0x55, 0xAA]);
         let partition_size = 4097 * GUEST_RESULT_GPT_SECTOR_BYTES;
 
-        // Every byte in the compared NTFS identity, geometry, extent,
-        // metadata-location, record-size, serial-number, and signature fields
-        // must remain identical between the primary and backup sectors.
-        for (start, end) in [(3usize, 14usize), (21, 22), (24, 80), (510, 512)] {
+        // Every byte in the complete NTFS BPB and extended BPB, plus the
+        // boot signature, must remain identical between primary and backup.
+        // This includes reserved/geometry fields and the BPB checksum.
+        for (start, end) in [(3usize, 84usize), (510, 512)] {
             for offset in start..end {
                 let mut backup = primary;
                 backup[offset] ^= 0x01;
