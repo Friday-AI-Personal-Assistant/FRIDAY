@@ -9502,6 +9502,31 @@ fn validate_guest_result_ntfs_boot_sector_pair(
     Ok(())
 }
 
+/// Validates all three independent NTFS read-back views before the formatted
+/// result volume can be accepted: the mounted-volume primary sector, the raw
+/// disk primary sector, and the raw disk's backup sector at the partition end.
+/// Kept platform-independent so disagreement and corruption cases are tested
+/// on every CI platform rather than only through Windows device handles.
+fn validate_guest_result_ntfs_boot_sector_readback(
+    volume_primary: &[u8],
+    raw_primary: &[u8],
+    backup: &[u8],
+    partition_size: u64,
+) -> Result<(), String> {
+    validate_guest_result_ntfs_boot_sector(volume_primary, partition_size)
+        .map_err(|error| format!("The formatted volume-handle read-back is invalid: {error}"))?;
+    if raw_primary != volume_primary {
+        return Err(format!(
+            "The formatted NTFS volume and attached raw-disk boot-sector reads disagree after flushing both handles (volume OEM={:02X?}, raw OEM={:02X?}, volume signature={:02X?}, raw signature={:02X?}).",
+            volume_primary.get(3..11).unwrap_or(&[]),
+            raw_primary.get(3..11).unwrap_or(&[]),
+            volume_primary.get(510..512).unwrap_or(&[]),
+            raw_primary.get(510..512).unwrap_or(&[])
+        ));
+    }
+    validate_guest_result_ntfs_boot_sector_pair(raw_primary, backup, partition_size)
+}
+
 #[cfg(windows)]
 fn verify_guest_result_ntfs_boot_sector_readback(
     disk: &OwnedRawGuestDisk,
@@ -9519,20 +9544,10 @@ fn verify_guest_result_ntfs_boot_sector_readback(
     // the exact volume Windows just formatted, then compare it with raw media.
     let volume = OwnedRawGuestVolume::open_and_flush(volume_path)?;
     let volume_primary = volume.read_boot_sector()?;
-    validate_guest_result_ntfs_boot_sector(&volume_primary, partition_size)
-        .map_err(|error| format!("The formatted volume-handle read-back is invalid: {error}"))?;
     disk.flush()?;
 
     let mut primary = [0u8; 512];
     disk.read_exact_at(partition_offset, &mut primary)?;
-    if primary != volume_primary {
-        return Err(format!(
-            "The formatted NTFS volume and attached raw-disk boot-sector reads disagree after flushing both handles (volume OEM={:02X?}, raw OEM={:02X?}, volume signature={:02X?}, raw signature={:02X?}).",
-            &volume_primary[3..11], &primary[3..11], &volume_primary[510..512], &primary[510..512]
-        ));
-    }
-    let total_sectors = validate_guest_result_ntfs_boot_sector(&primary, partition_size)
-        .map_err(|error| format!("The attached raw-disk read-back is invalid: {error}"))?;
     // NTFS stores its backup boot sector in the final sector of the
     // partition. The BPB total-sectors field excludes that final sector on
     // Windows NTFS volumes, so deriving this offset from total_sectors reads
@@ -9542,7 +9557,9 @@ fn verify_guest_result_ntfs_boot_sector_readback(
     )?;
     let mut backup = [0u8; 512];
     disk.read_exact_at(backup_offset, &mut backup)?;
-    validate_guest_result_ntfs_boot_sector_pair(&primary, &backup, partition_size)?;
+    validate_guest_result_ntfs_boot_sector_readback(
+        &volume_primary, &primary, &backup, partition_size,
+    )?;
     Ok(())
 }
 
@@ -13600,6 +13617,52 @@ mod tests {
         changed[510..512].copy_from_slice(&[0, 0]);
         assert!(validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err());
         assert!(validate_guest_result_ntfs_boot_sector(&sector, partition_size - 2049 * 512).is_err());
+    }
+
+    #[test]
+    fn ntfs_readback_requires_volume_raw_and_backup_sectors_to_agree() {
+        let mut primary = [0u8; 512];
+        primary[3..11].copy_from_slice(b"NTFS    ");
+        primary[11..13].copy_from_slice(&512u16.to_le_bytes());
+        primary[13] = 8;
+        primary[21] = 0xF8;
+        primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        primary[48..56].copy_from_slice(&4u64.to_le_bytes());
+        primary[56..64].copy_from_slice(&8u64.to_le_bytes());
+        primary[510..512].copy_from_slice(&[0x55, 0xAA]);
+        let partition_size = 4097 * GUEST_RESULT_GPT_SECTOR_BYTES;
+
+        assert!(validate_guest_result_ntfs_boot_sector_readback(
+            &primary, &primary, &primary, partition_size,
+        ).is_ok(), "identical valid volume, raw-primary, and backup sectors must pass");
+
+        let mut raw_primary = primary;
+        raw_primary[72] ^= 0x01;
+        assert!(validate_guest_result_ntfs_boot_sector_readback(
+            &primary, &raw_primary, &primary, partition_size,
+        ).is_err(), "a mounted-volume/raw-disk disagreement must fail");
+
+        let mut invalid_volume = primary;
+        invalid_volume[3..11].copy_from_slice(b"FAT32   ");
+        assert!(validate_guest_result_ntfs_boot_sector_readback(
+            &invalid_volume, &invalid_volume, &primary, partition_size,
+        ).is_err(), "an invalid mounted-volume sector must fail before comparison");
+
+        let mut invalid_raw = primary;
+        invalid_raw[510..512].copy_from_slice(&[0, 0]);
+        assert!(validate_guest_result_ntfs_boot_sector_readback(
+            &primary, &invalid_raw, &invalid_raw, partition_size,
+        ).is_err(), "an invalid raw primary sector must fail");
+
+        let mut invalid_backup = primary;
+        invalid_backup[40..48].copy_from_slice(&4095u64.to_le_bytes());
+        assert!(validate_guest_result_ntfs_boot_sector_readback(
+            &primary, &primary, &invalid_backup, partition_size,
+        ).is_err(), "a backup sector describing a different volume extent must fail");
+
+        assert!(validate_guest_result_ntfs_boot_sector_readback(
+            &primary, &primary, &primary[..511], partition_size,
+        ).is_err(), "a truncated backup sector must fail");
     }
 
     #[test]
