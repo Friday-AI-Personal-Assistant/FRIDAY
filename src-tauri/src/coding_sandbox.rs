@@ -14105,6 +14105,39 @@ mod tests {
         assert!(validate_guest_result_ntfs_boot_sector(&sector, partition_size - 2049 * 512).is_err());
     }
 
+
+    #[test]
+    fn ntfs_backup_boot_sector_rejects_every_independent_bpb_and_signature_mismatch() {
+        let mut primary = [0u8; 512];
+        primary[3..11].copy_from_slice(b"NTFS    ");
+        primary[11..13].copy_from_slice(&512u16.to_le_bytes());
+        primary[13] = 8;
+        primary[64] = 0xF6; // 1 KiB MFT record
+        primary[68] = 0xF4; // 4 KiB index buffer
+        primary[21] = 0xF8;
+        primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        primary[48..56].copy_from_slice(&4u64.to_le_bytes());
+        primary[56..64].copy_from_slice(&8u64.to_le_bytes());
+        primary[510..512].copy_from_slice(&[0x55, 0xAA]);
+        let partition_size = 4096 * GUEST_RESULT_GPT_SECTOR_BYTES;
+
+        // Mutate each compared BPB/extended-BPB and signature byte independently.
+        for offset in (3usize..84).chain(510usize..512) {
+            let mut backup = primary;
+            backup[offset] ^= 0x01;
+            assert!(
+                validate_guest_result_ntfs_boot_sector_pair(
+                    &primary, &backup, partition_size,
+                ).is_err(),
+                "backup boot-sector mismatch at byte {offset} must be rejected",
+            );
+        }
+
+        validate_guest_result_ntfs_boot_sector_pair(
+            &primary, &primary, partition_size,
+        ).expect("identical valid primary and backup boot sectors must be accepted");
+    }
+
     #[test]
     fn ntfs_metadata_record_size_encoding_covers_signed_and_cluster_boundaries() {
         // Negative encodings are base-2 exponents. The supported byte-size

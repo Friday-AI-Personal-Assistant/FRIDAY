@@ -2748,3 +2748,17 @@ namespace comparison and strict canonical GUID/path structure remain
 unchanged; no storage limits, ownership rules, formatting behavior, result
 transfer, or execution policy changed. Physical Windows formatting and
 read-back acceptance remain separate requirements.
+
+
+## Exhaustive NTFS backup boot-sector disagreement matrix — #975
+
+Added a cross-platform regression test that independently flips every byte
+within the NTFS BPB/extended-BPB comparison range ([3..84]) and both boot
+signature bytes ([510..512]) in an otherwise valid backup boot sector.
+Every one-byte disagreement must be rejected by the primary/backup pair
+validator, while an identical valid pair remains accepted.
+
+This strengthens coverage of the existing full-field comparison without
+changing production validation, storage limits, formatting behavior, result
+transfer, or guest execution policy. Physical Windows formatting and
+read-back acceptance remain separate requirements.
