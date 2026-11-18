@@ -9776,12 +9776,17 @@ fn valid_windows_volume_guid_path(path: &str) -> bool {
     parse_canonical_guid_bytes(&path[PREFIX.len()..path.len() - 2]).is_ok()
 }
 
-fn validate_guest_result_ntfs_format_report(
+fn validate_guest_result_ntfs_format_report_for_run(
     report: &GuestResultNtfsFormatReport,
     expected_disk_number: u32,
     metadata: &GuestResultGptMetadata,
     partition_plan: &GuestResultPartitionPlan,
+    expected_run_id: &str,
 ) -> Result<(), String> {
+    // The report's expected partition geometry must come from a plan bound to
+    // the independently trusted storage-journal run identity, not from the
+    // run ID carried by the plan itself.
+    validate_guest_result_partition_plan(partition_plan, expected_run_id)?;
     let expected_offset = partition_plan.first_lba.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
         .ok_or_else(|| "The expected NTFS partition offset overflowed.".to_string())?;
     let partition_sector_count = partition_plan.last_lba
@@ -9816,6 +9821,21 @@ fn validate_guest_result_ntfs_format_report(
         ));
     }
     Ok(())
+}
+
+// Tests that focus on report-field validation use the fixture plan as their
+// local identity. The production formatting path must call the explicit
+// trusted-run variant above with the validated storage journal identity.
+#[cfg(test)]
+fn validate_guest_result_ntfs_format_report(
+    report: &GuestResultNtfsFormatReport,
+    expected_disk_number: u32,
+    metadata: &GuestResultGptMetadata,
+    partition_plan: &GuestResultPartitionPlan,
+) -> Result<(), String> {
+    validate_guest_result_ntfs_format_report_for_run(
+        report, expected_disk_number, metadata, partition_plan, &partition_plan.run_id,
+    )
 }
 
 const MAX_STORAGE_OPERATION_OUTPUT_BYTES: usize = 64 * 1024;
@@ -9989,7 +10009,9 @@ $driveLetter = if ([string]::IsNullOrEmpty($volumeDriveLetter)) { $null } else {
         }
         let report: GuestResultNtfsFormatReport = serde_json::from_slice(&stdout)
             .map_err(|_| "Windows returned malformed or unsupported NTFS format evidence.".to_string())?;
-        validate_guest_result_ntfs_format_report(&report, disk_number, &metadata, &partition_plan)?;
+        validate_guest_result_ntfs_format_report_for_run(
+            &report, disk_number, &metadata, &partition_plan, &current_journal.run_id,
+        )?;
         let volume_path = report.volume_path.clone();
         if guest_vhdx_physical_path(attached.handle.0)? != attached.physical_path
             || verify_attached_guest_result_vhdx_identity(&attached.handle, &attached.physical_path, plan, trusted_storage_root)? != identifier {
@@ -14101,6 +14123,21 @@ mod tests {
                 });
             }
         }
+    }
+
+    #[test]
+    fn ntfs_format_report_requires_the_independently_trusted_run_identity() {
+        let trusted_run_id = "0123456789abcdef0123456789abcdef";
+        let (report, metadata, valid_partition) = valid_test_ntfs_format_report();
+        validate_guest_result_ntfs_format_report_for_run(
+            &report, 7, &metadata, &valid_partition, trusted_run_id,
+        ).unwrap();
+
+        let mut substituted = valid_partition;
+        substituted.run_id = "fedcba9876543210fedcba9876543210".into();
+        assert!(validate_guest_result_ntfs_format_report_for_run(
+            &report, 7, &metadata, &substituted, trusted_run_id,
+        ).is_err());
     }
 
     #[test]

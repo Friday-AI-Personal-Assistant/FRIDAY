@@ -2824,3 +2824,21 @@ expected extent and independently substituted start LBA, end LBA, reversed
 range, extreme LBA values, and run identity are rejected before the extent
 can be used for disk reads. No storage capacity, partition layout, formatting,
 result-transfer, or guest execution policy is broadened.
+
+## Bind NTFS format-report validation to the trusted storage journal — #982
+
+The NTFS format-report validator now has an explicit trusted-run entry point.
+Before deriving expected partition offsets or sizes from a partition plan, it
+revalidates the complete fixed plan against the independently supplied run ID
+from the already validated storage journal. The Windows formatting path passes
+that journal identity directly, so a substituted run ID embedded in a plan
+cannot authenticate itself or influence acceptance of the format report.
+
+Cross-platform regression coverage confirms that the valid report and plan
+are accepted with the trusted run identity, while a plan carrying a different
+run ID is rejected even when the report and other plan fields remain unchanged.
+Existing report-field, geometry, filesystem, volume-path, and size-boundary
+checks remain intact. No storage capacity, formatting behavior, result
+transfer, privilege, or guest execution policy is changed; physical Windows
+formatting and read-back acceptance remain separate requirements.
+
