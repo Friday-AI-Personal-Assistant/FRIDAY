@@ -2576,6 +2576,21 @@ negative exponent and is rejected as an out-of-policy size. Corrected the test
 to cover the valid positive signed-byte range without changing the production
 validator or its security bounds.
 
+## Exhaustive NTFS record-size encoding and cluster-geometry matrix — #965
+
+Added a cross-platform exhaustive regression matrix for all 256 possible
+signed-byte encodings across every supported power-of-two sectors-per-cluster
+geometry (1 through 128). The test independently derives the documented
+negative-exponent and positive-cluster-count meanings, then applies the fixed
+512-byte through 2-MiB size policy. It verifies both accepted decoded sizes
+and rejection of zero, the signed minimum, non-power-of-two results, and
+out-of-policy sizes across the complete input matrix.
+
+This is test-only coverage: the production NTFS validator and accepted storage
+policy are unchanged. It complements the focused boundary tests and does not
+replace physical Windows formatting/read-back acceptance or prove guest result
+transfer.
+
 ## NTFS BPB volume-serial field offset correction — #963
 
 Corrected the documented and tested NTFS volume-serial-number byte range to

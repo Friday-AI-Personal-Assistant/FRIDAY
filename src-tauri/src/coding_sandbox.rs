@@ -14017,6 +14017,46 @@ mod tests {
     }
 
     #[test]
+    fn ntfs_record_size_encoding_exhaustively_covers_signed_values_and_cluster_geometries() {
+        // NTFS stores this field as a signed byte. Exercise every representable
+        // value against every supported power-of-two sectors-per-cluster size.
+        // The independent oracle below expresses the documented encoding
+        // directly, then applies FRIDAY's fixed 512-byte..2-MiB policy.
+        for sectors_per_cluster in [1u8, 2, 4, 8, 16, 32, 64, 128] {
+            for raw in 0u8..=u8::MAX {
+                let signed = raw as i8;
+                let expected = if signed == 0 || signed == i8::MIN {
+                    None
+                } else if signed < 0 {
+                    let exponent = signed.unsigned_abs() as u32;
+                    1u64.checked_shl(exponent)
+                } else {
+                    (signed as u64)
+                        .checked_mul(sectors_per_cluster as u64)
+                        .and_then(|clusters| clusters.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES))
+                }.filter(|bytes| {
+                    (512..=2 * 1024 * 1024).contains(bytes) && bytes.is_power_of_two()
+                });
+
+                let actual = validate_guest_result_ntfs_record_size_encoding(
+                    raw, sectors_per_cluster,
+                );
+                match expected {
+                    Some(bytes) => assert_eq!(
+                        actual.unwrap(),
+                        bytes,
+                        "encoding {raw:#04x} with {sectors_per_cluster} sectors/cluster"
+                    ),
+                    None => assert!(
+                        actual.is_err(),
+                        "out-of-policy encoding {raw:#04x} with {sectors_per_cluster} sectors/cluster was accepted"
+                    ),
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ntfs_boot_sector_rejects_nonzero_reserved_and_fat_specific_bpb_bytes() {
         let mut sector = [0u8; 512];
         sector[3..11].copy_from_slice(b"NTFS    ");
