@@ -9495,11 +9495,14 @@ fn verify_guest_result_ntfs_boot_sector_readback(
     }
     let total_sectors = validate_guest_result_ntfs_boot_sector(&primary, partition_size)
         .map_err(|error| format!("The attached raw-disk read-back is invalid: {error}"))?;
+    // NTFS stores its backup boot sector in the final sector of the
+    // partition. The BPB total-sectors field excludes that final sector on
+    // Windows NTFS volumes, so deriving this offset from total_sectors reads
+    // the preceding (normally zero) sector instead.
     let backup_offset = partition_offset.checked_add(
-        total_sectors.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
-            .ok_or_else(|| "The NTFS backup boot-sector offset overflowed.".to_string())?
-    ).and_then(|offset| offset.checked_sub(512))
-        .ok_or_else(|| "The NTFS backup boot-sector offset is invalid.".to_string())?;
+        partition_size.checked_sub(GUEST_RESULT_GPT_SECTOR_BYTES)
+            .ok_or_else(|| "The NTFS partition is too small for its backup boot sector.".to_string())?
+    ).ok_or_else(|| "The NTFS backup boot-sector offset overflowed.".to_string())?;
     let mut backup = [0u8; 512];
     disk.read_exact_at(backup_offset, &mut backup)?;
     let backup_sectors = validate_guest_result_ntfs_boot_sector(&backup, partition_size)?;
