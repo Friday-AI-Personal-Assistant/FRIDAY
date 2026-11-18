@@ -9289,8 +9289,8 @@ fn verify_guest_result_windows_partition_layout_bytes(
     let required = FRIDAY_DRIVE_LAYOUT_EX_HEADER_BYTES
         .checked_add(FRIDAY_PARTITION_INFORMATION_EX_BYTES)
         .ok_or_else(|| "The Windows partition-layout size overflowed.".to_string())?;
-    if returned_bytes > bytes.len() || returned_bytes < required {
-        return Err("Windows returned a truncated drive-layout structure.".into());
+    if returned_bytes > bytes.len() || returned_bytes != required {
+        return Err("Windows returned an unexpected drive-layout structure size.".into());
     }
     let data = &bytes[..returned_bytes];
     let read_u32 = |offset: usize| -> Result<u32, String> {
@@ -9345,6 +9345,8 @@ fn verify_guest_result_windows_partition_layout_bytes(
         || read_u32(entry + 24)? != 1
         || data[entry + 28] != 0
         || data[entry + 29] != 0
+        || data[entry + 30] != 0
+        || data[entry + 31] != 0
         || data[entry + 32..entry + 48] != metadata.primary_entries[0..16]
         || data[entry + 48..entry + 64] != metadata.primary_entries[16..32]
         || read_u64(entry + 64)? != 0
@@ -10294,6 +10296,16 @@ mod tests {
         changed[entry + 29] = 1;
         assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
             "unexpected rewrite state must be rejected");
+        for reserved_offset in [entry + 30, entry + 31] {
+            let mut changed = bytes.clone();
+            changed[reserved_offset] = 1;
+            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+                "nonzero reserved partition-layout byte {reserved_offset} must be rejected");
+        }
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(verify_guest_result_windows_partition_layout_bytes(&trailing, trailing.len(), &plan, &metadata).is_err(),
+            "unexpected trailing bytes in the returned Windows layout must be rejected");
         assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len() + 1, &plan, &metadata).is_err(),
             "a returned byte count beyond the supplied buffer must be rejected");
         for returned in [0usize, 47, 48, 191] {

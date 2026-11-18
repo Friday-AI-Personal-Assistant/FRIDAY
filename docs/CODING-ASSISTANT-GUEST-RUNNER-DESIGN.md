@@ -2412,3 +2412,17 @@ partition record.
 These are parser regression tests over synthetic Windows ABI bytes. They do
 not claim physical Windows Sandbox acceptance, invoke a Sandbox session, or
 enable guest execution; the storage and lifecycle gates remain fail-closed.
+
+
+## Exact Windows GPT layout ABI response — #949
+
+The independent Windows drive-layout parser now accepts only the exact
+single-partition ABI response size requested by FRIDAY. It rejects both
+truncated structures and otherwise-valid structures with unexpected trailing
+bytes. The two reserved bytes in the native partition-information structure
+must also remain zero; they are no longer silently ignored.
+
+Cross-platform regression tests cover each reserved byte independently and
+an oversized response with trailing data. This validates the parser contract
+against synthetic Windows ABI bytes; it does not replace physical Windows
+storage-stack acceptance or enable guest execution.
