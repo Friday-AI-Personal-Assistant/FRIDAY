@@ -9032,6 +9032,72 @@ extern "system" {
 }
 
 #[cfg(windows)]
+struct OwnedRawGuestVolume(*mut std::ffi::c_void);
+
+#[cfg(windows)]
+impl Drop for OwnedRawGuestVolume {
+    fn drop(&mut self) {
+        const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+        if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+            unsafe { CloseHandle(self.0); }
+            self.0 = std::ptr::null_mut();
+        }
+    }
+}
+
+#[cfg(windows)]
+impl OwnedRawGuestVolume {
+    fn open_and_flush(volume_path: &str) -> Result<Self, String> {
+        use std::os::windows::ffi::OsStrExt;
+        if !valid_windows_volume_guid_path(volume_path) {
+            return Err("The NTFS volume handle path is not an authenticated volume GUID path.".into());
+        }
+        // CreateFile opens a volume GUID path without its required trailing
+        // separator. The path is already constrained to one canonical GUID.
+        let open_path = volume_path.strip_suffix('\\\\')
+            .ok_or_else(|| "The NTFS volume GUID path has no canonical terminator.".to_string())?;
+        let wide: Vec<u16> = std::ffi::OsStr::new(open_path)
+            .encode_wide().chain(std::iter::once(0)).collect();
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        const OPEN_EXISTING: u32 = 3;
+        const FILE_ATTRIBUTE_NORMAL: u32 = 0x0000_0080;
+        const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(), GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(),
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, std::ptr::null_mut(),
+            )
+        };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return Err("Windows could not open the exact formatted NTFS volume for a durable read-back.".into());
+        }
+        let owned = Self(handle);
+        if unsafe { FlushFileBuffers(owned.0) } == 0 {
+            return Err("Windows could not flush the formatted NTFS volume before raw-disk verification.".into());
+        }
+        Ok(owned)
+    }
+
+    fn read_boot_sector(&self) -> Result<[u8; 512], String> {
+        let mut sector = [0u8; 512];
+        if unsafe { SetFilePointerEx(self.0, 0, std::ptr::null_mut(), 0) } == 0 {
+            return Err("Windows could not position the formatted NTFS volume for boot-sector verification.".into());
+        }
+        let mut read = 0u32;
+        if unsafe { ReadFile(self.0, sector.as_mut_ptr(), sector.len() as u32, &mut read, std::ptr::null_mut()) } == 0
+            || read as usize != sector.len()
+        {
+            return Err("Windows returned an incomplete NTFS volume boot-sector read.".into());
+        }
+        Ok(sector)
+    }
+}
+
+#[cfg(windows)]
 struct OwnedRawGuestDisk(*mut std::ffi::c_void);
 
 #[cfg(windows)]
@@ -9402,15 +9468,28 @@ fn validate_guest_result_ntfs_boot_sector(
 fn verify_guest_result_ntfs_boot_sector_readback(
     disk: &OwnedRawGuestDisk,
     partition_plan: &GuestResultPartitionPlan,
+    volume_path: &str,
 ) -> Result<(), String> {
     let partition_offset = partition_plan.first_lba.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
         .ok_or_else(|| "The NTFS partition offset overflowed.".to_string())?;
     let partition_size = (partition_plan.last_lba - partition_plan.first_lba + 1)
         .checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
         .ok_or_else(|| "The NTFS partition size overflowed.".to_string())?;
+
+    // Format-Volume can return before cached filesystem metadata is durably
+    // visible through a separately opened PhysicalDrive handle. Flush and read
+    // the exact volume Windows just formatted, then compare it with raw media.
+    let volume = OwnedRawGuestVolume::open_and_flush(volume_path)?;
+    let volume_primary = volume.read_boot_sector()?;
+    validate_guest_result_ntfs_boot_sector(&volume_primary, partition_size)?;
+    disk.flush()?;
+
     let mut primary = [0u8; 512];
     disk.read_exact_at(partition_offset, &mut primary)?;
     let total_sectors = validate_guest_result_ntfs_boot_sector(&primary, partition_size)?;
+    if primary != volume_primary {
+        return Err("The formatted NTFS volume boot sector differs from the attached raw-disk read-back after flushing both handles.".into());
+    }
     let backup_offset = partition_offset.checked_add(
         total_sectors.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
             .ok_or_else(|| "The NTFS backup boot-sector offset overflowed.".to_string())?
@@ -9739,7 +9818,7 @@ $driveLetter = if ([string]::IsNullOrEmpty($volumeDriveLetter)) { $null } else {
         let raw_disk = OwnedRawGuestDisk::open_attached_device(attached)?;
         raw_disk.verify_fixed_geometry()?;
         raw_disk.verify_windows_partition_layout(&partition_plan, &metadata)?;
-        verify_guest_result_ntfs_boot_sector_readback(&raw_disk, &partition_plan)?;
+        verify_guest_result_ntfs_boot_sector_readback(&raw_disk, &partition_plan, &volume_path)?;
         Ok(volume_path)
     })();
     let volume_path = match result {
