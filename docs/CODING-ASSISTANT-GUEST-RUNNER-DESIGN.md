@@ -2309,3 +2309,18 @@ execution. A crash after the journal preservation but before the first receipt
 is recoverable by a later assessment, which can append the missing first
 observation. Run #897 passed both Windows and Linux CI. Hands-on physical Windows interruption
 acceptance remains required.
+
+## Windows storage command output overflow is rejected
+
+The fixed Windows storage-operation pipe reader now retains at most 64 KiB
+while continuing to drain the child process pipes, and separately records
+whether any bytes exceeded that budget. The operation wrapper rejects the
+entire storage operation if either standard output or standard error overflowed;
+a retained prefix is never treated as complete formatting evidence or
+diagnostics. The bounded reader is platform-independent so its exact-limit,
+one-byte-over-limit, and multi-read overflow behavior is covered by tests on
+both Windows and Linux CI.
+
+This hardening does not change the NTFS formatting command, establish a guest
+result-transfer channel, or enable Sandbox execution. Physical Windows
+storage-lifecycle acceptance remains required.

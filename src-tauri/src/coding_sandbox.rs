@@ -9372,27 +9372,32 @@ fn validate_guest_result_ntfs_format_report(
     Ok(())
 }
 
-#[cfg(windows)]
 const MAX_STORAGE_OPERATION_OUTPUT_BYTES: usize = 64 * 1024;
 #[cfg(windows)]
 const STORAGE_OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
 
-#[cfg(windows)]
-fn read_bounded_storage_output<R: Read>(mut reader: R) -> Vec<u8> {
+/// Drain an operation pipe while retaining at most the fixed output budget.
+/// The overflow bit is security-relevant: callers must reject the operation
+/// rather than treating a truncated prefix as complete evidence.
+fn read_bounded_storage_output<R: Read>(mut reader: R) -> (Vec<u8>, bool) {
     let mut retained = Vec::new();
+    let mut exceeded_limit = false;
     let mut buffer = [0u8; 4096];
     loop {
         match reader.read(&mut buffer) {
             Ok(0) => break,
             Ok(count) => {
                 let remaining = MAX_STORAGE_OPERATION_OUTPUT_BYTES.saturating_sub(retained.len());
+                if count > remaining {
+                    exceeded_limit = true;
+                }
                 retained.extend_from_slice(&buffer[..count.min(remaining)]);
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
     }
-    retained
+    (retained, exceeded_limit)
 }
 
 #[cfg(windows)]
@@ -9420,8 +9425,13 @@ fn run_bounded_storage_operation(mut command: Command) -> Result<(ExitStatus, Ve
             }
         }
     };
-    let stdout = stdout_reader.join().map_err(|_| "The NTFS format output could not be collected.".to_string())?;
-    let stderr = stderr_reader.join().map_err(|_| "The NTFS format diagnostics could not be collected.".to_string())?;
+    let (stdout, stdout_exceeded) = stdout_reader.join()
+        .map_err(|_| "The NTFS format output could not be collected.".to_string())?;
+    let (stderr, stderr_exceeded) = stderr_reader.join()
+        .map_err(|_| "The NTFS format diagnostics could not be collected.".to_string())?;
+    if stdout_exceeded || stderr_exceeded {
+        return Err("The Windows storage operation exceeded FRIDAY's fixed 64 KiB output limit; the result disk requires recovery.".into());
+    }
     Ok((status, stdout, stderr))
 }
 
@@ -12890,6 +12900,32 @@ mod tests {
         assert_eq!(fs::read(original.join("replacement-evidence.txt")).unwrap(), b"preserve replacement");
         assert_eq!(fs::read(displaced.join(GUEST_RESULT_VOLUME_OWNER_MARKER)).unwrap(), marker_bytes);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bounded_storage_output_accepts_exact_limit_without_truncation() {
+        let input = vec![b'x'; MAX_STORAGE_OPERATION_OUTPUT_BYTES];
+        let (retained, exceeded) = read_bounded_storage_output(std::io::Cursor::new(&input));
+        assert_eq!(retained, input);
+        assert!(!exceeded);
+    }
+
+    #[test]
+    fn bounded_storage_output_reports_overflow_and_retains_only_the_limit() {
+        let mut input = vec![b'x'; MAX_STORAGE_OPERATION_OUTPUT_BYTES];
+        input.push(b'y');
+        let (retained, exceeded) = read_bounded_storage_output(std::io::Cursor::new(&input));
+        assert_eq!(retained.len(), MAX_STORAGE_OPERATION_OUTPUT_BYTES);
+        assert!(retained.iter().all(|byte| *byte == b'x'));
+        assert!(exceeded, "discarded bytes must never be mistaken for complete command output");
+    }
+
+    #[test]
+    fn bounded_storage_output_detects_overflow_across_multiple_reads() {
+        let input = vec![b'z'; MAX_STORAGE_OPERATION_OUTPUT_BYTES + 8193];
+        let (retained, exceeded) = read_bounded_storage_output(std::io::Cursor::new(&input));
+        assert_eq!(retained.len(), MAX_STORAGE_OPERATION_OUTPUT_BYTES);
+        assert!(exceeded);
     }
 
     fn valid_test_ntfs_format_report() -> (
