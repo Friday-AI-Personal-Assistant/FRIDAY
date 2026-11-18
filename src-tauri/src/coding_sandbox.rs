@@ -13616,7 +13616,7 @@ mod tests {
         assert!(guest_result_ntfs_backup_boot_sector_offset(1, 4096 * sector).is_err());
         assert!(guest_result_ntfs_backup_boot_sector_offset(0, sector - 1).is_err());
         assert!(guest_result_ntfs_backup_boot_sector_offset(0, sector + 1).is_err());
-        assert!(guest_result_ntfs_backup_boot_sector_offset(u64::MAX - sector + 1, sector).is_err());
+        assert!(guest_result_ntfs_backup_boot_sector_offset(u64::MAX - sector + 1, 2 * sector).is_err());
     }
 
     #[test]
