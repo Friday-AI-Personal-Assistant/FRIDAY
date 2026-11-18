@@ -12657,6 +12657,63 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_session_journal_accepts_only_exact_root_receipt_sidecars() {
+        let root = make_test_directory("session-journal-receipt-inventory");
+        secure_private_workspace_directory(&root).unwrap();
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let initial = empty_test_sandbox_session_journal();
+        let launch = append_and_persist_sandbox_session_transition(
+            &root, &initial, SandboxSessionEvent::RequestLaunch, None, false, false,
+        ).unwrap();
+
+        // An allowlisted receipt name is valid only as a root-level ordinary
+        // file. A directory with that name must not be mistaken for a sidecar.
+        let ownership_directory = root.join(WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_FILE);
+        fs::create_dir(&ownership_directory).unwrap();
+        assert!(load_sandbox_session_journal(&root, run_id).is_err());
+        fs::remove_dir(&ownership_directory).unwrap();
+
+        // Produce a genuine interrupted-launch journal and its first durable
+        // recovery receipt. Both records must coexist in the same run root.
+        let recovered = preserve_interrupted_windows_sandbox_cli_transaction_for_recovery(
+            &root, run_id, &[],
+        ).unwrap();
+        assert_eq!(recovered.recovery_receipt_sequence, 1);
+        assert_eq!(
+            validate_sandbox_session_journal(
+                &load_sandbox_session_journal(&root, run_id).unwrap(),
+            ).unwrap(),
+            SandboxSessionState::RecoveryRequired,
+        );
+
+        // Only the exact bounded receipt filenames are sidecars. A ninth
+        // receipt, a backup-like suffix, or a directory at a receipt name is
+        // still unexpected journal-root evidence and must fail closed.
+        let unexpected_files = [
+            "windows-sandbox-cli-recovery-09.json",
+            "windows-sandbox-cli-recovery-01.json.bak",
+            "windows-sandbox-cli-recovery-00.json",
+        ];
+        for name in unexpected_files {
+            let path = root.join(name);
+            fs::write(&path, b"preserve-unexpected-sidecar").unwrap();
+            assert!(load_sandbox_session_journal(&root, run_id).is_err(), "{name}");
+            assert_eq!(fs::read(&path).unwrap(), b"preserve-unexpected-sidecar");
+            fs::remove_file(path).unwrap();
+        }
+
+        let directory = root.join(windows_sandbox_cli_recovery_receipt_file_name(2));
+        fs::create_dir(&directory).unwrap();
+        assert!(load_sandbox_session_journal(&root, run_id).is_err());
+        fs::remove_dir(directory).unwrap();
+
+        // Restoring the exact permitted layout restores journal readability;
+        // no rejected sidecar evidence was deleted by the loader.
+        assert_eq!(load_sandbox_session_journal(&root, run_id).unwrap().run_id, run_id);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn sandbox_session_journal_rejects_identity_substitution_and_unknown_fields() {
         use SandboxSessionEvent as E;
         let identity = valid_test_sandbox_identity();

@@ -2324,3 +2324,22 @@ both Windows and Linux CI.
 This hardening does not change the NTFS formatting command, establish a guest
 result-transfer channel, or enable Sandbox execution. Physical Windows
 storage-lifecycle acceptance remains required.
+
+
+## Session journal root inventory with bounded receipt sidecars — #930
+
+The handle-relative session-journal inventory now has regression coverage for
+the complete run-root layout. The journal loader accepts the exact root-level
+ownership receipt name and the eight fixed recovery-receipt filenames as
+separate sidecars, while journal generation directories and their state files
+remain a contiguous, exact one-to-one set.
+
+The inventory rejects receipt-shaped directories, unknown or backup-suffixed
+receipt names, sequence zero, and recovery receipt names beyond the fixed
+eight-entry limit. Rejection preserves the unexpected entry for manual
+recovery. A valid interrupted-launch journal and its durable recovery receipt
+are also verified to coexist in the same private run root.
+
+This is inventory validation only: ownership and recovery receipt contents
+continue to be validated by their dedicated bounded, handle-relative loaders.
+The tests do not invoke Windows Sandbox or authorize automatic recovery.
