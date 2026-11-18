@@ -2397,3 +2397,18 @@ disk is still preserved on every failure; no validation was weakened and no
 automatic retry was added. This remains a native Windows storage integration
 check, not physical Windows Sandbox acceptance or permission to enable guest
 execution.
+
+## Independent Windows GPT layout parser regression coverage — #947
+
+The cross-platform Windows drive-layout parser tests now exercise rejection of
+additional malformed or substituted storage-stack evidence: non-GPT disk
+style, disk identifier changes, incorrect disk-wide usable-range start or
+length, unexpected maximum partition count, invalid partition style, zero or
+incorrect partition extent, changed partition type or unique GUID, unexpected
+attributes or rewrite state, and a returned-byte count beyond the supplied
+buffer. Truncation is checked at the structure boundary as well as within the
+partition record.
+
+These are parser regression tests over synthetic Windows ABI bytes. They do
+not claim physical Windows Sandbox acceptance, invoke a Sandbox session, or
+enable guest execution; the storage and lifecycle gates remain fail-closed.

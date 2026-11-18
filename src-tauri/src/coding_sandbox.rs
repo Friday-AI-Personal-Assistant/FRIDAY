@@ -10242,6 +10242,64 @@ mod tests {
         let mut altered = bytes.clone();
         altered[40..44].copy_from_slice(&64u32.to_le_bytes());
         assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata).is_err());
+
+        // Exercise every identity and geometry field returned by the Windows
+        // storage stack, not only the partition count and starting offset.
+        for (offset, value) in [
+            (0usize, 0u32),       // MBR instead of GPT
+            (8usize, 0xA5A5_A5A5u32), // disk GUID bytes below
+            (24usize, 34u64),     // wrong usable-range start
+            (32usize, 1u64),      // wrong usable-range length
+            (40usize, 127u32),    // wrong maximum partition count
+        ] {
+            let mut changed = bytes.clone();
+            match value {
+                v if offset == 8 => changed[8..24].fill(0xA5),
+                v if offset == 24 || offset == 32 => changed[offset..offset + 8].copy_from_slice(&v.to_le_bytes()),
+                v if offset == 0 || offset == 40 => changed[offset..offset + 4].copy_from_slice(&(v as u32).to_le_bytes()),
+                _ => unreachable!(),
+            }
+            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+                "Windows layout field at byte {offset} must be rejected");
+        }
+
+        for (offset, value) in [
+            (entry, 0u32), // zero partitions in the entry
+            (entry + 24, 2u32), // wrong partition style
+            (entry + 64, 1u64), // unexpected GPT attributes
+        ] {
+            let mut changed = bytes.clone();
+            if value == 1 && offset == entry + 64 {
+                changed[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            } else {
+                changed[offset..offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
+            }
+            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+                "Windows partition field at byte {offset} must be rejected");
+        }
+
+        let mut changed = bytes.clone();
+        changed[entry + 16..entry + 24].copy_from_slice(&0u64.to_le_bytes());
+        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+            "wrong partition length must be rejected");
+        let mut changed = bytes.clone();
+        changed[entry + 32] ^= 0x01;
+        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+            "wrong partition type GUID must be rejected");
+        let mut changed = bytes.clone();
+        changed[entry + 48] ^= 0x01;
+        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+            "wrong unique partition GUID must be rejected");
+        let mut changed = bytes.clone();
+        changed[entry + 29] = 1;
+        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+            "unexpected rewrite state must be rejected");
+        assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len() + 1, &plan, &metadata).is_err(),
+            "a returned byte count beyond the supplied buffer must be rejected");
+        for returned in [0usize, 47, 48, 191] {
+            assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, returned, &plan, &metadata).is_err(),
+                "truncated Windows layout length {returned} must be rejected");
+        }
     }
 
     #[test]
