@@ -9311,6 +9311,12 @@ fn verify_guest_result_windows_partition_layout_bytes(
     if data[8..24] != metadata.primary_header[56..72] {
         return Err("Windows reported a GPT disk identifier different from FRIDAY's recorded layout.".into());
     }
+    // The GPT union occupies 40 bytes in DRIVE_LAYOUT_INFORMATION_EX.
+    // Its final four bytes are ABI padding after MaxPartitionCount and must
+    // remain zero rather than carrying unvalidated data.
+    if data[44..48].iter().any(|byte| *byte != 0) {
+        return Err("Windows returned nonzero reserved bytes in its GPT drive-layout header.".into());
+    }
     // DRIVE_LAYOUT_INFORMATION_GPT reports the disk-wide GPT usable
     // interval (FirstUsableLBA=34 through LastUsableLBA=total-34), not the
     // aligned start/end of FRIDAY's individual partition. The partition entry
@@ -10227,6 +10233,12 @@ mod tests {
             bytes[entry + 72 + index * 2..entry + 74 + index * 2].copy_from_slice(&unit.to_le_bytes());
         }
         assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len(), &plan, &metadata).is_ok());
+        for reserved_offset in 44..48 {
+            let mut changed = bytes.clone();
+            changed[reserved_offset] = 1;
+            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+                "nonzero GPT header padding byte {reserved_offset} must be rejected");
+        }
 
         let mut altered = bytes.clone();
         altered[4..8].copy_from_slice(&2u32.to_le_bytes());

@@ -2426,3 +2426,13 @@ Cross-platform regression tests cover each reserved byte independently and
 an oversized response with trailing data. This validates the parser contract
 against synthetic Windows ABI bytes; it does not replace physical Windows
 storage-stack acceptance or enable guest execution.
+
+
+## GPT drive-layout union padding validation — #950
+
+The Windows `DRIVE_LAYOUT_INFORMATION_EX` GPT union includes four ABI
+padding bytes after its maximum-partition-count field. The parser now requires
+those bytes to be zero instead of silently accepting unvalidated content.
+Cross-platform synthetic ABI tests independently corrupt each of the four
+padding bytes and require rejection. This remains parser-level regression
+coverage, not physical Windows storage-stack acceptance.
