@@ -9748,7 +9748,10 @@ struct GuestResultNtfsFormatReport {
 
 fn valid_windows_volume_guid_path(path: &str) -> bool {
     const PREFIX: &str = r"\\?\Volume{";
-    if !path.starts_with(PREFIX) || !path.ends_with(r"}\") {
+    if path.len() != PREFIX.len() + 36 + 2
+        || !path.get(..PREFIX.len()).is_some_and(|value| value.eq_ignore_ascii_case(PREFIX))
+        || !path.ends_with(r"}\")
+    {
         return false;
     }
     parse_canonical_guid_bytes(&path[PREFIX.len()..path.len() - 2]).is_ok()

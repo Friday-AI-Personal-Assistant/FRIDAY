@@ -2706,3 +2706,27 @@ This batch adds regression tests and documentation only. Production validation,
 the result-volume layout, storage limits, formatting behavior, and execution
 policy are unchanged. Physical Windows formatting/read-back acceptance and a
 guest result-transfer channel remain separate requirements.
+
+
+## Case-insensitive volume GUID namespace prefix correction — #972
+
+The #971 regression test exposed that the volume GUID path validator compared
+the fixed Windows namespace prefix case-sensitively even though GUID and NTFS
+identity checks are case-insensitive. The validator now accepts casing
+differences in that fixed prefix while retaining the exact path length,
+closing brace and trailing separator requirements, and canonical GUID parser.
+No storage limits, path containment, ownership, or execution policy changed.
+
+
+## NTFS volume GUID trailing-separator correction — #973
+
+The #972 CI run exposed an escaping mistake in the validator's trailing
+separator check: it required two trailing backslashes even though a canonical
+Windows volume GUID path has exactly one. The check now requires the single
+canonical separator, consistent with its exact path-length check and the
+Windows volume GUID namespace format. The case-insensitive namespace-prefix
+comparison remains in place, and malformed paths with missing or duplicated
+separators remain rejected.
+
+This correction does not relax path validation or change storage limits,
+ownership, formatting, result transfer, or execution policy.
