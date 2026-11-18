@@ -9054,7 +9054,7 @@ impl OwnedRawGuestVolume {
         }
         // CreateFile opens a volume GUID path without its required trailing
         // separator. The path is already constrained to one canonical GUID.
-        let open_path = volume_path.strip_suffix('\\\\')
+        let open_path = volume_path.strip_suffix("\\\\")
             .ok_or_else(|| "The NTFS volume GUID path has no canonical terminator.".to_string())?;
         let wide: Vec<u16> = std::ffi::OsStr::new(open_path)
             .encode_wide().chain(std::iter::once(0)).collect();
