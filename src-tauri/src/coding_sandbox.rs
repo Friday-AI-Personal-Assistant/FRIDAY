@@ -14152,7 +14152,7 @@ mod tests {
         primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
         primary[48..56].copy_from_slice(&4u64.to_le_bytes());
         primary[56..64].copy_from_slice(&8u64.to_le_bytes());
-        primary[64..72].copy_from_slice(&[0xF6, 0, 0, 0, 0, 0, 0, 0]);
+        primary[64..72].copy_from_slice(&[0xF6, 0, 0, 0, 0xF4, 0, 0, 0]);
         primary[72..80].copy_from_slice(&0x1234_5678_9ABC_DEF0u64.to_le_bytes());
         primary[510..512].copy_from_slice(&[0x55, 0xAA]);
         let partition_size = 4097 * GUEST_RESULT_GPT_SECTOR_BYTES;
@@ -14193,7 +14193,7 @@ mod tests {
         primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
         primary[48..56].copy_from_slice(&4u64.to_le_bytes());
         primary[56..64].copy_from_slice(&8u64.to_le_bytes());
-        primary[64..72].copy_from_slice(&[0xF6, 0, 0, 0, 0, 0, 0, 0]);
+        primary[64..72].copy_from_slice(&[0xF6, 0, 0, 0, 0xF4, 0, 0, 0]);
         primary[72..80].copy_from_slice(&0x1234_5678_9ABC_DEF0u64.to_le_bytes());
         primary[510..512].copy_from_slice(&[0x55, 0xAA]);
         let partition_size = 4097 * GUEST_RESULT_GPT_SECTOR_BYTES;
