@@ -2436,3 +2436,18 @@ those bytes to be zero instead of silently accepting unvalidated content.
 Cross-platform synthetic ABI tests independently corrupt each of the four
 padding bytes and require rejection. This remains parser-level regression
 coverage, not physical Windows storage-stack acceptance.
+
+
+## Validate GPT layout parser inputs before offset arithmetic — #951
+
+The independent Windows drive-layout parser now validates the complete supplied
+partition plan against FRIDAY's fixed per-run GPT/NTFS policy before deriving
+expected byte offsets or lengths. This prevents malformed internal plan values
+from reaching unchecked multiplication or subtraction in the parser, even if
+a future caller bypasses the normal plan-construction path.
+
+Cross-platform regression tests pass malformed plans with an overflowing
+partition start, reversed partition bounds, substituted disk capacity, and
+unexpected partition number; each must be rejected before parsing. This is
+synthetic parser-boundary coverage only and does not replace physical Windows
+storage-stack acceptance or enable guest execution.

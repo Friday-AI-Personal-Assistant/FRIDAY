@@ -9286,6 +9286,9 @@ fn verify_guest_result_windows_partition_layout_bytes(
     plan: &GuestResultPartitionPlan,
     metadata: &GuestResultGptMetadata,
 ) -> Result<(), String> {
+    // This parser is a trust boundary: do not perform offset arithmetic from
+    // a caller-supplied plan until its complete fixed per-run policy is proven.
+    validate_guest_result_partition_plan(plan, &plan.run_id)?;
     let required = FRIDAY_DRIVE_LAYOUT_EX_HEADER_BYTES
         .checked_add(FRIDAY_PARTITION_INFORMATION_EX_BYTES)
         .ok_or_else(|| "The Windows partition-layout size overflowed.".to_string())?;
@@ -10233,6 +10236,30 @@ mod tests {
             bytes[entry + 72 + index * 2..entry + 74 + index * 2].copy_from_slice(&unit.to_le_bytes());
         }
         assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len(), &plan, &metadata).is_ok());
+
+        // The parser must validate its own plan input before using it in
+        // offset arithmetic; malformed plans must fail closed, not underflow
+        // or overflow while deriving expected byte ranges.
+        let mut invalid_plan = plan.clone();
+        invalid_plan.first_lba = u64::MAX;
+        assert!(verify_guest_result_windows_partition_layout_bytes(
+            &bytes, bytes.len(), &invalid_plan, &metadata,
+        ).is_err(), "an overflowing partition start must be rejected");
+        let mut invalid_plan = plan.clone();
+        invalid_plan.last_lba = 0;
+        assert!(verify_guest_result_windows_partition_layout_bytes(
+            &bytes, bytes.len(), &invalid_plan, &metadata,
+        ).is_err(), "a reversed partition range must be rejected");
+        let mut invalid_plan = plan.clone();
+        invalid_plan.disk_capacity_bytes = u64::MAX;
+        assert!(verify_guest_result_windows_partition_layout_bytes(
+            &bytes, bytes.len(), &invalid_plan, &metadata,
+        ).is_err(), "a substituted disk capacity must be rejected");
+        let mut invalid_plan = plan.clone();
+        invalid_plan.partition_number = 2;
+        assert!(verify_guest_result_windows_partition_layout_bytes(
+            &bytes, bytes.len(), &invalid_plan, &metadata,
+        ).is_err(), "a substituted partition number must be rejected");
         for reserved_offset in 44..48 {
             let mut changed = bytes.clone();
             changed[reserved_offset] = 1;
