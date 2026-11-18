@@ -2856,3 +2856,14 @@ run ID. This is test-harness hardening only: no production storage behavior,
 capacity, formatting policy, result-transfer mechanism, or privilege model
 changes. Physical Windows guest/result-disk acceptance remains outstanding.
 
+## Test mismatched trusted identities against an unchanged NTFS plan — #984
+
+Expanded the NTFS report identity regression test to keep the valid report and
+partition plan unchanged while supplying empty, different, overlong, and
+case-altered trusted run IDs. Every mismatch must be rejected. This directly
+proves that the independently supplied trust anchor controls validation and
+that neither the report nor the unchanged plan can override it.
+
+Tests and design documentation only. Production validation, disk layout,
+capacity, formatting, privilege boundaries, and result-transfer behavior are
+unchanged. Physical Windows guest/result-disk acceptance remains outstanding.

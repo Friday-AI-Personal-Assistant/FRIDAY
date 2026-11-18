@@ -14139,6 +14139,22 @@ mod tests {
             &report, 7, &metadata, &valid_partition, trusted_run_id,
         ).unwrap();
 
+        // Keep the plan and report unchanged while substituting only the
+        // independently supplied trust anchor. Every mismatch must fail.
+        for untrusted_run_id in [
+            "",
+            "fedcba9876543210fedcba9876543210",
+            "0123456789abcdef0123456789abcdef0",
+            "0123456789ABCDEF0123456789ABCDEF",
+        ] {
+            assert!(
+                validate_guest_result_ntfs_format_report_for_run(
+                    &report, 7, &metadata, &valid_partition, untrusted_run_id,
+                ).is_err(),
+                "a mismatched trusted run identity was accepted: {untrusted_run_id:?}",
+            );
+        }
+
         let mut substituted = valid_partition;
         substituted.run_id = "fedcba9876543210fedcba9876543210".into();
         assert!(validate_guest_result_ntfs_format_report_for_run(
