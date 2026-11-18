@@ -9462,6 +9462,30 @@ fn verify_guest_result_gpt_readback(
     )
 }
 
+fn validate_guest_result_ntfs_record_size_encoding(
+    encoded: u8,
+    sectors_per_cluster: u8,
+) -> Result<u64, String> {
+    let signed_encoding = encoded as i8;
+    if signed_encoding == 0 {
+        return Err("The NTFS boot sector contains a zero metadata record-size encoding.".into());
+    }
+    let cluster_bytes = (sectors_per_cluster as u64)
+        .checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+        .ok_or_else(|| "The NTFS cluster size overflowed.".to_string())?;
+    let record_bytes = if signed_encoding > 0 {
+        (signed_encoding as u64).checked_mul(cluster_bytes)
+    } else {
+        1u64.checked_shl(signed_encoding.unsigned_abs() as u32)
+    }.ok_or_else(|| "The NTFS metadata record-size encoding overflowed.".to_string())?;
+    if !(512..=2 * 1024 * 1024).contains(&record_bytes)
+        || !record_bytes.is_power_of_two()
+    {
+        return Err("The NTFS metadata record-size encoding is outside the supported structural bounds.".into());
+    }
+    Ok(record_bytes)
+}
+
 /// Validates the on-disk NTFS BIOS parameter block read directly from the
 /// attached result disk. The Windows formatting report is useful evidence, but
 /// it is not a substitute for checking the bytes that will actually be mounted.
@@ -9517,6 +9541,17 @@ fn validate_guest_result_ntfs_boot_sector(
         || partition_sectors - total_sectors > 2048
     {
         return Err("The NTFS boot sector's volume extent is outside the exact bounded partition.".into());
+    }
+    let mft_record_bytes = validate_guest_result_ntfs_record_size_encoding(
+        sector[64], sectors_per_cluster,
+    )?;
+    let index_record_bytes = validate_guest_result_ntfs_record_size_encoding(
+        sector[68], sectors_per_cluster,
+    )?;
+    let volume_bytes = total_sectors.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+        .ok_or_else(|| "The NTFS volume byte size overflowed.".to_string())?;
+    if mft_record_bytes > volume_bytes || index_record_bytes > volume_bytes {
+        return Err("The NTFS metadata record size exceeds the validated volume extent.".into());
     }
     let mft_cluster = u64::from_le_bytes(sector[48..56].try_into()
         .map_err(|_| "The NTFS master-file-table location is truncated.".to_string())?);
@@ -13889,6 +13924,8 @@ mod tests {
         sector[3..11].copy_from_slice(b"NTFS    ");
         sector[11..13].copy_from_slice(&512u16.to_le_bytes());
         sector[13] = 8;
+        sector[64] = 0xF6; // 1 KiB MFT record
+        sector[68] = 0xF4; // 4 KiB index buffer
         sector[21] = 0xF8;
         sector[40..48].copy_from_slice(&4096u64.to_le_bytes());
         sector[48..56].copy_from_slice(&4u64.to_le_bytes());
@@ -13932,6 +13969,8 @@ mod tests {
         sector[3..11].copy_from_slice(b"NTFS    ");
         sector[11..13].copy_from_slice(&512u16.to_le_bytes());
         sector[13] = 8;
+        sector[64] = 0xF6; // 1 KiB MFT record
+        sector[68] = 0xF4; // 4 KiB index buffer
         sector[21] = 0xF8;
         sector[40..48].copy_from_slice(&4096u64.to_le_bytes());
         sector[48..56].copy_from_slice(&4u64.to_le_bytes());
@@ -13942,6 +13981,18 @@ mod tests {
         let partition_size = 4096 * GUEST_RESULT_GPT_SECTOR_BYTES;
 
         assert!(validate_guest_result_ntfs_boot_sector(&sector, partition_size).is_ok());
+
+        // Negative encodings are byte exponents; positive encodings are cluster counts.
+        for (offset, invalid) in [(64usize, 0u8), (68usize, 0u8), (64, 0x80), (68, 0xEA)] {
+            let mut changed = sector;
+            changed[offset] = invalid;
+            assert!(validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err(),
+                "invalid NTFS record-size encoding {invalid:#04x} at {offset} must be rejected");
+        }
+        let mut positive_cluster_encoding = sector;
+        positive_cluster_encoding[68] = 1;
+        assert!(validate_guest_result_ntfs_boot_sector(&positive_cluster_encoding, partition_size).is_ok(),
+            "a valid positive cluster-count encoding must remain accepted");
 
         // Each byte in an NTFS-reserved or FAT-specific BPB field is checked
         // independently. Meaningful hidden-sector, CHS, and serial-number
@@ -13973,6 +14024,8 @@ mod tests {
         sector[3..11].copy_from_slice(b"NTFS    ");
         sector[11..13].copy_from_slice(&512u16.to_le_bytes());
         sector[13] = 8;
+        sector[64] = 0xF6; // 1 KiB MFT record
+        sector[68] = 0xF4; // 4 KiB index buffer
         sector[21] = 0xF8;
         sector[40..48].copy_from_slice(&4096u64.to_le_bytes());
         sector[48..56].copy_from_slice(&4u64.to_le_bytes());
@@ -14028,6 +14081,8 @@ mod tests {
         primary[3..11].copy_from_slice(b"NTFS    ");
         primary[11..13].copy_from_slice(&512u16.to_le_bytes());
         primary[13] = 8;
+        primary[64] = 0xF6; // 1 KiB MFT record
+        primary[68] = 0xF4; // 4 KiB index buffer
         primary[21] = 0xF8;
         primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
         primary[48..56].copy_from_slice(&4u64.to_le_bytes());
@@ -14091,6 +14146,8 @@ mod tests {
         primary[3..11].copy_from_slice(b"NTFS    ");
         primary[11..13].copy_from_slice(&512u16.to_le_bytes());
         primary[13] = 8;
+        primary[64] = 0xF6; // 1 KiB MFT record
+        primary[68] = 0xF4; // 4 KiB index buffer
         primary[21] = 0xF8;
         primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
         primary[48..56].copy_from_slice(&4u64.to_le_bytes());
@@ -14130,6 +14187,8 @@ mod tests {
         primary[3..11].copy_from_slice(b"NTFS    ");
         primary[11..13].copy_from_slice(&512u16.to_le_bytes());
         primary[13] = 8;
+        primary[64] = 0xF6; // 1 KiB MFT record
+        primary[68] = 0xF4; // 4 KiB index buffer
         primary[21] = 0xF8;
         primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
         primary[48..56].copy_from_slice(&4u64.to_le_bytes());
@@ -14162,6 +14221,8 @@ mod tests {
         primary[3..11].copy_from_slice(b"NTFS    ");
         primary[11..13].copy_from_slice(&512u16.to_le_bytes());
         primary[13] = 8;
+        primary[64] = 0xF6; // 1 KiB MFT record
+        primary[68] = 0xF4; // 4 KiB index buffer
         primary[21] = 0xF8;
         primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
         primary[48..56].copy_from_slice(&4u64.to_le_bytes());

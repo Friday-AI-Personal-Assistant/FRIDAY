@@ -2549,6 +2549,23 @@ format/mount/read-back acceptance or prove guest result transfer.
 
 
 
+## Validate NTFS metadata record-size encodings — #961
+
+The NTFS boot-sector validator now decodes both signed metadata-size fields:
+the MFT file-record size and the index-buffer size. Negative encodings describe
+power-of-two byte sizes; positive encodings describe a count of allocation
+clusters. Zero, overflowing, non-power-of-two, below-sector, and above-2-MiB
+results are rejected, and the decoded sizes must fit within the validated
+volume extent. This prevents malformed metadata-layout declarations from
+passing solely because their MFT and mirror cluster indices are in range.
+
+Regression coverage includes invalid zero and extreme signed encodings and a
+valid positive cluster-count encoding. Existing Windows NTFS values and the
+previously accepted meaningful BPB identity fields remain supported. This is
+synthetic validation coverage; it does not replace physical Windows formatting,
+mount/read-back acceptance, prove guest result transfer, or enable guest
+execution.
+
 ## Validate NTFS-reserved and FAT-specific BPB fields — #959
 
 The NTFS boot-sector validator now rejects non-zero values in the legacy
