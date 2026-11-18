@@ -9486,10 +9486,13 @@ fn verify_guest_result_ntfs_boot_sector_readback(
 
     let mut primary = [0u8; 512];
     disk.read_exact_at(partition_offset, &mut primary)?;
-    let total_sectors = validate_guest_result_ntfs_boot_sector(&primary, partition_size)?;
     if primary != volume_primary {
-        return Err("The formatted NTFS volume boot sector differs from the attached raw-disk read-back after flushing both handles.".into());
+        return Err(format!(
+            "The formatted NTFS volume and attached raw-disk boot-sector reads disagree after flushing both handles (volume OEM={:02X?}, raw OEM={:02X?}, raw signature={:02X?}).",
+            &volume_primary[3..11], &primary[3..11], &primary[510..512]
+        ));
     }
+    let total_sectors = validate_guest_result_ntfs_boot_sector(&primary, partition_size)?;
     let backup_offset = partition_offset.checked_add(
         total_sectors.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
             .ok_or_else(|| "The NTFS backup boot-sector offset overflowed.".to_string())?
