@@ -2380,3 +2380,20 @@ existing VHDX identity checks, and the Windows partition-layout checks all
 succeed. Any mismatch preserves the disk for recovery. This verifies the
 filesystem metadata boundary; it does not provide a guest-to-host result
 channel or enable guest execution.
+
+## NTFS format flush and dual-path read-back — #934
+
+The Windows format report's volume GUID is now used to open the exact formatted
+volume without assigning a drive letter. FRIDAY flushes that volume handle and
+reads its primary boot sector through the volume device. It then flushes the
+already identity-verified attached raw-disk handle, reads the same sector at the
+partition's exact byte offset, and requires byte-for-byte agreement before
+validating the raw sector and its backup copy.
+
+This separates filesystem-cache visibility from raw-device addressing: a
+volume/raw mismatch is reported explicitly with bounded OEM/signature evidence,
+while an invalid volume read or invalid raw sector remains a hard failure. The
+disk is still preserved on every failure; no validation was weakened and no
+automatic retry was added. This remains a native Windows storage integration
+check, not physical Windows Sandbox acceptance or permission to enable guest
+execution.
