@@ -14215,6 +14215,50 @@ mod tests {
     }
 
     #[test]
+    fn ntfs_boot_sector_fixed_identity_and_cluster_geometry_are_exhaustive() {
+        let mut sector = [0u8; 512];
+        sector[3..11].copy_from_slice(b"NTFS    ");
+        sector[11..13].copy_from_slice(&512u16.to_le_bytes());
+        sector[13] = 8;
+        sector[64] = 0xF6; // 1 KiB MFT record
+        sector[68] = 0xF4; // 4 KiB index buffer
+        sector[21] = 0xF8;
+        sector[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        sector[48..56].copy_from_slice(&4u64.to_le_bytes());
+        sector[56..64].copy_from_slice(&8u64.to_le_bytes());
+        sector[510..512].copy_from_slice(&[0x55, 0xAA]);
+        let partition_size = 4096 * GUEST_RESULT_GPT_SECTOR_BYTES;
+
+        assert!(validate_guest_result_ntfs_boot_sector(&sector, partition_size).is_ok());
+
+        // The cluster-size field is one byte. Only the eight supported
+        // power-of-two values from 1 through 128 sectors are accepted.
+        for raw in 0u8..=u8::MAX {
+            let mut changed = sector;
+            changed[13] = raw;
+            let supported = [1u8, 2, 4, 8, 16, 32, 64, 128].contains(&raw);
+            assert_eq!(
+                validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_ok(),
+                supported,
+                "sectors-per-cluster byte {raw:#04x} has incorrect acceptance"
+            );
+        }
+
+        // Every byte of the fixed OEM identifier, sector-size field, media
+        // descriptor, and boot signature must be independently significant.
+        for (start, end) in [(3usize, 11usize), (11, 13), (21, 22), (510, 512)] {
+            for offset in start..end {
+                let mut changed = sector;
+                changed[offset] ^= 0x01;
+                assert!(
+                    validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err(),
+                    "fixed NTFS identity/signature byte at offset {offset} must be rejected"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ntfs_readback_requires_volume_raw_and_backup_sectors_to_agree() {
         let mut primary = [0u8; 512];
         primary[3..11].copy_from_slice(b"NTFS    ");

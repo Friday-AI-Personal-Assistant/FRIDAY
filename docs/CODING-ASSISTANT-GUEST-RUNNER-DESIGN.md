@@ -2634,3 +2634,17 @@ Cross-platform tests independently substitute every byte in each constrained
 field and require rejection, while confirming non-zero CHS geometry,
 hidden-sector offset, and NTFS volume serial number remain accepted. These synthetic tests do not replace physical Windows formatting,
 mount, or read-back acceptance and do not enable guest execution.
+
+## Exhaustive NTFS fixed identity and cluster-geometry validation — #967
+
+Added cross-platform regression coverage for every possible value of the
+one-byte sectors-per-cluster field. Exactly the eight supported power-of-two
+values from 1 through 128 sectors are accepted; zero, non-power-of-two values,
+and values above the supported maximum are rejected.
+
+The test also independently changes every byte of the fixed NTFS OEM
+identifier, bytes-per-sector field, media descriptor, and boot signature and
+requires rejection. This is test-only coverage: the NTFS validator, accepted
+geometry, storage limits, and execution policy are unchanged. It does not
+replace physical Windows formatting/read-back acceptance or establish guest
+result transfer.
