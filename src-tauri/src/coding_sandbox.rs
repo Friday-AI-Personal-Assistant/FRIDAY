@@ -14451,6 +14451,70 @@ mod tests {
         ).is_err());
     }
 
+    #[test]
+    fn ntfs_format_report_deserialization_rejects_missing_duplicate_and_wrongly_typed_fields() {
+        let (report, _, _) = valid_test_ntfs_format_report();
+        let valid = serde_json::json!({
+            "diskNumber": report.disk_number,
+            "diskGuid": report.disk_guid,
+            "partitionGuid": report.partition_guid,
+            "partitionOffset": report.partition_offset,
+            "partitionSize": report.partition_size,
+            "fileSystem": report.file_system,
+            "fileSystemLabel": report.file_system_label,
+            "volumePath": report.volume_path,
+            "volumeSize": report.volume_size,
+            "sizeRemaining": report.size_remaining,
+            "driveLetter": null,
+        });
+        assert!(serde_json::from_value::<GuestResultNtfsFormatReport>(valid.clone()).is_ok());
+
+        // Every field except driveLetter is required by the report contract.
+        for field in [
+            "diskNumber", "diskGuid", "partitionGuid", "partitionOffset",
+            "partitionSize", "fileSystem", "fileSystemLabel", "volumePath",
+            "volumeSize", "sizeRemaining",
+        ] {
+            let mut missing = valid.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<GuestResultNtfsFormatReport>(missing).is_err(),
+                "missing required report field {field} must be rejected"
+            );
+        }
+
+        // Numeric and textual fields must not be silently coerced.
+        for field in ["diskNumber", "partitionOffset", "partitionSize", "volumeSize", "sizeRemaining"] {
+            let mut changed = valid.clone();
+            changed[field] = serde_json::json!("7");
+            assert!(
+                serde_json::from_value::<GuestResultNtfsFormatReport>(changed).is_err(),
+                "string substituted for numeric report field {field} must be rejected"
+            );
+        }
+        for field in ["diskGuid", "partitionGuid", "fileSystem", "fileSystemLabel", "volumePath"] {
+            let mut changed = valid.clone();
+            changed[field] = serde_json::json!(7);
+            assert!(
+                serde_json::from_value::<GuestResultNtfsFormatReport>(changed).is_err(),
+                "number substituted for textual report field {field} must be rejected"
+            );
+        }
+
+        // serde must reject duplicate keys rather than accepting an
+        // ambiguous identity/geometry value from the guest report.
+        let duplicate_disk_number = br#"{"diskNumber":7,"diskNumber":8}"#;
+        assert!(
+            serde_json::from_slice::<GuestResultNtfsFormatReport>(duplicate_disk_number).is_err(),
+            "duplicate report fields must be rejected"
+        );
+
+        // The optional drive letter may be absent or explicitly null.
+        let mut omitted_optional = valid;
+        omitted_optional.as_object_mut().unwrap().remove("driveLetter");
+        assert!(serde_json::from_value::<GuestResultNtfsFormatReport>(omitted_optional).is_ok());
+    }
+
     #[cfg(windows)]
     #[test]
     fn guest_result_vhdx_readback_requires_exact_fixed_capacity_and_geometry() {

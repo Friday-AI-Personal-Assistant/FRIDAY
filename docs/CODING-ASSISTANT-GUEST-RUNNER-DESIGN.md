@@ -2648,3 +2648,16 @@ requires rejection. This is test-only coverage: the NTFS validator, accepted
 geometry, storage limits, and execution policy are unchanged. It does not
 replace physical Windows formatting/read-back acceptance or establish guest
 result transfer.
+
+## Strict NTFS format-report deserialization contract — #968
+
+Expanded cross-platform tests for the guest formatting report's JSON boundary.
+The tests verify that all required identity, geometry, filesystem, and volume
+fields are present; numeric and textual fields retain their declared JSON
+types; duplicate keys are rejected; and unknown fields remain rejected.
+The optional drive-letter field is accepted both when absent and when null.
+
+This batch changes tests and documentation only. The report schema, production
+deserializer, validation rules, storage limits, and execution policy are
+unchanged. It does not establish physical Windows guest formatting acceptance
+or a result-transfer channel.
