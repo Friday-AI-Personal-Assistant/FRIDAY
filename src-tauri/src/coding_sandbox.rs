@@ -9380,7 +9380,9 @@ const STORAGE_OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
 /// The overflow bit is security-relevant: callers must reject the operation
 /// rather than treating a truncated prefix as complete evidence.
 fn read_bounded_storage_output<R: Read>(mut reader: R) -> std::io::Result<(Vec<u8>, bool)> {
-    let mut retained = Vec::new();
+    // Allocate only the fixed retention budget once; excess bytes are drained
+    // without growing memory or allowing a truncated prefix to look complete.
+    let mut retained = Vec::with_capacity(MAX_STORAGE_OPERATION_OUTPUT_BYTES);
     let mut exceeded_limit = false;
     let mut buffer = [0u8; 4096];
     loop {
@@ -12942,6 +12944,61 @@ mod tests {
         let (retained, exceeded) = read_bounded_storage_output(std::io::Cursor::new(&input)).unwrap();
         assert_eq!(retained.len(), MAX_STORAGE_OPERATION_OUTPUT_BYTES);
         assert!(exceeded);
+    }
+
+    #[test]
+    fn bounded_storage_output_retries_interrupted_reads_without_losing_data() {
+        struct InterruptedThenData {
+            step: u8,
+        }
+
+        impl Read for InterruptedThenData {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                match self.step {
+                    0 | 2 => {
+                        self.step += 1;
+                        Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+                    }
+                    1 => {
+                        self.step += 1;
+                        buffer[..3].copy_from_slice(b"abc");
+                        Ok(3)
+                    }
+                    _ => Ok(0),
+                }
+            }
+        }
+
+        let (retained, exceeded) =
+            read_bounded_storage_output(InterruptedThenData { step: 0 }).unwrap();
+        assert_eq!(retained, b"abc");
+        assert!(!exceeded);
+    }
+
+    #[test]
+    fn bounded_storage_output_rejects_read_failure_after_partial_data() {
+        struct PartialThenFailure {
+            delivered: bool,
+        }
+
+        impl Read for PartialThenFailure {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if !self.delivered {
+                    self.delivered = true;
+                    buffer[..4].copy_from_slice(b"safe");
+                    Ok(4)
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "simulated pipe closure",
+                    ))
+                }
+            }
+        }
+
+        let error = read_bounded_storage_output(PartialThenFailure { delivered: false })
+            .expect_err("partial output must never be returned as complete after a pipe failure");
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
     }
 
     fn valid_test_ntfs_format_report() -> (
