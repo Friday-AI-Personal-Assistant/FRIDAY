@@ -9491,15 +9491,14 @@ fn validate_guest_result_ntfs_boot_sector(
             "The result partition does not contain a valid 512-byte NTFS boot sector (partition_bytes={partition_size}, {observed})."
         ));
     }
-    // NTFS does not use the legacy FAT BPB fields below. The reserved
-    // bytes, FAT count, root-entry count, legacy sector counts, hidden-sector
-    // count, and legacy large-sector count must remain zero. CHS geometry at
-    // 24..28 is intentionally not constrained because it is irrelevant to NTFS.
+    // NTFS requires these legacy FAT BPB fields and reserved bytes to be
+    // zero. The hidden-sector field (28..32), CHS geometry (24..28), volume
+    // serial number (68..76), and other NTFS-specific fields are meaningful
+    // and must not be mistaken for reserved bytes.
     if sector[14..21].iter().any(|byte| *byte != 0)
         || sector[22..24].iter().any(|byte| *byte != 0)
-        || sector[28..36].iter().any(|byte| *byte != 0)
+        || sector[32..36].iter().any(|byte| *byte != 0)
         || sector[65..68].iter().any(|byte| *byte != 0)
-        || sector[69..72].iter().any(|byte| *byte != 0)
     {
         return Err("The NTFS boot sector contains non-zero reserved or FAT-specific BPB fields.".into());
     }
@@ -13945,9 +13944,9 @@ mod tests {
         assert!(validate_guest_result_ntfs_boot_sector(&sector, partition_size).is_ok());
 
         // Each byte in an NTFS-reserved or FAT-specific BPB field is checked
-        // independently. The CHS geometry bytes at 24..28 are deliberately
-        // excluded because they are irrelevant to NTFS.
-        for range in [14usize..21, 22..24, 28..36, 65..68, 69..72] {
+        // independently. Meaningful hidden-sector, CHS, and serial-number
+        // fields are deliberately excluded.
+        for range in [14usize..21, 22..24, 32..36, 65..68] {
             for offset in range {
                 let mut changed = sector;
                 changed[offset] = 1;
@@ -13958,11 +13957,13 @@ mod tests {
             }
         }
 
-        let mut chs_geometry = sector;
-        chs_geometry[24..28].copy_from_slice(&[0x3F, 0x00, 0xFF, 0x00]);
+        let mut meaningful_fields = sector;
+        meaningful_fields[24..28].copy_from_slice(&[0x3F, 0x00, 0xFF, 0x00]);
+        meaningful_fields[28..32].copy_from_slice(&1234u32.to_le_bytes());
+        meaningful_fields[68..76].copy_from_slice(&0x1234_5678_9ABC_DEF0u64.to_le_bytes());
         assert!(
-            validate_guest_result_ntfs_boot_sector(&chs_geometry, partition_size).is_ok(),
-            "legacy CHS geometry must remain unrestricted"
+            validate_guest_result_ntfs_boot_sector(&meaningful_fields, partition_size).is_ok(),
+            "CHS geometry, hidden-sector offset, and NTFS volume serial must remain unrestricted"
         );
     }
 
