@@ -2674,3 +2674,20 @@ Cross-platform regression tests cover a reversed range, inclusive sector-count
 overflow, and byte-size multiplication overflow. Valid report behavior and the
 fixed storage policy are unchanged. This does not establish physical Windows
 guest formatting acceptance or a result-transfer channel.
+
+
+## NTFS format-report volume-size boundary matrix — #970
+
+Added cross-platform tests for the inclusive numeric boundaries of the
+validated NTFS volume report. The test checks that a reported volume equal to
+the exact partition size is accepted, and that the maximum permitted
+1-MiB filesystem-metadata difference is also accepted. At both volume-size
+boundaries, zero remaining space and all volume space remaining are accepted.
+Existing rejection coverage continues to verify that a volume exceeding the
+partition, a volume smaller than the permitted minimum, or remaining space
+greater than the volume is rejected.
+
+This batch adds regression tests and documentation only. It does not change
+the fixed storage allowance, report schema, formatting behavior, result
+transfer, or guest execution policy. Physical Windows formatting and
+read-back acceptance remain separate requirements.

@@ -13923,6 +13923,33 @@ mod tests {
     }
 
     #[test]
+    fn ntfs_format_report_accepts_exact_volume_and_remaining_size_boundaries() {
+        let (valid, metadata, partition) = valid_test_ntfs_format_report();
+
+        // The NTFS volume may be smaller than its partition only by the
+        // explicitly bounded filesystem-metadata allowance. Exercise both
+        // inclusive ends of that allowance, and both ends of the remaining
+        // space interval, without changing the production policy.
+        for volume_size in [
+            valid.partition_size,
+            valid.partition_size - 1024 * 1024,
+        ] {
+            for size_remaining in [0, volume_size] {
+                let mut report = valid.clone();
+                report.volume_size = volume_size;
+                report.size_remaining = size_remaining;
+                validate_guest_result_ntfs_format_report(
+                    &report, 7, &metadata, &partition,
+                ).unwrap_or_else(|error| {
+                    panic!(
+                        "valid volume boundary must be accepted (volume_size={volume_size}, size_remaining={size_remaining}): {error}"
+                    )
+                });
+            }
+        }
+    }
+
+    #[test]
     fn ntfs_format_report_rejects_malformed_partition_lba_ranges_without_panicking() {
         let (report, metadata, valid_partition) = valid_test_ntfs_format_report();
 
