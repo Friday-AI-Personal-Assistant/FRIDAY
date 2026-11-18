@@ -12916,7 +12916,7 @@ mod tests {
     fn bounded_storage_output_reports_overflow_and_retains_only_the_limit() {
         let mut input = vec![b'x'; MAX_STORAGE_OPERATION_OUTPUT_BYTES];
         input.push(b'y');
-        let (retained, exceeded) = read_bounded_storage_output(std::io::Cursor::new(&input));
+        let (retained, exceeded) = read_bounded_storage_output(std::io::Cursor::new(&input)).unwrap();
         assert_eq!(retained.len(), MAX_STORAGE_OPERATION_OUTPUT_BYTES);
         assert!(retained.iter().all(|byte| *byte == b'x'));
         assert!(exceeded, "discarded bytes must never be mistaken for complete command output");
@@ -12939,7 +12939,7 @@ mod tests {
     #[test]
     fn bounded_storage_output_detects_overflow_across_multiple_reads() {
         let input = vec![b'z'; MAX_STORAGE_OPERATION_OUTPUT_BYTES + 8193];
-        let (retained, exceeded) = read_bounded_storage_output(std::io::Cursor::new(&input));
+        let (retained, exceeded) = read_bounded_storage_output(std::io::Cursor::new(&input)).unwrap();
         assert_eq!(retained.len(), MAX_STORAGE_OPERATION_OUTPUT_BYTES);
         assert!(exceeded);
     }
