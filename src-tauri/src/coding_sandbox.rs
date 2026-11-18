@@ -12167,6 +12167,46 @@ mod tests {
     }
 
     #[test]
+    fn result_storage_journal_preserves_torn_and_unexpected_generation_contents() {
+        for (case, contents) in [
+            ("empty-state", vec![(GUEST_RESULT_STORAGE_JOURNAL_FILE, Vec::new())]),
+            ("partial-state", vec![(GUEST_RESULT_STORAGE_JOURNAL_FILE, br#"{"schemaVersion":2"#.to_vec())]),
+            ("extra-file", vec![
+                (GUEST_RESULT_STORAGE_JOURNAL_FILE, b"not-a-complete-journal".to_vec()),
+                ("unexpected.bin", b"preserve-me".to_vec()),
+            ]),
+        ] {
+            let root = make_test_directory(&format!("result-journal-torn-{case}"));
+            let first = valid_result_storage_journal_for_root(&root);
+            persist_guest_result_storage_journal(&root, &first).unwrap();
+
+            let interrupted = guest_result_storage_journal_generation_path(&root, 2);
+            fs::create_dir(&interrupted).unwrap();
+            secure_private_workspace_directory(&interrupted).unwrap();
+            for (name, bytes) in contents {
+                fs::write(interrupted.join(name), bytes).unwrap();
+            }
+
+            assert!(
+                load_guest_result_storage_journal(&root, &first.run_id, &first.vhdx_identifier).is_err(),
+                "{case}: recovery must reject an incomplete or unexpected generation",
+            );
+            let next = append_guest_result_storage_journal_entry(
+                &first, GuestResultStorageEvent::PreserveForRecovery, true, false,
+            ).unwrap();
+            assert!(
+                persist_guest_result_storage_journal(&root, &next).is_err(),
+                "{case}: a writer must not overwrite or skip uncertain generation evidence",
+            );
+            assert!(interrupted.exists(), "{case}: the incomplete generation must be preserved");
+            if case == "extra-file" {
+                assert_eq!(fs::read(interrupted.join("unexpected.bin")).unwrap(), b"preserve-me");
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn result_storage_journal_rejects_generation_gaps_and_identity_substitution() {
         let root = make_test_directory("result-journal-gap");
         let first = valid_result_storage_journal_for_root(&root);
