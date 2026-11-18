@@ -9374,6 +9374,45 @@ fn verify_gpt_header_crc(header: &[u8]) -> bool {
     gpt_crc32(&crc_input) == stored
 }
 
+/// Validates the complete GPT read-back as pure bytes. Keeping this boundary
+/// platform-independent lets CI exercise corruption and truncation cases on
+/// every host while the Windows adapter remains responsible only for exact
+/// device reads at the planned LBAs.
+fn validate_guest_result_gpt_readback_bytes(
+    mbr: &[u8],
+    primary_header: &[u8],
+    primary_entries: &[u8],
+    backup_entries: &[u8],
+    backup_header: &[u8],
+    expected: &GuestResultGptMetadata,
+) -> Result<(), String> {
+    if mbr.len() != expected.protective_mbr.len()
+        || primary_header.len() != expected.primary_header.len()
+        || primary_entries.len() != expected.primary_entries.len()
+        || backup_entries.len() != expected.backup_entries.len()
+        || backup_header.len() != expected.backup_header.len()
+    {
+        return Err("The GPT metadata read-back contains a truncated or oversized structure.".into());
+    }
+    let primary_entries_crc = u32::from_le_bytes(primary_header[88..92].try_into()
+        .map_err(|_| "The primary GPT entry-array CRC field is truncated.".to_string())?);
+    let backup_entries_crc = u32::from_le_bytes(backup_header[88..92].try_into()
+        .map_err(|_| "The backup GPT entry-array CRC field is truncated.".to_string())?);
+    if mbr != expected.protective_mbr
+        || primary_header != expected.primary_header
+        || primary_entries != expected.primary_entries
+        || backup_entries != expected.backup_entries
+        || backup_header != expected.backup_header
+        || gpt_crc32(primary_entries) != primary_entries_crc
+        || gpt_crc32(backup_entries) != backup_entries_crc
+        || !verify_gpt_header_crc(primary_header)
+        || !verify_gpt_header_crc(backup_header)
+    {
+        return Err("The GPT metadata read-back differs from FRIDAY's exact layout or CRC policy.".into());
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn verify_guest_result_gpt_readback(
     disk: &OwnedRawGuestDisk,
@@ -9392,19 +9431,9 @@ fn verify_guest_result_gpt_readback(
     disk.read_exact_at(2 * 512, &mut primary_entries)?;
     disk.read_exact_at(backup_entries_lba * 512, &mut backup_entries)?;
     disk.read_exact_at((total_sectors - 1) * 512, &mut backup_header)?;
-    if mbr != expected.protective_mbr
-        || primary_header != expected.primary_header
-        || primary_entries != expected.primary_entries
-        || backup_entries != expected.backup_entries
-        || backup_header != expected.backup_header
-        || gpt_crc32(&primary_entries) != u32::from_le_bytes(primary_header[88..92].try_into().unwrap())
-        || gpt_crc32(&backup_entries) != u32::from_le_bytes(backup_header[88..92].try_into().unwrap())
-        || !verify_gpt_header_crc(&primary_header)
-        || !verify_gpt_header_crc(&backup_header)
-    {
-        return Err("The GPT metadata read-back differs from FRIDAY's exact layout or CRC policy.".into());
-    }
-    Ok(())
+    validate_guest_result_gpt_readback_bytes(
+        &mbr, &primary_header, &primary_entries, &backup_entries, &backup_header, expected,
+    )
 }
 
 /// Validates the on-disk NTFS BIOS parameter block read directly from the
@@ -10123,6 +10152,52 @@ mod tests {
             u64::from_le_bytes(metadata.backup_header[24..32].try_into().unwrap()),
             GUEST_RESULT_VOLUME_CAPACITY_BYTES / 512 - 1,
         );
+    }
+
+    #[test]
+    fn gpt_readback_accepts_only_exact_complete_primary_and_backup_metadata() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_partition_plan(
+            run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, GUEST_RESULT_GPT_SECTOR_BYTES as u32,
+        ).unwrap();
+        let expected = build_guest_result_gpt_metadata(&plan).unwrap();
+        let valid = (
+            expected.protective_mbr.clone(),
+            expected.primary_header.clone(),
+            expected.primary_entries.clone(),
+            expected.backup_entries.clone(),
+            expected.backup_header.clone(),
+        );
+        assert!(validate_guest_result_gpt_readback_bytes(
+            &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &expected,
+        ).is_ok());
+
+        for region in 0..5 {
+            let mut altered = valid.clone();
+            let bytes = match region {
+                0 => &mut altered.0,
+                1 => &mut altered.1,
+                2 => &mut altered.2,
+                3 => &mut altered.3,
+                _ => &mut altered.4,
+            };
+            bytes[bytes.len() / 2] ^= 0x01;
+            assert!(validate_guest_result_gpt_readback_bytes(
+                &altered.0, &altered.1, &altered.2, &altered.3, &altered.4, &expected,
+            ).is_err(), "corruption in GPT region {region} must be rejected");
+        }
+
+        let mut truncated = valid.clone();
+        truncated.1.pop();
+        assert!(validate_guest_result_gpt_readback_bytes(
+            &truncated.0, &truncated.1, &truncated.2, &truncated.3, &truncated.4, &expected,
+        ).is_err(), "truncated primary header must be rejected");
+
+        let mut oversized = valid.clone();
+        oversized.3.push(0);
+        assert!(validate_guest_result_gpt_readback_bytes(
+            &oversized.0, &oversized.1, &oversized.2, &oversized.3, &oversized.4, &expected,
+        ).is_err(), "oversized backup entry array must be rejected");
     }
 
     #[test]
