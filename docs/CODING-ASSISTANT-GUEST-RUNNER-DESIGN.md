@@ -2566,6 +2566,16 @@ synthetic validation coverage; it does not replace physical Windows formatting,
 mount/read-back acceptance, prove guest result transfer, or enable guest
 execution.
 
+## NTFS positive cluster-count encoding boundary test correction — #964
+
+The NTFS record-size field is a signed 8-bit value: positive values encode
+cluster counts and therefore have a maximum representable value of 127. The
+initial boundary test incorrectly included 128 in the positive set, even
+though its byte representation is `0x80`, which correctly decodes as a
+negative exponent and is rejected as an out-of-policy size. Corrected the test
+to cover the valid positive signed-byte range without changing the production
+validator or its security bounds.
+
 ## NTFS BPB volume-serial field offset correction — #963
 
 Corrected the documented and tested NTFS volume-serial-number byte range to

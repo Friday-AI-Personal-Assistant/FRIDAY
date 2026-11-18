@@ -13993,7 +13993,8 @@ mod tests {
 
         // Positive encodings count allocation clusters. Only power-of-two
         // counts produce power-of-two byte sizes under this fixed geometry.
-        for clusters in [1u8, 2, 4, 8, 16, 32, 64, 128] {
+        // The encoding is a signed byte, so positive cluster counts stop at 127.
+        for clusters in [1u8, 2, 4, 8, 16, 32, 64] {
             assert_eq!(
                 validate_guest_result_ntfs_record_size_encoding(clusters, 8).unwrap(),
                 clusters as u64 * 8 * GUEST_RESULT_GPT_SECTOR_BYTES
