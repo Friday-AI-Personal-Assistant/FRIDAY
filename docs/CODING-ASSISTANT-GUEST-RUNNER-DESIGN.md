@@ -2513,3 +2513,20 @@ The tests exercise existing fail-closed validation rules without broadening
 accepted NTFS geometry or changing the formatting policy. They remain
 synthetic byte-validation coverage and do not replace physical Windows
 format/mount/read-back acceptance or prove guest result transfer.
+
+## Exhaustive NTFS primary/backup and dual-path byte disagreement tests — #957
+
+Expanded the cross-platform NTFS read-back regression matrix without changing
+production validation behavior. The primary/backup comparison is now tested
+against an independent one-byte substitution at every byte in each critical
+NTFS identity, geometry, volume-extent, metadata-location, record-size,
+serial-number, and boot-signature field range. The mounted-volume versus raw
+primary-sector check is also tested against a one-byte disagreement at every
+position in the complete 512-byte sector.
+
+These tests ensure that the backup comparison does not silently omit a byte
+from its declared critical fields and that the dual-path read-back continues
+to require exact full-sector agreement. They remain synthetic byte-validation
+tests and do not replace physical Windows format/mount/read-back acceptance,
+prove guest result transfer, or enable guest execution.
+

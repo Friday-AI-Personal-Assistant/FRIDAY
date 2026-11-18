@@ -14074,6 +14074,63 @@ mod tests {
     }
 
     #[test]
+    fn ntfs_primary_backup_pair_rejects_every_critical_byte_substitution() {
+        let mut primary = [0u8; 512];
+        primary[3..11].copy_from_slice(b"NTFS    ");
+        primary[11..13].copy_from_slice(&512u16.to_le_bytes());
+        primary[13] = 8;
+        primary[21] = 0xF8;
+        primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        primary[48..56].copy_from_slice(&4u64.to_le_bytes());
+        primary[56..64].copy_from_slice(&8u64.to_le_bytes());
+        primary[64..72].copy_from_slice(&[0xF6, 0, 0, 0, 0, 0, 0, 0]);
+        primary[72..80].copy_from_slice(&0x1234_5678_9ABC_DEF0u64.to_le_bytes());
+        primary[510..512].copy_from_slice(&[0x55, 0xAA]);
+        let partition_size = 4097 * GUEST_RESULT_GPT_SECTOR_BYTES;
+
+        // Every byte in the compared NTFS identity, geometry, extent,
+        // metadata-location, record-size, serial-number, and signature fields
+        // must remain identical between the primary and backup sectors.
+        for (start, end) in [(3usize, 14usize), (21, 22), (24, 80), (510, 512)] {
+            for offset in start..end {
+                let mut backup = primary;
+                backup[offset] ^= 0x01;
+                assert!(
+                    validate_guest_result_ntfs_boot_sector_pair(
+                        &primary, &backup, partition_size,
+                    ).is_err(),
+                    "backup-sector substitution at critical byte {offset} must be rejected",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ntfs_volume_and_raw_primary_readback_require_all_512_bytes_to_match() {
+        let mut primary = [0u8; 512];
+        primary[3..11].copy_from_slice(b"NTFS    ");
+        primary[11..13].copy_from_slice(&512u16.to_le_bytes());
+        primary[13] = 8;
+        primary[21] = 0xF8;
+        primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        primary[48..56].copy_from_slice(&4u64.to_le_bytes());
+        primary[56..64].copy_from_slice(&8u64.to_le_bytes());
+        primary[510..512].copy_from_slice(&[0x55, 0xAA]);
+        let partition_size = 4097 * GUEST_RESULT_GPT_SECTOR_BYTES;
+
+        for offset in 0..primary.len() {
+            let mut raw_primary = primary;
+            raw_primary[offset] ^= 0x01;
+            assert!(
+                validate_guest_result_ntfs_boot_sector_readback(
+                    &primary, &raw_primary, &primary, partition_size,
+                ).is_err(),
+                "volume/raw primary disagreement at byte {offset} must be rejected",
+            );
+        }
+    }
+
+    #[test]
     fn ntfs_format_report_deserialization_rejects_unknown_fields() {
         let (report, _, _) = valid_test_ntfs_format_report();
         let mut value = serde_json::json!({
