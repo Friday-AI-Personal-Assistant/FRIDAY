@@ -9289,6 +9289,13 @@ fn verify_guest_result_windows_partition_layout_bytes(
     // This parser is a trust boundary: do not perform offset arithmetic from
     // a caller-supplied plan until its complete fixed per-run policy is proven.
     validate_guest_result_partition_plan(plan, &plan.run_id)?;
+    // Bind every expected GPT byte to this exact plan. The parser must not
+    // accept caller-supplied metadata that describes a different disk or
+    // partition, even if the Windows response matches that substituted data.
+    let expected_metadata = build_guest_result_gpt_metadata(plan)?;
+    if metadata != &expected_metadata {
+        return Err("The expected GPT metadata does not match the validated partition plan.".into());
+    }
     let required = FRIDAY_DRIVE_LAYOUT_EX_HEADER_BYTES
         .checked_add(FRIDAY_PARTITION_INFORMATION_EX_BYTES)
         .ok_or_else(|| "The Windows partition-layout size overflowed.".to_string())?;
@@ -10236,6 +10243,35 @@ mod tests {
             bytes[entry + 72 + index * 2..entry + 74 + index * 2].copy_from_slice(&unit.to_le_bytes());
         }
         assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len(), &plan, &metadata).is_ok());
+
+        // Metadata is also an untrusted parser input: each on-disk region
+        // must be the deterministic metadata generated from this exact plan.
+        let mut altered_metadata = metadata.clone();
+        altered_metadata.protective_mbr[446] ^= 1;
+        assert!(verify_guest_result_windows_partition_layout_bytes(
+            &bytes, bytes.len(), &plan, &altered_metadata,
+        ).is_err(), "substituted protective MBR metadata must be rejected");
+        let mut altered_metadata = metadata.clone();
+        altered_metadata.primary_header[56] ^= 1;
+        assert!(verify_guest_result_windows_partition_layout_bytes(
+            &bytes, bytes.len(), &plan, &altered_metadata,
+        ).is_err(), "substituted primary-header metadata must be rejected");
+        let mut altered_metadata = metadata.clone();
+        altered_metadata.primary_entries[16] ^= 1;
+        assert!(verify_guest_result_windows_partition_layout_bytes(
+            &bytes, bytes.len(), &plan, &altered_metadata,
+        ).is_err(), "substituted primary-entry metadata must be rejected");
+        let mut altered_metadata = metadata.clone();
+        altered_metadata.backup_entries[16] ^= 1;
+        assert!(verify_guest_result_windows_partition_layout_bytes(
+            &bytes, bytes.len(), &plan, &altered_metadata,
+        ).is_err(), "substituted backup-entry metadata must be rejected");
+        let mut altered_metadata = metadata.clone();
+        altered_metadata.backup_header[56] ^= 1;
+        assert!(verify_guest_result_windows_partition_layout_bytes(
+            &bytes, bytes.len(), &plan, &altered_metadata,
+        ).is_err(), "substituted backup-header metadata must be rejected");
+
 
         // The parser must validate its own plan input before using it in
         // offset arithmetic; malformed plans must fail closed, not underflow

@@ -2451,3 +2451,17 @@ partition start, reversed partition bounds, substituted disk capacity, and
 unexpected partition number; each must be rejected before parsing. This is
 synthetic parser-boundary coverage only and does not replace physical Windows
 storage-stack acceptance or enable guest execution.
+
+
+## Bind Windows GPT layout expectations to the validated partition plan — #952
+
+Before interpreting the Windows drive-layout response, the parser now rebuilds
+the complete expected GPT metadata from the already-validated per-run partition
+plan and requires the supplied metadata object to match byte-for-byte. This
+prevents a mismatched protective MBR, primary/backup header, or primary/backup
+entry array from changing the identity and layout values treated as expected.
+
+Cross-platform regression tests independently substitute each of the five GPT
+metadata regions and require rejection. This is synthetic parser-boundary
+coverage; it does not replace physical Windows storage-stack acceptance, prove
+a guest result-transfer channel, or enable guest execution.
