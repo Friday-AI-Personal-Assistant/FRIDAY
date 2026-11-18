@@ -10247,9 +10247,16 @@ mod tests {
             run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, 512,
         ).unwrap();
         let metadata = build_guest_result_gpt_metadata(&plan, run_id).unwrap();
-        assert!(build_guest_result_gpt_metadata(
-            &plan, "fedcba9876543210fedcba9876543210",
-        ).is_err(), "metadata generation must reject a mismatched trusted run ID");
+        for invalid_trusted_run_id in [
+            "",
+            "fedcba9876543210fedcba9876543210",
+            "0123456789abcdef0123456789abcdef0",
+            "0123456789ABCDEF0123456789ABCDEF",
+        ] {
+            assert!(build_guest_result_gpt_metadata(
+                &plan, invalid_trusted_run_id,
+            ).is_err(), "metadata generation must reject invalid trusted run ID {invalid_trusted_run_id:?}");
+        }
         assert_eq!(&metadata.protective_mbr[510..512], &[0x55, 0xaa]);
         assert_eq!(&metadata.primary_header[0..8], b"EFI PART");
         assert_eq!(&metadata.backup_header[0..8], b"EFI PART");
@@ -10305,10 +10312,17 @@ mod tests {
         assert!(validate_guest_result_gpt_readback_bytes(
             &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &expected, run_id,
         ).is_ok());
-        assert!(validate_guest_result_gpt_readback_bytes(
-            &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &expected,
+        for invalid_trusted_run_id in [
+            "",
             "fedcba9876543210fedcba9876543210",
-        ).is_err(), "a mismatched trusted run ID must reject unchanged GPT evidence");
+            "0123456789abcdef0123456789abcdef0",
+            "0123456789ABCDEF0123456789ABCDEF",
+        ] {
+            assert!(validate_guest_result_gpt_readback_bytes(
+                &valid.0, &valid.1, &valid.2, &valid.3, &valid.4,
+                &plan, &expected, invalid_trusted_run_id,
+            ).is_err(), "unchanged GPT evidence must reject invalid trusted run ID {invalid_trusted_run_id:?}");
+        }
 
         // Even a byte-for-byte matching disk read-back cannot authorize
         // metadata substituted independently of the validated partition plan.
@@ -10431,9 +10445,16 @@ mod tests {
             bytes[entry + 72 + index * 2..entry + 74 + index * 2].copy_from_slice(&unit.to_le_bytes());
         }
         assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len(), &plan, &metadata, run_id).is_ok());
-        assert!(verify_guest_result_windows_partition_layout_bytes(
-            &bytes, bytes.len(), &plan, &metadata, "fedcba9876543210fedcba9876543210",
-        ).is_err(), "a mismatched trusted run ID must reject unchanged Windows layout evidence");
+        for invalid_trusted_run_id in [
+            "",
+            "fedcba9876543210fedcba9876543210",
+            "0123456789abcdef0123456789abcdef0",
+            "0123456789ABCDEF0123456789ABCDEF",
+        ] {
+            assert!(verify_guest_result_windows_partition_layout_bytes(
+                &bytes, bytes.len(), &plan, &metadata, invalid_trusted_run_id,
+            ).is_err(), "unchanged Windows layout evidence must reject invalid trusted run ID {invalid_trusted_run_id:?}");
+        }
         let mut substituted_plan = plan.clone();
         substituted_plan.run_id = "abcdef0123456789abcdef0123456789".into();
         assert!(verify_guest_result_windows_partition_layout_bytes(

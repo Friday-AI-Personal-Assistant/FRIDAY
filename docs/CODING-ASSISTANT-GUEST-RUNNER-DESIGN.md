@@ -2881,3 +2881,19 @@ This is a trust-boundary hardening change. The fixed disk capacity, GPT geometry
 Added direct regression coverage proving GPT metadata generation rejects a trusted run ID that differs from the unchanged partition plan. Extended the Windows drive-layout parser test to reject a substituted plan run ID while keeping the original Windows layout bytes, metadata, and independently trusted run ID unchanged. This complements the existing GPT raw-read-back mismatch and plan-substitution tests, covering the metadata builder and both independent read-back boundaries with explicit identity-mismatch cases.
 
 Tests and design documentation only. Production GPT generation, disk geometry, NTFS formatting, privilege boundaries, and result-transfer behavior are unchanged. Physical Windows VHDX/Sandbox guest acceptance remains outstanding.
+
+## Exhaustive malformed trusted-identity rejection at GPT boundaries — #988
+
+Expanded the independent GPT trust-anchor regression coverage across all three
+acceptance boundaries: deterministic metadata generation, raw GPT read-back,
+and Windows' independently reported partition-layout parser. Each boundary
+now rejects the same unchanged valid plan/evidence when the separately
+supplied trusted run ID is empty, different, overlong, or uppercase. The
+positive baseline remains unchanged, and existing substituted-plan tests
+continue to prove that an embedded plan identity cannot replace the trusted
+journal identity.
+
+This is test and documentation coverage only. GPT generation, disk geometry,
+partition layout, NTFS formatting, storage capacity, privilege boundaries,
+and guest execution behavior are unchanged. Physical Windows VHDX/Sandbox
+acceptance and result-transfer validation remain outstanding.
