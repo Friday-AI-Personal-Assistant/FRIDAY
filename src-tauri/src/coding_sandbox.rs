@@ -5023,18 +5023,15 @@ fn verify_attached_guest_result_vhdx_identity(
     if physical_path != expected_physical_path {
         return Err("The attached physical-device path changed during identity verification.".into());
     }
-    let mut identifier_info = FridayGetVirtualDiskInfo {
-        version: FRIDAY_GET_VIRTUAL_DISK_INFO_VIRTUAL_DISK_ID, // VHDX GET_VIRTUAL_DISK_INFO_VIRTUAL_DISK_ID
-        data: FridayGetVirtualDiskInfoData { alignment: [0; 3] },
-    };
-    let mut identifier_bytes = std::mem::size_of::<FridayGetVirtualDiskInfo>() as u32;
-    let status = unsafe {
-        GetVirtualDiskInformation(handle.0, &mut identifier_bytes, &mut identifier_info, std::ptr::null_mut())
-    };
-    if status != 0 {
-        return Err(format!("Windows could not read the persistent identifier from FRIDAY's attached VHDX handle (error {status})."));
-    }
-    let observed_identifier = format_guest_vhdx_identifier(unsafe { identifier_info.data.identifier })?;
+    // Revalidate the complete fixed-disk contract through the exact attached
+    // handle. A correct GUID alone must never authorize a disk whose capacity,
+    // allocation type, or sector geometry changed between path verification
+    // and attachment.
+    let (size, provider_subtype, observed_identifier) =
+        query_guest_result_vhdx_info_from_handle(handle)?;
+    validate_guest_result_vhdx_readback(
+        size, provider_subtype, &observed_identifier, plan.capacity_bytes,
+    )?;
     let verified_again = verify_guest_result_vhdx_file_path(plan, trusted_storage_root)?;
     if verified_again != verified_path {
         return Err("The result VHDX backing-file path changed during attached identity verification.".into());
@@ -5046,6 +5043,51 @@ fn verify_attached_guest_result_vhdx_identity(
         ));
     }
     Ok(observed_identifier)
+}
+
+#[cfg(windows)]
+fn query_guest_result_vhdx_info_from_handle(
+    handle: &OwnedVirtualDiskHandle,
+) -> Result<(FridayVirtualDiskSizeInfo, u32, String), String> {
+    let mut size_info = FridayGetVirtualDiskInfo {
+        version: 1, // GET_VIRTUAL_DISK_INFO_SIZE
+        data: FridayGetVirtualDiskInfoData { alignment: [0; 3] },
+    };
+    let mut size_bytes = std::mem::size_of::<FridayGetVirtualDiskInfo>() as u32;
+    let size_status = unsafe {
+        GetVirtualDiskInformation(handle.0, &mut size_bytes, &mut size_info, std::ptr::null_mut())
+    };
+    if size_status != 0 {
+        return Err(format!("Windows could not read capacity from FRIDAY's attached VHDX handle (error {size_status})."));
+    }
+    let size = unsafe { size_info.data.size };
+
+    let mut subtype_info = FridayGetVirtualDiskInfo {
+        version: 7, // GET_VIRTUAL_DISK_INFO_PROVIDER_SUBTYPE
+        data: FridayGetVirtualDiskInfoData { alignment: [0; 3] },
+    };
+    let mut subtype_bytes = std::mem::size_of::<FridayGetVirtualDiskInfo>() as u32;
+    let subtype_status = unsafe {
+        GetVirtualDiskInformation(handle.0, &mut subtype_bytes, &mut subtype_info, std::ptr::null_mut())
+    };
+    if subtype_status != 0 {
+        return Err(format!("Windows could not verify allocation type from FRIDAY's attached VHDX handle (error {subtype_status})."));
+    }
+    let provider_subtype = unsafe { subtype_info.data.provider_subtype };
+
+    let mut identifier_info = FridayGetVirtualDiskInfo {
+        version: FRIDAY_GET_VIRTUAL_DISK_INFO_VIRTUAL_DISK_ID,
+        data: FridayGetVirtualDiskInfoData { alignment: [0; 3] },
+    };
+    let mut identifier_bytes = std::mem::size_of::<FridayGetVirtualDiskInfo>() as u32;
+    let identifier_status = unsafe {
+        GetVirtualDiskInformation(handle.0, &mut identifier_bytes, &mut identifier_info, std::ptr::null_mut())
+    };
+    if identifier_status != 0 {
+        return Err(format!("Windows could not read the persistent identifier from FRIDAY's attached VHDX handle (error {identifier_status})."));
+    }
+    let identifier = format_guest_vhdx_identifier(unsafe { identifier_info.data.identifier })?;
+    Ok((size, provider_subtype, identifier))
 }
 
 #[cfg(windows)]
@@ -13334,6 +13376,55 @@ mod tests {
         value["unexpected"] = serde_json::json!(true);
         assert!(serde_json::from_slice::<GuestResultNtfsFormatReport>(
             &serde_json::to_vec(&value).unwrap()
+        ).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn guest_result_vhdx_readback_requires_exact_fixed_capacity_and_geometry() {
+        let identifier = "12345678-1234-5678-9abc-def012345678";
+        let valid = FridayVirtualDiskSizeInfo {
+            virtual_size: GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+            physical_size: GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+            block_size: 0,
+            sector_size: 512,
+        };
+        assert!(validate_guest_result_vhdx_readback(
+            valid, 2, identifier, GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+        ).is_ok());
+
+        let mut changed = valid;
+        changed.virtual_size -= 512;
+        assert!(validate_guest_result_vhdx_readback(
+            changed, 2, identifier, GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+        ).is_err());
+
+        let mut changed = valid;
+        changed.physical_size -= 512;
+        assert!(validate_guest_result_vhdx_readback(
+            changed, 2, identifier, GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+        ).is_err());
+
+        let mut changed = valid;
+        changed.block_size = 1024 * 1024;
+        assert!(validate_guest_result_vhdx_readback(
+            changed, 2, identifier, GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+        ).is_err());
+
+        let mut changed = valid;
+        changed.sector_size = 4096;
+        assert!(validate_guest_result_vhdx_readback(
+            changed, 2, identifier, GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+        ).is_err());
+
+        assert!(validate_guest_result_vhdx_readback(
+            valid, 3, identifier, GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+        ).is_err());
+        assert!(validate_guest_result_vhdx_readback(
+            valid, 2, "not-a-guid", GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+        ).is_err());
+        assert!(validate_guest_result_vhdx_readback(
+            valid, 2, identifier, GUEST_RESULT_VOLUME_CAPACITY_BYTES + 512,
         ).is_err());
     }
 

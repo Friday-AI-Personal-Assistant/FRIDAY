@@ -2343,3 +2343,23 @@ are also verified to coexist in the same private run root.
 This is inventory validation only: ownership and recovery receipt contents
 continue to be validated by their dedicated bounded, handle-relative loaders.
 The tests do not invoke Windows Sandbox or authorize automatic recovery.
+
+
+## Attached VHDX handle revalidates fixed capacity and geometry — #931
+
+After Windows attaches the per-run result VHDX, FRIDAY now reads the virtual
+size, physical size, provider allocation subtype, sector size, block-size
+sentinel, and persistent identifier again through the exact owned attachment
+handle. The complete result is checked against the fixed 64 MiB, fixed-allocation
+NTFS-disk policy before partition initialization or formatting can continue.
+The identifier must still match the separately persisted per-run ownership
+record, and the backing-file path is rechecked around the handle query.
+
+This closes the gap where a disk could pass the pre-attachment path-based
+metadata check and later be accepted after attachment based only on its GUID.
+Windows regression coverage checks mismatched capacity, physical allocation,
+block/sector geometry, provider subtype, identifier, and policy capacity.
+The native Windows lifecycle test also exercises the attached-handle check.
+This remains storage-boundary hardening, not proof of a guest result-transfer
+channel or physical Windows Sandbox acceptance; guest execution remains
+disabled.
