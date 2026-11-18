@@ -9355,7 +9355,20 @@ fn validate_guest_result_ntfs_boot_sector(
         || sector[21] != 0xF8
         || sector[510] != 0x55 || sector[511] != 0xAA
     {
-        return Err("The result partition does not contain a valid 512-byte NTFS boot sector.".into());
+        let observed = if sector.len() == 512 {
+            format!(
+                "OEM={:02X?}, bytes_per_sector={}, media={:#04X}, signature={:02X?}",
+                &sector[3..11],
+                u16::from_le_bytes([sector[11], sector[12]]),
+                sector[21],
+                &sector[510..512],
+            )
+        } else {
+            format!("sector_length={}", sector.len())
+        };
+        return Err(format!(
+            "The result partition does not contain a valid 512-byte NTFS boot sector (partition_bytes={partition_size}, {observed})."
+        ));
     }
     let sectors_per_cluster = sector[13];
     if sectors_per_cluster == 0 || sectors_per_cluster > 128
