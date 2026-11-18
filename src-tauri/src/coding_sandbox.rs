@@ -10181,7 +10181,8 @@ mod tests {
                 3 => &mut altered.3,
                 _ => &mut altered.4,
             };
-            bytes[bytes.len() / 2] ^= 0x01;
+            let midpoint = bytes.len() / 2;
+            bytes[midpoint] ^= 0x01;
             assert!(validate_guest_result_gpt_readback_bytes(
                 &altered.0, &altered.1, &altered.2, &altered.3, &altered.4, &expected,
             ).is_err(), "corruption in GPT region {region} must be rejected");
