@@ -7564,16 +7564,25 @@ fn sandbox_session_journal_generation_path(root: &Path, generation: usize) -> Pa
 fn sandbox_session_journal_generations_from_handle(
     root_handle: &File,
 ) -> Result<Vec<usize>, String> {
+    // The run directory may contain journal generations plus the separately
+    // validated CLI ownership and bounded recovery receipts. Account for the
+    // maximum complete layout before inventorying it: eight generation
+    // directories, eight state files, eight recovery receipts, and one
+    // ownership receipt.
     let (files, directories) = crate::coding_sandbox_fs::collect_runtime_tree_inventory(
         root_handle,
         2,
-        MAX_SANDBOX_SESSION_JOURNAL_ENTRIES * 2,
+        MAX_SANDBOX_SESSION_JOURNAL_ENTRIES * 3 + 1,
     ).map_err(|_| "The Sandbox session journal root contains an unsafe or oversized entry layout.".to_string())?;
     let directory_set = directories.into_iter().collect::<BTreeSet<_>>();
     let mut file_set = files.into_iter().collect::<BTreeSet<_>>();
-    // The run directory may also contain the separately validated, immutable
-    // CLI ownership receipt. It is not part of the journal generation stream.
+    // Sidecar receipts are validated by their dedicated bounded loaders. They
+    // are not journal generations, but must not make valid journal history
+    // appear incomplete. Only the exact policy-defined root filenames pass.
     file_set.remove(WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_FILE);
+    for sequence in 1..=MAX_WINDOWS_SANDBOX_CLI_RECOVERY_RECEIPTS {
+        file_set.remove(&windows_sandbox_cli_recovery_receipt_file_name(sequence));
+    }
     if directory_set.len() > MAX_SANDBOX_SESSION_JOURNAL_ENTRIES
         || directory_set.len() != file_set.len()
     {
