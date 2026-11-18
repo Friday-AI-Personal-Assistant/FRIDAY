@@ -10246,11 +10246,11 @@ mod tests {
         // Exercise every identity and geometry field returned by the Windows
         // storage stack, not only the partition count and starting offset.
         for (offset, value) in [
-            (0usize, 0u32),       // MBR instead of GPT
-            (8usize, 0xA5A5_A5A5u32), // disk GUID bytes below
+            (0usize, 0u64),       // MBR instead of GPT
+            (8usize, 0xA5A5_A5A5u64), // disk GUID bytes below
             (24usize, 34u64),     // wrong usable-range start
             (32usize, 1u64),      // wrong usable-range length
-            (40usize, 127u32),    // wrong maximum partition count
+            (40usize, 127u64),    // wrong maximum partition count
         ] {
             let mut changed = bytes.clone();
             match value {
@@ -10264,8 +10264,8 @@ mod tests {
         }
 
         for (offset, value) in [
-            (entry, 0u32), // zero partitions in the entry
-            (entry + 24, 2u32), // wrong partition style
+            (entry, 0u64), // zero partitions in the entry
+            (entry + 24, 2u64), // wrong partition style
             (entry + 64, 1u64), // unexpected GPT attributes
         ] {
             let mut changed = bytes.clone();
