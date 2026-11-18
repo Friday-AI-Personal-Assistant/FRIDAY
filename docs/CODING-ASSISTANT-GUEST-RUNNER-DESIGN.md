@@ -2576,6 +2576,20 @@ negative exponent and is rejected as an out-of-policy size. Corrected the test
 to cover the valid positive signed-byte range without changing the production
 validator or its security bounds.
 
+## NTFS metadata-cluster bounds across every supported geometry — #966
+
+Added cross-platform boundary coverage for all eight supported power-of-two
+sectors-per-cluster values (1 through 128). For both the MFT and MFT-mirror
+cluster fields, the test verifies that the final in-volume cluster is accepted
+and the first cluster at the volume's cluster-count boundary is rejected.
+Each geometry is also checked with an otherwise valid NTFS boot-sector
+fixture. This confirms that metadata locations are bounded using the decoded
+volume geometry rather than a fixed example cluster size.
+
+The change is regression-test-only; production validation and storage policy
+are unchanged. It does not replace physical Windows formatting/read-back
+acceptance or establish a guest result-transfer mechanism.
+
 ## Exhaustive NTFS record-size encoding and cluster-geometry matrix — #965
 
 Added a cross-platform exhaustive regression matrix for all 256 possible

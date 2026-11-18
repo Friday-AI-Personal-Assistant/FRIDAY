@@ -14169,6 +14169,52 @@ mod tests {
     }
 
     #[test]
+    fn ntfs_metadata_cluster_bounds_cover_every_supported_cluster_geometry() {
+        let mut sector = [0u8; 512];
+        sector[3..11].copy_from_slice(b"NTFS    ");
+        sector[11..13].copy_from_slice(&512u16.to_le_bytes());
+        sector[64] = 0xF6; // 1 KiB MFT record
+        sector[68] = 0xF4; // 4 KiB index buffer
+        sector[21] = 0xF8;
+        sector[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        sector[48..56].copy_from_slice(&4u64.to_le_bytes());
+        sector[56..64].copy_from_slice(&8u64.to_le_bytes());
+        sector[510..512].copy_from_slice(&[0x55, 0xAA]);
+        let partition_size = 4096 * GUEST_RESULT_GPT_SECTOR_BYTES;
+
+        // For each supported cluster geometry, metadata locations must be
+        // strictly inside the volume's cluster count, not merely its sectors.
+        for sectors_per_cluster in [1u8, 2, 4, 8, 16, 32, 64, 128] {
+            let cluster_count = 4096 / sectors_per_cluster as u64;
+            let mut valid_geometry = sector;
+            valid_geometry[13] = sectors_per_cluster;
+            assert!(
+                validate_guest_result_ntfs_boot_sector(&valid_geometry, partition_size).is_ok(),
+                "supported geometry {sectors_per_cluster} sectors/cluster must pass"
+            );
+
+            for offset in [48usize, 56usize] {
+                let mut last_valid = valid_geometry;
+                last_valid[offset..offset + 8]
+                    .copy_from_slice(&(cluster_count - 1).to_le_bytes());
+                assert!(
+                    validate_guest_result_ntfs_boot_sector(&last_valid, partition_size).is_ok(),
+                    "last valid metadata cluster {} at offset {offset} must pass for {sectors_per_cluster} sectors/cluster",
+                    cluster_count - 1
+                );
+
+                let mut first_invalid = valid_geometry;
+                first_invalid[offset..offset + 8]
+                    .copy_from_slice(&cluster_count.to_le_bytes());
+                assert!(
+                    validate_guest_result_ntfs_boot_sector(&first_invalid, partition_size).is_err(),
+                    "first out-of-volume metadata cluster {cluster_count} at offset {offset} must fail for {sectors_per_cluster} sectors/cluster"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ntfs_readback_requires_volume_raw_and_backup_sectors_to_agree() {
         let mut primary = [0u8; 512];
         primary[3..11].copy_from_slice(b"NTFS    ");
