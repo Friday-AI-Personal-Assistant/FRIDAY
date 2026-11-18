@@ -9465,6 +9465,44 @@ fn validate_guest_result_ntfs_boot_sector(
 }
 
 #[cfg(windows)]
+fn guest_result_ntfs_backup_boot_sector_offset(
+    partition_offset: u64,
+    partition_size: u64,
+) -> Result<u64, String> {
+    if partition_offset % GUEST_RESULT_GPT_SECTOR_BYTES != 0
+        || partition_size < GUEST_RESULT_GPT_SECTOR_BYTES
+        || partition_size % GUEST_RESULT_GPT_SECTOR_BYTES != 0
+    {
+        return Err("The NTFS partition offset or size is not sector-aligned.".into());
+    }
+    partition_offset.checked_add(
+        partition_size - GUEST_RESULT_GPT_SECTOR_BYTES,
+    ).ok_or_else(|| "The NTFS backup boot-sector offset overflowed.".to_string())
+}
+
+fn validate_guest_result_ntfs_boot_sector_pair(
+    primary: &[u8],
+    backup: &[u8],
+    partition_size: u64,
+) -> Result<(), String> {
+    let primary_sectors = validate_guest_result_ntfs_boot_sector(primary, partition_size)?;
+    let backup_sectors = validate_guest_result_ntfs_boot_sector(backup, partition_size)?;
+    // Compare the complete critical BIOS parameter block and NTFS extension:
+    // OEM/sector/cluster geometry, media and disk geometry, volume extent,
+    // metadata locations, record-size encodings, and volume serial number.
+    if primary_sectors != backup_sectors
+        || primary[3..14] != backup[3..14]
+        || primary[21] != backup[21]
+        || primary[24..40] != backup[24..40]
+        || primary[40..64] != backup[40..64]
+        || primary[64..80] != backup[64..80]
+        || primary[510..512] != backup[510..512]
+    {
+        return Err("The NTFS primary and backup boot sectors do not describe the same bounded volume.".into());
+    }
+    Ok(())
+}
+
 fn verify_guest_result_ntfs_boot_sector_readback(
     disk: &OwnedRawGuestDisk,
     partition_plan: &GuestResultPartitionPlan,
@@ -9499,21 +9537,12 @@ fn verify_guest_result_ntfs_boot_sector_readback(
     // partition. The BPB total-sectors field excludes that final sector on
     // Windows NTFS volumes, so deriving this offset from total_sectors reads
     // the preceding (normally zero) sector instead.
-    let backup_offset = partition_offset.checked_add(
-        partition_size.checked_sub(GUEST_RESULT_GPT_SECTOR_BYTES)
-            .ok_or_else(|| "The NTFS partition is too small for its backup boot sector.".to_string())?
-    ).ok_or_else(|| "The NTFS backup boot-sector offset overflowed.".to_string())?;
+    let backup_offset = guest_result_ntfs_backup_boot_sector_offset(
+        partition_offset, partition_size,
+    )?;
     let mut backup = [0u8; 512];
     disk.read_exact_at(backup_offset, &mut backup)?;
-    let backup_sectors = validate_guest_result_ntfs_boot_sector(&backup, partition_size)?;
-    if backup_sectors != total_sectors
-        || primary[3..14] != backup[3..14]
-        || primary[40..64] != backup[40..64]
-        || primary[72..80] != backup[72..80]
-        || primary[510..512] != backup[510..512]
-    {
-        return Err("The NTFS primary and backup boot sectors do not describe the same bounded volume.".into());
-    }
+    validate_guest_result_ntfs_boot_sector_pair(&primary, &backup, partition_size)?;
     Ok(())
 }
 
@@ -13571,6 +13600,62 @@ mod tests {
         changed[510..512].copy_from_slice(&[0, 0]);
         assert!(validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err());
         assert!(validate_guest_result_ntfs_boot_sector(&sector, partition_size - 2049 * 512).is_err());
+    }
+
+    #[test]
+    fn ntfs_backup_boot_sector_offset_uses_final_partition_sector_with_checked_arithmetic() {
+        let sector = GUEST_RESULT_GPT_SECTOR_BYTES;
+        assert_eq!(
+            guest_result_ntfs_backup_boot_sector_offset(34 * sector, 4096 * sector).unwrap(),
+            (34 + 4095) * sector,
+        );
+        assert_eq!(
+            guest_result_ntfs_backup_boot_sector_offset(0, sector).unwrap(),
+            0,
+        );
+        assert!(guest_result_ntfs_backup_boot_sector_offset(1, 4096 * sector).is_err());
+        assert!(guest_result_ntfs_backup_boot_sector_offset(0, sector - 1).is_err());
+        assert!(guest_result_ntfs_backup_boot_sector_offset(0, sector + 1).is_err());
+        assert!(guest_result_ntfs_backup_boot_sector_offset(u64::MAX - sector + 1, sector).is_err());
+    }
+
+    #[test]
+    fn ntfs_primary_and_backup_must_match_all_critical_geometry_fields() {
+        let mut primary = [0u8; 512];
+        primary[3..11].copy_from_slice(b"NTFS    ");
+        primary[11..13].copy_from_slice(&512u16.to_le_bytes());
+        primary[13] = 8;
+        primary[21] = 0xF8;
+        primary[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        primary[48..56].copy_from_slice(&4u64.to_le_bytes());
+        primary[56..64].copy_from_slice(&8u64.to_le_bytes());
+        primary[64..72].copy_from_slice(&[0xF6, 0, 0, 0, 0, 0, 0, 0]);
+        primary[72..80].copy_from_slice(&0x1234_5678_9ABC_DEF0u64.to_le_bytes());
+        primary[510..512].copy_from_slice(&[0x55, 0xAA]);
+        let partition_size = 4097 * GUEST_RESULT_GPT_SECTOR_BYTES;
+        assert!(validate_guest_result_ntfs_boot_sector_pair(
+            &primary, &primary, partition_size,
+        ).is_ok());
+
+        for (offset, replacement) in [
+            (21usize, vec![0xF0]),
+            (24usize, vec![1, 0]),
+            (64usize, vec![0xF7]),
+            (72usize, vec![0xFF]),
+            (510usize, vec![0, 0]),
+        ] {
+            let mut backup = primary;
+            backup[offset..offset + replacement.len()].copy_from_slice(&replacement);
+            assert!(validate_guest_result_ntfs_boot_sector_pair(
+                &primary, &backup, partition_size,
+            ).is_err(), "backup mutation at offset {offset} must be rejected");
+        }
+
+        let mut backup = primary;
+        backup[40..48].copy_from_slice(&4095u64.to_le_bytes());
+        assert!(validate_guest_result_ntfs_boot_sector_pair(
+            &primary, &backup, partition_size,
+        ).is_err(), "a different backup volume extent must be rejected");
     }
 
     #[test]
