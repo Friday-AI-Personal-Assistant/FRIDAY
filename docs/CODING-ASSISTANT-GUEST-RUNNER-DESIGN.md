@@ -2661,3 +2661,16 @@ This batch changes tests and documentation only. The report schema, production
 deserializer, validation rules, storage limits, and execution policy are
 unchanged. It does not establish physical Windows guest formatting acceptance
 or a result-transfer channel.
+
+## Checked NTFS report partition-range arithmetic — #969
+
+Hardened the guest NTFS format-report validator so malformed partition LBA
+ranges cannot trigger unsigned subtraction or inclusive-count overflow.
+The validator now uses checked subtraction, checked addition for the inclusive
+sector count, and checked multiplication for the byte size, rejecting each
+invalid or overflowing range with an error.
+
+Cross-platform regression tests cover a reversed range, inclusive sector-count
+overflow, and byte-size multiplication overflow. Valid report behavior and the
+fixed storage policy are unchanged. This does not establish physical Windows
+guest formatting acceptance or a result-transfer channel.

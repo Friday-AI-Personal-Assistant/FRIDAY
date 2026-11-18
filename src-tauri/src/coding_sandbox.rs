@@ -9762,7 +9762,11 @@ fn validate_guest_result_ntfs_format_report(
 ) -> Result<(), String> {
     let expected_offset = partition_plan.first_lba.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
         .ok_or_else(|| "The expected NTFS partition offset overflowed.".to_string())?;
-    let expected_size = (partition_plan.last_lba - partition_plan.first_lba + 1)
+    let partition_sector_count = partition_plan.last_lba
+        .checked_sub(partition_plan.first_lba)
+        .and_then(|difference| difference.checked_add(1))
+        .ok_or_else(|| "The expected NTFS partition LBA range is invalid or overflowed.".to_string())?;
+    let expected_size = partition_sector_count
         .checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
         .ok_or_else(|| "The expected NTFS partition size overflowed.".to_string())?;
     if report.disk_number != expected_disk_number
@@ -13916,6 +13920,31 @@ mod tests {
         let mut changed = valid.clone();
         changed.drive_letter = Some("R".into());
         assert!(validate_guest_result_ntfs_format_report(&changed, 7, &metadata, &partition).is_err());
+    }
+
+    #[test]
+    fn ntfs_format_report_rejects_malformed_partition_lba_ranges_without_panicking() {
+        let (report, metadata, valid_partition) = valid_test_ntfs_format_report();
+
+        let mut reversed = valid_partition.clone();
+        reversed.last_lba = reversed.first_lba - 1;
+        assert!(validate_guest_result_ntfs_format_report(
+            &report, 7, &metadata, &reversed,
+        ).is_err());
+
+        let mut inclusive_count_overflow = valid_partition.clone();
+        inclusive_count_overflow.first_lba = 0;
+        inclusive_count_overflow.last_lba = u64::MAX;
+        assert!(validate_guest_result_ntfs_format_report(
+            &report, 7, &metadata, &inclusive_count_overflow,
+        ).is_err());
+
+        let mut byte_size_overflow = valid_partition;
+        byte_size_overflow.first_lba = 0;
+        byte_size_overflow.last_lba = (u64::MAX / GUEST_RESULT_GPT_SECTOR_BYTES) + 1;
+        assert!(validate_guest_result_ntfs_format_report(
+            &report, 7, &metadata, &byte_size_overflow,
+        ).is_err());
     }
 
     #[test]
