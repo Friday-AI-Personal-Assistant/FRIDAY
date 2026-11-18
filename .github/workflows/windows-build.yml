@@ -1,0 +1,167 @@
+name: Windows desktop build
+
+on:
+  push:
+    branches: [main, feature/phase-2-skills]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('package.json') }}
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Generate Windows application icon
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $size = 256
+          $bitmap = [System.Drawing.Bitmap]::new($size, $size)
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+          $graphics.Clear([System.Drawing.Color]::FromArgb(20, 60, 48))
+          $font = [System.Drawing.Font]::new("Segoe UI", 150, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+          $brush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
+          $format = [System.Drawing.StringFormat]::new()
+          $format.Alignment = [System.Drawing.StringAlignment]::Center
+          $format.LineAlignment = [System.Drawing.StringAlignment]::Center
+          $graphics.DrawString("F", $font, $brush, [System.Drawing.RectangleF]::new(0, 0, $size, $size), $format)
+          $memory = [System.IO.MemoryStream]::new()
+          $bitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
+          $png = $memory.ToArray()
+          $output = [System.IO.MemoryStream]::new()
+          $writer = [System.IO.BinaryWriter]::new($output)
+          $writer.Write([UInt16]0); $writer.Write([UInt16]1); $writer.Write([UInt16]1)
+          $writer.Write([byte]0); $writer.Write([byte]0); $writer.Write([byte]0); $writer.Write([byte]0)
+          $writer.Write([UInt16]1); $writer.Write([UInt16]32)
+          $writer.Write([UInt32]$png.Length); $writer.Write([UInt32]22)
+          $writer.Write($png); $writer.Flush()
+          New-Item -ItemType Directory -Force -Path "src-tauri/icons" | Out-Null
+          [System.IO.File]::WriteAllBytes("src-tauri/icons/icon.ico", $output.ToArray())
+          $writer.Dispose(); $output.Dispose(); $memory.Dispose()
+          $graphics.Dispose(); $font.Dispose(); $brush.Dispose(); $format.Dispose(); $bitmap.Dispose()
+
+      - name: Generate Windows application icon
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $size = 256
+          $bitmap = [System.Drawing.Bitmap]::new($size, $size)
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+          $graphics.Clear([System.Drawing.Color]::FromArgb(20, 60, 48))
+          $font = [System.Drawing.Font]::new("Segoe UI", 150, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+          $brush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
+          $format = [System.Drawing.StringFormat]::new()
+          $format.Alignment = [System.Drawing.StringAlignment]::Center
+          $format.LineAlignment = [System.Drawing.StringAlignment]::Center
+          $graphics.DrawString("F", $font, $brush, [System.Drawing.RectangleF]::new(0, 0, $size, $size), $format)
+          $iconHandle = $bitmap.GetHicon()
+          $icon = [System.Drawing.Icon]::FromHandle($iconHandle)
+          New-Item -ItemType Directory -Force -Path "src-tauri/icons" | Out-Null
+          $stream = [System.IO.File]::Open("src-tauri/icons/icon.ico", [System.IO.FileMode]::Create)
+          $icon.Save($stream)
+          $stream.Dispose()
+          $icon.Dispose(); $graphics.Dispose(); $font.Dispose(); $brush.Dispose(); $format.Dispose(); $bitmap.Dispose()
+          Add-Type -Namespace Native -Name IconCleanup -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool DestroyIcon(System.IntPtr handle);'
+          [Native.IconCleanup]::DestroyIcon($iconHandle) | Out-Null
+
+      - name: Run Rust unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Build Windows installers
+        run: npm run tauri build
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: friday-windows-installers
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: error
+          retention-days: 14
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file libssl-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev patchelf libwebkit2gtk-4.1-dev
+
+      - name: Generate Linux compile-time application icon
+        run: |
+          python3 - <<'PY'
+          import binascii
+          import struct
+          import zlib
+          from pathlib import Path
+
+          width = height = 256
+          pixel = bytes((20, 60, 48, 255))
+          raw = b"".join(bytes((0,)) + pixel * width for _ in range(height))
+
+          def chunk(kind, data):
+              body = kind + data
+              return struct.pack(">I", len(data)) + body + struct.pack(">I", binascii.crc32(body) & 0xffffffff)
+
+          png = (bytes.fromhex("89504e470d0a1a0a")
+                 + chunk(b"IHDR", struct.pack(">2I5B", width, height, 8, 6, 0, 0, 0))
+                 + chunk(b"IDAT", zlib.compress(raw))
+                 + chunk(b"IEND", b""))
+          icon_dir = Path("src-tauri/icons")
+          icon_dir.mkdir(parents=True, exist_ok=True)
+          (icon_dir / "icon.png").write_bytes(png)
+          PY
+
+      - name: Run Rust unit tests on Linux
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+

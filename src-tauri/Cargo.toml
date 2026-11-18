@@ -1,0 +1,40 @@
+[package]
+name = "friday"
+version = "0.2.0"
+description = "FRIDAY personal AI desktop assistant"
+authors = ["FRIDAY contributors"]
+edition = "2021"
+
+[lib]
+name = "friday_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ambient-authority = "=0.0.2"
+cap-primitives = "=4.0.3"
+tauri = { version = "2", features = [] }
+chacha20poly1305 = "0.10"
+rand = "0.8"
+keyring = { version = "3", features = ["windows-native"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+
+tokio = { version = "1", features = ["macros", "sync", "net"] }
+lopdf = "0.47"
+regex = "1"
+libc = "0.2"
+scraper = "0.24"
+encoding_rs = "0.8"
+url = "2"
+tauri-plugin-dialog = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Memory"] }
+
+[dev-dependencies]
