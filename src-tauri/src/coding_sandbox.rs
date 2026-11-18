@@ -10209,7 +10209,8 @@ mod tests {
                 3 => &mut altered_expected.backup_entries,
                 _ => &mut altered_expected.backup_header,
             };
-            bytes[bytes.len() / 2] ^= 0x01;
+            let midpoint = bytes.len() / 2;
+            bytes[midpoint] ^= 0x01;
             assert!(validate_guest_result_gpt_readback_bytes(
                 &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &altered_expected,
             ).is_err(), "substituted expected GPT region {region} must be rejected");
