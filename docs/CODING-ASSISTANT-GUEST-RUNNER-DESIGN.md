@@ -2318,7 +2318,7 @@ whether any bytes exceeded that budget. The operation wrapper rejects the
 entire storage operation if either standard output or standard error overflowed;
 a retained prefix is never treated as complete formatting evidence or
 diagnostics. The bounded reader is platform-independent so its exact-limit,
-one-byte-over-limit, and multi-read overflow behavior is covered by tests on
+one-byte-over-limit, multi-read overflow, and pipe-read failure behavior is covered by tests on
 both Windows and Linux CI.
 
 This hardening does not change the NTFS formatting command, establish a guest

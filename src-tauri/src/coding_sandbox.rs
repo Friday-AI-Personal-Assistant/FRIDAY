@@ -9379,7 +9379,7 @@ const STORAGE_OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
 /// Drain an operation pipe while retaining at most the fixed output budget.
 /// The overflow bit is security-relevant: callers must reject the operation
 /// rather than treating a truncated prefix as complete evidence.
-fn read_bounded_storage_output<R: Read>(mut reader: R) -> (Vec<u8>, bool) {
+fn read_bounded_storage_output<R: Read>(mut reader: R) -> std::io::Result<(Vec<u8>, bool)> {
     let mut retained = Vec::new();
     let mut exceeded_limit = false;
     let mut buffer = [0u8; 4096];
@@ -9394,10 +9394,10 @@ fn read_bounded_storage_output<R: Read>(mut reader: R) -> (Vec<u8>, bool) {
                 retained.extend_from_slice(&buffer[..count.min(remaining)]);
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
+            Err(error) => return Err(error),
         }
     }
-    (retained, exceeded_limit)
+    Ok((retained, exceeded_limit))
 }
 
 #[cfg(windows)]
@@ -9426,9 +9426,11 @@ fn run_bounded_storage_operation(mut command: Command) -> Result<(ExitStatus, Ve
         }
     };
     let (stdout, stdout_exceeded) = stdout_reader.join()
-        .map_err(|_| "The NTFS format output could not be collected.".to_string())?;
+        .map_err(|_| "The NTFS format output reader stopped unexpectedly.".to_string())?
+        .map_err(|_| "The NTFS format output could not be read completely.".to_string())?;
     let (stderr, stderr_exceeded) = stderr_reader.join()
-        .map_err(|_| "The NTFS format diagnostics could not be collected.".to_string())?;
+        .map_err(|_| "The NTFS format diagnostics reader stopped unexpectedly.".to_string())?
+        .map_err(|_| "The NTFS format diagnostics could not be read completely.".to_string())?;
     if stdout_exceeded || stderr_exceeded {
         return Err("The Windows storage operation exceeded FRIDAY's fixed 64 KiB output limit; the result disk requires recovery.".into());
     }
@@ -12905,7 +12907,7 @@ mod tests {
     #[test]
     fn bounded_storage_output_accepts_exact_limit_without_truncation() {
         let input = vec![b'x'; MAX_STORAGE_OPERATION_OUTPUT_BYTES];
-        let (retained, exceeded) = read_bounded_storage_output(std::io::Cursor::new(&input));
+        let (retained, exceeded) = read_bounded_storage_output(std::io::Cursor::new(&input)).unwrap();
         assert_eq!(retained, input);
         assert!(!exceeded);
     }
@@ -12918,6 +12920,20 @@ mod tests {
         assert_eq!(retained.len(), MAX_STORAGE_OPERATION_OUTPUT_BYTES);
         assert!(retained.iter().all(|byte| *byte == b'x'));
         assert!(exceeded, "discarded bytes must never be mistaken for complete command output");
+    }
+
+    #[test]
+    fn bounded_storage_output_rejects_unrecoverable_read_errors() {
+        struct FailingReader;
+
+        impl Read for FailingReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "simulated pipe failure"))
+            }
+        }
+
+        let error = read_bounded_storage_output(FailingReader).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
     }
 
     #[test]
