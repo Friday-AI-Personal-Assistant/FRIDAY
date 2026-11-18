@@ -2794,6 +2794,22 @@ execution policy. Physical Windows formatting and read-back acceptance remain
 separate requirements.
 
 
+## Bind NTFS read-back extent validation to the trusted storage journal — #981
+
+The NTFS read-back extent helper now requires the expected FRIDAY run ID as
+an explicit trusted input instead of treating the run ID carried inside the
+partition plan as its own authority. The Windows read-back caller supplies
+the run identity from the already validated storage journal, and the helper
+revalidates the complete fixed partition plan against that identity before
+calculating the byte range used for disk I/O.
+
+Cross-platform tests pass the trusted run ID separately and verify that a
+partition plan carrying a substituted run ID is rejected. Checked arithmetic
+and the fixed GPT layout remain unchanged. This is a validation-boundary
+hardening change; it does not alter storage capacity, formatting behavior,
+result transfer, or guest execution policy.
+
+
 ## Authenticate the NTFS read-back partition extent before disk I/O — #978
 
 The Windows NTFS read-back path now derives its partition byte offset and

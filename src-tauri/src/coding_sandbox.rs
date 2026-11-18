@@ -8816,8 +8816,9 @@ fn validate_guest_result_partition_plan(
 /// plan currently makes overflow unreachable.
 fn guest_result_partition_byte_extent(
     plan: &GuestResultPartitionPlan,
+    expected_run_id: &str,
 ) -> Result<(u64, u64), String> {
-    validate_guest_result_partition_plan(plan, &plan.run_id)?;
+    validate_guest_result_partition_plan(plan, expected_run_id)?;
     let offset = plan.first_lba.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
         .ok_or_else(|| "The NTFS partition offset overflowed.".to_string())?;
     let sector_count = plan.last_lba.checked_sub(plan.first_lba)
@@ -9651,10 +9652,11 @@ fn validate_guest_result_ntfs_boot_sector_readback(
 fn verify_guest_result_ntfs_boot_sector_readback(
     disk: &OwnedRawGuestDisk,
     partition_plan: &GuestResultPartitionPlan,
+    expected_run_id: &str,
     volume_path: &str,
 ) -> Result<(), String> {
     let (partition_offset, partition_size) =
-        guest_result_partition_byte_extent(partition_plan)?;
+        guest_result_partition_byte_extent(partition_plan, expected_run_id)?;
 
     // Format-Volume can return before cached filesystem metadata is durably
     // visible through a separately opened PhysicalDrive handle. Flush and read
@@ -9996,7 +9998,7 @@ $driveLetter = if ([string]::IsNullOrEmpty($volumeDriveLetter)) { $null } else {
         let raw_disk = OwnedRawGuestDisk::open_attached_device(attached)?;
         raw_disk.verify_fixed_geometry()?;
         raw_disk.verify_windows_partition_layout(&partition_plan, &metadata)?;
-        verify_guest_result_ntfs_boot_sector_readback(&raw_disk, &partition_plan, &volume_path)?;
+        verify_guest_result_ntfs_boot_sector_readback(&raw_disk, &partition_plan, &current_journal.run_id, &volume_path)?;
         Ok(volume_path)
     })();
     let volume_path = match result {
@@ -14107,7 +14109,7 @@ mod tests {
         let valid = build_guest_result_partition_plan(
             run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, GUEST_RESULT_GPT_SECTOR_BYTES as u32,
         ).unwrap();
-        let (offset, size) = guest_result_partition_byte_extent(&valid).unwrap();
+        let (offset, size) = guest_result_partition_byte_extent(&valid, run_id).unwrap();
         assert_eq!(offset, valid.first_lba * GUEST_RESULT_GPT_SECTOR_BYTES);
         assert_eq!(
             size,
@@ -14117,24 +14119,24 @@ mod tests {
 
         let mut changed = valid.clone();
         changed.first_lba = changed.first_lba.saturating_add(1);
-        assert!(guest_result_partition_byte_extent(&changed).is_err());
+        assert!(guest_result_partition_byte_extent(&changed, run_id).is_err());
 
         let mut changed = valid.clone();
         changed.last_lba = changed.last_lba.saturating_sub(1);
-        assert!(guest_result_partition_byte_extent(&changed).is_err());
+        assert!(guest_result_partition_byte_extent(&changed, run_id).is_err());
 
         let mut changed = valid.clone();
         changed.last_lba = changed.first_lba.saturating_sub(1);
-        assert!(guest_result_partition_byte_extent(&changed).is_err());
+        assert!(guest_result_partition_byte_extent(&changed, run_id).is_err());
 
         let mut changed = valid.clone();
         changed.first_lba = u64::MAX;
         changed.last_lba = u64::MAX;
-        assert!(guest_result_partition_byte_extent(&changed).is_err());
+        assert!(guest_result_partition_byte_extent(&changed, run_id).is_err());
 
         let mut changed = valid;
         changed.run_id = "fedcba9876543210fedcba9876543210".into();
-        assert!(guest_result_partition_byte_extent(&changed).is_err());
+        assert!(guest_result_partition_byte_extent(&changed, run_id).is_err());
     }
 
     #[test]
