@@ -2874,3 +2874,10 @@ unchanged. Physical Windows guest/result-disk acceptance remains outstanding.
 The GPT metadata builder and both independent GPT read-back validators now require the expected FRIDAY run ID as a separate trusted input. They validate the complete fixed partition plan against that identity before deriving disk GUIDs, metadata, or byte ranges; the plan's embedded run ID can no longer authenticate itself at these boundaries. The Windows initialization and NTFS-formatting paths source the expected identity from the validated storage journal and pass it through raw GPT read-back and Windows' independently reported partition-layout checks.
 
 This is a trust-boundary hardening change. The fixed disk capacity, GPT geometry, partition layout, NTFS format policy, privilege model, and guest execution state are unchanged. Physical Windows VHDX/Sandbox guest acceptance and result-transfer validation remain outstanding.
+
+
+## Test GPT metadata generation against an independent trusted identity — #987
+
+Added direct regression coverage proving GPT metadata generation rejects a trusted run ID that differs from the unchanged partition plan. Extended the Windows drive-layout parser test to reject a substituted plan run ID while keeping the original Windows layout bytes, metadata, and independently trusted run ID unchanged. This complements the existing GPT raw-read-back mismatch and plan-substitution tests, covering the metadata builder and both independent read-back boundaries with explicit identity-mismatch cases.
+
+Tests and design documentation only. Production GPT generation, disk geometry, NTFS formatting, privilege boundaries, and result-transfer behavior are unchanged. Physical Windows VHDX/Sandbox guest acceptance remains outstanding.

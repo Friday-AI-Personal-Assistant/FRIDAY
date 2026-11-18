@@ -10247,6 +10247,9 @@ mod tests {
             run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, 512,
         ).unwrap();
         let metadata = build_guest_result_gpt_metadata(&plan, run_id).unwrap();
+        assert!(build_guest_result_gpt_metadata(
+            &plan, "fedcba9876543210fedcba9876543210",
+        ).is_err(), "metadata generation must reject a mismatched trusted run ID");
         assert_eq!(&metadata.protective_mbr[510..512], &[0x55, 0xaa]);
         assert_eq!(&metadata.primary_header[0..8], b"EFI PART");
         assert_eq!(&metadata.backup_header[0..8], b"EFI PART");
@@ -10431,6 +10434,11 @@ mod tests {
         assert!(verify_guest_result_windows_partition_layout_bytes(
             &bytes, bytes.len(), &plan, &metadata, "fedcba9876543210fedcba9876543210",
         ).is_err(), "a mismatched trusted run ID must reject unchanged Windows layout evidence");
+        let mut substituted_plan = plan.clone();
+        substituted_plan.run_id = "abcdef0123456789abcdef0123456789".into();
+        assert!(verify_guest_result_windows_partition_layout_bytes(
+            &bytes, bytes.len(), &substituted_plan, &metadata, run_id,
+        ).is_err(), "a substituted plan identity must reject unchanged Windows layout evidence");
 
         // Metadata is also an untrusted parser input: each on-disk region
         // must be the deterministic metadata generated from this exact plan.
