@@ -2547,3 +2547,20 @@ formatting allowance, privilege, or execution policy is changed. This remains
 synthetic byte-validation coverage and does not replace physical Windows
 format/mount/read-back acceptance or prove guest result transfer.
 
+
+
+## Validate NTFS-reserved and FAT-specific BPB fields — #959
+
+The NTFS boot-sector validator now rejects non-zero values in the legacy
+FAT-specific and reserved BPB fields that NTFS defines as zero: reserved
+sectors, FAT count, root-entry count, legacy sector count, sectors-per-FAT,
+hidden-sector count, legacy large-sector count, and the reserved bytes around
+the MFT/index record-size encodings. CHS geometry remains unrestricted because
+it is irrelevant to NTFS. The existing fixed sector size, cluster geometry,
+volume extent, metadata bounds, and primary/backup agreement checks remain
+unchanged.
+
+Cross-platform tests independently substitute every byte in each constrained
+field and require rejection, while confirming non-zero CHS geometry remains
+accepted. These synthetic tests do not replace physical Windows formatting,
+mount, or read-back acceptance and do not enable guest execution.

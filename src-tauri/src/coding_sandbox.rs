@@ -9491,6 +9491,18 @@ fn validate_guest_result_ntfs_boot_sector(
             "The result partition does not contain a valid 512-byte NTFS boot sector (partition_bytes={partition_size}, {observed})."
         ));
     }
+    // NTFS does not use the legacy FAT BPB fields below. The reserved
+    // bytes, FAT count, root-entry count, legacy sector counts, hidden-sector
+    // count, and legacy large-sector count must remain zero. CHS geometry at
+    // 24..28 is intentionally not constrained because it is irrelevant to NTFS.
+    if sector[14..21].iter().any(|byte| *byte != 0)
+        || sector[22..24].iter().any(|byte| *byte != 0)
+        || sector[28..36].iter().any(|byte| *byte != 0)
+        || sector[65..68].iter().any(|byte| *byte != 0)
+        || sector[69..72].iter().any(|byte| *byte != 0)
+    {
+        return Err("The NTFS boot sector contains non-zero reserved or FAT-specific BPB fields.".into());
+    }
     let sectors_per_cluster = sector[13];
     if sectors_per_cluster == 0 || sectors_per_cluster > 128
         || !sectors_per_cluster.is_power_of_two()
@@ -13913,6 +13925,45 @@ mod tests {
         changed[510..512].copy_from_slice(&[0, 0]);
         assert!(validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err());
         assert!(validate_guest_result_ntfs_boot_sector(&sector, partition_size - 2049 * 512).is_err());
+    }
+
+    #[test]
+    fn ntfs_boot_sector_rejects_nonzero_reserved_and_fat_specific_bpb_bytes() {
+        let mut sector = [0u8; 512];
+        sector[3..11].copy_from_slice(b"NTFS    ");
+        sector[11..13].copy_from_slice(&512u16.to_le_bytes());
+        sector[13] = 8;
+        sector[21] = 0xF8;
+        sector[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        sector[48..56].copy_from_slice(&4u64.to_le_bytes());
+        sector[56..64].copy_from_slice(&8u64.to_le_bytes());
+        sector[64] = 0xF6;
+        sector[68] = 1;
+        sector[510..512].copy_from_slice(&[0x55, 0xAA]);
+        let partition_size = 4096 * GUEST_RESULT_GPT_SECTOR_BYTES;
+
+        assert!(validate_guest_result_ntfs_boot_sector(&sector, partition_size).is_ok());
+
+        // Each byte in an NTFS-reserved or FAT-specific BPB field is checked
+        // independently. The CHS geometry bytes at 24..28 are deliberately
+        // excluded because they are irrelevant to NTFS.
+        for range in [14usize..21, 22..24, 28..36, 65..68, 69..72] {
+            for offset in range {
+                let mut changed = sector;
+                changed[offset] = 1;
+                assert!(
+                    validate_guest_result_ntfs_boot_sector(&changed, partition_size).is_err(),
+                    "non-zero NTFS-reserved/FAT-specific BPB byte at offset {offset} must be rejected"
+                );
+            }
+        }
+
+        let mut chs_geometry = sector;
+        chs_geometry[24..28].copy_from_slice(&[0x3F, 0x00, 0xFF, 0x00]);
+        assert!(
+            validate_guest_result_ntfs_boot_sector(&chs_geometry, partition_size).is_ok(),
+            "legacy CHS geometry must remain unrestricted"
+        );
     }
 
     #[test]
