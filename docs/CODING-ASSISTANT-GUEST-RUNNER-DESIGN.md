@@ -2691,3 +2691,18 @@ This batch adds regression tests and documentation only. It does not change
 the fixed storage allowance, report schema, formatting behavior, result
 transfer, or guest execution policy. Physical Windows formatting and
 read-back acceptance remain separate requirements.
+
+
+## Case-insensitive NTFS format-report identity — #971
+
+Added cross-platform regression coverage confirming that hexadecimal casing
+in canonical disk, partition, and volume GUIDs does not change their identity,
+and that the NTFS filesystem name is compared case-insensitively. The test
+also confirms that an absent or whitespace-only optional drive letter is
+accepted, while existing coverage continues to reject an actual assigned
+drive letter. The volume GUID path must retain its strict canonical structure.
+
+This batch adds regression tests and documentation only. Production validation,
+the result-volume layout, storage limits, formatting behavior, and execution
+policy are unchanged. Physical Windows formatting/read-back acceptance and a
+guest result-transfer channel remain separate requirements.

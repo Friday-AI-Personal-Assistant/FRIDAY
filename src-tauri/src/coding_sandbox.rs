@@ -13923,6 +13923,34 @@ mod tests {
     }
 
     #[test]
+    fn ntfs_format_report_accepts_case_insensitive_ntfs_identity_and_filesystem() {
+        let (valid, metadata, partition) = valid_test_ntfs_format_report();
+
+        // Windows volume and disk identifiers are GUIDs, whose hexadecimal
+        // casing does not change identity. NTFS filesystem names are likewise
+        // compared case-insensitively. Keep the volume-path structure strict.
+        let mut lowercase = valid.clone();
+        lowercase.disk_guid = lowercase.disk_guid.to_ascii_lowercase();
+        lowercase.partition_guid = lowercase.partition_guid.to_ascii_lowercase();
+        lowercase.file_system = "ntfs".into();
+        lowercase.volume_path = lowercase.volume_path.to_ascii_lowercase();
+        validate_guest_result_ntfs_format_report(
+            &lowercase, 7, &metadata, &partition,
+        ).expect("canonical GUID casing and NTFS name casing must not change identity");
+
+        // Optional drive letters are not part of the accepted result-volume
+        // contract: absent and whitespace-only values are normalized away,
+        // while any actual assigned letter remains rejected.
+        for drive_letter in [Some(String::new()), Some("   ".into()), None] {
+            let mut report = valid.clone();
+            report.drive_letter = drive_letter;
+            validate_guest_result_ntfs_format_report(
+                &report, 7, &metadata, &partition,
+            ).expect("empty or absent drive letters must be accepted");
+        }
+    }
+
+    #[test]
     fn ntfs_format_report_accepts_exact_volume_and_remaining_size_boundaries() {
         let (valid, metadata, partition) = valid_test_ntfs_format_report();
 
