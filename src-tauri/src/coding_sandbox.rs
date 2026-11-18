@@ -9464,7 +9464,6 @@ fn validate_guest_result_ntfs_boot_sector(
     Ok(total_sectors)
 }
 
-#[cfg(windows)]
 fn guest_result_ntfs_backup_boot_sector_offset(
     partition_offset: u64,
     partition_size: u64,
@@ -9503,6 +9502,7 @@ fn validate_guest_result_ntfs_boot_sector_pair(
     Ok(())
 }
 
+#[cfg(windows)]
 fn verify_guest_result_ntfs_boot_sector_readback(
     disk: &OwnedRawGuestDisk,
     partition_plan: &GuestResultPartitionPlan,
