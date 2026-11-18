@@ -2730,3 +2730,21 @@ separators remain rejected.
 
 This correction does not relax path validation or change storage limits,
 ownership, formatting, result transfer, or execution policy.
+
+
+## Canonical NTFS volume GUID path acceptance and rejection matrix — #974
+
+Added cross-platform regression coverage for the exact Windows volume GUID
+namespace accepted in the NTFS formatting report. Valid canonical paths are
+checked with uppercase, lowercase, and mixed-case namespace spelling.
+Malformed cases independently cover a missing or duplicated trailing
+separator, a substituted namespace, malformed GUID grouping, non-hexadecimal
+GUID content, extra characters, extra path components, and slash substitution.
+A report-level test confirms malformed volume paths cannot pass the complete
+NTFS format-report validator.
+
+This is test and documentation coverage only. The existing case-insensitive
+namespace comparison and strict canonical GUID/path structure remain
+unchanged; no storage limits, ownership rules, formatting behavior, result
+transfer, or execution policy changed. Physical Windows formatting and
+read-back acceptance remain separate requirements.

@@ -13954,6 +13954,61 @@ mod tests {
     }
 
     #[test]
+    fn windows_volume_guid_path_accepts_only_canonical_namespace_and_guid_structure() {
+        let canonical = r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}\";
+        assert!(valid_windows_volume_guid_path(canonical));
+
+        let lowercase = canonical.to_ascii_lowercase();
+        assert!(valid_windows_volume_guid_path(&lowercase));
+
+        let mixed_case_prefix = r"\\?\vOlUmE{12345678-1234-5678-9ABC-DEF012345678}\";
+        assert!(valid_windows_volume_guid_path(mixed_case_prefix));
+
+        let malformed = [
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}\\",
+            r"\\.\Volume{12345678-1234-5678-9ABC-DEF012345678}\",
+            r"\\?\Volume{123456781234-5678-9ABC-DEF012345678}\",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF01234567Z}\",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}x\",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}\extra",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}/",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}\ ",
+            r"\\?\Volume{{12345678-1234-5678-9ABC-DEF012345678}}\",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}}\\",
+        ];
+        for path in malformed {
+            assert!(
+                !valid_windows_volume_guid_path(path),
+                "malformed volume GUID path was accepted: {path:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn ntfs_format_report_rejects_noncanonical_volume_guid_paths() {
+        let (valid, metadata, partition) = valid_test_ntfs_format_report();
+        let malformed = [
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}\\",
+            r"\\.\Volume{12345678-1234-5678-9ABC-DEF012345678}\",
+            r"\\?\Volume{123456781234-5678-9ABC-DEF012345678}\",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF01234567Z}\",
+            r"\\?\Volume{12345678-1234-5678-9ABC-DEF012345678}\extra",
+        ];
+        for volume_path in malformed {
+            let mut report = valid.clone();
+            report.volume_path = volume_path.into();
+            assert!(
+                validate_guest_result_ntfs_format_report(
+                    &report, 7, &metadata, &partition,
+                ).is_err(),
+                "noncanonical volume path was accepted: {volume_path:?}",
+            );
+        }
+    }
+
+    #[test]
     fn ntfs_format_report_accepts_exact_volume_and_remaining_size_boundaries() {
         let (valid, metadata, partition) = valid_test_ntfs_format_report();
 
