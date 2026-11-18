@@ -13917,6 +13917,61 @@ mod tests {
     }
 
     #[test]
+    fn ntfs_boot_sector_validator_enforces_extent_and_metadata_boundary_matrix() {
+        let mut sector = [0u8; 512];
+        sector[3..11].copy_from_slice(b"NTFS    ");
+        sector[11..13].copy_from_slice(&512u16.to_le_bytes());
+        sector[13] = 8;
+        sector[21] = 0xF8;
+        sector[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        sector[48..56].copy_from_slice(&4u64.to_le_bytes());
+        sector[56..64].copy_from_slice(&8u64.to_le_bytes());
+        sector[510..512].copy_from_slice(&[0x55, 0xAA]);
+        let exact_partition = 4096 * GUEST_RESULT_GPT_SECTOR_BYTES;
+
+        // The volume may end at the partition boundary or leave at most the
+        // documented 2048-sector formatting allowance.
+        assert!(validate_guest_result_ntfs_boot_sector(&sector, exact_partition).is_ok());
+        assert!(validate_guest_result_ntfs_boot_sector(
+            &sector, exact_partition + 2048 * GUEST_RESULT_GPT_SECTOR_BYTES,
+        ).is_ok());
+        assert!(validate_guest_result_ntfs_boot_sector(
+            &sector, exact_partition + 2049 * GUEST_RESULT_GPT_SECTOR_BYTES,
+        ).is_err());
+
+        for total_sectors in [0u64, 4097, u64::MAX] {
+            let mut changed = sector;
+            changed[40..48].copy_from_slice(&total_sectors.to_le_bytes());
+            assert!(validate_guest_result_ntfs_boot_sector(
+                &changed, exact_partition,
+            ).is_err(), "invalid volume extent {total_sectors} must be rejected");
+        }
+
+        for sectors_per_cluster in [0u8, 3, 6, 129, 255] {
+            let mut changed = sector;
+            changed[13] = sectors_per_cluster;
+            assert!(validate_guest_result_ntfs_boot_sector(
+                &changed, exact_partition,
+            ).is_err(), "invalid cluster size encoding {sectors_per_cluster} must be rejected");
+        }
+
+        // With 4096 sectors and eight sectors per cluster, valid metadata
+        // cluster indices are strictly below 512.
+        for (offset, invalid_cluster) in [(48usize, 512u64), (56usize, 512u64)] {
+            let mut changed = sector;
+            changed[offset..offset + 8].copy_from_slice(&invalid_cluster.to_le_bytes());
+            assert!(validate_guest_result_ntfs_boot_sector(
+                &changed, exact_partition,
+            ).is_err(), "metadata cluster index {invalid_cluster} at {offset} must be rejected");
+        }
+
+        assert!(validate_guest_result_ntfs_boot_sector(&sector, 511).is_err());
+        assert!(validate_guest_result_ntfs_boot_sector(&sector, 513).is_err());
+        assert!(validate_guest_result_ntfs_boot_sector(&sector[..511], exact_partition).is_err());
+        assert!(validate_guest_result_ntfs_boot_sector(&sector[..], 0).is_err());
+    }
+
+    #[test]
     fn ntfs_readback_requires_volume_raw_and_backup_sectors_to_agree() {
         let mut primary = [0u8; 512];
         primary[3..11].copy_from_slice(b"NTFS    ");

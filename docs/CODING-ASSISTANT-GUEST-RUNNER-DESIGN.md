@@ -2499,3 +2499,17 @@ the supplied disk bytes with metadata derived from caller-provided values.
 These are cross-platform synthetic byte-validation tests; they do not replace
 physical Windows storage-stack acceptance, prove a guest result-transfer
 channel, or enable guest execution.
+
+## Exercise NTFS boot-sector extent and metadata boundaries — #956
+
+Expanded cross-platform regression coverage for the NTFS boot-sector validator.
+The boundary matrix checks the exact partition extent, the maximum accepted
+2048-sector formatting allowance and rejection immediately beyond it; zero,
+oversized and overflowing volume extents; invalid sectors-per-cluster
+encodings; MFT and MFT-mirror cluster indices at the first invalid boundary;
+and truncated or non-sector-aligned input/partition sizes.
+
+The tests exercise existing fail-closed validation rules without broadening
+accepted NTFS geometry or changing the formatting policy. They remain
+synthetic byte-validation coverage and do not replace physical Windows
+format/mount/read-back acceptance or prove guest result transfer.
