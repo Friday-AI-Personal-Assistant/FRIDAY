@@ -9481,18 +9481,20 @@ fn verify_guest_result_ntfs_boot_sector_readback(
     // the exact volume Windows just formatted, then compare it with raw media.
     let volume = OwnedRawGuestVolume::open_and_flush(volume_path)?;
     let volume_primary = volume.read_boot_sector()?;
-    validate_guest_result_ntfs_boot_sector(&volume_primary, partition_size)?;
+    validate_guest_result_ntfs_boot_sector(&volume_primary, partition_size)
+        .map_err(|error| format!("The formatted volume-handle read-back is invalid: {error}"))?;
     disk.flush()?;
 
     let mut primary = [0u8; 512];
     disk.read_exact_at(partition_offset, &mut primary)?;
     if primary != volume_primary {
         return Err(format!(
-            "The formatted NTFS volume and attached raw-disk boot-sector reads disagree after flushing both handles (volume OEM={:02X?}, raw OEM={:02X?}, raw signature={:02X?}).",
-            &volume_primary[3..11], &primary[3..11], &primary[510..512]
+            "The formatted NTFS volume and attached raw-disk boot-sector reads disagree after flushing both handles (volume OEM={:02X?}, raw OEM={:02X?}, volume signature={:02X?}, raw signature={:02X?}).",
+            &volume_primary[3..11], &primary[3..11], &volume_primary[510..512], &primary[510..512]
         ));
     }
-    let total_sectors = validate_guest_result_ntfs_boot_sector(&primary, partition_size)?;
+    let total_sectors = validate_guest_result_ntfs_boot_sector(&primary, partition_size)
+        .map_err(|error| format!("The attached raw-disk read-back is invalid: {error}"))?;
     let backup_offset = partition_offset.checked_add(
         total_sectors.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
             .ok_or_else(|| "The NTFS backup boot-sector offset overflowed.".to_string())?
