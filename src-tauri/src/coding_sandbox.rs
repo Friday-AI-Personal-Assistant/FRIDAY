@@ -9827,6 +9827,10 @@ fn validate_guest_result_ntfs_format_report_for_run(
 // local identity. The production formatting path must call the explicit
 // trusted-run variant above with the validated storage journal identity.
 #[cfg(test)]
+const TEST_GUEST_RESULT_TRUSTED_RUN_ID: &str = "0123456789abcdef0123456789abcdef";
+
+// The expected identity must be independent of the plan under test.
+#[cfg(test)]
 fn validate_guest_result_ntfs_format_report(
     report: &GuestResultNtfsFormatReport,
     expected_disk_number: u32,
@@ -9834,7 +9838,8 @@ fn validate_guest_result_ntfs_format_report(
     partition_plan: &GuestResultPartitionPlan,
 ) -> Result<(), String> {
     validate_guest_result_ntfs_format_report_for_run(
-        report, expected_disk_number, metadata, partition_plan, &partition_plan.run_id,
+        report, expected_disk_number, metadata, partition_plan,
+        TEST_GUEST_RESULT_TRUSTED_RUN_ID,
     )
 }
 
@@ -13859,9 +13864,10 @@ mod tests {
         GuestResultGptMetadata,
         GuestResultPartitionPlan,
     ) {
-        let run_id = "0123456789abcdef0123456789abcdef";
         let partition = build_guest_result_partition_plan(
-            run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, GUEST_RESULT_GPT_SECTOR_BYTES as u32,
+            TEST_GUEST_RESULT_TRUSTED_RUN_ID,
+            GUEST_RESULT_VOLUME_CAPACITY_BYTES,
+            GUEST_RESULT_GPT_SECTOR_BYTES as u32,
         ).unwrap();
         let metadata = build_guest_result_gpt_metadata(&partition).unwrap();
         let offset = partition.first_lba * GUEST_RESULT_GPT_SECTOR_BYTES;
@@ -14127,7 +14133,7 @@ mod tests {
 
     #[test]
     fn ntfs_format_report_requires_the_independently_trusted_run_identity() {
-        let trusted_run_id = "0123456789abcdef0123456789abcdef";
+        let trusted_run_id = TEST_GUEST_RESULT_TRUSTED_RUN_ID;
         let (report, metadata, valid_partition) = valid_test_ntfs_format_report();
         validate_guest_result_ntfs_format_report_for_run(
             &report, 7, &metadata, &valid_partition, trusted_run_id,

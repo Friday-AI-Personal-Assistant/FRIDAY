@@ -2842,3 +2842,17 @@ checks remain intact. No storage capacity, formatting behavior, result
 transfer, privilege, or guest execution policy is changed; physical Windows
 formatting and read-back acceptance remain separate requirements.
 
+## Keep NTFS report test identity independent from the plan under test — #983
+
+The shared NTFS report-test adapter now supplies a fixed trusted fixture run ID
+instead of reading the expected identity from the partition plan being tested.
+All report-field substitution, path, size, geometry, and malformed-range tests
+therefore exercise the same independent identity check used by production.
+A tampered plan run ID is rejected by the common test path, not only by a
+single dedicated assertion.
+
+The Windows formatting path remains bound to the validated storage journal's
+run ID. This is test-harness hardening only: no production storage behavior,
+capacity, formatting policy, result-transfer mechanism, or privilege model
+changes. Physical Windows guest/result-disk acceptance remains outstanding.
+
