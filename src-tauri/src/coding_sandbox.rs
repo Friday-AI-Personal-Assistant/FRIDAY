@@ -8909,8 +8909,9 @@ fn write_gpt_header(
 
 fn build_guest_result_gpt_metadata(
     plan: &GuestResultPartitionPlan,
+    expected_run_id: &str,
 ) -> Result<GuestResultGptMetadata, String> {
-    validate_guest_result_partition_plan(plan, &plan.run_id)?;
+    validate_guest_result_partition_plan(plan, expected_run_id)?;
     let total_sectors = plan.disk_capacity_bytes / GUEST_RESULT_GPT_SECTOR_BYTES;
     let backup_header_lba = total_sectors - 1;
     let backup_entries_lba = backup_header_lba - (GUEST_RESULT_GPT_ARRAY_BYTES as u64 / GUEST_RESULT_GPT_SECTOR_BYTES);
@@ -8923,7 +8924,7 @@ fn build_guest_result_gpt_metadata(
 
     let partition_type = parse_canonical_guid_bytes(&plan.partition_type_guid)?;
     let partition_id = parse_canonical_guid_bytes(&plan.partition_unique_guid)?;
-    let compact_run = plan.run_id.to_ascii_lowercase();
+    let compact_run = expected_run_id.to_ascii_lowercase();
     let mut disk_compact = compact_run.clone().into_bytes();
     disk_compact[0] = if disk_compact[0] == b'0' { b'1' } else { b'0' };
     let disk_guid_text = format!(
@@ -9170,6 +9171,7 @@ impl OwnedRawGuestDisk {
         &self,
         plan: &GuestResultPartitionPlan,
         metadata: &GuestResultGptMetadata,
+        expected_run_id: &str,
     ) -> Result<(), String> {
         const IOCTL_DISK_UPDATE_PROPERTIES: u32 = 0x0007_0140;
         const IOCTL_DISK_GET_DRIVE_LAYOUT_EX: u32 = 0x0007_0050;
@@ -9212,7 +9214,7 @@ impl OwnedRawGuestDisk {
         let output_bytes = unsafe {
             std::slice::from_raw_parts(output.as_ptr() as *const u8, output.len() * 8)
         };
-        verify_guest_result_windows_partition_layout_bytes(output_bytes, returned, plan, metadata)
+        verify_guest_result_windows_partition_layout_bytes(output_bytes, returned, plan, metadata, expected_run_id)
     }
 
     fn verify_fixed_geometry(&self) -> Result<(), String> {
@@ -9306,14 +9308,15 @@ fn verify_guest_result_windows_partition_layout_bytes(
     returned_bytes: usize,
     plan: &GuestResultPartitionPlan,
     metadata: &GuestResultGptMetadata,
+    expected_run_id: &str,
 ) -> Result<(), String> {
     // This parser is a trust boundary: do not perform offset arithmetic from
     // a caller-supplied plan until its complete fixed per-run policy is proven.
-    validate_guest_result_partition_plan(plan, &plan.run_id)?;
+    validate_guest_result_partition_plan(plan, expected_run_id)?;
     // Bind every expected GPT byte to this exact plan. The parser must not
     // accept caller-supplied metadata that describes a different disk or
     // partition, even if the Windows response matches that substituted data.
-    let expected_metadata = build_guest_result_gpt_metadata(plan)?;
+    let expected_metadata = build_guest_result_gpt_metadata(plan, expected_run_id)?;
     if metadata != &expected_metadata {
         return Err("The expected GPT metadata does not match the validated partition plan.".into());
     }
@@ -9425,11 +9428,12 @@ fn validate_guest_result_gpt_readback_bytes(
     backup_header: &[u8],
     plan: &GuestResultPartitionPlan,
     expected: &GuestResultGptMetadata,
+    expected_run_id: &str,
 ) -> Result<(), String> {
     // Rebuild expectations at this trust boundary too: matching disk bytes
     // must never make caller-substituted metadata authoritative.
-    validate_guest_result_partition_plan(plan, &plan.run_id)?;
-    let plan_metadata = build_guest_result_gpt_metadata(plan)?;
+    validate_guest_result_partition_plan(plan, expected_run_id)?;
+    let plan_metadata = build_guest_result_gpt_metadata(plan, expected_run_id)?;
     if expected != &plan_metadata {
         return Err("The expected GPT read-back metadata does not match the validated partition plan.".into());
     }
@@ -9465,6 +9469,7 @@ fn verify_guest_result_gpt_readback(
     disk: &OwnedRawGuestDisk,
     plan: &GuestResultPartitionPlan,
     expected: &GuestResultGptMetadata,
+    expected_run_id: &str,
 ) -> Result<(), String> {
     let total_sectors = plan.disk_capacity_bytes / GUEST_RESULT_GPT_SECTOR_BYTES;
     let backup_entries_lba = total_sectors - 1 - (GUEST_RESULT_GPT_ARRAY_BYTES as u64 / GUEST_RESULT_GPT_SECTOR_BYTES);
@@ -9479,7 +9484,7 @@ fn verify_guest_result_gpt_readback(
     disk.read_exact_at(backup_entries_lba * 512, &mut backup_entries)?;
     disk.read_exact_at((total_sectors - 1) * 512, &mut backup_header)?;
     validate_guest_result_gpt_readback_bytes(
-        &mbr, &primary_header, &primary_entries, &backup_entries, &backup_header, plan, expected,
+        &mbr, &primary_header, &primary_entries, &backup_entries, &backup_header, plan, expected, expected_run_id,
     )
 }
 
@@ -9694,11 +9699,12 @@ fn initialize_guest_result_gpt(
     journal_root: &Path,
     current_journal: &GuestResultStorageJournal,
 ) -> Result<GuestResultStorageJournal, String> {
-    validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
+    validate_guest_result_storage_journal(current_journal)?;
+    validate_guest_result_volume_plan(plan, trusted_storage_root, &current_journal.run_id)?;
     let partition_plan = build_guest_result_partition_plan(
-        &plan.run_id, plan.capacity_bytes, GUEST_RESULT_GPT_SECTOR_BYTES as u32,
+        &current_journal.run_id, plan.capacity_bytes, GUEST_RESULT_GPT_SECTOR_BYTES as u32,
     )?;
-    let metadata = build_guest_result_gpt_metadata(&partition_plan)?;
+    let metadata = build_guest_result_gpt_metadata(&partition_plan, &current_journal.run_id)?;
     let identifier = verify_guest_result_vhdx_identity(plan, trusted_storage_root)?;
     if current_journal.run_id != plan.run_id || current_journal.vhdx_identifier != identifier
         || validate_guest_result_storage_journal(current_journal)? != GuestResultStorageState::Attached
@@ -9723,9 +9729,9 @@ fn initialize_guest_result_gpt(
         disk.flush()?;
         disk.write_all_at(0, &metadata.protective_mbr)?;
         disk.flush()?;
-        verify_guest_result_gpt_readback(&disk, &partition_plan, &metadata)?;
+        verify_guest_result_gpt_readback(&disk, &partition_plan, &metadata, &current_journal.run_id)?;
         disk.verify_fixed_geometry()?;
-        disk.verify_windows_partition_layout(&partition_plan, &metadata)?;
+        disk.verify_windows_partition_layout(&partition_plan, &metadata, &current_journal.run_id)?;
         if guest_vhdx_physical_path(attached.handle.0)? != attached.physical_path {
             return Err("The attached physical-device identity changed after GPT initialization.".into());
         }
@@ -9918,9 +9924,10 @@ fn format_guest_result_ntfs(
     journal_root: &Path,
     current_journal: &GuestResultStorageJournal,
 ) -> Result<(GuestResultStorageJournal, String), String> {
-    validate_guest_result_volume_plan(plan, trusted_storage_root, &plan.run_id)?;
-    let partition_plan = build_guest_result_partition_plan(&plan.run_id, plan.capacity_bytes, GUEST_RESULT_GPT_SECTOR_BYTES as u32)?;
-    let metadata = build_guest_result_gpt_metadata(&partition_plan)?;
+    validate_guest_result_storage_journal(current_journal)?;
+    validate_guest_result_volume_plan(plan, trusted_storage_root, &current_journal.run_id)?;
+    let partition_plan = build_guest_result_partition_plan(&current_journal.run_id, plan.capacity_bytes, GUEST_RESULT_GPT_SECTOR_BYTES as u32)?;
+    let metadata = build_guest_result_gpt_metadata(&partition_plan, &current_journal.run_id)?;
     let identifier = verify_attached_guest_result_vhdx_identity(&attached.handle, &attached.physical_path, plan, trusted_storage_root)?;
     if current_journal.run_id != plan.run_id || current_journal.vhdx_identifier != identifier
         || validate_guest_result_storage_journal(current_journal)? != GuestResultStorageState::Partitioned {
@@ -10024,7 +10031,7 @@ $driveLetter = if ([string]::IsNullOrEmpty($volumeDriveLetter)) { $null } else {
         }
         let raw_disk = OwnedRawGuestDisk::open_attached_device(attached)?;
         raw_disk.verify_fixed_geometry()?;
-        raw_disk.verify_windows_partition_layout(&partition_plan, &metadata)?;
+        raw_disk.verify_windows_partition_layout(&partition_plan, &metadata, &current_journal.run_id)?;
         verify_guest_result_ntfs_boot_sector_readback(&raw_disk, &partition_plan, &current_journal.run_id, &volume_path)?;
         Ok(volume_path)
     })();
@@ -10239,7 +10246,7 @@ mod tests {
         let plan = build_guest_result_partition_plan(
             run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, 512,
         ).unwrap();
-        let metadata = build_guest_result_gpt_metadata(&plan).unwrap();
+        let metadata = build_guest_result_gpt_metadata(&plan, run_id).unwrap();
         assert_eq!(&metadata.protective_mbr[510..512], &[0x55, 0xaa]);
         assert_eq!(&metadata.primary_header[0..8], b"EFI PART");
         assert_eq!(&metadata.backup_header[0..8], b"EFI PART");
@@ -10284,7 +10291,7 @@ mod tests {
         let plan = build_guest_result_partition_plan(
             run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, GUEST_RESULT_GPT_SECTOR_BYTES as u32,
         ).unwrap();
-        let expected = build_guest_result_gpt_metadata(&plan).unwrap();
+        let expected = build_guest_result_gpt_metadata(&plan, run_id).unwrap();
         let valid = (
             expected.protective_mbr.clone(),
             expected.primary_header.clone(),
@@ -10293,8 +10300,12 @@ mod tests {
             expected.backup_header.clone(),
         );
         assert!(validate_guest_result_gpt_readback_bytes(
-            &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &expected,
+            &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &expected, run_id,
         ).is_ok());
+        assert!(validate_guest_result_gpt_readback_bytes(
+            &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &expected,
+            "fedcba9876543210fedcba9876543210",
+        ).is_err(), "a mismatched trusted run ID must reject unchanged GPT evidence");
 
         // Even a byte-for-byte matching disk read-back cannot authorize
         // metadata substituted independently of the validated partition plan.
@@ -10310,7 +10321,7 @@ mod tests {
             let midpoint = bytes.len() / 2;
             bytes[midpoint] ^= 0x01;
             assert!(validate_guest_result_gpt_readback_bytes(
-                &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &altered_expected,
+                &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &altered_expected, run_id,
             ).is_err(), "substituted expected GPT region {region} must be rejected");
         }
 
@@ -10326,20 +10337,20 @@ mod tests {
             let midpoint = bytes.len() / 2;
             bytes[midpoint] ^= 0x01;
             assert!(validate_guest_result_gpt_readback_bytes(
-                &altered.0, &altered.1, &altered.2, &altered.3, &altered.4, &plan, &expected,
+                &altered.0, &altered.1, &altered.2, &altered.3, &altered.4, &plan, &expected, run_id,
             ).is_err(), "corruption in GPT region {region} must be rejected");
         }
 
         let mut truncated = valid.clone();
         truncated.1.pop();
         assert!(validate_guest_result_gpt_readback_bytes(
-            &truncated.0, &truncated.1, &truncated.2, &truncated.3, &truncated.4, &plan, &expected,
+            &truncated.0, &truncated.1, &truncated.2, &truncated.3, &truncated.4, &plan, &expected, run_id,
         ).is_err(), "truncated primary header must be rejected");
 
         let mut oversized = valid.clone();
         oversized.3.push(0);
         assert!(validate_guest_result_gpt_readback_bytes(
-            &oversized.0, &oversized.1, &oversized.2, &oversized.3, &oversized.4, &plan, &expected,
+            &oversized.0, &oversized.1, &oversized.2, &oversized.3, &oversized.4, &plan, &expected, run_id,
         ).is_err(), "oversized backup entry array must be rejected");
     }
 
@@ -10349,7 +10360,7 @@ mod tests {
         let plan = build_guest_result_partition_plan(
             run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, GUEST_RESULT_GPT_SECTOR_BYTES as u32,
         ).unwrap();
-        let expected = build_guest_result_gpt_metadata(&plan).unwrap();
+        let expected = build_guest_result_gpt_metadata(&plan, run_id).unwrap();
         let valid = (
             expected.protective_mbr.clone(),
             expected.primary_header.clone(),
@@ -10358,7 +10369,7 @@ mod tests {
             expected.backup_header.clone(),
         );
         assert!(validate_guest_result_gpt_readback_bytes(
-            &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &expected,
+            &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &expected, run_id,
         ).is_ok());
 
         let mut invalid_plans = Vec::new();
@@ -10388,7 +10399,7 @@ mod tests {
 
         for (description, invalid_plan) in invalid_plans {
             assert!(validate_guest_result_gpt_readback_bytes(
-                &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &invalid_plan, &expected,
+                &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &invalid_plan, &expected, run_id,
             ).is_err(), "{description} must be rejected even when disk bytes are valid");
         }
     }
@@ -10397,7 +10408,7 @@ mod tests {
     fn windows_partition_layout_parser_accepts_only_the_exact_single_gpt_partition() {
         let run_id = "0123456789abcdef0123456789abcdef";
         let plan = build_guest_result_partition_plan(run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, 512).unwrap();
-        let metadata = build_guest_result_gpt_metadata(&plan).unwrap();
+        let metadata = build_guest_result_gpt_metadata(&plan, run_id).unwrap();
         let mut bytes = vec![0u8; FRIDAY_DRIVE_LAYOUT_EX_HEADER_BYTES + FRIDAY_PARTITION_INFORMATION_EX_BYTES];
         bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
         bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
@@ -10416,34 +10427,37 @@ mod tests {
         for (index, unit) in "FRIDAY_RESULTS".encode_utf16().enumerate() {
             bytes[entry + 72 + index * 2..entry + 74 + index * 2].copy_from_slice(&unit.to_le_bytes());
         }
-        assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len(), &plan, &metadata).is_ok());
+        assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len(), &plan, &metadata, run_id).is_ok());
+        assert!(verify_guest_result_windows_partition_layout_bytes(
+            &bytes, bytes.len(), &plan, &metadata, "fedcba9876543210fedcba9876543210",
+        ).is_err(), "a mismatched trusted run ID must reject unchanged Windows layout evidence");
 
         // Metadata is also an untrusted parser input: each on-disk region
         // must be the deterministic metadata generated from this exact plan.
         let mut altered_metadata = metadata.clone();
         altered_metadata.protective_mbr[446] ^= 1;
         assert!(verify_guest_result_windows_partition_layout_bytes(
-            &bytes, bytes.len(), &plan, &altered_metadata,
+            &bytes, bytes.len(), &plan, &altered_metadata, run_id,
         ).is_err(), "substituted protective MBR metadata must be rejected");
         let mut altered_metadata = metadata.clone();
         altered_metadata.primary_header[56] ^= 1;
         assert!(verify_guest_result_windows_partition_layout_bytes(
-            &bytes, bytes.len(), &plan, &altered_metadata,
+            &bytes, bytes.len(), &plan, &altered_metadata, run_id,
         ).is_err(), "substituted primary-header metadata must be rejected");
         let mut altered_metadata = metadata.clone();
         altered_metadata.primary_entries[16] ^= 1;
         assert!(verify_guest_result_windows_partition_layout_bytes(
-            &bytes, bytes.len(), &plan, &altered_metadata,
+            &bytes, bytes.len(), &plan, &altered_metadata, run_id,
         ).is_err(), "substituted primary-entry metadata must be rejected");
         let mut altered_metadata = metadata.clone();
         altered_metadata.backup_entries[16] ^= 1;
         assert!(verify_guest_result_windows_partition_layout_bytes(
-            &bytes, bytes.len(), &plan, &altered_metadata,
+            &bytes, bytes.len(), &plan, &altered_metadata, run_id,
         ).is_err(), "substituted backup-entry metadata must be rejected");
         let mut altered_metadata = metadata.clone();
         altered_metadata.backup_header[56] ^= 1;
         assert!(verify_guest_result_windows_partition_layout_bytes(
-            &bytes, bytes.len(), &plan, &altered_metadata,
+            &bytes, bytes.len(), &plan, &altered_metadata, run_id,
         ).is_err(), "substituted backup-header metadata must be rejected");
 
 
@@ -10453,46 +10467,46 @@ mod tests {
         let mut invalid_plan = plan.clone();
         invalid_plan.first_lba = u64::MAX;
         assert!(verify_guest_result_windows_partition_layout_bytes(
-            &bytes, bytes.len(), &invalid_plan, &metadata,
+            &bytes, bytes.len(), &invalid_plan, &metadata, run_id,
         ).is_err(), "an overflowing partition start must be rejected");
         let mut invalid_plan = plan.clone();
         invalid_plan.last_lba = 0;
         assert!(verify_guest_result_windows_partition_layout_bytes(
-            &bytes, bytes.len(), &invalid_plan, &metadata,
+            &bytes, bytes.len(), &invalid_plan, &metadata, run_id,
         ).is_err(), "a reversed partition range must be rejected");
         let mut invalid_plan = plan.clone();
         invalid_plan.disk_capacity_bytes = u64::MAX;
         assert!(verify_guest_result_windows_partition_layout_bytes(
-            &bytes, bytes.len(), &invalid_plan, &metadata,
+            &bytes, bytes.len(), &invalid_plan, &metadata, run_id,
         ).is_err(), "a substituted disk capacity must be rejected");
         let mut invalid_plan = plan.clone();
         invalid_plan.partition_number = 2;
         assert!(verify_guest_result_windows_partition_layout_bytes(
-            &bytes, bytes.len(), &invalid_plan, &metadata,
+            &bytes, bytes.len(), &invalid_plan, &metadata, run_id,
         ).is_err(), "a substituted partition number must be rejected");
         for reserved_offset in 44..48 {
             let mut changed = bytes.clone();
             changed[reserved_offset] = 1;
-            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata, run_id).is_err(),
                 "nonzero GPT header padding byte {reserved_offset} must be rejected");
         }
 
         let mut altered = bytes.clone();
         altered[4..8].copy_from_slice(&2u32.to_le_bytes());
-        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata).is_err());
+        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata, run_id).is_err());
         let mut altered = bytes.clone();
         altered[entry + 8..entry + 16].copy_from_slice(&0u64.to_le_bytes());
-        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata).is_err());
+        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata, run_id).is_err());
         let mut altered = bytes.clone();
         altered[entry + 96] ^= 0x80;
-        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata).is_err());
-        assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, 80, &plan, &metadata).is_err());
+        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata, run_id).is_err());
+        assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, 80, &plan, &metadata, run_id).is_err());
         let mut altered = bytes.clone();
         altered[24..32].copy_from_slice(&(35u64 * 512).to_le_bytes());
-        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata).is_err());
+        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata, run_id).is_err());
         let mut altered = bytes.clone();
         altered[40..44].copy_from_slice(&64u32.to_le_bytes());
-        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata).is_err());
+        assert!(verify_guest_result_windows_partition_layout_bytes(&altered, altered.len(), &plan, &metadata, run_id).is_err());
 
         // Exercise every identity and geometry field returned by the Windows
         // storage stack, not only the partition count and starting offset.
@@ -10510,7 +10524,7 @@ mod tests {
                 v if offset == 0 || offset == 40 => changed[offset..offset + 4].copy_from_slice(&(v as u32).to_le_bytes()),
                 _ => unreachable!(),
             }
-            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata, run_id).is_err(),
                 "Windows layout field at byte {offset} must be rejected");
         }
 
@@ -10525,40 +10539,40 @@ mod tests {
             } else {
                 changed[offset..offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
             }
-            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata, run_id).is_err(),
                 "Windows partition field at byte {offset} must be rejected");
         }
 
         let mut changed = bytes.clone();
         changed[entry + 16..entry + 24].copy_from_slice(&0u64.to_le_bytes());
-        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata, run_id).is_err(),
             "wrong partition length must be rejected");
         let mut changed = bytes.clone();
         changed[entry + 32] ^= 0x01;
-        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata, run_id).is_err(),
             "wrong partition type GUID must be rejected");
         let mut changed = bytes.clone();
         changed[entry + 48] ^= 0x01;
-        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata, run_id).is_err(),
             "wrong unique partition GUID must be rejected");
         let mut changed = bytes.clone();
         changed[entry + 29] = 1;
-        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+        assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata, run_id).is_err(),
             "unexpected rewrite state must be rejected");
         for reserved_offset in [entry + 30, entry + 31] {
             let mut changed = bytes.clone();
             changed[reserved_offset] = 1;
-            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata).is_err(),
+            assert!(verify_guest_result_windows_partition_layout_bytes(&changed, changed.len(), &plan, &metadata, run_id).is_err(),
                 "nonzero reserved partition-layout byte {reserved_offset} must be rejected");
         }
         let mut trailing = bytes.clone();
         trailing.push(0);
-        assert!(verify_guest_result_windows_partition_layout_bytes(&trailing, trailing.len(), &plan, &metadata).is_err(),
+        assert!(verify_guest_result_windows_partition_layout_bytes(&trailing, trailing.len(), &plan, &metadata, run_id).is_err(),
             "unexpected trailing bytes in the returned Windows layout must be rejected");
-        assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len() + 1, &plan, &metadata).is_err(),
+        assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, bytes.len() + 1, &plan, &metadata, run_id).is_err(),
             "a returned byte count beyond the supplied buffer must be rejected");
         for returned in [0usize, 47, 48, 191] {
-            assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, returned, &plan, &metadata).is_err(),
+            assert!(verify_guest_result_windows_partition_layout_bytes(&bytes, returned, &plan, &metadata, run_id).is_err(),
                 "truncated Windows layout length {returned} must be rejected");
         }
     }
@@ -12100,7 +12114,7 @@ mod tests {
             parse_guest_run_request(&valid_guest_request_json()).unwrap(),
         ).unwrap();
         let proof = authorize_guest_result_collection_after_sandbox_stop(&journal, &approved_run).unwrap();
-        assert_eq!(proof.run_id, run_id);
+        assert_eq!(proof.run_id);
         assert_eq!(proof.snapshot_id, approved_run.snapshot_id);
         assert_eq!(proof.operation, approved_run.operation);
         assert_eq!(proof.max_output_bytes, approved_run.max_output_bytes);
@@ -12358,7 +12372,7 @@ mod tests {
             ).unwrap();
             assert_eq!(result.status, expected_status);
             assert_eq!(result.exit_code, exit_code);
-            assert_eq!(result.run_id, run_id);
+            assert_eq!(result.run_id);
             assert_eq!(result.snapshot_id, snapshot_id);
             assert!(result.truncated);
             assert_eq!(result.duration_ms, MAX_GUEST_RESULT_DURATION_MS);
@@ -13369,7 +13383,7 @@ mod tests {
 
         // Restoring the exact permitted layout restores journal readability;
         // no rejected sidecar evidence was deleted by the loader.
-        assert_eq!(load_sandbox_session_journal(&root, run_id).unwrap().run_id, run_id);
+        assert_eq!(load_sandbox_session_journal(&root, run_id).unwrap().run_id);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -13664,7 +13678,7 @@ mod tests {
         let root = make_test_directory("result-volume-plan");
         let run_id = "0123456789abcdef0123456789abcdef";
         let plan = build_guest_result_volume_plan(&root, run_id).unwrap();
-        assert_eq!(plan.run_id, run_id);
+        assert_eq!(plan.run_id);
         assert_eq!(plan.storage_root, fs::canonicalize(&root).unwrap());
         assert_eq!(plan.run_directory, plan.storage_root.join(run_id));
         assert_eq!(plan.vhdx_path, plan.run_directory.join("result.vhdx"));
@@ -13734,7 +13748,7 @@ mod tests {
         let marker_bytes = fs::read(reserved.join(GUEST_RESULT_VOLUME_OWNER_MARKER)).unwrap();
         let marker: GuestResultVolumeOwnershipMarker = serde_json::from_slice(&marker_bytes).unwrap();
         assert_eq!(marker.schema_version, GUEST_RESULT_VOLUME_OWNER_SCHEMA);
-        assert_eq!(marker.run_id, run_id);
+        assert_eq!(marker.run_id);
         assert_eq!(marker.owner, "FRIDAY-CodingAssistant-ResultVolume");
         assert_eq!(verify_guest_result_volume_directory(&plan, &root).unwrap(), reserved);
         assert!(reserve_guest_result_volume_directory(&plan, &root).is_err());
@@ -13869,7 +13883,7 @@ mod tests {
             GUEST_RESULT_VOLUME_CAPACITY_BYTES,
             GUEST_RESULT_GPT_SECTOR_BYTES as u32,
         ).unwrap();
-        let metadata = build_guest_result_gpt_metadata(&partition).unwrap();
+        let metadata = build_guest_result_gpt_metadata(&partition, TEST_GUEST_RESULT_TRUSTED_RUN_ID).unwrap();
         let offset = partition.first_lba * GUEST_RESULT_GPT_SECTOR_BYTES;
         let size = (partition.last_lba - partition.first_lba + 1) * GUEST_RESULT_GPT_SECTOR_BYTES;
         let volume_size = size - 128 * 1024;
@@ -15085,7 +15099,7 @@ mod tests {
         let marker_bytes = fs::read(&marker_path).unwrap();
         let marker: GuestResultHostMountOwnershipMarker = serde_json::from_slice(&marker_bytes).unwrap();
         assert_eq!(marker.schema_version, GUEST_RESULT_HOST_MOUNT_OWNER_SCHEMA);
-        assert_eq!(marker.run_id, run_id);
+        assert_eq!(marker.run_id);
         assert_eq!(marker.owner, "FRIDAY-CodingAssistant-ResultMount");
         #[cfg(unix)]
         {
@@ -15638,7 +15652,7 @@ fn windows_sandbox_stop_plan_requires_running_owned_journal_and_exclusive_invent
         let proof = prove_windows_sandbox_cli_session_ownership(
             run_id, response.as_bytes(), &[], &[expected.clone()],
         ).unwrap();
-        assert_eq!(proof.run_id, run_id);
+        assert_eq!(proof.run_id);
         assert_eq!(proof.session_id, expected_id);
         assert_eq!(proof.start_response_id, proof.session_id);
         assert_eq!(
