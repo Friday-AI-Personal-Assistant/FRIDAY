@@ -2482,3 +2482,20 @@ expected metadata regions while leaving the disk read-back valid; every
 substitution must be rejected. Existing corruption, truncation, oversized
 read-back, and CRC checks remain in place. This is synthetic byte-validation
 coverage, not physical Windows storage-stack acceptance or guest execution.
+
+## Reject substituted partition plans at the GPT read-back boundary — #955
+
+The pure GPT metadata read-back validator now has dedicated regression
+coverage proving that valid on-disk bytes and valid expected metadata cannot
+override a malformed or substituted partition plan. Tests independently alter
+the first LBA to an overflowing value, reverse the partition range, substitute
+the disk capacity, change the partition number, change the logical sector
+size, and substitute the run identity. Every altered plan must be rejected
+before the read-back can be accepted.
+
+This complements the existing plan-bound expectation checks: the validator
+must independently enforce the fixed per-run GPT/NTFS plan, not merely compare
+the supplied disk bytes with metadata derived from caller-provided values.
+These are cross-platform synthetic byte-validation tests; they do not replace
+physical Windows storage-stack acceptance, prove a guest result-transfer
+channel, or enable guest execution.

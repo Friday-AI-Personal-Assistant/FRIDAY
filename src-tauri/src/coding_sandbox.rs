@@ -10246,6 +10246,56 @@ mod tests {
     }
 
     #[test]
+    fn gpt_readback_rejects_partition_plan_substitution_before_accepting_valid_bytes() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let plan = build_guest_result_partition_plan(
+            run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, GUEST_RESULT_GPT_SECTOR_BYTES as u32,
+        ).unwrap();
+        let expected = build_guest_result_gpt_metadata(&plan).unwrap();
+        let valid = (
+            expected.protective_mbr.clone(),
+            expected.primary_header.clone(),
+            expected.primary_entries.clone(),
+            expected.backup_entries.clone(),
+            expected.backup_header.clone(),
+        );
+        assert!(validate_guest_result_gpt_readback_bytes(
+            &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &expected,
+        ).is_ok());
+
+        let mut invalid_plans = Vec::new();
+        let mut changed = plan.clone();
+        changed.first_lba = u64::MAX;
+        invalid_plans.push(("overflowing first LBA", changed));
+
+        let mut changed = plan.clone();
+        changed.last_lba = 0;
+        invalid_plans.push(("reversed partition range", changed));
+
+        let mut changed = plan.clone();
+        changed.disk_capacity_bytes = u64::MAX;
+        invalid_plans.push(("substituted disk capacity", changed));
+
+        let mut changed = plan.clone();
+        changed.partition_number = 2;
+        invalid_plans.push(("unexpected partition number", changed));
+
+        let mut changed = plan.clone();
+        changed.logical_sector_bytes = 4096;
+        invalid_plans.push(("substituted logical sector size", changed));
+
+        let mut changed = plan.clone();
+        changed.run_id = "abcdef0123456789abcdef0123456789".into();
+        invalid_plans.push(("substituted run identity", changed));
+
+        for (description, invalid_plan) in invalid_plans {
+            assert!(validate_guest_result_gpt_readback_bytes(
+                &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &invalid_plan, &expected,
+            ).is_err(), "{description} must be rejected even when disk bytes are valid");
+        }
+    }
+
+    #[test]
     fn windows_partition_layout_parser_accepts_only_the_exact_single_gpt_partition() {
         let run_id = "0123456789abcdef0123456789abcdef";
         let plan = build_guest_result_partition_plan(run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, 512).unwrap();
