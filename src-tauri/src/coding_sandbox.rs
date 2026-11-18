@@ -7561,21 +7561,62 @@ fn sandbox_session_journal_generation_path(root: &Path, generation: usize) -> Pa
     root.join(format!("{SANDBOX_SESSION_JOURNAL_DIR_PREFIX}{generation:02}"))
 }
 
-fn read_sandbox_session_journal_generation(
-    root: &Path,
+fn sandbox_session_journal_generations_from_handle(
+    root_handle: &File,
+) -> Result<Vec<usize>, String> {
+    let (files, directories) = crate::coding_sandbox_fs::collect_runtime_tree_inventory(
+        root_handle,
+        2,
+        MAX_SANDBOX_SESSION_JOURNAL_ENTRIES * 2,
+    ).map_err(|_| "The Sandbox session journal root contains an unsafe or oversized entry layout.".to_string())?;
+    let directory_set = directories.into_iter().collect::<BTreeSet<_>>();
+    let file_set = files.into_iter().collect::<BTreeSet<_>>();
+    if directory_set.len() > MAX_SANDBOX_SESSION_JOURNAL_ENTRIES
+        || directory_set.len() != file_set.len()
+    {
+        return Err("The Sandbox session journal does not contain complete bounded generations.".into());
+    }
+    let mut generations = Vec::with_capacity(directory_set.len());
+    let mut expected_files = BTreeSet::new();
+    for generation in 1..=directory_set.len() {
+        let directory = format!("{SANDBOX_SESSION_JOURNAL_DIR_PREFIX}{generation:02}");
+        let file = format!("{directory}\\{SANDBOX_SESSION_JOURNAL_FILE}");
+        if !directory_set.contains(&directory) || !file_set.contains(&file) {
+            return Err("The Sandbox session journal contains a generation gap or unexpected entry.".into());
+        }
+        expected_files.insert(file);
+        generations.push(generation);
+    }
+    if expected_files != file_set || directory_set.len() != generations.len() {
+        return Err("The Sandbox session journal contains unexpected files or generation directories.".into());
+    }
+    Ok(generations)
+}
+
+fn read_sandbox_session_journal_generation_from_handle(
+    root_handle: &File,
     generation: usize,
 ) -> Result<SandboxSessionJournal, String> {
     if generation == 0 || generation > MAX_SANDBOX_SESSION_JOURNAL_ENTRIES {
         return Err("The Sandbox session journal generation is outside its fixed limit.".into());
     }
-    let directory = sandbox_session_journal_generation_path(root, generation);
-    let metadata = fs::symlink_metadata(&directory)
-        .map_err(|_| "A Sandbox session journal generation is missing or unavailable.".to_string())?;
-    if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
-        return Err("A Sandbox session journal generation is not an ordinary directory.".into());
+    let root_metadata = root_handle.metadata()
+        .map_err(|_| "The held Sandbox session journal root could not be inspected.".to_string())?;
+    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
+        return Err("The held Sandbox session journal root is not an ordinary directory.".into());
     }
-    let bytes = crate::coding_sandbox_fs::read_single_bounded_file_from_directory(
-        &directory, OsStr::new(SANDBOX_SESSION_JOURNAL_FILE),
+    let generation_name = format!("{SANDBOX_SESSION_JOURNAL_DIR_PREFIX}{generation:02}");
+    let directory = crate::coding_sandbox_fs::open_child_directory_nofollow(
+        root_handle, OsStr::new(&generation_name),
+    ).map_err(|_| "A Sandbox session journal generation is missing or is not an ordinary directory.".to_string())?;
+    let (files, directories) = crate::coding_sandbox_fs::collect_runtime_tree_inventory(&directory, 1, 2)
+        .map_err(|_| "A Sandbox session journal generation could not be safely inventoried.".to_string())?;
+    if !directories.is_empty() || files.len() != 1 || files[0] != SANDBOX_SESSION_JOURNAL_FILE {
+        return Err("A Sandbox session journal generation must contain exactly its state file.".into());
+    }
+    let bytes = crate::coding_sandbox_fs::read_bounded_relative_file(
+        &directory,
+        SANDBOX_SESSION_JOURNAL_FILE,
         MAX_SANDBOX_SESSION_JOURNAL_BYTES as u64,
     ).map_err(|_| "A Sandbox session journal generation is incomplete or unsafe.".to_string())?;
     let journal = parse_sandbox_session_journal(&bytes)?;
@@ -7596,39 +7637,43 @@ fn persist_sandbox_session_journal(
     if generation == 0 || generation > MAX_SANDBOX_SESSION_JOURNAL_ENTRIES {
         return Err("Only a non-empty bounded Sandbox session journal can be persisted.".into());
     }
-    let root_metadata = fs::symlink_metadata(root)
-        .map_err(|_| "The Sandbox session journal root is unavailable.".to_string())?;
-    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
-        return Err("The Sandbox session journal root must be an ordinary directory.".into());
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The Sandbox session journal root could not be opened safely.".to_string())?;
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The Sandbox session journal root identity could not be verified.".to_string())?;
+    let existing_generations = sandbox_session_journal_generations_from_handle(&root_handle)?;
+    let expected_generations = (1..generation).collect::<Vec<_>>();
+    if existing_generations != expected_generations {
+        return Err("The Sandbox session journal cannot be extended because its existing inventory is incomplete or unexpected.".into());
     }
     if generation > 1 {
-        let previous = read_sandbox_session_journal_generation(root, generation - 1)?;
-        if previous.run_id != journal.run_id
-            || previous.entries != journal.entries[..generation - 1]
-        {
+        let previous = read_sandbox_session_journal_generation_from_handle(&root_handle, generation - 1)?;
+        if previous.run_id != journal.run_id || previous.entries != journal.entries[..generation - 1] {
             return Err("The next Sandbox session journal generation does not extend persisted history.".into());
         }
-    } else if fs::symlink_metadata(sandbox_session_journal_generation_path(root, 1)).is_ok() {
-        return Err("The initial Sandbox session journal generation already exists.".into());
     }
-    let directory = sandbox_session_journal_generation_path(root, generation);
-    fs::create_dir(&directory)
-        .map_err(|_| "FRIDAY could not exclusively create the Sandbox session journal generation.".to_string())?;
-    secure_private_workspace_directory(&directory)
-        .map_err(|_| "FRIDAY could not secure the new session journal generation; it was preserved.".to_string())?;
+    let generation_name = format!("{SANDBOX_SESSION_JOURNAL_DIR_PREFIX}{generation:02}");
+    let directory = crate::coding_sandbox_fs::create_destination_entry(
+        &root_handle, OsStr::new(&generation_name), true,
+    ).map_err(|_| "FRIDAY could not exclusively create the Sandbox session journal generation; it was preserved.".to_string())?;
+    let mut file = crate::coding_sandbox_fs::create_destination_entry(
+        &directory, OsStr::new(SANDBOX_SESSION_JOURNAL_FILE), false,
+    ).map_err(|_| "FRIDAY could not exclusively create the Sandbox session journal file; the directory was preserved.".to_string())?;
     let bytes = encode_sandbox_session_journal(journal)?;
-    let file_path = directory.join(SANDBOX_SESSION_JOURNAL_FILE);
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&file_path)
-        .map_err(|_| "FRIDAY could not exclusively create the Sandbox session journal file; it was preserved.".to_string())?;
     use std::io::Write;
     file.write_all(&bytes)
         .map_err(|_| "FRIDAY could not write the Sandbox session journal; it was preserved.".to_string())?;
     file.sync_all()
         .map_err(|_| "FRIDAY could not flush the Sandbox session journal; it was preserved.".to_string())?;
     drop(file);
-    let verified = read_sandbox_session_journal_generation(root, generation)?;
+    let verified = read_sandbox_session_journal_generation_from_handle(&root_handle, generation)?;
     if verified != *journal {
         return Err("The persisted Sandbox session journal failed exact read-back verification.".into());
+    }
+    let final_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The Sandbox session journal root path changed during persistence; evidence was preserved.".to_string())?;
+    if final_identity != root_identity {
+        return Err("The Sandbox session journal root was replaced during persistence; evidence was preserved.".into());
     }
     Ok(())
 }
@@ -7640,32 +7685,31 @@ fn load_sandbox_session_journal(
     if !valid_snapshot_id(expected_run_id) {
         return Err("The expected Sandbox session run identifier is invalid.".into());
     }
-    let root_metadata = fs::symlink_metadata(root)
-        .map_err(|_| "The Sandbox session journal root is unavailable.".to_string())?;
-    if !root_metadata.is_dir() || is_reparse_or_symlink(&root_metadata) {
-        return Err("The Sandbox session journal root must be an ordinary directory.".into());
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "The Sandbox session journal root could not be opened safely.".to_string())?;
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The Sandbox session journal root identity could not be verified.".to_string())?;
+    let generations = sandbox_session_journal_generations_from_handle(&root_handle)?;
+    if generations.is_empty() {
+        return Err("No complete Sandbox session journal generation is available.".into());
     }
     let mut latest: Option<SandboxSessionJournal> = None;
-    let mut gap_seen = false;
-    for generation in 1..=MAX_SANDBOX_SESSION_JOURNAL_ENTRIES {
-        let path = sandbox_session_journal_generation_path(root, generation);
-        match fs::symlink_metadata(&path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => gap_seen = true,
-            Err(_) => return Err("A Sandbox session journal generation could not be inspected.".into()),
-            Ok(_) if gap_seen => return Err("The Sandbox session journal contains a generation gap.".into()),
-            Ok(_) => {
-                let current = read_sandbox_session_journal_generation(root, generation)?;
-                if current.run_id != expected_run_id {
-                    return Err("The Sandbox session journal belongs to a different FRIDAY run.".into());
-                }
-                if let Some(previous) = &latest {
-                    if current.entries[..generation - 1] != previous.entries {
-                        return Err("The Sandbox session journal history is not append-only.".into());
-                    }
-                }
-                latest = Some(current);
+    for generation in generations {
+        let current = read_sandbox_session_journal_generation_from_handle(&root_handle, generation)?;
+        if current.run_id != expected_run_id {
+            return Err("The Sandbox session journal belongs to a different FRIDAY run.".into());
+        }
+        if let Some(previous) = &latest {
+            if current.entries[..generation - 1] != previous.entries {
+                return Err("The Sandbox session journal history is not append-only.".into());
             }
         }
+        latest = Some(current);
+    }
+    let final_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+        .map_err(|_| "The Sandbox session journal root path changed during recovery; evidence was preserved.".to_string())?;
+    if final_identity != root_identity {
+        return Err("The Sandbox session journal root was replaced during recovery; evidence was preserved.".into());
     }
     latest.ok_or_else(|| "No complete Sandbox session journal generation is available.".into())
 }
@@ -7680,12 +7724,12 @@ fn append_and_persist_sandbox_session_transition(
 ) -> Result<SandboxSessionJournal, String> {
     validate_sandbox_session_journal(current)?;
     if current.entries.is_empty() {
-        for generation in 1..=MAX_SANDBOX_SESSION_JOURNAL_ENTRIES {
-            match fs::symlink_metadata(sandbox_session_journal_generation_path(root, generation)) {
-                Ok(_) => return Err("An initial Sandbox session journal cannot overwrite existing recovery evidence.".into()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err("Existing Sandbox session journal evidence could not be inspected.".into()),
-            }
+        let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+            .map_err(|_| "The initial Sandbox session journal root could not be opened safely.".to_string())?;
+        let _root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+            .map_err(|_| "The initial Sandbox session journal root identity could not be verified.".to_string())?;
+        if !sandbox_session_journal_generations_from_handle(&root_handle)?.is_empty() {
+            return Err("An initial Sandbox session journal cannot overwrite existing recovery evidence.".into());
         }
     } else if load_sandbox_session_journal(root, &current.run_id)? != *current {
         return Err("The supplied Sandbox session journal is stale or differs from persisted history.".into());
@@ -12553,6 +12597,51 @@ mod tests {
         fs::remove_dir_all(sandbox_session_journal_generation_path(&root, 1)).unwrap();
         assert!(load_sandbox_session_journal(&root, &next.run_id).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sandbox_session_journal_preserves_torn_and_unexpected_generation_evidence() {
+        for case in ["empty-state", "partial-state", "extra-file", "unexpected-root-file"] {
+            let root = make_test_directory(&format!("session-journal-torn-{case}"));
+            let identity = valid_test_sandbox_identity();
+            let mut journal = empty_test_sandbox_session_journal();
+            journal = append_and_persist_sandbox_session_transition(
+                &root, &journal, SandboxSessionEvent::RequestLaunch, None, false, false,
+            ).unwrap();
+
+            if case == "unexpected-root-file" {
+                fs::write(root.join("unexpected.bin"), b"preserve-root-evidence").unwrap();
+            } else {
+                let interrupted = sandbox_session_journal_generation_path(&root, 2);
+                fs::create_dir(&interrupted).unwrap();
+                secure_private_workspace_directory(&interrupted).unwrap();
+                match case {
+                    "empty-state" => fs::write(interrupted.join(SANDBOX_SESSION_JOURNAL_FILE), []).unwrap(),
+                    "partial-state" => fs::write(interrupted.join(SANDBOX_SESSION_JOURNAL_FILE), br#"{"schemaVersion":1"#).unwrap(),
+                    "extra-file" => {
+                        fs::write(interrupted.join(SANDBOX_SESSION_JOURNAL_FILE), b"partial").unwrap();
+                        fs::write(interrupted.join("unexpected.bin"), b"preserve-generation-evidence").unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            assert!(load_sandbox_session_journal(&root, &journal.run_id).is_err(),
+                "{case}: recovery must reject torn or unexpected journal evidence");
+            assert!(append_and_persist_sandbox_session_transition(
+                &root, &journal, SandboxSessionEvent::PreserveForRecovery, None, false, false,
+            ).is_err(), "{case}: append must not overwrite or skip uncertain evidence");
+            if case == "unexpected-root-file" {
+                assert_eq!(fs::read(root.join("unexpected.bin")).unwrap(), b"preserve-root-evidence");
+            }
+            if case == "extra-file" {
+                assert_eq!(
+                    fs::read(sandbox_session_journal_generation_path(&root, 2).join("unexpected.bin")).unwrap(),
+                    b"preserve-generation-evidence",
+                );
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
