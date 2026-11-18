@@ -7570,7 +7570,10 @@ fn sandbox_session_journal_generations_from_handle(
         MAX_SANDBOX_SESSION_JOURNAL_ENTRIES * 2,
     ).map_err(|_| "The Sandbox session journal root contains an unsafe or oversized entry layout.".to_string())?;
     let directory_set = directories.into_iter().collect::<BTreeSet<_>>();
-    let file_set = files.into_iter().collect::<BTreeSet<_>>();
+    let mut file_set = files.into_iter().collect::<BTreeSet<_>>();
+    // The run directory may also contain the separately validated, immutable
+    // CLI ownership receipt. It is not part of the journal generation stream.
+    file_set.remove(WINDOWS_SANDBOX_CLI_OWNERSHIP_RECEIPT_FILE);
     if directory_set.len() > MAX_SANDBOX_SESSION_JOURNAL_ENTRIES
         || directory_set.len() != file_set.len()
     {
