@@ -8811,6 +8811,26 @@ fn validate_guest_result_partition_plan(
     Ok(())
 }
 
+/// Derive the exact byte extent only after independently authenticating the
+/// partition plan. Checked arithmetic remains mandatory even though the fixed
+/// plan currently makes overflow unreachable.
+fn guest_result_partition_byte_extent(
+    plan: &GuestResultPartitionPlan,
+) -> Result<(u64, u64), String> {
+    validate_guest_result_partition_plan(plan, &plan.run_id)?;
+    let offset = plan.first_lba.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+        .ok_or_else(|| "The NTFS partition offset overflowed.".to_string())?;
+    let sector_count = plan.last_lba.checked_sub(plan.first_lba)
+        .and_then(|difference| difference.checked_add(1))
+        .ok_or_else(|| "The NTFS partition LBA range is invalid or overflowed.".to_string())?;
+    let size = sector_count.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
+        .ok_or_else(|| "The NTFS partition size overflowed.".to_string())?;
+    if size == 0 || offset.checked_add(size).is_none() {
+        return Err("The NTFS partition byte extent is empty or overflows the disk address space.".into());
+    }
+    Ok((offset, size))
+}
+
 
 const GUEST_RESULT_GPT_HEADER_BYTES: usize = 92;
 const GUEST_RESULT_GPT_ENTRY_COUNT: usize = 128;
@@ -9633,11 +9653,8 @@ fn verify_guest_result_ntfs_boot_sector_readback(
     partition_plan: &GuestResultPartitionPlan,
     volume_path: &str,
 ) -> Result<(), String> {
-    let partition_offset = partition_plan.first_lba.checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
-        .ok_or_else(|| "The NTFS partition offset overflowed.".to_string())?;
-    let partition_size = (partition_plan.last_lba - partition_plan.first_lba + 1)
-        .checked_mul(GUEST_RESULT_GPT_SECTOR_BYTES)
-        .ok_or_else(|| "The NTFS partition size overflowed.".to_string())?;
+    let (partition_offset, partition_size) =
+        guest_result_partition_byte_extent(partition_plan)?;
 
     // Format-Volume can return before cached filesystem metadata is durably
     // visible through a separately opened PhysicalDrive handle. Flush and read
@@ -14082,6 +14099,42 @@ mod tests {
                 });
             }
         }
+    }
+
+    #[test]
+    fn ntfs_readback_partition_extent_requires_the_exact_authenticated_plan() {
+        let run_id = "0123456789abcdef0123456789abcdef";
+        let valid = build_guest_result_partition_plan(
+            run_id, GUEST_RESULT_VOLUME_CAPACITY_BYTES, GUEST_RESULT_GPT_SECTOR_BYTES as u32,
+        ).unwrap();
+        let (offset, size) = guest_result_partition_byte_extent(&valid).unwrap();
+        assert_eq!(offset, valid.first_lba * GUEST_RESULT_GPT_SECTOR_BYTES);
+        assert_eq!(
+            size,
+            (valid.last_lba - valid.first_lba + 1) * GUEST_RESULT_GPT_SECTOR_BYTES,
+        );
+        assert!(offset.checked_add(size).is_some());
+
+        let mut changed = valid.clone();
+        changed.first_lba = changed.first_lba.saturating_add(1);
+        assert!(guest_result_partition_byte_extent(&changed).is_err());
+
+        let mut changed = valid.clone();
+        changed.last_lba = changed.last_lba.saturating_sub(1);
+        assert!(guest_result_partition_byte_extent(&changed).is_err());
+
+        let mut changed = valid.clone();
+        changed.last_lba = changed.first_lba.saturating_sub(1);
+        assert!(guest_result_partition_byte_extent(&changed).is_err());
+
+        let mut changed = valid.clone();
+        changed.first_lba = u64::MAX;
+        changed.last_lba = u64::MAX;
+        assert!(guest_result_partition_byte_extent(&changed).is_err());
+
+        let mut changed = valid;
+        changed.run_id = "fedcba9876543210fedcba9876543210".into();
+        assert!(guest_result_partition_byte_extent(&changed).is_err());
     }
 
     #[test]

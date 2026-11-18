@@ -2792,3 +2792,19 @@ This is test and documentation coverage only. It does not change report
 validation, storage limits, formatting behavior, result transfer, or guest
 execution policy. Physical Windows formatting and read-back acceptance remain
 separate requirements.
+
+
+## Authenticate the NTFS read-back partition extent before disk I/O — #978
+
+The Windows NTFS read-back path now derives its partition byte offset and
+length through a shared platform-independent helper. The helper first
+revalidates the complete partition plan against FRIDAY's fixed per-run GPT
+policy, then uses checked subtraction, addition, and multiplication and
+rejects empty or overflowing byte extents. This removes unchecked inclusive
+LBA arithmetic from the Windows-only device-read boundary.
+
+Cross-platform regression coverage confirms the valid fixed plan produces the
+expected extent and independently substituted start LBA, end LBA, reversed
+range, extreme LBA values, and run identity are rejected before the extent
+can be used for disk reads. No storage capacity, partition layout, formatting,
+result-transfer, or guest execution policy is broadened.
