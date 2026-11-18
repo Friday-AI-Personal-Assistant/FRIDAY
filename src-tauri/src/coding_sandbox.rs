@@ -9402,8 +9402,16 @@ fn validate_guest_result_gpt_readback_bytes(
     primary_entries: &[u8],
     backup_entries: &[u8],
     backup_header: &[u8],
+    plan: &GuestResultPartitionPlan,
     expected: &GuestResultGptMetadata,
 ) -> Result<(), String> {
+    // Rebuild expectations at this trust boundary too: matching disk bytes
+    // must never make caller-substituted metadata authoritative.
+    validate_guest_result_partition_plan(plan, &plan.run_id)?;
+    let plan_metadata = build_guest_result_gpt_metadata(plan)?;
+    if expected != &plan_metadata {
+        return Err("The expected GPT read-back metadata does not match the validated partition plan.".into());
+    }
     if mbr.len() != expected.protective_mbr.len()
         || primary_header.len() != expected.primary_header.len()
         || primary_entries.len() != expected.primary_entries.len()
@@ -9450,7 +9458,7 @@ fn verify_guest_result_gpt_readback(
     disk.read_exact_at(backup_entries_lba * 512, &mut backup_entries)?;
     disk.read_exact_at((total_sectors - 1) * 512, &mut backup_header)?;
     validate_guest_result_gpt_readback_bytes(
-        &mbr, &primary_header, &primary_entries, &backup_entries, &backup_header, expected,
+        &mbr, &primary_header, &primary_entries, &backup_entries, &backup_header, plan, expected,
     )
 }
 
@@ -10187,8 +10195,25 @@ mod tests {
             expected.backup_header.clone(),
         );
         assert!(validate_guest_result_gpt_readback_bytes(
-            &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &expected,
+            &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &expected,
         ).is_ok());
+
+        // Even a byte-for-byte matching disk read-back cannot authorize
+        // metadata substituted independently of the validated partition plan.
+        for region in 0..5 {
+            let mut altered_expected = expected.clone();
+            let bytes = match region {
+                0 => &mut altered_expected.protective_mbr,
+                1 => &mut altered_expected.primary_header,
+                2 => &mut altered_expected.primary_entries,
+                3 => &mut altered_expected.backup_entries,
+                _ => &mut altered_expected.backup_header,
+            };
+            bytes[bytes.len() / 2] ^= 0x01;
+            assert!(validate_guest_result_gpt_readback_bytes(
+                &valid.0, &valid.1, &valid.2, &valid.3, &valid.4, &plan, &altered_expected,
+            ).is_err(), "substituted expected GPT region {region} must be rejected");
+        }
 
         for region in 0..5 {
             let mut altered = valid.clone();
@@ -10202,20 +10227,20 @@ mod tests {
             let midpoint = bytes.len() / 2;
             bytes[midpoint] ^= 0x01;
             assert!(validate_guest_result_gpt_readback_bytes(
-                &altered.0, &altered.1, &altered.2, &altered.3, &altered.4, &expected,
+                &altered.0, &altered.1, &altered.2, &altered.3, &altered.4, &plan, &expected,
             ).is_err(), "corruption in GPT region {region} must be rejected");
         }
 
         let mut truncated = valid.clone();
         truncated.1.pop();
         assert!(validate_guest_result_gpt_readback_bytes(
-            &truncated.0, &truncated.1, &truncated.2, &truncated.3, &truncated.4, &expected,
+            &truncated.0, &truncated.1, &truncated.2, &truncated.3, &truncated.4, &plan, &expected,
         ).is_err(), "truncated primary header must be rejected");
 
         let mut oversized = valid.clone();
         oversized.3.push(0);
         assert!(validate_guest_result_gpt_readback_bytes(
-            &oversized.0, &oversized.1, &oversized.2, &oversized.3, &oversized.4, &expected,
+            &oversized.0, &oversized.1, &oversized.2, &oversized.3, &oversized.4, &plan, &expected,
         ).is_err(), "oversized backup entry array must be rejected");
     }
 

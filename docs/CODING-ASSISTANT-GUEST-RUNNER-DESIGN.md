@@ -2465,3 +2465,20 @@ Cross-platform regression tests independently substitute each of the five GPT
 metadata regions and require rejection. This is synthetic parser-boundary
 coverage; it does not replace physical Windows storage-stack acceptance, prove
 a guest result-transfer channel, or enable guest execution.
+
+
+## Bind GPT read-back expectations to the validated partition plan — #953
+
+The pure GPT disk read-back validator now receives the exact partition plan,
+validates it against FRIDAY's fixed per-run policy, rebuilds the deterministic
+protective MBR and both GPT headers and entry arrays, and requires the supplied
+expected metadata to match that rebuilt value before comparing any disk bytes.
+This closes the parallel trust-boundary gap where a future caller could
+otherwise substitute both an expected metadata object and matching read-back
+bytes independently of the approved plan.
+
+Cross-platform regression coverage independently substitutes each of the five
+expected metadata regions while leaving the disk read-back valid; every
+substitution must be rejected. Existing corruption, truncation, oversized
+read-back, and CRC checks remain in place. This is synthetic byte-validation
+coverage, not physical Windows storage-stack acceptance or guest execution.
