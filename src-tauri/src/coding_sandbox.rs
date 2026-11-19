@@ -8680,7 +8680,7 @@ pub async fn coding_sandbox_recover_workspaces(app: AppHandle) -> Result<CodingS
     let mut removed = 0usize;
     let mut preserved = 0usize;
     for entry_name in entries {
-        let Some(name) = entry_name.to_str().map(str::to_string) else { preserved += 1; continue; };
+        let Some(name) = entry_name.to_str().map(|name| name.to_owned()) else { preserved += 1; continue; };
         if !valid_snapshot_id(&name) {
             preserved += 1;
             continue;

@@ -7,7 +7,7 @@
 
 use cap_primitives::fs::{open_dir_nofollow, read_dir};
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs::File,
     io::{self, Read},
     path::{Component, Path, PathBuf},
