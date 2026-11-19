@@ -2753,14 +2753,20 @@ pub(crate) fn preflight_snapshot_tree(
     let expected_files: BTreeMap<String, u64> = manifest.files.into_iter()
         .map(|item| (item.path, item.size)).collect();
     let expected_directories: BTreeSet<String> = manifest.directories.into_iter().collect();
+    if limits.max_entries == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot inventory entry limit must be non-zero"));
+    }
     let mut observed_files = BTreeSet::new();
     let mut observed_directories = BTreeSet::new();
+    let mut entries_scanned = 0usize;
     inspect_snapshot_directory(
         snapshot_root,
         Path::new(""),
         &expected_files,
         &expected_directories,
         &marker,
+        limits.max_entries,
+        &mut entries_scanned,
         &mut observed_files,
         &mut observed_directories,
     )?;
@@ -2779,10 +2785,18 @@ fn inspect_snapshot_directory(
     expected_files: &std::collections::BTreeMap<String, u64>,
     expected_directories: &std::collections::BTreeSet<String>,
     marker_handle: &File,
+    max_entries: usize,
+    entries_scanned: &mut usize,
     observed_files: &mut std::collections::BTreeSet<String>,
     observed_directories: &mut std::collections::BTreeSet<String>,
 ) -> io::Result<()> {
     for entry in read_dir(parent, Path::new("."))? {
+        *entries_scanned = entries_scanned.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory entry count overflowed")
+        })?;
+        if *entries_scanned > max_entries {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory exceeded its entry limit"));
+        }
         let entry = entry?;
         let name = entry.file_name();
         if !is_single_normal_component(&name) {
@@ -2818,7 +2832,7 @@ fn inspect_snapshot_directory(
             if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory changed type during inspection"));
             }
-            inspect_snapshot_directory(&child, &relative_path, expected_files, expected_directories, marker_handle, observed_files, observed_directories)?;
+            inspect_snapshot_directory(&child, &relative_path, expected_files, expected_directories, marker_handle, max_entries, entries_scanned, observed_files, observed_directories)?;
             continue;
         }
         if !kind.is_file() {
@@ -2875,12 +2889,18 @@ pub(crate) fn preflight_snapshot_cleanup_progress(
     let expected_files: BTreeMap<String, u64> = manifest.files.iter()
         .map(|item| (item.path.clone(), item.size)).collect();
     let expected_directories: BTreeSet<String> = manifest.directories.iter().cloned().collect();
+    if limits.max_entries == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot cleanup entry limit must be non-zero"));
+    }
+    let mut entries_scanned = 0usize;
     inspect_snapshot_cleanup_progress_directory(
         snapshot_root,
         Path::new(""),
         &expected_files,
         &expected_directories,
         &marker,
+        limits.max_entries,
+        &mut entries_scanned,
     )?;
     Ok(manifest)
 }
@@ -2891,8 +2911,16 @@ fn inspect_snapshot_cleanup_progress_directory(
     expected_files: &std::collections::BTreeMap<String, u64>,
     expected_directories: &std::collections::BTreeSet<String>,
     marker_handle: &File,
+    max_entries: usize,
+    entries_scanned: &mut usize,
 ) -> io::Result<()> {
     for entry in read_dir(parent, Path::new("."))? {
+        *entries_scanned = entries_scanned.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "snapshot cleanup entry count overflowed")
+        })?;
+        if *entries_scanned > max_entries {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot cleanup exceeded its entry limit"));
+        }
         let entry = entry?;
         let name = entry.file_name();
         if !is_single_normal_component(&name) {
@@ -2926,7 +2954,7 @@ fn inspect_snapshot_cleanup_progress_directory(
             if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory changed type during cleanup preflight"));
             }
-            inspect_snapshot_cleanup_progress_directory(&child, &relative_path, expected_files, expected_directories, marker_handle)?;
+            inspect_snapshot_cleanup_progress_directory(&child, &relative_path, expected_files, expected_directories, marker_handle, max_entries, entries_scanned)?;
             continue;
         }
         if !kind.is_file() {
@@ -4714,6 +4742,46 @@ mod tests {
         fs::write(workspace_path.join(&id).join("unexpected.txt"), b"do not delete").unwrap();
         assert!(preflight_snapshot_tree(&root, &id, bounded_limits()).is_err());
         assert_eq!(fs::read(workspace_path.join(&id).join("unexpected.txt")).unwrap(), b"do not delete");
+        drop(root);
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_inventory_and_cleanup_preflight_enforce_shared_nested_entry_budget() {
+        let workspace_path = make_test_directory("snapshot-entry-budget-preflight");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![
+                BoundedSnapshotFile { relative_path: PathBuf::from("src/main.rs"), contents: b"fn main() {}".to_vec() },
+                BoundedSnapshotFile { relative_path: PathBuf::from("Cargo.toml"), contents: b"[package]".to_vec() },
+            ],
+            bytes: b"fn main() {}".len() as u64 + b"[package]".len() as u64,
+            truncated: false,
+        };
+        let id = "f".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        let root = open_dir_nofollow(&workspace, Path::new(&id)).unwrap();
+
+        // The exact tree has four entries across two levels: marker, src,
+        // Cargo.toml, and src/main.rs. The shared budget must not reset in src.
+        let mut exact = bounded_limits();
+        exact.max_entries = 4;
+        preflight_snapshot_tree(&root, &id, exact).unwrap();
+        preflight_snapshot_cleanup_progress(&root, &id, exact).unwrap();
+
+        let mut too_small = exact;
+        too_small.max_entries = 3;
+        assert!(preflight_snapshot_tree(&root, &id, too_small).is_err());
+        assert!(preflight_snapshot_cleanup_progress(&root, &id, too_small).is_err());
+
+        // Cleanup must complete its entire bounded preflight before deleting
+        // anything; an over-budget tree remains byte-for-byte available.
+        assert!(cleanup_owned_snapshot(&workspace, &id, too_small).is_err());
+        assert_eq!(fs::read(workspace_path.join(&id).join("Cargo.toml")).unwrap(), b"[package]");
+        assert_eq!(fs::read(workspace_path.join(&id).join("src/main.rs")).unwrap(), b"fn main() {}");
+        assert!(workspace_path.join(&id).join(".friday-snapshot-owner.json").exists());
+
         drop(root);
         drop(workspace);
         fs::remove_dir_all(workspace_path).unwrap();

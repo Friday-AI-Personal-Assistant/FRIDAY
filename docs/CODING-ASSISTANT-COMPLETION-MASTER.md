@@ -266,9 +266,29 @@ The next batch must be selected only after the filesystem-boundary review in sec
 
 ### #1009 — bounded directory enumeration
 
-- [ ] Count every enumerated directory entry, including ignored files and excluded directories.
-- [ ] Stop scanning and mark the collection incomplete when the entry budget is exceeded; production publication must reject incomplete collections.
-- [ ] Test ignored-file fanout, excluded-directory fanout and the exact budget boundary.
-- [ ] Verify Linux tests and Windows tests/build before marking this batch complete.
+- [x] Count every enumerated directory entry, including ignored files and excluded directories.
+- [x] Stop scanning and mark the collection incomplete when the entry budget is exceeded; production publication rejects incomplete collections.
+- [x] Test ignored-file fanout, excluded-directory fanout and the exact budget boundary.
+- [x] Linux tests and Windows tests/build passed after the #1010 compile-only correction.
+- Commit: `18b624d47135540689b30f86daa90c50dc63227e` (implementation).
+- #1009 initially failed CI because several test closures needed explicit `&str` parameter types; #1010 corrected those annotations without changing the security behavior.
+- #1010 commit: `6cd8ca12d3725f15fff402e3a592a3be02f84d61`.
+- #1010 GitHub Actions run: [44561234862](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44561234862) — Linux and Windows passed.
 
-**Policy note:** production snapshot collection currently derives a conservative entry budget of 32 times the configured maximum file count. This bounds metadata traversal even when entries are filtered out. Revisit the ratio only with measured project-tree workloads; do not remove the independent entry cap.
+**Policy note:** production snapshot collection derives a conservative entry budget of 32 times the configured maximum file count. This bounds metadata traversal even when entries are filtered out. Revisit the ratio only with measured project-tree workloads; do not remove the independent entry cap.
+
+### #1011 — bounded candidate filesystem traversal
+
+- [x] Add a required non-zero entry budget to the candidate-file walker.
+- [x] Count every encountered entry, including ignored names and links, using one shared counter across recursive directories.
+- [x] Preserve handle-relative no-follow directory opens and update traversal race tests.
+- [x] Linux tests and Windows desktop build passed.
+- Commit: `a7e396f5b961e8a80c083dfe5ea8a8f7d1a14e08`.
+- GitHub Actions run: [44563160955](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44563160955).
+
+### #1012 — bound snapshot inventory and cleanup preflight
+
+- [ ] Add one shared checked entry counter across recursive exact-inventory traversal.
+- [ ] Apply the same bound to cleanup-progress preflight before any destructive operation.
+- [ ] Test exact-budget acceptance and nested over-budget rejection; verify cleanup preserves every entry when preflight exceeds its budget.
+- [ ] Verify Linux tests and Windows tests/build before marking this batch complete.

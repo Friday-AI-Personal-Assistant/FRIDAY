@@ -2,7 +2,7 @@
 
 > **Purpose:** This is the durable, cross-conversation source of truth for what FRIDAY is intended to become, what has been verified as implemented, what remains, the order of work, and the relative effort/risk of each area. A new development conversation must read this file and the Coding Assistant completion checklist before making changes.
 >
-> **Status baseline:** This document is a planning and status consolidation based on the repository documentation and the Coding Assistant audit baseline `feature/phase-2-skills` at #988 (`108a5573bb3343017658c826f3d682aeb845b3c0`). The Coding Assistant checklist contains the detailed #988 evidence. Other product areas are marked planned/not verified unless repository evidence explicitly says otherwise.
+> **Status baseline:** Coding Assistant progress is tracked through #1012 on `feature/phase-2-skills`; detailed batch evidence and CI links are in `docs/CODING-ASSISTANT-COMPLETION-MASTER.md`. Other product areas remain planned/not verified unless repository evidence explicitly says otherwise.
 >
 > **Do not confuse a plan with implementation.** A checkbox is complete only when code, tests, and (where required) real-device acceptance demonstrate it. Update this document after each meaningful batch with commit, CI run, and evidence.
 
@@ -51,6 +51,13 @@ FRIDAY is a modular, local-first personal AI desktop assistant. A user should be
 - [ ] Security claims must state limitations; never promise absolute security against a compromised OS or malware running as the same user.
 - [ ] Initial distribution should be usable without paid cloud services; optional paid services must be clearly labelled.
 - [ ] Commercial distribution must respect code, dependency, voice, model, and provider licences.
+
+## 1.1. Coding Assistant filesystem-boundary progress (through #1012)
+
+- #1009 added a shared scan-entry budget to source snapshot collection; #1010 fixed Rust test closure annotations and Linux/Windows CI passed.
+- #1011 added a shared entry budget to the candidate-file walker; Linux and Windows CI passed.
+- #1012 extends shared entry limits to exact snapshot inventory and cleanup-progress preflight. It is awaiting CI and is not complete until both platforms pass.
+- Guest execution remains disabled. These CI checks do not establish physical Windows Sandbox, VHDX/NTFS, or end-to-end result-transfer acceptance.
 
 ## 2. Overall status snapshot
 
