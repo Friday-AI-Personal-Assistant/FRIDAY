@@ -5389,7 +5389,7 @@ mod tests {
     }
 
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn snapshot_cleanup_refuses_replacement_at_final_directory_removal() {
         let workspace_path = make_test_directory("cleanup-final-root-replacement");
