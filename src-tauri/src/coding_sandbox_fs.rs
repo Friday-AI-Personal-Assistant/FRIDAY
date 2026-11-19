@@ -23,9 +23,14 @@ use std::{
 pub(crate) fn collect_regular_file_paths(
     root: &File,
     max_depth: usize,
+    max_entries: usize,
 ) -> io::Result<Vec<PathBuf>> {
+    if max_depth == 0 || max_entries == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "candidate scan limits must be non-zero"));
+    }
     let mut files = Vec::new();
-    walk_directory(root, Path::new(""), 0, max_depth, &mut files, &mut |_| Ok(()))?;
+    let mut entries_scanned = 0usize;
+    walk_directory(root, Path::new(""), 0, max_depth, max_entries, &mut entries_scanned, &mut files, &mut |_| Ok(()))?;
     Ok(files)
 }
 
@@ -939,6 +944,8 @@ fn walk_directory<F>(
     relative_directory: &Path,
     depth: usize,
     max_depth: usize,
+    max_entries: usize,
+    entries_scanned: &mut usize,
     files: &mut Vec<PathBuf>,
     before_directory_open: &mut F,
 ) -> io::Result<()>
@@ -946,6 +953,12 @@ where
     F: FnMut(&Path) -> io::Result<()>,
 {
     for entry in read_dir(parent, Path::new("."))? {
+        *entries_scanned = entries_scanned.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "candidate scan entry count overflowed")
+        })?;
+        if *entries_scanned > max_entries {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "candidate scan exceeded its entry limit"));
+        }
         let entry = entry?;
         let name = entry.file_name();
 
@@ -986,6 +999,8 @@ where
                 &relative_path,
                 depth + 1,
                 max_depth,
+                max_entries,
+                entries_scanned,
                 files,
                 before_directory_open,
             )?;
@@ -4243,7 +4258,7 @@ mod tests {
         .unwrap();
 
         let root = open_test_root(&root_path);
-        let mut files = collect_regular_file_paths(&root, 12).unwrap();
+        let mut files = collect_regular_file_paths(&root, 12, 64_000).unwrap();
         files.sort();
 
         assert_eq!(
@@ -4273,7 +4288,7 @@ mod tests {
         fs::write(root_path.join("safe.rs"), b"safe").unwrap();
 
         let root = open_test_root(&root_path);
-        let files = collect_regular_file_paths(&root, 12).unwrap();
+        let files = collect_regular_file_paths(&root, 12, 64_000).unwrap();
         assert_eq!(files, vec![PathBuf::from("safe.rs")]);
 
         drop(root);
@@ -4297,7 +4312,7 @@ mod tests {
         fs::write(root_path.join("safe.rs"), b"safe").unwrap();
 
         let root = open_test_root(&root_path);
-        let files = collect_regular_file_paths(&root, 12).unwrap();
+        let files = collect_regular_file_paths(&root, 12, 64_000).unwrap();
         assert_eq!(files, vec![PathBuf::from("safe.rs")]);
 
         drop(root);
@@ -4325,11 +4340,14 @@ mod tests {
                 Ok(())
             };
             let mut files = Vec::new();
+            let mut entries_scanned = 0usize;
             walk_directory(
                 &root,
                 Path::new(""),
                 0,
                 12,
+                64_000,
+                &mut entries_scanned,
                 &mut files,
                 &mut hook,
             )
@@ -4370,7 +4388,7 @@ mod tests {
         );
 
         let root = open_test_root(&root_path);
-        let result = collect_regular_file_paths(&root, 12);
+        let result = collect_regular_file_paths(&root, 12, 64_000);
         match result {
             Ok(files) => {
                 assert!(files.contains(&PathBuf::from("safe.rs")));
@@ -4590,11 +4608,14 @@ mod tests {
                 Ok(())
             };
             let mut files = Vec::new();
+            let mut entries_scanned = 0usize;
             walk_directory(
                 &root,
                 Path::new(""),
                 0,
                 12,
+                64_000,
+                &mut entries_scanned,
                 &mut files,
                 &mut hook,
             )
