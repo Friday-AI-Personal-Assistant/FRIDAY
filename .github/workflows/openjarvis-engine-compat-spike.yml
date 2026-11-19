@@ -1,0 +1,45 @@
+name: OpenJarvis engine compatibility spike
+
+on:
+  push:
+    branches:
+      - experiment/openjarvis-engine-compat
+    paths:
+      - "integration/openjarvis-engine-spike/**"
+      - ".github/workflows/openjarvis-engine-compat-spike.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-and-test:
+    name: ${{ matrix.os }} OpenJarvis adapter compatibility
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out FRIDAY
+        uses: actions/checkout@v4
+
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            integration/openjarvis-engine-spike/target
+          key: ${{ runner.os }}-openjarvis-spike-${{ hashFiles('integration/openjarvis-engine-spike/Cargo.toml') }}
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path integration/openjarvis-engine-spike/Cargo.toml -- --check
+
+      - name: Compile and run compatibility tests
+        run: cargo test --manifest-path integration/openjarvis-engine-spike/Cargo.toml --all-targets
