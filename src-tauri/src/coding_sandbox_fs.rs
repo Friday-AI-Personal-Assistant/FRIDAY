@@ -58,6 +58,26 @@ pub(crate) fn collect_runtime_tree_inventory(
     Ok((files, directories))
 }
 
+/// Read a bounded, stable list of immediate child names from a held directory handle.
+/// The caller receives no partial list: any overflow or read error fails closed.
+pub(crate) fn collect_bounded_directory_entry_names(
+    directory: &File,
+    max_entries: usize,
+) -> io::Result<Vec<OsString>> {
+    if max_entries == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "directory entry limit must be non-zero"));
+    }
+    let mut names = Vec::new();
+    for entry in read_dir(directory, Path::new("."))? {
+        let entry = entry?;
+        if names.len() >= max_entries {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "directory exceeds its entry limit"));
+        }
+        names.push(entry.file_name());
+    }
+    Ok(names)
+}
+
 fn collect_runtime_tree_directory(
     parent: &File,
     relative_directory: &Path,
@@ -4720,6 +4740,23 @@ mod tests {
         assert!(marker.contains("FRIDAY-CodingAssistant"));
         drop(workspace);
         fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn bounded_directory_entry_name_collection_accepts_boundary_and_rejects_overflow() {
+        let path = make_test_directory("bounded-directory-entry-names");
+        fs::write(path.join("one"), b"1").unwrap();
+        fs::write(path.join("two"), b"2").unwrap();
+        let root = open_verified_root_directory(&path).unwrap();
+
+        assert_eq!(collect_bounded_directory_entry_names(&root, 2).unwrap().len(), 2);
+        let error = collect_bounded_directory_entry_names(&root, 1).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let error = collect_bounded_directory_entry_names(&root, 0).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

@@ -18,6 +18,7 @@ const MAX_SNAPSHOT_DEPTH: usize = 12;
 const MAX_SNAPSHOT_FILES: usize = 2_000;
 const MAX_SNAPSHOT_FILE_BYTES: u64 = 1_048_576;
 const MAX_SNAPSHOT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_RECOVERY_WORKSPACE_ENTRIES: usize = 4_096;
 const SNAPSHOT_OWNER_MARKER: &str = ".friday-snapshot-owner.json";
 const SNAPSHOT_OWNER_SCHEMA: u32 = 1;
 
@@ -8668,13 +8669,17 @@ pub async fn coding_sandbox_recover_workspaces(app: AppHandle) -> Result<CodingS
     }
     // Re-assert the private ACL before enumerating old workspace entries.
     secure_private_workspace_directory(&workspace_root)?;
-    let entries = fs::read_dir(&workspace_root)
-        .map_err(|_| "FRIDAY could not list its private sandbox workspace.".to_string())?;
+    // Inventory the workspace through one verified directory handle before
+    // performing any cleanup. Oversized workspaces are left entirely untouched.
+    let workspace_handle = crate::coding_sandbox_fs::open_verified_root_directory(&workspace_root)
+        .map_err(|_| "FRIDAY could not safely open its private sandbox workspace.".to_string())?;
+    let entries = crate::coding_sandbox_fs::collect_bounded_directory_entry_names(
+        &workspace_handle,
+        MAX_RECOVERY_WORKSPACE_ENTRIES,
+    ).map_err(|_| "The private sandbox workspace exceeds its safe recovery entry limit; nothing was removed.".to_string())?;
     let mut removed = 0usize;
     let mut preserved = 0usize;
-    for entry in entries {
-        let Ok(entry) = entry else { preserved += 1; continue; };
-        let entry_name = entry.file_name();
+    for entry_name in entries {
         let Some(name) = entry_name.to_str().map(str::to_string) else { preserved += 1; continue; };
         if !valid_snapshot_id(&name) {
             preserved += 1;
