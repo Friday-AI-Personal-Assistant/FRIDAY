@@ -143,6 +143,20 @@ The inspected OpenJarvis Tauri capability file grants shell plugin permissions i
 
 There is also a licence metadata discrepancy requiring clarification before reusing the desktop crate: the repository root reports Apache-2.0 and has an Apache-2.0 LICENSE, while `frontend/src-tauri/Cargo.toml` declares `license = "MIT"`. This audit does not assume which notice governs every file in that subproject. Obtain provenance/maintainer clarification and inspect applicable file headers, assets and dependency licences before copying or redistributing the desktop crate. The overall dependency/licence audit remains incomplete.
 
+
+### 4.9 Engine crate is a plausible narrow integration, not a complete provider platform
+
+The inspected `openjarvis-engine` Rust crate exposes an `InferenceEngine` trait and concrete Ollama, llama.cpp and OpenAI-compatible server adapters (including vLLM/SGLang wrappers). The generic OpenAI-compatible adapter targets `/v1/chat/completions` and `/v1/models`, accepts a base URL and optional bearer key, and can be configured for a compatible cloud endpoint such as OpenAI's API.
+
+Important limitations:
+- The crate is version `0.1.0` in the upstream workspace and is not yet proven compatible with FRIDAY's target matrix.
+- `generate()` is synchronous/blocking while streaming is async. FRIDAY must not call blocking inference on the Tauri async runtime thread.
+- The adapter's generic OpenAI-compatible endpoint does not by itself provide native provider-specific APIs for every cloud provider (for example, Anthropic/Gemini-specific semantics).
+- Tool calls returned by the engine are model proposals only; they must be routed through FRIDAY's own allowlisted tool gateway and approval rules.
+- The engine crate depends on `openjarvis-core`, `rig-core`, Tokio, Reqwest, futures, schemars and other workspace dependencies. Its actual compile time, binary-size and dependency-license footprint must be measured before adoption.
+
+**Decision:** this is the best first compatibility-spike candidate because FRIDAY already has Ollama and wants optional cloud engines. Test it as an adapter in a reversible branch. Do not replace the current Ollama path until behavior, cancellation, streaming, timeouts, provider disclosure and CI are proven.
+
 ## 5. What FRIDAY already has that should be preserved
 
 ### 5.1 Desktop foundation
@@ -283,7 +297,7 @@ No wholesale migration is authorized by this audit. Proceed in small, reversible
 The next task is a bounded compatibility spike:
 1. Inspect the OpenJarvis Rust workspace crates `openjarvis-engine`, `openjarvis-core` and `openjarvis-security` at the pinned revision.
 2. Compare their API/dependency requirements with FRIDAY's current Rust crate versions and Windows/Linux build setup.
-3. Select one safe, low-risk feature (hardware metadata or model/engine discovery) for a throwaway adapter branch.
+3. Select the OpenJarvis Rust `InferenceEngine` / Ollama + OpenAI-compatible adapter as the first narrow compatibility spike; separately retain FRIDAY's native Windows hardware detection rather than adopting the current Unix-oriented upstream detector.
 4. Record a go/no-go decision based on compile/test results, footprint and security boundaries.
 5. Only then decide whether to adopt selected Rust crates, an optional Python sidecar, or just the upstream design/protocol.
 
