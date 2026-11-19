@@ -347,6 +347,38 @@ The spike is intentionally separate from production code. It has no production d
 
 The desktop crate's MIT metadata versus repository-root Apache-2.0 licence discrepancy remains unresolved; the spike does not copy that crate and does not resolve the licensing question.
 
+## 11.3 API/dependency review and final decision for the inference-engine candidate
+
+The pinned upstream manifests and implementation were reviewed after the cross-platform compile spike.
+
+### Dependency and reproducibility findings
+
+- The upstream Rust workspace declares Rust 1.89 and includes 17 workspace crates; its workspace dependency set includes Tokio with `full`, Reqwest with blocking + streaming, `rig-core`, `schemars`, SQLite and additional dependencies used by other workspace members.
+- `openjarvis-engine` directly depends on `openjarvis-core`, Serde, Tokio, Reqwest, async-trait, once_cell, futures, tokio-stream, rig-core and schemars. `openjarvis-core` adds TOML, regex, UUID and parking_lot among others.
+- A workspace `rust/Cargo.lock` exists at the inspected upstream commit (3,301 lines). The FRIDAY spike crate itself does not currently carry a committed lockfile. The upstream workspace lock is not automatically a minimal or directly reusable lock for FRIDAY; a production candidate would need its own generated and committed lockfile and `--locked` CI.
+- Exact compile/install size, cold build time, idle RAM and active RAM have not been measured. Do not make footprint claims.
+
+### API behavior findings
+
+- `InferenceEngine::generate` is synchronous and can block the caller; `stream` is async. The trait itself does not provide FRIDAY's permission, provider-transparency, local-only or user-approval policy.
+- The inspected `OllamaEngine` uses a blocking Reqwest client for `generate`, constructs a timeout directly from an unchecked floating-point seconds value, and accepts a configurable host string. Its synchronous generation path can block a Tauri async worker if called directly.
+- The Ollama generation path can send `extra.tools` to the model endpoint and returns model-produced tool-call proposals. The streaming implementation in this revision ignores its `extra` argument. Tool calls remain untrusted proposals and must never execute without FRIDAY's independent tool registry, exact approval and permission gateway.
+- `OpenAICompatEngine` also has a blocking generation method, accepts a configurable host and optional bearer key, and forwards arbitrary extra JSON fields (apart from its special tools handling). A FRIDAY wrapper would need strict provider/endpoint allowlisting, credential isolation, bounded response handling, explicit cloud consent, SSRF protections and local-only enforcement.
+- The existing FRIDAY `assistant.rs` already uses asynchronous Reqwest, targets the fixed loopback Ollama endpoint `127.0.0.1:11434`, applies message/model bounds, has dedicated bounded coding-response limits and supports streaming. It is a closer fit to FRIDAY's current desktop runtime and strict local-first requirements.
+
+### Final candidate decision
+
+**NO-GO for adopting `openjarvis-engine` as FRIDAY's production inference engine or replacing the existing FRIDAY Ollama implementation.** The compile spike was useful evidence, but the upstream abstraction does not currently save enough work to justify its blocking API, broader dependency footprint and additional policy-adaptation burden for the use case already implemented by FRIDAY.
+
+- Retain FRIDAY's existing asynchronous local Ollama path.
+- Do not add `openjarvis-engine` or its transitive dependency graph to the production application.
+- Keep the spike branch as a reproducible compatibility experiment/reference; do not merge it into the product branch.
+- Revisit OpenJarvis selectively for other capabilities only after the feature matrix identifies a concrete net benefit and security/licence/resource checks pass.
+- Any future cloud provider adapter must be owned by FRIDAY's provider gateway and expose truthful local/cloud state, explicit connection consent, revocation, bounded I/O and strict local-only behavior.
+- The upstream desktop crate licence discrepancy remains unresolved and blocks copying that crate; it does not affect the engine-only decision because no desktop crate is being adopted.
+
+**Roadmap consequence:** the isolated inference-engine evaluation is complete with a documented NO-GO. Resume the Coding Assistant filesystem trust-boundary work at Stage 4 section 6A. Guest execution remains disabled.
+
 ## 12. Evidence and handoff
 
 | Field | Value |
@@ -359,6 +391,6 @@ The desktop crate's MIT metadata versus repository-root Apache-2.0 licence discr
 | FRIDAY code changed | No product code changed by this audit |
 | CI result | OpenJarvis engine compatibility spike PASS on Linux + Windows (run `44540769399`); audit document itself still needs its own CI |
 | Physical hardware acceptance | Not performed |
-| Next task | Stage A: inspect upstream Rust crates and dependency/platform compatibility |
+| Next task | Resume Coding Assistant Stage 4 section 6A: handle-relative snapshot traversal and parent identity hardening |
 
 **Maintainer rule:** Re-run this audit whenever the selected upstream pin changes materially. Never treat a moving upstream `main` branch as a reproducible dependency.
