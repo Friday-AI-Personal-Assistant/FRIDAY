@@ -2038,6 +2038,7 @@ pub(crate) fn remove_verified_runtime_owner_marker(
 pub(crate) fn remove_verified_empty_snapshot_directory(
     parent: &File,
     name: &OsStr,
+    expected_directory: Option<&File>,
 ) -> io::Result<()> {
     use std::{ffi::CString, os::unix::{ffi::OsStrExt, io::AsRawFd}};
     if !is_single_normal_component(name)
@@ -2047,8 +2048,14 @@ pub(crate) fn remove_verified_empty_snapshot_directory(
     }
     let relative = PathBuf::from(name);
     let opened = open_dir_nofollow(parent, &relative)?;
-    if !opened.metadata()?.is_dir() || is_reparse_or_symlink(&opened.metadata()?) {
+    let opened_metadata = opened.metadata()?;
+    if !opened_metadata.is_dir() || is_reparse_or_symlink(&opened_metadata) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot entry is not an ordinary directory"));
+    }
+    if let Some(expected) = expected_directory {
+        if !same_handle_identity(expected, &opened)? {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory no longer matches the inventoried handle"));
+        }
     }
     if read_dir(&opened, Path::new("."))?.next().transpose()?.is_some() {
         return Err(io::Error::new(io::ErrorKind::DirectoryNotEmpty, "snapshot directory is not empty"));
@@ -2069,6 +2076,7 @@ pub(crate) fn remove_verified_empty_snapshot_directory(
 pub(crate) fn remove_verified_empty_snapshot_directory(
     parent: &File,
     name: &OsStr,
+    expected_directory: Option<&File>,
 ) -> io::Result<()> {
     use std::{
         mem,
@@ -2173,6 +2181,11 @@ pub(crate) fn remove_verified_empty_snapshot_directory(
         || (metadata.file_attributes() & 0x400 != 0)
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot entry is not an ordinary directory"));
+    }
+    if let Some(expected) = expected_directory {
+        if !same_handle_identity(expected, &directory)? {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory no longer matches the inventoried handle"));
+        }
     }
     // Enumerate through this exact restrictive handle. cap_std::read_dir
     // opens a second handle; with FILE_SHARE_READ only that second open gets
@@ -2685,7 +2698,7 @@ where
         let name = relative.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "manifest directory has no filename")
         })?;
-        match remove_verified_empty_snapshot_directory(&parent, name) {
+        match remove_verified_empty_snapshot_directory(&parent, name, None) {
             Ok(()) => after_payload_entry(directory)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
@@ -2716,12 +2729,11 @@ where
         marker_metadata.len(),
     )?;
     drop(marker);
-    drop(root);
 
     // If this final operation fails, the empty unmarked directory is not
     // eligible for a later recovery pass. That is intentional fail-closed
     // behavior rather than deleting a directory without ownership evidence.
-    remove_verified_empty_snapshot_directory(workspace, OsStr::new(snapshot_id))
+    remove_verified_empty_snapshot_directory(workspace, OsStr::new(snapshot_id), Some(&root))
 }
 
 fn open_existing_snapshot_parent(root: &File, relative: &Path) -> io::Result<Option<File>> {
@@ -5058,12 +5070,12 @@ mod tests {
         fs::write(workspace_path.join("nonempty").join("keep.txt"), b"keep").unwrap();
         let parent = open_test_root(&workspace_path);
 
-        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new("nonempty")).is_err());
+        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new("nonempty"), None).is_err());
         assert!(workspace_path.join("nonempty").join("keep.txt").exists());
-        remove_verified_empty_snapshot_directory(&parent, OsStr::new("empty")).unwrap();
+        remove_verified_empty_snapshot_directory(&parent, OsStr::new("empty"), None).unwrap();
         assert!(!workspace_path.join("empty").exists());
         assert!(workspace_path.join("nonempty").exists());
-        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new("..")).is_err());
+        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new(".."), None).is_err());
 
         drop(parent);
         fs::remove_dir_all(workspace_path).unwrap();
@@ -5079,12 +5091,12 @@ mod tests {
         fs::write(workspace_path.join("nonempty").join("keep.txt"), b"keep").unwrap();
         let parent = open_test_root(&workspace_path);
 
-        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new("nonempty")).is_err());
+        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new("nonempty"), None).is_err());
         assert!(workspace_path.join("nonempty").join("keep.txt").exists());
-        remove_verified_empty_snapshot_directory(&parent, OsStr::new("empty")).unwrap();
+        remove_verified_empty_snapshot_directory(&parent, OsStr::new("empty"), None).unwrap();
         assert!(!workspace_path.join("empty").exists());
         assert!(workspace_path.join("nonempty").exists());
-        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new("..")).is_err());
+        assert!(remove_verified_empty_snapshot_directory(&parent, OsStr::new(".."), None).is_err());
 
         drop(parent);
         fs::remove_dir_all(workspace_path).unwrap();
@@ -5277,6 +5289,42 @@ mod tests {
         fs::remove_dir_all(workspace_path).unwrap();
     }
 
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_cleanup_refuses_replacement_at_final_directory_removal() {
+        let workspace_path = make_test_directory("cleanup-final-root-replacement");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![BoundedSnapshotFile {
+                relative_path: PathBuf::from("main.rs"),
+                contents: b"fn main() {}".to_vec(),
+            }],
+            bytes: b"fn main() {}".len() as u64,
+            truncated: false,
+        };
+        let id = "a".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+
+        let original_path = workspace_path.join(&id);
+        let displaced_path = workspace_path.join(format!("{id}-displaced"));
+        let mut replaced = false;
+        let result = cleanup_owned_snapshot_with_hook(&workspace, &id, bounded_limits(), |_| {
+            if !replaced {
+                fs::rename(&original_path, &displaced_path)?;
+                fs::create_dir(&original_path)?;
+                replaced = true;
+            }
+            Ok(())
+        });
+
+        assert!(result.is_err(), "cleanup must not remove a replacement at the original snapshot name");
+        assert!(replaced);
+        assert!(original_path.is_dir(), "replacement directory must be preserved");
+        assert!(displaced_path.is_dir(), "the inventoried directory must remain available for inspection");
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
 
     #[test]
     fn snapshot_cleanup_resumes_after_interruption_and_removes_marker_last() {
