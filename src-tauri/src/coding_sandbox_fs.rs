@@ -2652,6 +2652,91 @@ pub(crate) fn cleanup_owned_snapshot(
     cleanup_owned_snapshot_with_hook(workspace, snapshot_id, limits, |_| Ok(()))
 }
 
+/// Open the snapshot root with delete-compatible sharing on Windows.
+/// The held inventory handle must permit a later DELETE-access handle to open
+/// the same directory; otherwise Windows reports STATUS_SHARING_VIOLATION.
+#[cfg(windows)]
+fn open_snapshot_cleanup_root(workspace: &File, snapshot_id: &str) -> io::Result<File> {
+    use std::{
+        mem,
+        os::windows::{ffi::OsStrExt, fs::MetadataExt, io::{AsRawHandle, FromRawHandle}},
+        ptr,
+    };
+    let wide: Vec<u16> = OsStr::new(snapshot_id).encode_wide().collect();
+    let byte_len = wide.len().checked_mul(mem::size_of::<u16>())
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "snapshot identifier is too long"))?;
+    #[repr(C)] struct UnicodeString { length: u16, maximum_length: u16, buffer: *mut u16 }
+    #[repr(C)] struct ObjectAttributes {
+        length: u32, root_directory: *mut std::ffi::c_void,
+        object_name: *mut UnicodeString, attributes: u32,
+        security_descriptor: *mut std::ffi::c_void,
+        security_quality_of_service: *mut std::ffi::c_void,
+    }
+    #[repr(C)] union IoStatusValue { status: i32, pointer: *mut std::ffi::c_void }
+    #[repr(C)] struct IoStatusBlock { status: IoStatusValue, information: usize }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut *mut std::ffi::c_void, desired_access: u32,
+            object_attributes: *const ObjectAttributes, io_status_block: *mut IoStatusBlock,
+            allocation_size: *const i64, file_attributes: u32, share_access: u32,
+            create_disposition: u32, create_options: u32,
+            ea_buffer: *const std::ffi::c_void, ea_length: u32,
+        ) -> i32;
+    }
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    const OBJ_DONT_REPARSE: u32 = 0x1000;
+    const FILE_LIST_DIRECTORY: u32 = 0x1;
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    const FILE_SHARE_DELETE: u32 = 0x4;
+    const FILE_OPEN: u32 = 1;
+    const FILE_DIRECTORY_FILE: u32 = 1;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
+    let mut unicode_name = UnicodeString {
+        length: byte_len, maximum_length: byte_len, buffer: wide.as_ptr() as *mut u16,
+    };
+    let attributes = ObjectAttributes {
+        length: mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: workspace.as_raw_handle(), object_name: &mut unicode_name,
+        attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        security_descriptor: ptr::null_mut(), security_quality_of_service: ptr::null_mut(),
+    };
+    let mut io_status = IoStatusBlock { status: IoStatusValue { status: 0 }, information: 0 };
+    let mut raw_handle = ptr::null_mut();
+    let status = unsafe {
+        NtCreateFile(
+            &mut raw_handle, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            &attributes, &mut io_status, ptr::null(), 0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN, FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            ptr::null(), 0,
+        )
+    };
+    if status < 0 || raw_handle.is_null() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+            format!("handle-relative snapshot root open failed (NTSTATUS 0x{:08X})", status as u32)));
+    }
+    let root = unsafe { File::from_raw_handle(raw_handle) };
+    let metadata = root.metadata()?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink()
+        || (metadata.file_attributes() & 0x400 != 0)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+            "snapshot root is not an ordinary directory"));
+    }
+    Ok(root)
+}
+
+#[cfg(unix)]
+fn open_snapshot_cleanup_root(workspace: &File, snapshot_id: &str) -> io::Result<File> {
+    open_dir_nofollow(workspace, Path::new(snapshot_id))
+}
+
 fn cleanup_owned_snapshot_with_hook<H>(
     workspace: &File,
     snapshot_id: &str,
@@ -2664,7 +2749,7 @@ where
     if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid snapshot identifier"));
     }
-    let root = match open_dir_nofollow(workspace, Path::new(snapshot_id)) {
+    let root = match open_snapshot_cleanup_root(workspace, snapshot_id) {
         Ok(root) => root,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
