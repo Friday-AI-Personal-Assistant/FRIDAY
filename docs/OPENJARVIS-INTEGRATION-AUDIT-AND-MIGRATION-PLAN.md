@@ -318,6 +318,21 @@ No user data, provider secrets, arbitrary shell access or unrestricted file tool
 | Keep Coding Assistant guest execution disabled | REQUIRED | Separate Stage 4 security and physical acceptance gates remain open. |
 | Build FRIDAY's blue identity and Control Centre | REQUIRED | Product identity and user requirements are independent of upstream UI. |
 
+## 11.1 Reversible compatibility spike started
+
+A separate experiment branch was created so the main FRIDAY development branch does not take on an unverified dependency:
+
+- Branch: `experiment/openjarvis-engine-compat`
+- Base: `765de1fc20ad937fc2caab932fb1df3b4b59191f`
+- OpenJarvis engine pin: `427c2dd11d180ac254a03e92c5fb01189fb4b23b`
+- Spike scope: compile and instantiate the upstream Ollama and OpenAI-compatible Rust adapters; assert the trait objects are `Send + Sync`.
+- No tools, user files, credentials, network calls or provider requests are exercised by the test.
+- Workflow: [OpenJarvis engine compatibility spike](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44540769399)
+- Run ID: `44540769399`
+- Initial state at documentation update: Linux and Windows jobs started; Linux passed formatting and entered compile/test; Windows was still setting up stable Rust. Final results must be recorded after both jobs finish.
+
+The spike is intentionally separate from production code. It has no production dependency impact unless a later reviewed change is merged.
+
 ## 12. Evidence and handoff
 
 | Field | Value |
