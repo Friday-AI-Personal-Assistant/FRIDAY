@@ -3328,7 +3328,10 @@ pub(crate) fn create_bounded_snapshot_destination(
         for component in &components[..components.len() - 1] {
             let next = match open_dir_nofollow(&parent, Path::new(component)) {
                 Ok(dir) => dir,
-                Err(_) => create_destination_entry(&parent, component, true)?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    create_destination_entry(&parent, component, true)?
+                }
+                Err(error) => return Err(error),
             };
             parent = next;
         }
@@ -3403,6 +3406,31 @@ where
     AF: Fn(&str) -> bool,
     AD: Fn(&str) -> bool,
 {
+    prepare_snapshot_from_paths_with_hook(
+        source_path, workspace_path, snapshot_id, limits,
+        include_file, exclude_directory, || Ok(()),
+    )
+}
+
+/// Testable publication boundary: after bounded collection, revalidate that
+/// both user-selected paths still identify the exact directory handles opened
+/// at entry. This prevents a root rename/replacement during a potentially long
+/// collection from silently publishing a snapshot sourced from a detached or
+/// substituted directory. The hook is private and exists only for race tests.
+fn prepare_snapshot_from_paths_with_hook<AF, AD, H>(
+    source_path: &Path,
+    workspace_path: &Path,
+    snapshot_id: &str,
+    limits: (usize, usize, u64, u64),
+    include_file: AF,
+    exclude_directory: AD,
+    mut before_publish: H,
+) -> io::Result<(usize, u64)>
+where
+    AF: Fn(&str) -> bool,
+    AD: Fn(&str) -> bool,
+    H: FnMut() -> io::Result<()>,
+{
     let policy = BoundedSnapshotLimits {
         max_depth: limits.0,
         max_files: limits.1,
@@ -3411,6 +3439,8 @@ where
     };
     let source = open_verified_root_directory(source_path)?;
     let workspace = open_verified_root_directory(workspace_path)?;
+    let source_identity = verified_directory_identity(source_path, &source)?;
+    let workspace_identity = verified_directory_identity(workspace_path, &workspace)?;
     let contents = collect_bounded_snapshot_contents(
         &source, policy, include_file, exclude_directory,
     )?;
@@ -3420,6 +3450,22 @@ where
             "snapshot source exceeded a collection limit; incomplete snapshots are not published",
         ));
     }
+
+    // Deterministic race point for tests. Production supplies a no-op.
+    before_publish()?;
+    if verified_directory_identity(source_path, &source)? != source_identity {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "snapshot source path no longer identifies the originally approved directory",
+        ));
+    }
+    if verified_directory_identity(workspace_path, &workspace)? != workspace_identity {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "snapshot workspace path no longer identifies the originally approved directory",
+        ));
+    }
+
     let file_count = contents.files.len();
     let byte_count = contents.bytes;
     create_bounded_snapshot_destination(&workspace, snapshot_id, &contents, policy)?;
@@ -5141,6 +5187,67 @@ mod tests {
         assert!(!snapshot.exists());
         fs::remove_dir_all(source_path).unwrap();
         fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn production_snapshot_aborts_if_source_root_is_replaced_after_collection() {
+        let base = make_test_directory("production-source-root-race");
+        let source = base.join("source");
+        let replacement = base.join("replacement");
+        let displaced = base.join("displaced");
+        let workspace = base.join("workspace");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        fs::write(source.join("approved.rs"), b"approved source").unwrap();
+        fs::write(replacement.join("outside.rs"), b"replacement source").unwrap();
+
+        let result = prepare_snapshot_from_paths_with_hook(
+            &source, &workspace, "9".repeat(32).as_str(),
+            (12, 2_000, 1024 * 1024, 32 * 1024 * 1024),
+            |_| true, |_| false,
+            || {
+                fs::rename(&source, &displaced)?;
+                fs::rename(&replacement, &source)?;
+                Ok(())
+            },
+        );
+        assert!(result.is_err(), "a replaced source root must invalidate snapshot publication");
+        assert!(!workspace.join("9".repeat(32)).exists());
+        assert_eq!(fs::read(displaced.join("approved.rs")).unwrap(), b"approved source");
+        assert_eq!(fs::read(source.join("outside.rs")).unwrap(), b"replacement source");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn production_snapshot_aborts_if_workspace_root_is_replaced_after_collection() {
+        let base = make_test_directory("production-workspace-root-race");
+        let source = base.join("source");
+        let workspace = base.join("workspace");
+        let replacement = base.join("replacement-workspace");
+        let displaced = base.join("displaced-workspace");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        fs::write(source.join("approved.rs"), b"approved source").unwrap();
+
+        let id = "a".repeat(32);
+        let result = prepare_snapshot_from_paths_with_hook(
+            &source, &workspace, &id,
+            (12, 2_000, 1024 * 1024, 32 * 1024 * 1024),
+            |_| true, |_| false,
+            || {
+                fs::rename(&workspace, &displaced)?;
+                fs::rename(&replacement, &workspace)?;
+                Ok(())
+            },
+        );
+        assert!(result.is_err(), "a replaced workspace root must invalidate snapshot publication");
+        assert!(!workspace.join(&id).exists());
+        assert!(fs::read_dir(&displaced).unwrap().next().is_none());
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
