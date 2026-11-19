@@ -665,20 +665,24 @@ Append or update a short record here after each meaningful batch:
 - FRIDAY's current skill catalogue is compile-time and first-party; package loading currently loads declarative instructions and explicitly reports that skill tools are not yet connected. This is a useful starting point, not a complete third-party Skills Store.
 - Preserve the existing FRIDAY file-edit and Coding Assistant security work. Coding Assistant guest execution remains disabled.
 
-### Roadmap reprioritization
+### Roadmap reprioritization and current next steps
 
-The product owner has explicitly directed that we investigate reuse before spending more time building duplicate product capabilities. This is a deliberate reprioritization, not a claim that Coding Assistant is complete.
+The product owner directed us to investigate reuse before building duplicate capabilities. This remains a deliberate reprioritization, not a claim that Coding Assistant is complete.
 
-- [x] Pause new Coding Assistant guest-runner integration work while the upstream compatibility audit is completed. Existing code, tests, checklist and security gates remain preserved.
-- [ ] Finish the OpenJarvis Rust crate/API/dependency/platform audit at a pinned upstream release.
-- [ ] Complete the feature-by-feature mapping and run a reversible OpenJarvis Rust inference-engine compatibility spike (Ollama/OpenAI-compatible adapters), with no privileged tools exposed.
-- [ ] Run FRIDAY Linux and Windows CI for the spike and record footprint/security findings.
-- [ ] Make a documented go/no-go decision: selected Rust crates, optional Python sidecar, protocol/design reuse only, or no adoption.
-- [ ] Resume the Coding Assistant filesystem trust-boundary batch or other dependency-ready work after the integration decision is recorded.
+- [x] Preserve the existing Coding Assistant security work and keep guest execution disabled.
+- [x] Complete the initial OpenJarvis source/API/platform inspection at a pinned upstream commit.
+- [x] Build and test the isolated Rust engine compatibility spike on Linux and Windows.
+- [x] Record the spike result and a conditional integration decision in the audit document.
+- [ ] Complete the feature-by-feature OpenJarvis-versus-FRIDAY capability map, including dependency licences, security, platform support, resource use and integration effort.
+- [ ] Add a reproducible dependency lock/pin for any further evaluation; measure compile/install footprint and idle/active resource cost before production adoption.
+- [ ] Exercise real local Ollama inference through a FRIDAY-owned adapter in an isolated test harness, including streaming, cancellation, errors and strict local-only routing. No tools, project files or user credentials are exposed.
+- [ ] Make the final production go/no-go decision. Until then, do not add OpenJarvis to the production dependency graph or replace FRIDAY's current Ollama path.
+- [ ] Resume Coding Assistant Stage 4 at section 6A: harden handle-relative snapshot traversal, parent identity and TOCTOU/reparse-point defenses. Keep all guest execution disabled.
+- [ ] Continue the product roadmap after these security foundations: enforceable skill grants/revocation and provenance, Control Centre/Transparency Centre, then Excel Intelligence and Job Hunter.
 
-**Compatibility experiment:** a separate, non-production branch `experiment/openjarvis-engine-compat` now tests the pinned upstream Rust engine adapters on Linux and Windows. Workflow run [#44540769399](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44540769399) was in progress at the time of this update; do not count the spike as passed until both jobs finish successfully.
+**Compatibility experiment:** branch `experiment/openjarvis-engine-compat`; spike commit `3eec6b4d96cd6aafb5367789b561b1adb903dab6`; upstream pin `427c2dd11d180ac254a03e92c5fb01189fb4b23b`. Workflow [44540769399](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44540769399) completed successfully on both `ubuntu-latest` and `windows-latest`. It proves compile/API compatibility and basic trait properties only—not real inference, streaming, provider routing, production security, dependency/licence compliance, resource footprint or physical hardware behavior.
 
-**Additional audit evidence:** OpenJarvis Rust crate manifests and selected source files were inspected, including the default-allow Rust capability policy, hardware detection implementation, and Tauri shell capability manifest. This is still source-level review; no compatibility build has run.
+**Current integration decision:** conditional GO for a second isolated evaluation; NO-GO for production adoption until the remaining evidence is collected. The OpenJarvis desktop crate's MIT metadata versus repository-root Apache-2.0 discrepancy remains unresolved. The engine-only spike does not copy that desktop crate.
 
-**Important:** The audit document records a source/docs inspection only. No OpenJarvis tests or local builds were run, and no physical hardware acceptance was performed. The audit documentation commit itself has not yet had a verified CI result.
+**Coding Assistant progress:** the user reports runs #991–#999 and #1000–#1002 passed. These are user-confirmed run outcomes; exact workflow URLs/commit SHAs have not been independently associated with those run numbers in this update. Do not infer that they close Stage 4 gates. The dedicated Coding Assistant checklist remains authoritative; physical Windows acceptance and guest execution remain pending.
 
