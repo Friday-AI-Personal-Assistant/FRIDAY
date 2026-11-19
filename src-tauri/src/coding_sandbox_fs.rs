@@ -3575,8 +3575,8 @@ mod tests {
         let result = collect_bounded_snapshot_contents(
             &root,
             limits,
-            &|name| name.ends_with(".rs"),
-            &|_| false,
+            &|name: &str| name.ends_with(".rs"),
+            &|_: &str| false,
         ).unwrap();
 
         assert!(result.truncated, "ignored entries must still consume the scan budget");
@@ -3597,8 +3597,8 @@ mod tests {
         let result = collect_bounded_snapshot_contents(
             &root,
             limits,
-            &|name| name == "main.rs",
-            &|_| false,
+            &|name: &str| name == "main.rs",
+            &|_: &str| false,
         ).unwrap();
 
         assert!(!result.truncated, "a tree exactly at the entry limit is complete");
@@ -3621,8 +3621,8 @@ mod tests {
         let result = collect_bounded_snapshot_contents(
             &root,
             limits,
-            &|_| true,
-            &|_| true,
+            &|_: &str| true,
+            &|_: &str| true,
         ).unwrap();
 
         assert!(result.truncated, "excluded directories must consume the scan budget");
@@ -3893,7 +3893,7 @@ mod tests {
             &root.unwrap(),
             bounded_limits(),
             &|name| name == "replace.txt",
-            &|_| false,
+            &|_: &str| false,
             |relative| {
                 if relative == Path::new("replace.txt") && !swapped {
                     fs::remove_file(root_path.join("replace.txt"))?;
@@ -5348,7 +5348,7 @@ mod tests {
             &root,
             bounded_limits(),
             &|name| name == "raced.rs",
-            &|_| false,
+            &|_: &str| false,
             |relative| {
                 if relative == Path::new("raced.rs") && !linked {
                     fs::hard_link(source.join("raced.rs"), &external)?;
