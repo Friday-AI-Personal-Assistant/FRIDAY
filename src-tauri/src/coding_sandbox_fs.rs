@@ -1195,9 +1195,21 @@ where
             }
         };
         let before = file.metadata()?;
-        if !before.is_file() || is_reparse_or_symlink(&before)
-            || before.len() == 0 || before.len() > limits.max_file_bytes
-        {
+        if !before.is_file() || is_reparse_or_symlink(&before) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "opened snapshot source is not an ordinary regular file",
+            ));
+        }
+        // A hard link can expose content whose other name is outside the
+        // selected project. Reject it rather than silently including it.
+        if !has_single_hard_link(&file) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "snapshot source file has multiple filesystem links",
+            ));
+        }
+        if before.len() == 0 || before.len() > limits.max_file_bytes {
             continue;
         }
 
@@ -1222,12 +1234,15 @@ where
         let after = file.metadata()?;
         if !after.is_file()
             || is_reparse_or_symlink(&after)
+            || !has_single_hard_link(&file)
             || after.len() != before.len()
             || after.modified()? != before.modified()?
             || contents.len() as u64 != before.len()
         {
-            result.truncated = true;
-            continue;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "snapshot source identity, link count, or size changed while being read",
+            ));
         }
 
         result.bytes = result.bytes.saturating_add(contents.len() as u64);
@@ -5187,6 +5202,40 @@ mod tests {
         assert!(!snapshot.exists());
         fs::remove_dir_all(source_path).unwrap();
         fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn production_snapshot_rejects_source_file_with_external_hard_link() {
+        let base = make_test_directory("production-source-hardlink");
+        let source = base.join("source");
+        let workspace = base.join("workspace");
+        let external = base.join("outside.rs");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        fs::write(&external, b"content outside selected project").unwrap();
+        fs::hard_link(&external, source.join("linked.rs")).unwrap();
+
+        let id = "b".repeat(32);
+        let result = prepare_snapshot_from_paths(
+            &source,
+            &workspace,
+            &id,
+            (12, 2_000, 1024 * 1024, 32 * 1024 * 1024),
+            |_| true,
+            |_| false,
+        );
+
+        assert!(
+            result.is_err(),
+            "a source file with an external hard-link alias must be rejected"
+        );
+        assert!(
+            !workspace.join(&id).exists(),
+            "a rejected hard-linked source must never be published"
+        );
+        assert_eq!(fs::read(&external).unwrap(), b"content outside selected project");
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[cfg(unix)]
