@@ -233,3 +233,23 @@ The next batch must be selected only after the filesystem-boundary review in sec
 ---
 
 **Baseline #988:** commit `108a5573bb3343017658c826f3d682aeb845b3c0`; workflow run `44313803884`; Linux and Windows jobs completed successfully. The #988 change itself added GPT trusted-identity negative-test coverage and did not enable guest execution.
+
+## 10. Latest verified progress and batched execution
+
+### #1007 — source hard-link rejection
+
+- [x] Reject snapshot source files whose opened file handle reports more than one filesystem link; recheck the link count after the bounded read.
+- [x] Add a production-path regression proving an external hard-link alias is rejected before snapshot publication and the external file remains unchanged.
+- [x] Linux unit-test job passed.
+- [x] Windows unit-test and desktop-installer build job passed.
+- Commit: `34b15036801ff13addc473252809cbb5d4c613e5`.
+- GitHub Actions run: [44555315714](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44555315714).
+
+### Next batched work — #1008 onward
+
+- [ ] Add a deterministic race regression that creates a second hard link after directory-entry enumeration but before the source file is opened; require fail-closed behavior.
+- [ ] Run the production external-hard-link regression on both Unix and Windows CI.
+- [ ] Continue the Stage 4A review of source traversal, parent/root identity, reparse points and cleanup boundaries before considering any guest-runner integration.
+- [ ] Keep physical Windows acceptance, result-transfer design and production Sandbox lifecycle gates open until actually verified.
+
+**Execution invariant:** guest execution remains disabled. CI success is evidence for the tested code paths only; it is not physical Windows Sandbox acceptance or proof of end-to-end isolation.

@@ -5204,7 +5204,7 @@ mod tests {
         fs::remove_dir_all(workspace_path).unwrap();
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn production_snapshot_rejects_source_file_with_external_hard_link() {
         let base = make_test_directory("production-source-hardlink");
@@ -5238,6 +5238,44 @@ mod tests {
         fs::remove_dir_all(base).unwrap();
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn bounded_snapshot_rejects_hard_link_added_after_enumeration() {
+        let base = make_test_directory("bounded-snapshot-hardlink-race");
+        let source = base.join("source");
+        let external = base.join("outside.rs");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("raced.rs"), b"selected project content").unwrap();
+        let root = open_verified_root_directory(&source).unwrap();
+        let mut linked = false;
+
+        // The collector has already observed a regular directory entry when
+        // this hook runs. Create a second name before its handle-relative open:
+        // the opened inode must be rejected based on its live link count.
+        let result = collect_bounded_snapshot_contents_with_hook(
+            &root,
+            bounded_limits(),
+            &|name| name == "raced.rs",
+            &|_| false,
+            |relative| {
+                if relative == Path::new("raced.rs") && !linked {
+                    fs::hard_link(source.join("raced.rs"), &external)?;
+                    linked = true;
+                }
+                Ok(())
+            },
+        );
+
+        assert!(linked, "the hard-link race must occur after enumeration");
+        assert!(
+            matches!(result, Err(ref error) if error.kind() == io::ErrorKind::InvalidData),
+            "a hard link introduced between enumeration and open must fail closed"
+        );
+        assert_eq!(fs::read(&external).unwrap(), b"selected project content");
+
+        drop(root);
+        fs::remove_dir_all(base).unwrap();
+    }
     #[cfg(unix)]
     #[test]
     fn production_snapshot_aborts_if_source_root_is_replaced_after_collection() {

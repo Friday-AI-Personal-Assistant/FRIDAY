@@ -394,3 +394,23 @@ The pinned upstream manifests and implementation were reviewed after the cross-p
 | Next task | Resume Coding Assistant Stage 4 section 6A: handle-relative snapshot traversal and parent identity hardening |
 
 **Maintainer rule:** Re-run this audit whenever the selected upstream pin changes materially. Never treat a moving upstream `main` branch as a reproducible dependency.
+
+## 12.1 Selective reuse execution plan (not an adoption claim)
+
+The OpenJarvis source audit and engine NO-GO decision are complete. **No OpenJarvis production component has been adopted into FRIDAY.** The next OpenJarvis activity is selective, feature-specific evaluation—not a wholesale fork and not an automatic dependency addition.
+
+Candidate reviews may cover document/PDF processing, speech, model catalogue/discovery, web research, scheduling, memory, skill packaging and agent orchestration. Each candidate must be pinned to an exact upstream revision and assessed for licence/provenance, dependency footprint, active and idle resource behavior, Windows/Linux support, maintenance, test quality and integration effort.
+
+Any reused code or capability remains subordinate to FRIDAY's existing product and security contracts:
+
+- FRIDAY Rust backend remains the sole authority for file access, permissions, approvals, revocation, credentials and execution.
+- Upstream shell/file tools, default-allow policies, trust tiers and UI confirmation flows must not become FRIDAY capabilities by inheritance.
+- Model-generated tool calls are proposals only; they pass through FRIDAY's tool registry and permission gateway.
+- Local-only mode must fail closed and must never silently fall back to a cloud provider.
+- Third-party providers require explicit connection, clear data/cost disclosure, bounded access and revocation.
+- Prefer selective ports/adapters; avoid a second always-running service or mandatory heavyweight runtime unless measurements justify it.
+- Integrate one candidate at a time, with Linux/Windows CI, adversarial permission tests and a rollback path.
+
+The first implementation focus remains Coding Assistant Stage 4A filesystem trust-boundary hardening. The selective-reuse track is approved for planning and review, but it does not authorize copying code before the individual review gates pass. Excel Intelligence and Job Hunter remain FRIDAY-specific product requirements and must be validated against their full acceptance criteria.
+
+**Current evidence:** #1007 (`34b15036801ff13addc473252809cbb5d4c613e5`, workflow `44555315714`) passed Linux tests and the Windows desktop build/tests. This does not close physical Windows Sandbox acceptance or enable guest execution.

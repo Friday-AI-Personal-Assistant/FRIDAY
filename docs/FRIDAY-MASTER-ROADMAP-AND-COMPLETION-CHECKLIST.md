@@ -688,3 +688,18 @@ The product owner directed us to investigate reuse before building duplicate cap
 
 **Coding Assistant progress:** the user reports runs #991–#999 and #1000–#1002 passed. These are user-confirmed run outcomes; exact workflow URLs/commit SHAs have not been independently associated with those run numbers in this update. Do not infer that they close Stage 4 gates. The dedicated Coding Assistant checklist remains authoritative; physical Windows acceptance and guest execution remain pending.
 
+
+### Selective OpenJarvis reuse — approved direction, not yet implemented
+
+The audit is complete, but production component reuse has **not** started. FRIDAY will not wholesale-fork or replace its existing desktop/backend stack. Once the current Coding Assistant filesystem trust-boundary batch is safely advanced, perform feature-by-feature reuse reviews and integrate only components with a demonstrable net benefit.
+
+- [ ] Build the broader capability matrix for specific candidates (document/PDF processing, speech, model catalogue/discovery, research, scheduling, memory and orchestration) rather than auditing or importing the entire repository indiscriminately.
+- [ ] For each candidate, pin the upstream commit and verify source/package licences, transitive dependencies, maintenance status, Linux/Windows compatibility, install size, idle/active RAM and CPU behavior.
+- [ ] Prefer a small isolated adapter or selective port over a second always-running service or mandatory Python stack.
+- [ ] Route every model/tool action through FRIDAY's own Rust permission gateway, explicit user grants, revocation, approval and Transparency Centre; upstream trust tiers or confirmation prompts never substitute for these controls.
+- [ ] Prove local-only mode has no cloud fallback; any optional provider must be disclosed, explicitly connected, bounded and revocable.
+- [ ] Add focused tests proving reused components cannot access files, execute commands, use credentials or make network requests beyond FRIDAY-issued capabilities.
+- [ ] Integrate one reviewed capability at a time with a rollback path; keep the existing FRIDAY implementation until the replacement passes parity and security checks.
+- [ ] Build Excel Intelligence and Job Hunter as FRIDAY product capabilities on the shared, permissioned skill/tool architecture; do not assume OpenJarvis already satisfies those product requirements.
+
+**Ordering:** continue Coding Assistant Stage 4A filesystem hardening first. Low-risk OpenJarvis research and capability comparison can proceed as a separate planning track, but no upstream code is imported merely to save time. The NO-GO decision for `openjarvis-engine` remains unchanged.
