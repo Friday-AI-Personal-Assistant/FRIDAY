@@ -2733,7 +2733,21 @@ where
     // If this final operation fails, the empty unmarked directory is not
     // eligible for a later recovery pass. That is intentional fail-closed
     // behavior rather than deleting a directory without ownership evidence.
-    remove_verified_empty_snapshot_directory(workspace, OsStr::new(snapshot_id), Some(&root))
+    // Unix compares the final name against the still-held inventoried
+    // directory handle before unlinkat. Windows currently opens the final
+    // directory with DELETE access using a restrictive share mode; retaining
+    // the original handle prevents that open (STATUS_SHARING_VIOLATION).
+    // Preserve the established Windows handle-relative delete path until the
+    // root opener can safely grant compatible delete sharing.
+    #[cfg(unix)]
+    {
+        remove_verified_empty_snapshot_directory(workspace, OsStr::new(snapshot_id), Some(&root))
+    }
+    #[cfg(windows)]
+    {
+        drop(root);
+        remove_verified_empty_snapshot_directory(workspace, OsStr::new(snapshot_id), None)
+    }
 }
 
 fn open_existing_snapshot_parent(root: &File, relative: &Path) -> io::Result<Option<File>> {
