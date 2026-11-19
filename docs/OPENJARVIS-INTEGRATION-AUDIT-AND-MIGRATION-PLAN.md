@@ -333,6 +333,20 @@ A separate experiment branch was created so the main FRIDAY development branch d
 
 The spike is intentionally separate from production code. It has no production dependency impact unless a later reviewed change is merged.
 
+## 11.2 Compatibility spike result and current integration decision
+
+**Result: PASS — compile/API compatibility only.** Workflow run [44540769399](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44540769399) completed successfully on both `ubuntu-latest` and `windows-latest`. Both jobs passed formatting and `cargo test --all-targets` for the isolated spike crate.
+
+- FRIDAY spike commit: `3eec6b4d96cd6aafb5367789b561b1adb903dab6`.
+- OpenJarvis pin: `427c2dd11d180ac254a03e92c5fb01189fb4b23b`.
+- Verified: the pinned crate compiles on both CI operating systems; `OllamaEngine` and `OpenAICompatEngine` can be constructed; both satisfy `Send + Sync`; engine IDs match the expected values.
+- Not verified: real inference, streaming behavior, cancellation, health checks, provider requests, credential handling, cloud/local routing enforcement, production FRIDAY integration, dependency/licence compliance, binary/install footprint, idle/active RAM, or physical Windows behavior.
+- No production dependency was added to FRIDAY. The experiment branch remains separate and reversible.
+
+**Decision: conditional GO for a second, still-isolated evaluation stage; NO-GO for production adoption today.** The compile proof removes one compatibility uncertainty, but does not justify replacing FRIDAY's Ollama implementation or adding an unmeasured dependency graph to the core application. Next evaluate API semantics and dependency/licence/footprint cost, then run a local-Ollama integration test through a FRIDAY-owned adapter with no tools or filesystem authority. Cloud adapters remain opt-in and must be blocked in strict local-only mode. Add a lockfile/reproducible pin before any production adoption.
+
+The desktop crate's MIT metadata versus repository-root Apache-2.0 licence discrepancy remains unresolved; the spike does not copy that crate and does not resolve the licensing question.
+
 ## 12. Evidence and handoff
 
 | Field | Value |
@@ -343,7 +357,7 @@ The spike is intentionally separate from production code. It has no production d
 | OpenJarvis inspected date | 2026-11-19 |
 | Audit type | Source/docs inspection through GitHub; no local build or upstream tests run in this audit |
 | FRIDAY code changed | No product code changed by this audit |
-| CI result | No CI run verified for this audit document yet |
+| CI result | OpenJarvis engine compatibility spike PASS on Linux + Windows (run `44540769399`); audit document itself still needs its own CI |
 | Physical hardware acceptance | Not performed |
 | Next task | Stage A: inspect upstream Rust crates and dependency/platform compatibility |
 
