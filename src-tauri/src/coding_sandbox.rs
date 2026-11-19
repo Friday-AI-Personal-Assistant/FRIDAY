@@ -8693,8 +8693,8 @@ pub async fn coding_sandbox_recover_workspaces(app: AppHandle) -> Result<CodingS
             preserved += 1;
             continue;
         }
-        match crate::coding_sandbox_fs::cleanup_snapshot_from_workspace_path(
-            &workspace_root,
+        match crate::coding_sandbox_fs::cleanup_snapshot_from_workspace_handle(
+            &workspace_handle,
             &name,
             (MAX_SNAPSHOT_DEPTH, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_FILE_BYTES, MAX_SNAPSHOT_TOTAL_BYTES),
         ) {

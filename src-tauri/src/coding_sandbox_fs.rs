@@ -3573,8 +3573,8 @@ where
 /// Production cleanup entry point. Only a complete schema-2 inventory can
 /// authorize deletion; schema-1, malformed, missing, partial, and unknown
 /// snapshots are intentionally preserved.
-pub(crate) fn cleanup_snapshot_from_workspace_path(
-    workspace_path: &Path,
+pub(crate) fn cleanup_snapshot_from_workspace_handle(
+    workspace: &File,
     snapshot_id: &str,
     limits: (usize, usize, u64, u64),
 ) -> io::Result<()> {
@@ -3586,8 +3586,18 @@ pub(crate) fn cleanup_snapshot_from_workspace_path(
         max_file_bytes: limits.2,
         max_total_bytes: limits.3,
     };
+    cleanup_owned_snapshot(workspace, snapshot_id, policy)
+}
+
+/// Path-based convenience wrapper for callers that do not already hold a
+/// verified workspace handle. Recovery should use the handle-based entry point.
+pub(crate) fn cleanup_snapshot_from_workspace_path(
+    workspace_path: &Path,
+    snapshot_id: &str,
+    limits: (usize, usize, u64, u64),
+) -> io::Result<()> {
     let workspace = open_verified_root_directory(workspace_path)?;
-    cleanup_owned_snapshot(&workspace, snapshot_id, policy)
+    cleanup_snapshot_from_workspace_handle(&workspace, snapshot_id, limits)
 }
 
 #[cfg(test)]
@@ -5383,6 +5393,44 @@ mod tests {
         assert!(verify_snapshot_for_sandbox_mapping(
             &workspace, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", (12, 2000, 1_048_576, 32 * 1024 * 1024),
         ).is_err());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handle_based_cleanup_cannot_be_redirected_by_workspace_path_replacement() {
+        let base = make_test_directory("cleanup-held-workspace-replacement");
+        let workspace_path = base.join("workspace");
+        let moved_workspace_path = base.join("moved-workspace");
+        let source_path = base.join("source");
+        fs::create_dir(&workspace_path).unwrap();
+        fs::create_dir(&source_path).unwrap();
+        fs::write(source_path.join("main.rs"), b"fn main() {}").unwrap();
+
+        let id = "7".repeat(32);
+        let limits = (12, 2_000, 1024 * 1024, 32 * 1024 * 1024);
+        prepare_snapshot_from_paths(
+            &source_path, &workspace_path, &id, limits,
+            |name| name == "main.rs", |_| false,
+        ).unwrap();
+
+        let held_workspace = open_verified_root_directory(&workspace_path).unwrap();
+        fs::rename(&workspace_path, &moved_workspace_path).unwrap();
+        fs::create_dir(&workspace_path).unwrap();
+        fs::create_dir(workspace_path.join(&id)).unwrap();
+        fs::write(workspace_path.join(&id).join("keep.txt"), b"replacement data").unwrap();
+
+        cleanup_snapshot_from_workspace_handle(&held_workspace, &id, limits).unwrap();
+
+        assert!(!moved_workspace_path.join(&id).exists(),
+            "cleanup must target the snapshot beneath the originally held workspace");
+        assert_eq!(
+            fs::read(workspace_path.join(&id).join("keep.txt")).unwrap(),
+            b"replacement data",
+            "a replacement workspace at the old path must remain untouched",
+        );
+
+        drop(held_workspace);
         fs::remove_dir_all(base).unwrap();
     }
 
