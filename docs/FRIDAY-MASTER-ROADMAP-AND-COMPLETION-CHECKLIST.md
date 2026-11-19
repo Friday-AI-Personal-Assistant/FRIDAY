@@ -568,8 +568,8 @@ Append or update a short record here after each meaningful batch:
 
 ### 22.2 Reuse-first engineering policy for OpenJarvis and other upstream projects
 
-- [ ] Audit the OpenJarvis repository, current release, architecture, platform support, dependencies, licence and security model before choosing integration boundaries.
-- [ ] For every FRIDAY requirement, check whether OpenJarvis already provides a working capability that meets FRIDAY's acceptance criteria.
+- [x] Complete an initial source/docs audit of OpenJarvis architecture, current main revision, platform/dependency declarations, root licence and documented security model. Evidence: [OPENJARVIS-INTEGRATION-AUDIT-AND-MIGRATION-PLAN.md](OPENJARVIS-INTEGRATION-AUDIT-AND-MIGRATION-PLAN.md). A pinned-release, transitive-dependency and full Rust-crate compatibility audit is still pending.
+- [ ] Complete the feature-by-feature source mapping for every FRIDAY requirement, including API/test evidence and a reuse/adapt/wrap/retain/build/defer decision.
 - [ ] Prefer reusing, adapting or wrapping a suitable upstream capability over independently rebuilding equivalent functionality.
 - [ ] Do not duplicate an upstream feature without documenting why it fails FRIDAY's requirements (for example: security, privacy, reliability, platform support, resource use, licence or maintainability).
 - [ ] Do not adopt an upstream capability merely because it exists: review its implementation, permissions, data flows, dependencies and failure behavior first.
@@ -648,4 +648,33 @@ Append or update a short record here after each meaningful batch:
 - [ ] Update this roadmap and the relevant subsystem checklists with the chosen architecture, migration sequence, compatibility strategy and rollback plan before broad code migration.
 
 **Non-negotiable product principles reaffirmed:** FRIDAY must not compromise user security for convenience; core FRIDAY functionality and first-party skills should not require extra FRIDAY fees; users decide what FRIDAY can do, what it can access and which AI engines/providers it may use.
+
+## 23. OpenJarvis audit result and deliberate roadmap reprioritization
+
+**Audit record:** [OpenJarvis Integration Audit & FRIDAY Migration Plan](OPENJARVIS-INTEGRATION-AUDIT-AND-MIGRATION-PLAN.md)
+
+**Audit baseline:** FRIDAY `feature/phase-2-skills` at `6cba2052157861aef56f550764db27a284d80921`; OpenJarvis `main` inspected at `427c2dd11d180ac254a03e92c5fb01189fb4b23b` on 2026-11-19.
+
+### Initial findings
+
+- OpenJarvis is a broad local-AI framework with Python modules, Rust crates, a React frontend and Tauri desktop packaging. FRIDAY already has React/Tauri/Rust, so a whole second desktop application/backend stack is not automatically beneficial.
+- Valuable candidates include engine/model abstractions, hardware detection, agent orchestration, tool registry, skills catalogue/import, memory, research, speech, scheduling, telemetry and connectors.
+- OpenJarvis is marked Alpha in its package metadata and requires Python >=3.11,<3.14. Its core dependency set and optional extras are substantial; adding the entire stack to FRIDAY's core installer would conflict with low-resource and modular-install goals.
+- Its documented system-access model includes powerful shell and file tools. The upstream system-access guide documents arbitrary shell execution as the current user, directory restrictions that do not constrain shell/patch/code-interpreter tools, and desktop/server confirmation behavior that differs from interactive CLI behavior. Its capability policy also has permissive defaults in some profiles.
+- Therefore, upstream security/tool defaults must not become FRIDAY's permission authority unchanged. FRIDAY Rust backend remains the authority for user grants, exact approvals, revocation, file safety and recovery.
+- FRIDAY's current skill catalogue is compile-time and first-party; package loading currently loads declarative instructions and explicitly reports that skill tools are not yet connected. This is a useful starting point, not a complete third-party Skills Store.
+- Preserve the existing FRIDAY file-edit and Coding Assistant security work. Coding Assistant guest execution remains disabled.
+
+### Roadmap reprioritization
+
+The product owner has explicitly directed that we investigate reuse before spending more time building duplicate product capabilities. This is a deliberate reprioritization, not a claim that Coding Assistant is complete.
+
+- [x] Pause new Coding Assistant guest-runner integration work while the upstream compatibility audit is completed. Existing code, tests, checklist and security gates remain preserved.
+- [ ] Finish the OpenJarvis Rust crate/API/dependency/platform audit at a pinned upstream release.
+- [ ] Complete the feature-by-feature mapping and choose a narrow, low-risk compatibility spike.
+- [ ] Run FRIDAY Linux and Windows CI for the spike and record footprint/security findings.
+- [ ] Make a documented go/no-go decision: selected Rust crates, optional Python sidecar, protocol/design reuse only, or no adoption.
+- [ ] Resume the Coding Assistant filesystem trust-boundary batch or other dependency-ready work after the integration decision is recorded.
+
+**Important:** The audit document records a source/docs inspection only. No OpenJarvis tests or local builds were run, and no physical hardware acceptance was performed. The audit documentation commit itself has not yet had a verified CI result.
 
