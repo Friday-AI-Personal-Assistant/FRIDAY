@@ -553,3 +553,99 @@ Append or update a short record here after each meaningful batch:
 ---
 
 **Maintainer rule:** This document records the whole product plan; `CODING-ASSISTANT-COMPLETION-MASTER.md` remains the detailed source of truth for Coding Assistant implementation status. When the two overlap, keep this document as the product-level index and the dedicated checklist as the detailed engineering record.
+
+## 22. Confirmed product decisions and OpenJarvis reuse policy
+
+**Decision status:** Product direction accepted by the product owner on 2026-11-19. These are requirements and architecture decisions, not claims that the features are already implemented.
+
+### 22.1 Product identity and visual direction
+
+- [ ] FRIDAY is an independently branded desktop assistant and product; OpenJarvis is a candidate upstream foundation, not the product identity.
+- [ ] Adopt a dark navy and electric-blue visual direction, with restrained cyan accents; support accessible contrast and a light theme where practical.
+- [ ] Build the **FRIDAY Control Centre** as the central place to manage features, skills, engines, models, permissions, privacy, memory, voice, appearance, security and updates.
+- [ ] Include a dedicated **Features** page so users can inspect and enable/disable available capabilities without confusing a feature toggle with a security permission.
+- [ ] Do not copy an upstream visual design merely because its underlying functionality is reused.
+
+### 22.2 Reuse-first engineering policy for OpenJarvis and other upstream projects
+
+- [ ] Audit the OpenJarvis repository, current release, architecture, platform support, dependencies, licence and security model before choosing integration boundaries.
+- [ ] For every FRIDAY requirement, check whether OpenJarvis already provides a working capability that meets FRIDAY's acceptance criteria.
+- [ ] Prefer reusing, adapting or wrapping a suitable upstream capability over independently rebuilding equivalent functionality.
+- [ ] Do not duplicate an upstream feature without documenting why it fails FRIDAY's requirements (for example: security, privacy, reliability, platform support, resource use, licence or maintainability).
+- [ ] Do not adopt an upstream capability merely because it exists: review its implementation, permissions, data flows, dependencies and failure behavior first.
+- [ ] Preserve valuable FRIDAY code where it meets or exceeds the required behavior; do not perform a wholesale rewrite for cosmetic or architectural preference alone.
+- [ ] Keep integration boundaries replaceable so FRIDAY can maintain or replace an upstream component if it becomes unsuitable.
+- [ ] Track upstream origin, version/commit, modifications, licence, required notices and third-party dependency obligations in a software bill of materials and third-party notices.
+- [ ] Keep FRIDAY's branding, product experience, policies and original features independently maintained. Submit generally useful improvements upstream when appropriate, but do not depend on upstream accepting them.
+
+### 22.3 User security, permissions, recovery and revocation
+
+- [ ] FRIDAY must not receive unrestricted access to a user's desktop or personal files by default.
+- [ ] Installing a skill, enabling a feature, selecting a model or asking FRIDAY to perform a task must not silently grant filesystem, application, account or network permissions.
+- [ ] Use least-privilege, narrowly scoped, purpose-specific grants enforced by trusted backend code.
+- [ ] Users can inspect and revoke a skill's permissions at any time from the FRIDAY Control Centre.
+- [ ] Revocation must prevent new operations and cancel or safely terminate active operations where possible; revoke associated tokens, sessions and pending approvals. Clearly disclose any operation that cannot be safely interrupted immediately.
+- [ ] Sensitive writes, deletes, sends, purchases, job applications, account changes and financial actions require a suitable preview and explicit approval.
+- [ ] Use backups, transaction journals, verification and undo/restore for supported changes. Explain actions that are inherently irreversible or cannot be fully restored.
+- [ ] Maintain a privacy-safe audit history showing what skill/provider acted, what permission was used, what category of data was accessed or transmitted, and the outcome—without unnecessarily recording sensitive content.
+- [ ] Never describe a third-party service as safe merely because it is free, popular or open source; communicate known limitations and unknowns honestly.
+
+### 22.4 Skills Store, modular installation and resource behavior
+
+- [ ] Provide a **Skills Store** where users can discover, inspect, install, update, disable, roll back and uninstall optional skills independently of the core application.
+- [ ] Clearly distinguish official FRIDAY skills, upstream integrations and community/third-party skills, including publisher, version, licence, provenance and requested capabilities.
+- [ ] Installation must be separate from enabling; enabling must be separate from granting permissions.
+- [ ] Skills should be lazy-loaded and unloaded when inactive where technically safe. An installed skill may use disk space, but inactive skills should not keep unnecessary runtimes, models, processes or substantial memory resident.
+- [ ] Show estimated disk requirements, dependencies, resource behavior, network access and costs before installation/activation.
+- [ ] Updates must be integrity-checked, atomic where possible, and recoverable through rollback.
+- [ ] Disabling or uninstalling a skill must revoke its grants and clean up its owned sessions/processes without touching unrelated user resources.
+
+### 22.5 Pricing, local capability and paid-provider transparency
+
+- [ ] Product policy: FRIDAY's core application and first-party FRIDAY skills are intended to be usable without an additional FRIDAY feature subscription or per-skill fee.
+- [ ] Local models and compatible local processing should be available without cloud inference charges, subject to hardware, model licence and download requirements.
+- [ ] Optional paid cloud models/APIs may incur charges from their provider. Display the provider, pricing/billing basis where known, and whether the user pays the provider directly or through another disclosed arrangement.
+- [ ] Do not imply that a paid model/API is included for free merely because its connector is included in FRIDAY.
+- [ ] Disclose third-party services whether free or paid. Before connection or data transfer, explain the provider's identity, purpose, data categories that may be sent/accessed, permissions/scopes, relevant retention/training terms where verifiable, costs and how to disconnect.
+- [ ] Show which engine/provider handled each request and whether processing was local or external.
+- [ ] Provide a clear way to disconnect a provider, revoke credentials/scopes and return to local-only operation.
+- [ ] Never silently fall back from local inference to a cloud provider.
+- [ ] Clearly label any optional third-party costs (job-board services, email/API services, data feeds, exchange fees or other external charges). Do not promise that every external service is free.
+- [ ] Treat “free” and “private/safe” as separate properties; make no blanket safety or privacy guarantee for a third-party service.
+
+### 22.6 Transparency Centre and privacy controls
+
+- [ ] Provide a **Transparency Centre** within the FRIDAY Control Centre.
+- [ ] Show connected providers and third-party services, their connection status, permissions/scopes, last use and the skills/features that can invoke them.
+- [ ] Show what categories of information may leave the device for each provider, when a transfer occurs, and the purpose.
+- [ ] Show actual runtime-observed engine/provider and local-versus-cloud processing status rather than relying only on settings labels.
+- [ ] Provide clear local-only and strict-offline controls, with backend/OS-level enforcement appropriate to the platform; a UI toggle alone is not sufficient.
+- [ ] Explain unknown or unverifiable provider data practices as unknown; link to current provider terms/privacy information where available.
+- [ ] Let users disconnect a provider and revoke its permissions without uninstalling unrelated skills.
+
+### 22.7 Feature priorities confirmed by the product owner
+
+- [ ] **Excel Intelligence is a must-have first-party skill:** workbook understanding, data cleaning, formula assistance, analysis, charts, reporting and carefully approved workbook edits with backup/undo. Prefer local processing where feasible.
+- [ ] **Job Hunter is a major planned skill:** discover and compare relevant opportunities, explain source and fit, prepare tailored application materials and track applications. Use only permitted platform access and respect each job platform's terms; submitting an application requires user approval.
+- [ ] **Crypto Intelligence / Trading is a later, separate, optional skill:** begin with research, backtesting and paper trading. Live trading must be disabled by default, use narrowly scoped exchange credentials, have explicit user-configured risk limits and approvals, and never require withdrawal permissions. No profit or performance guarantees.
+- [ ] Continue the broader planned catalogue (File Assistant, PDF Reader, Web Research, Coding Assistant, CV Studio, Email Assistant and Voice) through the same skill, permission, provider and transparency contracts.
+- [ ] New first-party skills should be deliverable through independently verified Skills Store updates without requiring a full application reinstall where architecture permits.
+
+### 22.8 Low-cost development and honest acceptance
+
+- [ ] Prefer GitHub-hosted automation, reproducible tests, static analysis and available free development infrastructure while project funding and local hardware are unavailable.
+- [ ] Do not make paid cloud infrastructure or a personal test computer a prerequisite for work that can be safely implemented and verified through repository-based tests.
+- [ ] Keep physical-device, supported-Windows Sandbox, real hardware, provider-account and other environment-specific acceptance explicitly marked pending until actually performed.
+- [ ] Do not claim compatibility with a hardware tier or OS configuration based solely on mocks or hosted CI. Record tested configurations and limitations.
+- [ ] Prepare safe, self-contained acceptance kits for volunteer testers where needed; no tester should have to grant AI remote access or expose personal files/accounts. Tests must operate only on explicitly created disposable test resources.
+
+### 22.9 Architecture decision gate before migration
+
+- [ ] Produce a feature-by-feature OpenJarvis-versus-FRIDAY comparison: capability, source location, licence, security review, resource behavior, platform support, test evidence, integration effort and recommendation (reuse/adapt/wrap/retain/build/defer).
+- [ ] Confirm the exact upstream repository and licence at the revision selected for integration; re-check all bundled and transitive dependency licences.
+- [ ] Decide whether to integrate OpenJarvis as a library/service, selectively port components, or fork it only after the comparison. Do not assume a wholesale fork is automatically the fastest or safest route.
+- [ ] Preserve the existing FRIDAY branch/history and Coding Assistant security work. Any migration must be incremental, reviewable and reversible.
+- [ ] Update this roadmap and the relevant subsystem checklists with the chosen architecture, migration sequence, compatibility strategy and rollback plan before broad code migration.
+
+**Non-negotiable product principles reaffirmed:** FRIDAY must not compromise user security for convenience; core FRIDAY functionality and first-party skills should not require extra FRIDAY fees; users decide what FRIDAY can do, what it can access and which AI engines/providers it may use.
+
