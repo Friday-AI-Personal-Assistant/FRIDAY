@@ -676,6 +676,8 @@ The product owner has explicitly directed that we investigate reuse before spend
 - [ ] Make a documented go/no-go decision: selected Rust crates, optional Python sidecar, protocol/design reuse only, or no adoption.
 - [ ] Resume the Coding Assistant filesystem trust-boundary batch or other dependency-ready work after the integration decision is recorded.
 
+**Compatibility experiment:** a separate, non-production branch `experiment/openjarvis-engine-compat` now tests the pinned upstream Rust engine adapters on Linux and Windows. Workflow run [#44540769399](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44540769399) was in progress at the time of this update; do not count the spike as passed until both jobs finish successfully.
+
 **Additional audit evidence:** OpenJarvis Rust crate manifests and selected source files were inspected, including the default-allow Rust capability policy, hardware detection implementation, and Tauri shell capability manifest. This is still source-level review; no compatibility build has run.
 
 **Important:** The audit document records a source/docs inspection only. No OpenJarvis tests or local builds were run, and no physical hardware acceptance was performed. The audit documentation commit itself has not yet had a verified CI result.
