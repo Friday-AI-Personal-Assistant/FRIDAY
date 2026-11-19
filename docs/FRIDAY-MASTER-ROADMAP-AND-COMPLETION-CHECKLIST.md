@@ -673,16 +673,18 @@ The product owner directed us to investigate reuse before building duplicate cap
 - [x] Complete the initial OpenJarvis source/API/platform inspection at a pinned upstream commit.
 - [x] Build and test the isolated Rust engine compatibility spike on Linux and Windows.
 - [x] Record the spike result and a conditional integration decision in the audit document.
-- [ ] Complete the feature-by-feature OpenJarvis-versus-FRIDAY capability map, including dependency licences, security, platform support, resource use and integration effort.
-- [ ] Add a reproducible dependency lock/pin for any further evaluation; measure compile/install footprint and idle/active resource cost before production adoption.
-- [ ] Exercise real local Ollama inference through a FRIDAY-owned adapter in an isolated test harness, including streaming, cancellation, errors and strict local-only routing. No tools, project files or user credentials are exposed.
-- [ ] Make the final production go/no-go decision. Until then, do not add OpenJarvis to the production dependency graph or replace FRIDAY's current Ollama path.
-- [ ] Resume Coding Assistant Stage 4 at section 6A: harden handle-relative snapshot traversal, parent identity and TOCTOU/reparse-point defenses. Keep all guest execution disabled.
+- [x] Complete the pinned OpenJarvis Rust engine/API/dependency review and document the final production decision.
+- [x] Run the isolated Rust engine compatibility spike on Linux and Windows (workflow [44540769399](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44540769399), both PASS).
+- [x] Decide **NO-GO** on adopting `openjarvis-engine` in FRIDAY production: the existing FRIDAY Ollama path is already async, bounded and fixed to loopback; the upstream generation API is blocking and brings additional dependency/policy work. See the audit's section 11.3.
+- [ ] Complete the broader feature-by-feature OpenJarvis-versus-FRIDAY capability matrix for other candidate subsystems only where reuse may provide a concrete net benefit.
+- [ ] Resume Coding Assistant Stage 4 at section 6A: continue hardening handle-relative snapshot traversal, parent identity and TOCTOU/reparse-point defenses. Keep guest execution disabled.
 - [ ] Continue the product roadmap after these security foundations: enforceable skill grants/revocation and provenance, Control Centre/Transparency Centre, then Excel Intelligence and Job Hunter.
 
-**Compatibility experiment:** branch `experiment/openjarvis-engine-compat`; spike commit `3eec6b4d96cd6aafb5367789b561b1adb903dab6`; upstream pin `427c2dd11d180ac254a03e92c5fb01189fb4b23b`. Workflow [44540769399](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44540769399) completed successfully on both `ubuntu-latest` and `windows-latest`. It proves compile/API compatibility and basic trait properties only—not real inference, streaming, provider routing, production security, dependency/licence compliance, resource footprint or physical hardware behavior.
+**Compatibility experiment:** branch `experiment/openjarvis-engine-compat`; spike commit `3eec6b4d96cd6aafb5367789b561b1adb903dab6`; upstream pin `427c2dd11d180ac254a03e92c5fb01189fb4b23b`. Workflow [44540769399](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44540769399) completed successfully on both `ubuntu-latest` and `windows-latest`. This proves compile/API compatibility and basic trait properties only.
 
-**Current integration decision:** conditional GO for a second isolated evaluation; NO-GO for production adoption until the remaining evidence is collected. The OpenJarvis desktop crate's MIT metadata versus repository-root Apache-2.0 discrepancy remains unresolved. The engine-only spike does not copy that desktop crate.
+**Final integration decision:** do not add `openjarvis-engine` or its transitive dependency graph to the production application and do not replace FRIDAY's existing Ollama path. The upstream desktop crate's MIT metadata versus repository-root Apache-2.0 discrepancy remains unresolved and blocks copying that crate. Other OpenJarvis components remain candidates only if a feature-specific review demonstrates a measurable advantage without weakening FRIDAY's security, privacy or low-resource goals.
+
+**Recent security batch:** commit `30db64f15165d41db0eb1ade19be2f32206cd530` adds deterministic source/workspace root replacement tests and revalidates both path-to-handle identities immediately before snapshot publication. Workflow run [44552742730](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44552742730): Linux PASS; Windows still running at the time of this update.
 
 **Coding Assistant progress:** the user reports runs #991–#999 and #1000–#1002 passed. These are user-confirmed run outcomes; exact workflow URLs/commit SHAs have not been independently associated with those run numbers in this update. Do not infer that they close Stage 4 gates. The dedicated Coding Assistant checklist remains authoritative; physical Windows acceptance and guest execution remain pending.
 
