@@ -659,9 +659,9 @@ Append or update a short record here after each meaningful batch:
 
 - OpenJarvis is a broad local-AI framework with Python modules, Rust crates, a React frontend and Tauri desktop packaging. FRIDAY already has React/Tauri/Rust, so a whole second desktop application/backend stack is not automatically beneficial.
 - Valuable candidates include engine/model abstractions, hardware detection, agent orchestration, tool registry, skills catalogue/import, memory, research, speech, scheduling, telemetry and connectors.
-- OpenJarvis is marked Alpha in its package metadata and requires Python >=3.11,<3.14. Its core dependency set and optional extras are substantial; adding the entire stack to FRIDAY's core installer would conflict with low-resource and modular-install goals.
-- Its documented system-access model includes powerful shell and file tools. The upstream system-access guide documents arbitrary shell execution as the current user, directory restrictions that do not constrain shell/patch/code-interpreter tools, and desktop/server confirmation behavior that differs from interactive CLI behavior. Its capability policy also has permissive defaults in some profiles.
-- Therefore, upstream security/tool defaults must not become FRIDAY's permission authority unchanged. FRIDAY Rust backend remains the authority for user grants, exact approvals, revocation, file safety and recovery.
+- OpenJarvis is marked Alpha in its package metadata and requires Python >=3.11,<3.14. It also has a Rust workspace (Rust 1.89 minimum), React frontend and Tauri 2 shell. Its core dependencies and optional extras are substantial; adding the entire stack to FRIDAY's core installer would conflict with low-resource and modular-install goals.
+- Its documented system-access model includes powerful shell and file tools. The upstream system-access guide documents arbitrary shell execution as the current user, directory restrictions that do not constrain shell/patch/code-interpreter tools, and desktop/server confirmation behavior that differs from interactive CLI behavior. Both Python and Rust capability policies default to allow unless explicitly configured deny-by-default. The inspected Tauri capability file also grants shell execute/spawn/stdin/kill permissions.
+- The inspected Rust hardware detector uses Unix `which`, `/proc/cpuinfo` and `/proc/meminfo` paths and does not yet provide reliable native Windows CPU/RAM/GPU detection. The upstream root licence is Apache-2.0, while the desktop Tauri crate manifest declares MIT; this needs provenance/maintainer clarification before reusing that crate. Therefore upstream security/tool defaults must not become FRIDAY's permission authority unchanged. FRIDAY Rust backend remains the authority for user grants, exact approvals, revocation, file safety and recovery.
 - FRIDAY's current skill catalogue is compile-time and first-party; package loading currently loads declarative instructions and explicitly reports that skill tools are not yet connected. This is a useful starting point, not a complete third-party Skills Store.
 - Preserve the existing FRIDAY file-edit and Coding Assistant security work. Coding Assistant guest execution remains disabled.
 
@@ -675,6 +675,8 @@ The product owner has explicitly directed that we investigate reuse before spend
 - [ ] Run FRIDAY Linux and Windows CI for the spike and record footprint/security findings.
 - [ ] Make a documented go/no-go decision: selected Rust crates, optional Python sidecar, protocol/design reuse only, or no adoption.
 - [ ] Resume the Coding Assistant filesystem trust-boundary batch or other dependency-ready work after the integration decision is recorded.
+
+**Additional audit evidence:** OpenJarvis Rust crate manifests and selected source files were inspected, including the default-allow Rust capability policy, hardware detection implementation, and Tauri shell capability manifest. This is still source-level review; no compatibility build has run.
 
 **Important:** The audit document records a source/docs inspection only. No OpenJarvis tests or local builds were run, and no physical hardware acceptance was performed. The audit documentation commit itself has not yet had a verified CI result.
 
