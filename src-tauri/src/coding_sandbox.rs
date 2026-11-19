@@ -7952,12 +7952,17 @@ fn excluded_directory(name: &str) -> bool {
     )
 }
 
+// Legacy path-based snapshot helper retained only for historical regression fixtures.
+// Production snapshot creation is exclusively routed through coding_sandbox_fs's
+// held-handle traversal and exclusive destination APIs.
+#[cfg(test)]
 struct SnapshotBudget {
     files: usize,
     bytes: u64,
     truncated: bool,
 }
 
+#[cfg(test)]
 fn safe_relative_path(path: &Path) -> bool {
     path.components().all(|component| matches!(component, Component::Normal(_)))
 }
@@ -7984,6 +7989,7 @@ fn open_source_file(path: &Path) -> Result<File, String> {
     File::open(path).map_err(|_| "A project file could not be opened safely.".to_string())
 }
 
+#[cfg(test)]
 fn copy_snapshot_tree(
     source_root: &Path,
     current: &Path,
