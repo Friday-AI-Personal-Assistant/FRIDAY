@@ -119,6 +119,30 @@ OpenJarvis supports local and cloud engines and documents engine discovery/fallb
 
 **FRIDAY requirement:** explicit provider selection per request or policy, no silent local-to-cloud fallback, clear disclosure before data transfer, provider-specific cost/data-access display, and an enforced local-only/offline mode. Audit actual network behavior and analytics separately; do not assume a dependency proves data is transmitted, or assume it is not transmitted without checking runtime paths.
 
+
+### 4.6 Rust security crate also defaults to allow
+
+The Rust `openjarvis-security` crate independently confirms the permissive default: `CapabilityPolicy::default()` calls `new(false)`, and an agent with no explicit policy is allowed unless the policy was constructed with `default_deny = true`. This is a direct source-level finding, not only a documentation concern.
+
+**FRIDAY requirement:** never use the upstream default constructor for FRIDAY authorization. If any upstream capability code is reused, construct an explicit deny-by-default policy and wrap it with FRIDAY's own user-grant and resource-identity enforcement. Prefer keeping the FRIDAY authorization service authoritative.
+
+### 4.7 Upstream Rust hardware detection needs Windows work
+
+The inspected `openjarvis-core/src/hardware.rs` currently:
+- Checks for GPU tools by invoking the Unix `which` command.
+- Reads CPU brand from `/proc/cpuinfo` except on macOS.
+- Reads total RAM from `/proc/meminfo` except on macOS.
+
+Those paths do not provide a native Windows implementation. On Windows, the current Rust detector can therefore return no GPU, `unknown` CPU brand and `0.0` GB RAM rather than reliable Windows hardware details. Its current recommendation logic also maps no detected GPU to llama.cpp, which is not a complete FRIDAY 4/8/16 GB resource policy.
+
+**FRIDAY requirement:** do not adopt this hardware detector as-is for Windows. Add native Windows detection (or use FRIDAY's already implemented Windows resource queries), test it on Windows CI, and report unknown values honestly rather than recommending a model based on missing data.
+
+### 4.8 Upstream desktop capabilities and package licence need separate review
+
+The inspected OpenJarvis Tauri capability file grants shell plugin permissions including execute, spawn, stdin-write and kill, plus a sidecar Ollama execute rule. This may be appropriate for OpenJarvis's own app design, but FRIDAY must not copy these permissions without reviewing every command and sidecar invocation. FRIDAY should keep the narrowest possible Tauri capabilities and mediate process launches in trusted Rust code.
+
+There is also a licence metadata discrepancy requiring clarification before reusing the desktop crate: the repository root reports Apache-2.0 and has an Apache-2.0 LICENSE, while `frontend/src-tauri/Cargo.toml` declares `license = "MIT"`. This audit does not assume which notice governs every file in that subproject. Obtain provenance/maintainer clarification and inspect applicable file headers, assets and dependency licences before copying or redistributing the desktop crate. The overall dependency/licence audit remains incomplete.
+
 ## 5. What FRIDAY already has that should be preserved
 
 ### 5.1 Desktop foundation
@@ -212,9 +236,11 @@ No wholesale migration is authorized by this audit. Proceed in small, reversible
 ### Stage A — Complete the architecture and supply-chain audit
 
 - [ ] Pin an upstream release/tag (not a moving `main` branch) for the candidate integration.
-- [ ] Inventory upstream Rust crates and their exact public APIs, platform support, build requirements and dependency footprint.
+- [x] Inventory candidate Rust crates and inspect engine/core/security crate manifests and key source APIs. Findings: Rust 1.89 workspace requirement; security policy defaults to allow; hardware detector lacks native Windows paths; desktop crate declares MIT while repository root is Apache-2.0. See sections 4.6–4.8.
+- [ ] Complete API/build compatibility proof, full crate/dependency graph and platform-specific CI assessment.
 - [ ] Inventory upstream Python modules/extras and determine the smallest useful optional install.
-- [ ] Inspect the Tauri desktop shell and backend IPC/permissions before considering any UI reuse.
+- [x] Inspect the Tauri desktop shell manifest and default capability file. Shell execute/spawn/stdin/kill permissions are present; do not copy the capability set without a command-by-command review.
+- [ ] Inspect all desktop IPC handlers and sidecar launch call sites before considering any UI/runtime reuse.
 - [ ] Review upstream CI, tests, open security advisories, release history and known Windows limitations.
 - [ ] Generate a dependency and licence report for the chosen components and bundled assets.
 - [ ] Run the relevant upstream tests in a reproducible environment; record what was and was not run.
