@@ -1,0 +1,9 @@
+[package]
+name = "friday-openjarvis-engine-spike"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+publish = false
+
+[dependencies]
+openjarvis-engine = { git = "https://github.com/open-jarvis/OpenJarvis", rev = "427c2dd11d180ac254a03e92c5fb01189fb4b23b", package = "openjarvis-engine" }
