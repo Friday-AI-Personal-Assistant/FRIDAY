@@ -1004,6 +1004,8 @@ where
 struct BoundedSnapshotLimits {
     max_depth: usize,
     max_files: usize,
+    /// Maximum directory entries inspected, including ignored files and directories.
+    max_entries: usize,
     max_file_bytes: u64,
     max_total_bytes: u64,
 }
@@ -1056,7 +1058,8 @@ where
     AD: Fn(&str) -> bool,
     H: FnMut(&Path) -> io::Result<()>,
 {
-    if limits.max_files == 0 || limits.max_file_bytes == 0 || limits.max_total_bytes == 0 {
+    if limits.max_files == 0 || limits.max_entries == 0
+        || limits.max_file_bytes == 0 || limits.max_total_bytes == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "snapshot limits must be non-zero",
@@ -1075,6 +1078,7 @@ where
         bytes: 0,
         truncated: false,
     };
+    let mut entries_scanned = 0usize;
     collect_bounded_directory(
         root,
         Path::new(""),
@@ -1083,6 +1087,7 @@ where
         include_file,
         exclude_directory,
         &mut before_file_open,
+        &mut entries_scanned,
         &mut result,
     )?;
     Ok(result)
@@ -1096,6 +1101,7 @@ fn collect_bounded_directory<AF, AD, H>(
     include_file: &AF,
     exclude_directory: &AD,
     before_file_open: &mut H,
+    entries_scanned: &mut usize,
     result: &mut BoundedSnapshotContents,
 ) -> io::Result<()>
 where
@@ -1112,6 +1118,13 @@ where
         if result.files.len() >= limits.max_files
             || result.bytes >= limits.max_total_bytes
         {
+            result.truncated = true;
+            break;
+        }
+        *entries_scanned = entries_scanned.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "snapshot directory entry count overflowed")
+        })?;
+        if *entries_scanned > limits.max_entries {
             result.truncated = true;
             break;
         }
@@ -1169,11 +1182,13 @@ where
                 include_file,
                 exclude_directory,
                 before_file_open,
+                entries_scanned,
                 result,
             )?;
             if result.truncated
                 && (result.files.len() >= limits.max_files
-                    || result.bytes >= limits.max_total_bytes)
+                    || result.bytes >= limits.max_total_bytes
+                    || *entries_scanned >= limits.max_entries)
             {
                 break;
             }
@@ -3301,7 +3316,8 @@ pub(crate) fn create_bounded_snapshot_destination(
     if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid snapshot identifier"));
     }
-    if limits.max_files == 0 || limits.max_file_bytes == 0 || limits.max_total_bytes == 0
+    if limits.max_files == 0 || limits.max_entries == 0
+        || limits.max_file_bytes == 0 || limits.max_total_bytes == 0
         || contents.truncated || contents.files.is_empty() || contents.files.len() > limits.max_files
     {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot contents are incomplete or outside policy limits"));
@@ -3390,6 +3406,8 @@ pub(crate) fn verify_snapshot_for_sandbox_mapping(
     let policy = BoundedSnapshotLimits {
         max_depth: limits.0,
         max_files: limits.1,
+        // Bound metadata work even when most entries are excluded by policy.
+        max_entries: limits.1.saturating_mul(32),
         max_file_bytes: limits.2,
         max_total_bytes: limits.3,
     };
@@ -3449,6 +3467,8 @@ where
     let policy = BoundedSnapshotLimits {
         max_depth: limits.0,
         max_files: limits.1,
+        // Bound metadata work even when most entries are excluded by policy.
+        max_entries: limits.1.saturating_mul(32),
         max_file_bytes: limits.2,
         max_total_bytes: limits.3,
     };
@@ -3498,6 +3518,8 @@ pub(crate) fn cleanup_snapshot_from_workspace_path(
     let policy = BoundedSnapshotLimits {
         max_depth: limits.0,
         max_files: limits.1,
+        // Bound metadata work even when most entries are excluded by policy.
+        max_entries: limits.1.saturating_mul(32),
         max_file_bytes: limits.2,
         max_total_bytes: limits.3,
     };
@@ -3534,9 +3556,79 @@ mod tests {
         BoundedSnapshotLimits {
             max_depth: 12,
             max_files: 2_000,
+            max_entries: 64_000,
             max_file_bytes: 1024 * 1024,
             max_total_bytes: 32 * 1024 * 1024,
         }
+    }
+
+    #[test]
+    fn bounded_snapshot_entry_budget_counts_ignored_files_and_directories() {
+        let root_path = make_test_directory("snapshot-entry-budget");
+        for index in 0..8 {
+            fs::write(root_path.join(format!("ignored-{index}.txt")), b"ignored").unwrap();
+        }
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let mut limits = bounded_limits();
+        limits.max_entries = 3;
+
+        let result = collect_bounded_snapshot_contents(
+            &root,
+            limits,
+            &|name| name.ends_with(".rs"),
+            &|_| false,
+        ).unwrap();
+
+        assert!(result.truncated, "ignored entries must still consume the scan budget");
+        assert!(result.files.is_empty());
+        assert_eq!(result.bytes, 0);
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn bounded_snapshot_entry_budget_accepts_exact_boundary() {
+        let root_path = make_test_directory("snapshot-entry-budget-boundary");
+        fs::write(root_path.join("main.rs"), b"fn main() {}").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let mut limits = bounded_limits();
+        limits.max_entries = 1;
+
+        let result = collect_bounded_snapshot_contents(
+            &root,
+            limits,
+            &|name| name == "main.rs",
+            &|_| false,
+        ).unwrap();
+
+        assert!(!result.truncated, "a tree exactly at the entry limit is complete");
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.bytes, b"fn main() {}".len() as u64);
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn bounded_snapshot_entry_budget_counts_excluded_directories() {
+        let root_path = make_test_directory("snapshot-entry-budget-directories");
+        for index in 0..6 {
+            fs::create_dir(root_path.join(format!("excluded-{index}"))).unwrap();
+        }
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let mut limits = bounded_limits();
+        limits.max_entries = 2;
+
+        let result = collect_bounded_snapshot_contents(
+            &root,
+            limits,
+            &|_| true,
+            &|_| true,
+        ).unwrap();
+
+        assert!(result.truncated, "excluded directories must consume the scan budget");
+        assert!(result.files.is_empty());
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
     }
 
     #[test]

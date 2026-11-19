@@ -253,3 +253,22 @@ The next batch must be selected only after the filesystem-boundary review in sec
 - [ ] Keep physical Windows acceptance, result-transfer design and production Sandbox lifecycle gates open until actually verified.
 
 **Execution invariant:** guest execution remains disabled. CI success is evidence for the tested code paths only; it is not physical Windows Sandbox acceptance or proof of end-to-end isolation.
+## 11. #1008 and next bounded-enumeration batch
+
+### #1008 — hard-link race coverage
+
+- [x] Deterministic regression creates a second hard link after directory enumeration but before the file is opened; collection fails closed.
+- [x] Production external-hard-link regression runs under both Unix and Windows CI configurations.
+- [x] Linux tests passed.
+- [x] Windows tests and desktop build passed.
+- Commit: `e49eb5160d5ddc713f31ca14844db55a6e421184`.
+- GitHub Actions run: [44557584318](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44557584318).
+
+### #1009 — bounded directory enumeration
+
+- [ ] Count every enumerated directory entry, including ignored files and excluded directories.
+- [ ] Stop scanning and mark the collection incomplete when the entry budget is exceeded; production publication must reject incomplete collections.
+- [ ] Test ignored-file fanout, excluded-directory fanout and the exact budget boundary.
+- [ ] Verify Linux tests and Windows tests/build before marking this batch complete.
+
+**Policy note:** production snapshot collection currently derives a conservative entry budget of 32 times the configured maximum file count. This bounds metadata traversal even when entries are filtered out. Revisit the ratio only with measured project-tree workloads; do not remove the independent entry cap.

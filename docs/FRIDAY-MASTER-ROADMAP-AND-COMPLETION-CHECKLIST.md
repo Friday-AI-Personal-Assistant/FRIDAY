@@ -703,3 +703,11 @@ The audit is complete, but production component reuse has **not** started. FRIDA
 - [ ] Build Excel Intelligence and Job Hunter as FRIDAY product capabilities on the shared, permissioned skill/tool architecture; do not assume OpenJarvis already satisfies those product requirements.
 
 **Ordering:** continue Coding Assistant Stage 4A filesystem hardening first. Low-risk OpenJarvis research and capability comparison can proceed as a separate planning track, but no upstream code is imported merely to save time. The NO-GO decision for `openjarvis-engine` remains unchanged.
+### Coding Assistant Stage 4A — bounded enumeration checkpoint
+
+- [ ] Enforce a separate maximum count of inspected directory entries, counting ignored files and excluded directories as well as accepted files.
+- [ ] Ensure entry-budget exhaustion marks the collection incomplete and blocks snapshot publication.
+- [ ] Preserve exact-boundary behavior and add fanout regression tests on Linux and Windows CI.
+- [ ] Continue the source traversal, parent identity, reparse-point and cleanup-boundary review; guest execution remains disabled.
+
+Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160d5ddc713f31ca14844db55a6e421184`, run [44557584318](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44557584318)).
