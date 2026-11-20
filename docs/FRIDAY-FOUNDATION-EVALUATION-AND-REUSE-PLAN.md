@@ -185,3 +185,26 @@ Inspected source files at Row-Bot commit `547116cfd03b4b391813e8e2d638ffc22b8255
 **Assessment:** The specific advisory appears credibly addressed in the inspected source and regression tests. This is a positive signal for configuration failure handling. It is still source inspection, not an independently executed test run or a full audit of all tool execution paths. Resetting unreadable settings intentionally clears blocked commands after explicit confirmation; FRIDAY should make such a reset equally explicit and should never silently discard a user's safety preferences.
 
 **Next source-review question:** prove that every execution route (built-in, MCP, plugin, custom tool, channel, background workflow and computer use) checks the effective user/profile/workspace policy at the point of execution, and that stale approvals cannot be reused after permissions or configuration change.
+
+
+### Row-Bot execution-boundary review (2026-11-20; source-only)
+
+**Reviewed revision:** `siddsachar/row-bot@547116cfd03b4b391813e8e2d638ffc22b8255ff).
+
+**Positive evidence**
+- `src/row_bot/tools/profile_policy.py` documents action-level restrictions at canonical tool dispatch. It classifies only exact registered source/operation pairs; unknown actions are not promoted to read-only by name or user-supplied descriptions. It checks MCP effects from the existing runtime catalog rather than trusting worker-supplied metadata.
+- `src/row_bot/mcp_client/safety.py` classifies tool names and descriptions, combines declared hints and destructive metadata, and treats unknown or destructive tools conservatively in the MCP policy layer. The policy controls reviewed earlier default uncertain tools to disabled/locked and require approval.
+- Plugin code is run in a separate owned worker process with a bounded JSON protocol, environment filtering, timeouts, cancellation/ownership logic and a Windows Job Object. The worker revalidates its prepared source/environment receipt at execution and callback boundaries; stale preparation revokes its API.
+- The plugin worker explicitly states it is **not** an OS filesystem or network sandbox. Its separate process and private virtual environment are useful isolation from the host Python process, but must not be mistaken for containment against arbitrary malicious plugin code.
+- `src/row_bot/computer_use/policy.py` has explicit refusals for password managers, protected screens, typing into password/one-time-code/card fields, and dangerous system key combinations. Computer use is limited to interactive local chat; channel chat is refused.
+
+**Important limitations / unresolved questions**
+- Row-Bot exposes a user-selectable Hands-off approval mode. Its own policy says this can approve actions without asking, including consequential actions unless separately marked as person-only. FRIDAY's default must remain user-controlled and must not silently adopt this autonomy model; any optional autonomy would need narrower per-action scopes and explicit, revocable grants.
+- Plugin subprocess isolation is not a true filesystem/network sandbox. A plugin with arbitrary Python code may still have the host user's OS permissions unless the worker is further constrained by OS-level controls. Do not import this as a trusted security boundary.
+- MCP tool classification depends partly on names, descriptions and server-provided hints. The code has conservative heuristics and locks unknown/destructive effects, but metadata-based classification is not a proof of benign behavior. Treat all remote MCP servers and their results as untrusted.
+- Computer use's own architecture document explicitly says the prior extra verdict layer was removed in the 5.3 rebuild. Its safety model relies on visibility, interruption and action approvals; the upstream Cua telemetry remains enabled after a disclosure. FRIDAY's stricter user-control and privacy requirements mean no direct adoption without a separate decision, and telemetry must be independently opt-in.
+- The audit has not yet traced every tool wrapper and dispatch middleware call site end-to-end. The existence of a canonical policy module does not prove every execution path is wired through it.
+
+**Preliminary decision:** Row-Bot is a strong source of design patterns for fail-closed settings, approval records, canonical dispatch policy, and constrained developer network egress. It is **not** a safe drop-in foundation: its broad dependency stack, host shell, plugin worker without OS sandboxing, optional Hands-off mode, MCP metadata uncertainty and computer-use telemetry all need adaptation or exclusion. Continue selective component evaluation only; no code import approved.
+
+**Next work:** inspect canonical agent middleware and tool wrappers to prove enforcement coverage, then compare these reusable patterns against FRIDAY's existing Rust/Tauri implementation and OpenJarvis before choosing a minimal prototype.
