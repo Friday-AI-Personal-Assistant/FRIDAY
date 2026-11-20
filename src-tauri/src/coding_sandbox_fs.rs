@@ -3005,7 +3005,9 @@ where
         };
         let result = remove_verified_snapshot_file_bound(&parent, OsStr::new(relative.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "manifest file has no filename")
-        })?), item.size, Some(&expected_file));
+        })?), item.size, Some(&expected_file)).map_err(|error| {
+            io::Error::new(error.kind(), format!("snapshot payload file removal failed for {}: {}", item.path, error))
+        });
         match result {
             Ok(()) => {
                 drop(expected_file);
@@ -3039,7 +3041,9 @@ where
         let name = relative.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "manifest directory has no filename")
         })?;
-        let result = remove_verified_empty_snapshot_directory(&parent, name, Some(&expected_directory));
+        let result = remove_verified_empty_snapshot_directory(&parent, name, Some(&expected_directory)).map_err(|error| {
+            io::Error::new(error.kind(), format!("snapshot payload directory removal failed for {}: {}", directory, error))
+        });
         match result {
             Ok(()) => {
                 drop(expected_directory);
@@ -3098,7 +3102,9 @@ where
     // directory handle. On Windows, open_snapshot_cleanup_root deliberately
     // grants FILE_SHARE_DELETE so the final DELETE-access handle can coexist
     // with this retained identity handle.
-    remove_verified_empty_snapshot_directory(workspace, OsStr::new(snapshot_id), Some(&root))
+    remove_verified_empty_snapshot_directory(workspace, OsStr::new(snapshot_id), Some(&root)).map_err(|error| {
+        io::Error::new(error.kind(), format!("snapshot root directory removal failed: {}", error))
+    })
 }
 
 fn open_existing_snapshot_parent(root: &File, relative: &Path) -> io::Result<Option<File>> {
