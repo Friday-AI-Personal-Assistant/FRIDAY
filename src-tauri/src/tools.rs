@@ -121,7 +121,6 @@ fn authorize_tool_execution(tool_id: &str, arguments: &Value, approval_token: Op
 }
 
 #[tauri::command]
-#[tauri::command]
 pub fn issue_tool_approval(tool_id: String, arguments: Value) -> Result<String, String> {
     let definition = registered_tool(&tool_id)?;
     if !definition.approval_required { return Err("This tool does not use an approval token.".into()); }
