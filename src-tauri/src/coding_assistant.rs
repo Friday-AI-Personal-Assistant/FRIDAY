@@ -292,8 +292,16 @@ fn check_code_backup_capacity(dir: &Path, additional_bytes: u64) -> Result<(), S
     Ok(())
 }
 
-fn apply_code_preview_to_disk(root: &Path, current: &Path, proposed: &[u8], expected_sha256: &str, token: &str, now: u64)
-    -> Result<(PathBuf, CodingUndoRecord), String>
+fn apply_code_preview_to_disk(
+    root: &Path, current: &Path, proposed: &[u8], expected_sha256: &str, token: &str, now: u64,
+) -> Result<(PathBuf, CodingUndoRecord), String> {
+    apply_code_preview_to_disk_bound(root, current, proposed, expected_sha256, token, now, None)
+}
+
+fn apply_code_preview_to_disk_bound(
+    root: &Path, current: &Path, proposed: &[u8], expected_sha256: &str, token: &str, now: u64,
+    expected_identity: Option<((u64, u64), crate::coding_sandbox_fs::RuntimeTreeIdentity)>,
+) -> Result<(PathBuf, CodingUndoRecord), String>
 {
     if !current.starts_with(root) || proposed.is_empty() || proposed.len() > MAX_PROPOSED_FILE_BYTES || proposed.contains(&0) {
         return Err("The approved code change failed its project or content bounds.".into());
@@ -306,7 +314,22 @@ fn apply_code_preview_to_disk(root: &Path, current: &Path, proposed: &[u8], expe
     if !supported_project_file(current) { return Err("This file type is not allowed for safe code editing.".into()); }
     let canonical = fs::canonicalize(current).map_err(|_| "Could not revalidate the selected project file.".to_string())?;
     if canonical != current || !canonical.starts_with(root) { return Err("The selected project file moved or was redirected.".into()); }
-    let original = fs::read(&canonical).map_err(|_| "Could not re-read the selected project file.".to_string())?;
+    let original = if let Some((expected_root_identity, expected_file_identity)) = expected_identity {
+        let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+            .map_err(|_| "Could not safely reopen the approved project folder.".to_string())?;
+        let actual_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+            .map_err(|_| "Could not verify the approved project folder.".to_string())?;
+        if actual_root_identity != expected_root_identity {
+            return Err("The approved project folder changed after scanning. No changes were made.".into());
+        }
+        let relative = current.strip_prefix(root)
+            .map_err(|_| "The selected project file is outside the approved folder.".to_string())?;
+        crate::coding_sandbox_fs::read_verified_project_file(
+            &root_handle, relative, expected_file_identity, MAX_FILE_BYTES,
+        ).map_err(|_| "The selected project file no longer matches the identity captured during scanning. Create a fresh preview.".to_string())?
+    } else {
+        fs::read(&canonical).map_err(|_| "Could not re-read the selected project file.".to_string())?
+    };
     if original.len() as u64 != meta.len() || original.len() as u64 > MAX_FILE_BYTES || original.contains(&0)
         || std::str::from_utf8(&original).is_err() {
         return Err("The selected project file changed or is no longer bounded UTF-8 text.".into());
@@ -361,6 +384,26 @@ fn apply_code_preview_to_disk(root: &Path, current: &Path, proposed: &[u8], expe
     if sha256_hex(&temp_bytes) != resulting_hash {
         let _ = fs::remove_file(&temporary);
         return Err("The replacement file failed SHA-256 verification. The original was not changed.".into());
+    }
+
+    // Re-check the scanned identity after preparing recovery data and immediately
+    // before the existing path-based replacement operation.
+    if let Some((expected_root_identity, expected_file_identity)) = expected_identity {
+        let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+            .map_err(|_| "The approved project folder changed before installation.".to_string())?;
+        let actual_root_identity = crate::coding_sandbox_fs::verified_directory_identity(root, &root_handle)
+            .map_err(|_| "Could not reverify the approved project folder before installation.".to_string())?;
+        if actual_root_identity != expected_root_identity {
+            return Err("The approved project folder changed before installation. Recovery files were retained.".into());
+        }
+        let relative = current.strip_prefix(root)
+            .map_err(|_| "The selected project file moved outside the approved folder.".to_string())?;
+        let latest = crate::coding_sandbox_fs::read_verified_project_file(
+            &root_handle, relative, expected_file_identity, MAX_FILE_BYTES,
+        ).map_err(|_| "The selected project file changed identity before installation. Recovery files were retained.".to_string())?;
+        if sha256_hex(&latest) != original_hash {
+            return Err("The selected project file changed before installation. Recovery files were retained.".into());
+        }
     }
 
     let displaced = parent.join(format!(".friday-code-original-{token}.tmp"));
@@ -1437,17 +1480,28 @@ pub fn apply_code_change(app: AppHandle, preview_id: String, approval_token: Str
     // Reconcile any interrupted transaction before trusting a fresh approval.
     // If recovery changes the file, the preview hash check below will reject it.
     recover_project_code_transactions(&root)?;
-    let current = fs::canonicalize(&grant.path).map_err(|_| "The selected project file is no longer available.".to_string())?;
+    let current = grant.path.clone();
     if current != preview.path || !current.starts_with(&root) {
         return Err("The selected project file moved or was redirected. No changes were made.".into());
     }
-    let original = fs::read(&current).map_err(|_| "Could not re-read the selected project file.".to_string())?;
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root)
+        .map_err(|_| "Could not safely reopen the approved project folder.".to_string())?;
+    let actual_root_identity = crate::coding_sandbox_fs::verified_directory_identity(&root, &root_handle)
+        .map_err(|_| "Could not verify the approved project folder.".to_string())?;
+    if actual_root_identity != grant.root_identity {
+        return Err("The approved project folder changed after scanning. No changes were made.".into());
+    }
+    let relative_file = current.strip_prefix(&root)
+        .map_err(|_| "The selected project file is outside the approved folder.".to_string())?;
+    let original = crate::coding_sandbox_fs::read_verified_project_file(
+        &root_handle, relative_file, grant.file_identity, MAX_FILE_BYTES,
+    ).map_err(|_| "The selected project file changed identity after preview. Create a fresh preview.".to_string())?;
     if sha256_hex(&original) != preview.original_sha256 {
         return Err("The file changed after preview. No changes were made; create a fresh preview.".into());
     }
     let token = make_token();
-    let (backup, record) = apply_code_preview_to_disk(&root, &current, preview.proposed_content.as_bytes(),
-        &preview.original_sha256, &token, now)?;
+    let (backup, record) = apply_code_preview_to_disk_bound(&root, &current, preview.proposed_content.as_bytes(),
+        &preview.original_sha256, &token, now, Some((grant.root_identity, grant.file_identity)))?;
     let relative = relative_path(&root, &current).ok_or("The changed file is outside the project folder.")?;
     let backup_relative = backup.strip_prefix(&root).unwrap_or(&backup).to_string_lossy().replace('\\', "/");
     let file_name = current.file_name().and_then(|v| v.to_str()).unwrap_or("Project file").to_string();
