@@ -1668,6 +1668,16 @@ struct SnapshotCleanupFile {
     size: u64,
 }
 
+/// In-memory authority captured by cleanup preflight. These handles keep the
+/// exact objects observed during native enumeration alive until cleanup ends;
+/// serialized manifest paths alone never authorize deletion.
+struct SnapshotCleanupPlan {
+    manifest: SnapshotCleanupManifest,
+    file_handles: std::collections::BTreeMap<String, File>,
+    directory_handles: std::collections::BTreeMap<String, File>,
+    marker_handle: File,
+}
+
 fn portable_manifest_path(path: &Path) -> io::Result<String> {
     let mut parts = Vec::new();
     for component in path.components() {
@@ -1765,6 +1775,16 @@ pub(crate) fn remove_verified_snapshot_file(
     name: &OsStr,
     expected_size: u64,
 ) -> io::Result<()> {
+    remove_verified_snapshot_file_bound(parent, name, expected_size, None)
+}
+
+#[cfg(unix)]
+fn remove_verified_snapshot_file_bound(
+    parent: &File,
+    name: &OsStr,
+    expected_size: u64,
+    expected_file: Option<&File>,
+) -> io::Result<()> {
     use std::os::unix::{ffi::OsStrExt, io::AsRawFd};
 
     if !is_single_normal_component(name) {
@@ -1774,6 +1794,11 @@ pub(crate) fn remove_verified_snapshot_file(
     let metadata = opened.metadata()?;
     if !metadata.is_file() || metadata.len() != expected_size {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file does not match its expected type or size"));
+    }
+    if let Some(expected) = expected_file {
+        if !same_handle_identity(expected, &opened)? {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file no longer matches the identity captured during preflight"));
+        }
     }
     let current = open_file_nofollow(parent, name)?;
     if !same_handle_identity(&opened, &current)? {
@@ -1798,6 +1823,16 @@ pub(crate) fn remove_verified_snapshot_file(
     parent: &File,
     name: &OsStr,
     expected_size: u64,
+) -> io::Result<()> {
+    remove_verified_snapshot_file_bound(parent, name, expected_size, None)
+}
+
+#[cfg(windows)]
+fn remove_verified_snapshot_file_bound(
+    parent: &File,
+    name: &OsStr,
+    expected_size: u64,
+    expected_file: Option<&File>,
 ) -> io::Result<()> {
     use std::{
         mem,
@@ -1940,6 +1975,11 @@ pub(crate) fn remove_verified_snapshot_file(
     }
 
     let file = unsafe { File::from_raw_handle(raw_handle) };
+    if let Some(expected) = expected_file {
+        if !same_handle_identity(expected, &file)? {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot delete handle does not match the identity captured during preflight"));
+        }
+    }
     let metadata = file.metadata()?;
     use std::os::windows::fs::MetadataExt;
     if !metadata.is_file()
@@ -2939,16 +2979,23 @@ where
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    let manifest = preflight_snapshot_cleanup_progress(&root, snapshot_id, limits)?;
+    let plan = preflight_snapshot_cleanup_plan(&root, snapshot_id, limits)?;
+    let manifest = &plan.manifest;
 
     for item in &manifest.files {
-        let relative = Path::new(&item.path);
-        let Some(parent) = open_existing_snapshot_parent(&root, relative.parent().unwrap_or(Path::new("")))? else {
+        let Some(expected_file) = plan.file_handles.get(&item.path) else {
+            // A missing inventoried entry is valid during retryable cleanup.
             continue;
         };
-        match remove_verified_snapshot_file(&parent, OsStr::new(relative.file_name().ok_or_else(|| {
+        let relative = Path::new(&item.path);
+        let Some(parent) = open_existing_snapshot_parent_bound(
+            &root, relative.parent().unwrap_or(Path::new("")), &plan.directory_handles,
+        )? else {
+            continue;
+        };
+        match remove_verified_snapshot_file_bound(&parent, OsStr::new(relative.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "manifest file has no filename")
-        })?), item.size) {
+        })?), item.size, Some(expected_file)) {
             Ok(()) => after_payload_entry(&item.path)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
@@ -2962,13 +3009,19 @@ where
     });
     for directory in &directories {
         let relative = Path::new(directory);
-        let Some(parent) = open_existing_snapshot_parent(&root, relative.parent().unwrap_or(Path::new("")))? else {
+        let Some(expected_directory) = plan.directory_handles.get(directory) else {
+            // It was already absent when retry preflight ran.
+            continue;
+        };
+        let Some(parent) = open_existing_snapshot_parent_bound(
+            &root, relative.parent().unwrap_or(Path::new("")), &plan.directory_handles,
+        )? else {
             continue;
         };
         let name = relative.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "manifest directory has no filename")
         })?;
-        match remove_verified_empty_snapshot_directory(&parent, name, None) {
+        match remove_verified_empty_snapshot_directory(&parent, name, Some(expected_directory)) {
             Ok(()) => after_payload_entry(directory)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
@@ -2987,16 +3040,20 @@ where
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains residual or unexpected entries; ownership marker preserved"));
     }
     let marker = open_file_nofollow(&root, OsStr::new(".friday-snapshot-owner.json"))?;
+    if !same_handle_identity(&plan.marker_handle, &marker)? {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot ownership marker no longer matches the identity captured during preflight"));
+    }
     let marker_metadata = marker.metadata()?;
     if !marker_metadata.is_file() || is_reparse_or_symlink(&marker_metadata)
         || marker_metadata.len() == 0 || marker_metadata.len() > 1024 * 1024
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot ownership marker is not a bounded regular file"));
     }
-    remove_verified_snapshot_file(
+    remove_verified_snapshot_file_bound(
         &root,
         OsStr::new(".friday-snapshot-owner.json"),
         marker_metadata.len(),
+        Some(&plan.marker_handle),
     )?;
     drop(marker);
 
@@ -3021,6 +3078,35 @@ fn open_existing_snapshot_parent(root: &File, relative: &Path) -> io::Result<Opt
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         }
+    }
+    Ok(Some(current))
+}
+
+fn open_existing_snapshot_parent_bound(
+    root: &File,
+    relative: &Path,
+    expected_directories: &std::collections::BTreeMap<String, File>,
+) -> io::Result<Option<File>> {
+    let mut current = root.try_clone()?;
+    let mut walked = PathBuf::new();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "manifest parent path is not normalized"));
+        };
+        walked.push(name);
+        let portable = portable_manifest_path(&walked)?;
+        let next = match open_dir_nofollow(&current, Path::new(name)) {
+            Ok(next) => next,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let expected = expected_directories.get(&portable).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "cleanup parent has no identity captured during preflight")
+        })?;
+        if !same_handle_identity(expected, &next)? {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "cleanup parent directory no longer matches its preflight identity"));
+        }
+        current = next;
     }
     Ok(Some(current))
 }
@@ -3172,6 +3258,14 @@ pub(crate) fn preflight_snapshot_cleanup_progress(
     expected_snapshot_id: &str,
     limits: BoundedSnapshotLimits,
 ) -> io::Result<SnapshotCleanupManifest> {
+    Ok(preflight_snapshot_cleanup_plan(snapshot_root, expected_snapshot_id, limits)?.manifest)
+}
+
+fn preflight_snapshot_cleanup_plan(
+    snapshot_root: &File,
+    expected_snapshot_id: &str,
+    limits: BoundedSnapshotLimits,
+) -> io::Result<SnapshotCleanupPlan> {
     use std::collections::{BTreeMap, BTreeSet};
 
     let root_metadata = snapshot_root.metadata()?;
@@ -3201,6 +3295,8 @@ pub(crate) fn preflight_snapshot_cleanup_progress(
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot cleanup entry limit must be non-zero"));
     }
     let mut entries_scanned = 0usize;
+    let mut file_handles = BTreeMap::new();
+    let mut directory_handles = BTreeMap::new();
     inspect_snapshot_cleanup_progress_directory(
         snapshot_root,
         Path::new(""),
@@ -3209,8 +3305,15 @@ pub(crate) fn preflight_snapshot_cleanup_progress(
         &marker,
         limits.max_entries,
         &mut entries_scanned,
+        &mut file_handles,
+        &mut directory_handles,
     )?;
-    Ok(manifest)
+    Ok(SnapshotCleanupPlan {
+        manifest,
+        file_handles,
+        directory_handles,
+        marker_handle: marker,
+    })
 }
 
 fn inspect_snapshot_cleanup_progress_directory(
@@ -3221,6 +3324,8 @@ fn inspect_snapshot_cleanup_progress_directory(
     marker_handle: &File,
     max_entries: usize,
     entries_scanned: &mut usize,
+    file_handles: &mut std::collections::BTreeMap<String, File>,
+    directory_handles: &mut std::collections::BTreeMap<String, File>,
 ) -> io::Result<()> {
     let entries = enumerate_runtime_tree_entries(parent, max_entries)?;
     for entry in entries {
@@ -3263,7 +3368,11 @@ fn inspect_snapshot_cleanup_progress_directory(
             {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory changed identity or type during cleanup preflight"));
             }
-            inspect_snapshot_cleanup_progress_directory(&child, &relative_path, expected_files, expected_directories, marker_handle, max_entries, entries_scanned)?;
+            directory_handles.insert(portable.clone(), child.try_clone()?);
+            inspect_snapshot_cleanup_progress_directory(
+                &child, &relative_path, expected_files, expected_directories,
+                marker_handle, max_entries, entries_scanned, file_handles, directory_handles,
+            )?;
             continue;
         }
         if !entry.is_file {
@@ -3279,6 +3388,9 @@ fn inspect_snapshot_cleanup_progress_directory(
             || !runtime_tree_handle_matches(entry.identity, &file)?
         {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file changed identity, type, or size during cleanup preflight"));
+        }
+        if file_handles.insert(portable, file).is_some() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot cleanup preflight observed a duplicate file path"));
         }
     }
     Ok(())
