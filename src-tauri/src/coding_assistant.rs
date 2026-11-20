@@ -1375,7 +1375,7 @@ pub async fn preview_code_change(file_id: String, proposed_content: String) -> R
         return Err("There are already 10 pending code previews. Wait for them to expire or select the project again.".into());
     }
     previews.insert(preview_id.clone(), StoredCodePreview {
-        file_id, root, path: canonical, original_sha256: original_sha256.clone(),
+        file_id, root, path: grant.path, original_sha256: original_sha256.clone(),
         proposed_sha256: proposed_sha256.clone(), proposed_content,
         expires_at: now.saturating_add(CODE_PREVIEW_TTL_SECONDS), approval_token: None,
     });
