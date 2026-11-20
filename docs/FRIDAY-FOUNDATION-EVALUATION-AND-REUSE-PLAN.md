@@ -1,6 +1,6 @@
 # FRIDAY Foundation Evaluation & Reuse-First Engineering Plan
 
-**Status:** Initial source inspection; foundation selection is NOT final  
+**Status:** Active comparative evaluation; foundation selection is NOT final  
 **Evaluation branch:** `foundation/evaluation`  
 **Preserved baseline:** `feature/phase-2-skills` at `85dbace48595c1600bb152cb511f65572d53706d` (#1056)  
 **Product acceptance order:** Safety → User control → Cost transparency → Time saved
@@ -13,7 +13,7 @@ The current leading candidate for deeper evaluation is **OpenJarvis**. Its modul
 
 **Current recommendation:** evaluate OpenJarvis as a source of reusable components and architectural patterns. Do not yet select it as FRIDAY's application foundation, enable its agents/tools, or ship its desktop app.
 
-The Thoth project is a secondary reference for user-facing breadth (Windows/macOS desktop, local models, graph memory, workflows, voice, documents and integrations), not a selected dependency. The inspected `zeroitp/Thoth` repository identifies itself as a fork and its README points to a different canonical repository. Its dependency set is broad and mostly unpinned in `requirements.txt`; a proper canonical-source and dependency/license/security review is still required before any reuse.
+The Thoth project remains a secondary reference, not a selected dependency. The inspected `zeroitp/Thoth` repository identifies itself as a fork whose GitHub parent is `siddsachar/row-bot`; its README badges and links refer to `siddsachar/Thoth`, while GitHub's API redirects that repository identity to `siddsachar/row-bot`. Treat this as a repository rename/identity transition that must be pinned and verified before citing a canonical source. The fork's dependency set is broad and mostly unpinned in `requirements.txt`; no reuse approval follows from the Apache-2.0 repository metadata.
 
 The previously mentioned Personal Jarvis candidate could not be reliably resolved to a canonical public repository during this pass. It is not ranked until the exact upstream repository and license can be verified.
 
@@ -50,6 +50,17 @@ Source inspected: https://github.com/zeroitp/Thoth
 - Its `requirements.txt` contains a large mixed dependency set, with many dependencies not version-pinned. This increases reproducibility, supply-chain and license-audit work.
 - The README makes claims about sandboxed plugins, approvals and secure credential storage. These claims have not yet been independently validated in source.
 - Do not import its shell, browser, tunnel, messaging, health, or computer-use features without individual threat-model and permission reviews.
+
+### Row-Bot / Thoth upstream candidate (new; not yet approved)
+
+Sources: https://github.com/siddsachar/row-bot and the `zeroitp/Thoth` fork.
+
+- GitHub repository metadata identifies `siddsachar/row-bot` as the non-fork upstream parent of `zeroitp/Thoth`; the fork README presents the product as Thoth and links its release/CI badges to `siddsachar/Thoth`, which GitHub currently redirects to the `row-bot` repository identity.
+- The upstream repository metadata reports Apache-2.0, active development, Python as its primary language, Windows/macOS desktop packaging claims, local Ollama support and optional cloud providers. These are repository/README claims, not verified runtime acceptance.
+- The project appears substantially broader and more actively maintained than the earlier `zeroitp/Thoth` fork snapshot. It is a serious candidate for a deeper architecture and component-level reuse review, not an automatic foundation choice.
+- Its advertised capabilities include agent/tool execution, shell, filesystem, browser automation, messaging channels, workflows, plugins/MCP and background tasks. These are high-risk surfaces. FRIDAY must not inherit their permission model without direct source review and adversarial tests.
+- The repository is large and Python/LangGraph-oriented, while FRIDAY already has a Rust/Tauri/React architecture. Evaluate selective components and integration cost; do not add a second full desktop/backend stack by default.
+- Required next checks: pin current commit; inspect tool registry and dispatch, authorization/approval middleware, filesystem and shell boundaries, plugin/MCP isolation, workflow persistence/cancellation, credential storage, telemetry/network behavior, updater/signing, installer scripts, dependency lockfiles/SBOM, bundled assets/models and Windows runtime behavior.
 
 ### Personal Jarvis
 
@@ -103,3 +114,30 @@ The Coding Assistant is not discarded. Its bounded project reading, analysis, di
 ## Decision status
 
 **No upstream project has been approved for wholesale adoption.** OpenJarvis is the leading candidate for component-level reuse pending the remaining security, privacy, license and Windows acceptance work.
+
+
+## Evaluation checkpoint — 2026-11-20
+
+### Repository and CI verification
+
+- [x] Verified the four-guarantees documentation commit on `feature/phase-2-skills`: `db57764283e449d71eb73e8d045914abc6940c53`.
+- [x] Verified Actions run #1057 (`44767368952`) completed successfully. Linux unit tests passed; Windows frontend build, Rust tests and installer build passed. This is hosted CI evidence, not physical-device acceptance.
+- [x] Confirmed the evaluation workspace can read its own roadmap and master checklist on `foundation/evaluation`. The existing development branch remains separate and untouched by this evaluation update.
+
+### New candidate lead and current decision
+
+- [x] Traced `zeroitp/Thoth` fork metadata to parent `siddsachar/row-bot`.
+- [x] Confirmed the upstream repository currently identifies as `siddsachar/row-bot`, reports Apache-2.0, and is active. The fork README uses Thoth branding and links to the old `siddsachar/Thoth` identity, which GitHub redirects to the Row-Bot repository.
+- [ ] Pin the exact upstream commit and inspect the source-level permission, execution, plugin, workflow, credential, telemetry, updater and Windows packaging boundaries.
+- [ ] Reconcile the repository rename/identity in the audit record before treating Thoth and Row-Bot as one canonical candidate.
+- [ ] Do not import or execute Row-Bot/Thoth code in FRIDAY during evaluation.
+
+### Revised candidate evaluation order
+
+1. **Row-Bot / Thoth upstream:** deep review first because it is the newly identified active upstream behind the previously inspected Thoth fork.
+2. **OpenJarvis:** retain as a serious component-reuse candidate; its Rust engine production integration remains NO-GO based on the already recorded compatibility audit, but other subsystems may still offer value.
+3. **Personal Jarvis:** remain unranked until the exact project reference is supplied or resolved without ambiguity.
+
+### Engineering guardrails
+
+This evaluation branch is a planning, source-inspection and isolated-prototype workspace. Do not merge to `main`, overwrite `feature/phase-2-skills`, replace FRIDAY wholesale, enable external agent tools, or introduce new runtime dependencies until the relevant four-guarantee release gates have evidence.
