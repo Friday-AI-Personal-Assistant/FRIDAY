@@ -814,8 +814,20 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 - [x] Add a separate capability for local Coding Assistant structural analysis.
 - [x] Deny unknown command IDs and capability substitutions in the central Rust policy.
 - [x] Preserve existing folder/project-scoped grants, per-operation previews, approvals, hash checks, backups and undo protections.
-- [ ] Verify this increment with Windows and Linux CI.
-- [ ] Extend the same audit to sandbox lifecycle and guest-execution approval commands while guest execution remains disabled.
+- [x] Verify this increment with Windows and Linux CI (#1076, [workflow 44796838718](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44796838718)).
+- [x] Extend the backend capability audit to sandbox lifecycle and guest-execution approval entry points while guest execution remains disabled.
 - [ ] Design and implement durable user-visible permission grants, revocation, expiry and audit before enabling broader integrations or executable skills.
 
 **Scope:** this is backend command classification/enforcement, not a persistent permission centre or OS-level sandbox. The UI cannot grant itself authority; feature-specific grants and operation tokens remain required where currently implemented.
+
+### Sandbox lifecycle capability enforcement — implementation pending CI
+
+- [x] Map preflight, snapshot preparation, recovery, configuration preview and snapshot discard to distinct backend capabilities.
+- [x] Enforce each capability at the start of its Rust command handler.
+- [x] Explicitly deny guest-run approval issuance, consumption and revocation until the complete execution boundary is approved.
+- [x] Add regression tests for lifecycle mappings, capability substitution and guest-approval denial.
+- [ ] Verify this increment with Windows and Linux CI.
+- [ ] Complete physical Windows Sandbox launch/isolation acceptance before considering any guest execution enablement.
+- [ ] Keep guest process launch, arbitrary commands, host fallback and network-enabled execution disabled.
+
+**Scope:** this is a static backend command allowlist with an explicit disabled-command set. It is not a persistent user-grant manager, universal Tauri IPC gateway or proof of OS isolation. Existing snapshot ownership and filesystem protections remain mandatory.

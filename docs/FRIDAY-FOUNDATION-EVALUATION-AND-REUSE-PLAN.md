@@ -324,3 +324,16 @@ Based on #1075 (`bf5469d3b4d0bfcaae6fed78a49b717a4d3a0907`), the next implementa
 - Guest execution and sandbox lifecycle commands are deliberately not expanded in this increment. Guest execution remains disabled and must receive a separate end-to-end review before enablement.
 
 **Limitations:** this is a static backend command allowlist, not yet a persistent user-editable permission store with grant expiry/revocation, nor an OS sandbox. The next stage will add durable grants, audit and revocation only after all command families are mapped. Do not infer that a capability name by itself grants a user permission.
+
+
+### Sandbox lifecycle capability enforcement and guest-execution hold
+
+The #1076 File/Coding Assistant capability increment is verified on both Windows and Linux. The next increment maps the registered sandbox lifecycle IPC entry points through the same Rust-owned backend policy.
+
+- Add distinct backend capabilities for sandbox preflight, snapshot preparation, recovery, configuration preview and snapshot discard.
+- Enforce each capability at the start of its Rust command handler, before host inspection, filesystem access or mutation. Existing selected-project grants, current-session snapshot ownership, bounded inventory and handle-relative cleanup remain independently required.
+- Keep the three registered guest-run approval endpoints explicitly denied by backend policy: issue, consume and revoke. They are not permission to execute code, and no guest process-launch command is enabled by this change.
+- Add regression tests for all lifecycle mappings, capability substitution and explicit guest-approval denial.
+- Preserve the existing Windows Sandbox configuration restrictions and resource limits as preparatory code only. This change does not prove a usable OS sandbox, enable guest execution, or establish a universal Tauri IPC gateway.
+
+**Next acceptance gate:** Windows and Linux CI must pass before this increment is marked complete. Physical Windows Sandbox launch/isolation validation remains a separate requirement; guest execution stays disabled until the full end-to-end boundary is independently reviewed.

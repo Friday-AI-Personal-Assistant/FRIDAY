@@ -85,12 +85,28 @@ const COMMAND_POLICIES: &[CommandPolicy] = &[
     CommandPolicy { command_id: "coding.cancel_code_change_preview", capability: "coding.change.cancel" },
     CommandPolicy { command_id: "coding.read_project_files", capability: "coding.project.read" },
     CommandPolicy { command_id: "coding.analyze_project_intelligence", capability: "coding.analysis.local" },
+    CommandPolicy { command_id: "coding_sandbox_preflight", capability: "coding.sandbox.preflight" },
+    CommandPolicy { command_id: "coding_sandbox_prepare_snapshot", capability: "coding.sandbox.snapshot.prepare" },
+    CommandPolicy { command_id: "coding_sandbox_recover_workspaces", capability: "coding.sandbox.snapshot.recover" },
+    CommandPolicy { command_id: "coding_sandbox_config_preview", capability: "coding.sandbox.config.preview" },
+    CommandPolicy { command_id: "coding_sandbox_discard_snapshot", capability: "coding.sandbox.snapshot.discard" },
+];
+
+/// Guest execution approval endpoints are registered for compatibility but are
+/// intentionally unavailable until the complete execution boundary is reviewed.
+const DISABLED_COMMANDS: &[&str] = &[
+    "issue_guest_run_execution_approval",
+    "consume_guest_run_execution_approval",
+    "revoke_guest_run_execution_approval",
 ];
 
 /// Authorize a specific IPC command against its trusted backend capability.
 /// Folder/project selection grants and per-operation preview tokens remain
 /// independently validated by their owning feature module.
 pub(crate) fn authorize_command(command_id: &str, capability: &str) -> Result<(), String> {
+    if DISABLED_COMMANDS.contains(&command_id) {
+        return Err("This backend operation is intentionally disabled by FRIDAY's current execution policy.".into());
+    }
     let policy = COMMAND_POLICIES
         .iter()
         .find(|policy| policy.command_id == command_id)
@@ -135,6 +151,29 @@ mod tests {
         assert!(authorize_command("coding.cancel_code_change_preview", "coding.change.cancel").is_ok());
         assert!(authorize_command("coding.read_project_files", "coding.project.read").is_ok());
         assert!(authorize_command("coding.analyze_project_intelligence", "coding.analysis.local").is_ok());
+    }
+
+    #[test]
+    fn sandbox_lifecycle_commands_have_distinct_backend_capabilities() {
+        assert!(authorize_command("coding_sandbox_preflight", "coding.sandbox.preflight").is_ok());
+        assert!(authorize_command("coding_sandbox_prepare_snapshot", "coding.sandbox.snapshot.prepare").is_ok());
+        assert!(authorize_command("coding_sandbox_recover_workspaces", "coding.sandbox.snapshot.recover").is_ok());
+        assert!(authorize_command("coding_sandbox_config_preview", "coding.sandbox.config.preview").is_ok());
+        assert!(authorize_command("coding_sandbox_discard_snapshot", "coding.sandbox.snapshot.discard").is_ok());
+    }
+
+    #[test]
+    fn guest_execution_approval_endpoints_are_explicitly_disabled() {
+        assert!(authorize_command("issue_guest_run_execution_approval", "coding.guest.execution.approval").is_err());
+        assert!(authorize_command("consume_guest_run_execution_approval", "coding.guest.execution.consume").is_err());
+        assert!(authorize_command("revoke_guest_run_execution_approval", "coding.guest.execution.revoke").is_err());
+        assert!(COMMAND_POLICIES.iter().all(|policy| !DISABLED_COMMANDS.contains(&policy.command_id)));
+    }
+
+    #[test]
+    fn sandbox_capabilities_cannot_be_substituted() {
+        assert!(authorize_command("coding_sandbox_discard_snapshot", "coding.sandbox.snapshot.recover").is_err());
+        assert!(authorize_command("coding_sandbox_prepare_snapshot", "coding.sandbox.config.preview").is_err());
     }
 
     #[test]

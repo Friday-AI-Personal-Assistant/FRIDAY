@@ -3419,6 +3419,7 @@ fn guest_run_now_unix_seconds() -> Result<u64, String> {
 /// The request is parsed again here; no command or path is accepted from the UI.
 #[tauri::command]
 pub fn issue_guest_run_execution_approval(request_json: String) -> Result<GuestRunApprovalReceipt, String> {
+    crate::permissions::authorize_command("issue_guest_run_execution_approval", "coding.guest.execution.approval")?;
     let request = parse_guest_run_request(request_json.as_bytes())?;
     let plan = build_guest_run_execution_plan(request)?;
     let now = guest_run_now_unix_seconds()?;
@@ -3435,6 +3436,7 @@ pub fn issue_guest_run_execution_approval(request_json: String) -> Result<GuestR
 /// Consumes the one-time approval for this exact request. This does not execute it.
 #[tauri::command]
 pub fn consume_guest_run_execution_approval(request_json: String, token: String) -> Result<(), String> {
+    crate::permissions::authorize_command("consume_guest_run_execution_approval", "coding.guest.execution.consume")?;
     let request = parse_guest_run_request(request_json.as_bytes())?;
     let plan = build_guest_run_execution_plan(request)?;
     let now = guest_run_now_unix_seconds()?;
@@ -3446,6 +3448,7 @@ pub fn consume_guest_run_execution_approval(request_json: String, token: String)
 /// Cancels a pending approval. Run IDs are fixed-width hexadecimal identifiers.
 #[tauri::command]
 pub fn revoke_guest_run_execution_approval(run_id: String) -> Result<bool, String> {
+    crate::permissions::authorize_command("revoke_guest_run_execution_approval", "coding.guest.execution.revoke")?;
     if !valid_snapshot_id(&run_id) {
         return Err("The guest run identifier is invalid.".into());
     }
@@ -7859,6 +7862,7 @@ fn guest_result_storage_capability_message(
 
 #[tauri::command]
 pub async fn coding_sandbox_preflight() -> Result<CodingSandboxPreflight, String> {
+    crate::permissions::authorize_command("coding_sandbox_preflight", "coding.sandbox.preflight")?;
     let _project_root = crate::coding_assistant::selected_project_root_for_sandbox()?;
     #[cfg(windows)]
     {
@@ -8216,6 +8220,7 @@ fn secure_private_workspace_directory_handle(path: &Path, directory: &File) -> R
 
 #[tauri::command]
 pub async fn coding_sandbox_prepare_snapshot(app: AppHandle) -> Result<CodingSandboxSnapshot, String> {
+    crate::permissions::authorize_command("coding_sandbox_prepare_snapshot", "coding.sandbox.snapshot.prepare")?;
     let source_root = crate::coding_assistant::selected_project_root_for_sandbox()?;
     let root_metadata = fs::symlink_metadata(&source_root)
         .map_err(|_| "The selected project folder is no longer available.".to_string())?;
@@ -8650,6 +8655,7 @@ fn decode_xml_text(value: &str) -> Option<String> {
 
 #[tauri::command]
 pub async fn coding_sandbox_recover_workspaces(app: AppHandle) -> Result<CodingSandboxRecovery, String> {
+    crate::permissions::authorize_command("coding_sandbox_recover_workspaces", "coding.sandbox.snapshot.recover")?;
     let app_data = app.path().app_local_data_dir()
         .map_err(|_| "FRIDAY could not locate its private application data folder.".to_string())?;
     let workspace_root = app_data.join("coding-sandbox-workspaces");
@@ -8714,6 +8720,7 @@ pub async fn coding_sandbox_recover_workspaces(app: AppHandle) -> Result<CodingS
 
 #[tauri::command]
 pub async fn coding_sandbox_config_preview(snapshot_id: String) -> Result<String, String> {
+    crate::permissions::authorize_command("coding_sandbox_config_preview", "coding.sandbox.config.preview")?;
     if !valid_snapshot_id(&snapshot_id) {
         return Err("The snapshot identifier is invalid.".into());
     }
@@ -8726,6 +8733,7 @@ pub async fn coding_sandbox_config_preview(snapshot_id: String) -> Result<String
 
 #[tauri::command]
 pub async fn coding_sandbox_discard_snapshot(snapshot_id: String) -> Result<String, String> {
+    crate::permissions::authorize_command("coding_sandbox_discard_snapshot", "coding.sandbox.snapshot.discard")?;
     if !valid_snapshot_id(&snapshot_id) {
         return Err("The snapshot identifier is invalid.".into());
     }
