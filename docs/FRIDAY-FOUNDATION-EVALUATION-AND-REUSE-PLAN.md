@@ -208,3 +208,28 @@ Inspected source files at Row-Bot commit `547116cfd03b4b391813e8e2d638ffc22b8255
 **Preliminary decision:** Row-Bot is a strong source of design patterns for fail-closed settings, approval records, canonical dispatch policy, and constrained developer network egress. It is **not** a safe drop-in foundation: its broad dependency stack, host shell, plugin worker without OS sandboxing, optional Hands-off mode, MCP metadata uncertainty and computer-use telemetry all need adaptation or exclusion. Continue selective component evaluation only; no code import approved.
 
 **Next work:** inspect canonical agent middleware and tool wrappers to prove enforcement coverage, then compare these reusable patterns against FRIDAY's existing Rust/Tauri implementation and OpenJarvis before choosing a minimal prototype.
+
+
+## OpenJarvis comparative source review (2026-11-20; preliminary)
+
+**Reviewed upstream revision:** `open-jarvis/OpenJarvis@a9e59e8770f92dd8046c2e5fcc1246eef51bb96a` (Apache-2.0 repository metadata).
+
+**Useful reusable ideas**
+- A central Rust tool executor exists, with clear extension points for capabilities, taint checks, timeouts and event recording.
+- File sensitivity checks cover common credential/key names, extensions, case variations and symlink targets, with dedicated tests.
+- A Docker sandbox runner exists with `--network none`, read-only bind mounts and mount allowlist validation; this is a promising pattern to study, not proof of production containment on FRIDAY's supported Windows configurations.
+- Analytics has an explicit opt-in flow, allowlisted events and redaction, and documentation says configurations without an analytics setting default off.
+- The project has substantial automated security/sandbox tests and lockfiles across Rust/Python/frontend packages.
+
+**Critical blockers for direct reuse**
+- Rust `CapabilityPolicy::default()` calls `new(false)`: missing agent policy allows capabilities by default. The source comments explicitly document this behavior, and unit tests assert it. FRIDAY requires deny-by-default.
+- Rust `ToolExecutor::execute` performs capability checks only when both a policy and an agent ID are supplied. If either is absent, that check is skipped. This makes integration wiring and mandatory context enforcement critical; FRIDAY cannot adopt this executor unchanged.
+- The Rust executor shown calls `tool.execute(params)` synchronously and checks elapsed time only after it returns. That elapsed-time check does not itself interrupt or contain a hung tool.
+- The shell tool directly launches host commands. Its tool spec requires `code:execute` and says confirmation is required, but these metadata flags are not a substitute for FRIDAY's own mandatory backend approval and a real OS sandbox.
+- The Docker runner is an optional wrapper around agent execution. It is not proof every built-in tool or every skill path is sandboxed, and it needs Windows/container runtime acceptance testing.
+- The analytics opt-in is better aligned with FRIDAY's cost/privacy guarantees than a default-on design, but it remains external telemetry and must be separately opt-in in FRIDAY, with no hidden installation identifier or network call.
+- Repository Apache-2.0 metadata does not clear every dependency, model, voice asset, font, icon or provider term. Full SBOM and asset-license review remains required.
+
+**Preliminary decision:** OpenJarvis is useful for selective patterns (file sensitivity tests, event redaction/consent UX, and sandbox design research). Its current capability defaults and optional enforcement context make its Rust executor a **NO-GO for direct reuse** until rewritten/adapted to mandatory deny-by-default policy and required identity/context. No code import approved.
+
+**Comparison so far:** Row-Bot shows more elaborate approval and configuration-recovery flows; OpenJarvis has a simpler Rust-centric architecture closer to FRIDAY's existing technology choices. Neither is approved as a wholesale foundation. Continue comparing individual components against FRIDAY's own implementation, then build a tiny isolated proof of concept only after selecting a bounded component with a clear testable benefit.
