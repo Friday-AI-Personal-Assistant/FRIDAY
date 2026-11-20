@@ -5319,6 +5319,91 @@ mod tests {
         fs::remove_dir_all(outside).unwrap();
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn handle_relative_file_rename_moves_only_the_verified_file_without_overwrite() {
+        let root_path = make_test_directory("handle-relative-file-rename");
+        fs::write(root_path.join("source.txt"), b"verified source").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let parent_identity = verified_directory_handle_identity(&root).unwrap();
+        let source_identity = enumerate_runtime_tree_entries(&root, 16).unwrap()
+            .into_iter()
+            .find(|entry| entry.name == OsStr::new("source.txt"))
+            .expect("source should be inventoried")
+            .identity;
+
+        rename_file_noreplace(
+            &root, OsStr::new("source.txt"), OsStr::new("published.txt"),
+            parent_identity, source_identity,
+        ).unwrap();
+
+        let mut published = open_result_file_nofollow(&root, OsStr::new("published.txt")).unwrap();
+        let mut contents = Vec::new();
+        published.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"verified source");
+        assert_eq!(
+            open_result_file_nofollow(&root, OsStr::new("source.txt")).unwrap_err().kind(),
+            io::ErrorKind::NotFound,
+        );
+
+        drop(published);
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn handle_relative_file_rename_refuses_existing_destination() {
+        let root_path = make_test_directory("handle-relative-file-rename-no-replace");
+        fs::write(root_path.join("source.txt"), b"source").unwrap();
+        fs::write(root_path.join("destination.txt"), b"keep destination").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let parent_identity = verified_directory_handle_identity(&root).unwrap();
+        let source_identity = enumerate_runtime_tree_entries(&root, 16).unwrap()
+            .into_iter()
+            .find(|entry| entry.name == OsStr::new("source.txt"))
+            .expect("source should be inventoried")
+            .identity;
+
+        let result = rename_file_noreplace(
+            &root, OsStr::new("source.txt"), OsStr::new("destination.txt"),
+            parent_identity, source_identity,
+        );
+        assert!(result.is_err(), "a no-replace rename must not overwrite an existing entry");
+
+        let source = fs::read(root_path.join("source.txt")).unwrap();
+        let destination = fs::read(root_path.join("destination.txt")).unwrap();
+        assert_eq!(source, b"source");
+        assert_eq!(destination, b"keep destination");
+
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn handle_relative_file_rename_rejects_changed_parent_identity() {
+        let root_path = make_test_directory("handle-relative-file-rename-parent-identity");
+        fs::write(root_path.join("source.txt"), b"source").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let source_identity = enumerate_runtime_tree_entries(&root, 16).unwrap()
+            .into_iter()
+            .find(|entry| entry.name == OsStr::new("source.txt"))
+            .expect("source should be inventoried")
+            .identity;
+
+        let result = rename_file_noreplace(
+            &root, OsStr::new("source.txt"), OsStr::new("published.txt"),
+            (0, 0), source_identity,
+        );
+        assert!(result.is_err(), "a changed parent identity must fail closed");
+        assert!(root_path.join("source.txt").exists());
+        assert!(!root_path.join("published.txt").exists());
+
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn unix_open_file_nofollow_stays_with_held_parent_after_rename() {
