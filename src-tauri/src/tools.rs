@@ -105,7 +105,6 @@ pub fn clear_tool_history(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
 fn registered_tool(tool_id: &str) -> Result<&'static ToolDefinition, String> {
     TOOLS.iter().find(|tool| tool.id == tool_id).ok_or_else(|| "This tool is not registered in FRIDAY.".into())
 }
@@ -121,6 +120,7 @@ fn authorize_tool_execution(tool_id: &str, arguments: &Value, approval_token: Op
     Ok(())
 }
 
+#[tauri::command]
 #[tauri::command]
 pub fn issue_tool_approval(tool_id: String, arguments: Value) -> Result<String, String> {
     let definition = registered_tool(&tool_id)?;
