@@ -413,7 +413,7 @@ fn apply_code_preview_to_disk_bound(
             .map_err(|_| "Could not reopen the original-file backup relative to its verified directory.".to_string())?;
         let mut bytes = Vec::new();
         use std::io::Read as _;
-        file.by_ref().take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)
+        std::io::Read::by_ref(&mut file).take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)
             .map_err(|_| "Could not read back the original-file backup.".to_string())?;
         bytes
     };
@@ -468,7 +468,7 @@ fn apply_code_preview_to_disk_bound(
             .map_err(|_| "Could not reopen the replacement relative to its verified parent.".to_string())?;
         let mut bytes = Vec::new();
         use std::io::Read as _;
-        file.by_ref().take(MAX_PROPOSED_FILE_BYTES as u64 + 1).read_to_end(&mut bytes)
+        std::io::Read::by_ref(&mut file).take(MAX_PROPOSED_FILE_BYTES as u64 + 1).read_to_end(&mut bytes)
             .map_err(|_| "Could not read back the replacement file.".to_string())?;
         bytes
     };
