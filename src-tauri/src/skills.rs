@@ -82,12 +82,8 @@ fn save_registry(path: &PathBuf, registry: &SkillRegistry) -> Result<(), String>
         .map_err(|e| format!("Could not create the local skills folder: {e}"))?;
     let contents = serde_json::to_vec_pretty(registry)
         .map_err(|e| format!("Could not prepare the skills registry: {e}"))?;
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, contents)
-        .map_err(|e| format!("Could not write the skills registry: {e}"))?;
-    if path.exists() { fs::remove_file(path).map_err(|e| format!("Could not replace the skills registry: {e}"))?; }
-    fs::rename(&temp, path)
-        .map_err(|e| format!("Could not save the skills registry: {e}"))
+    crate::atomic_file::replace(path, contents.as_bytes())
+        .map_err(|e| format!("Could not safely save the skills registry: {e}"))
 }
 
 fn known_skill(skill_id: &str) -> bool {
