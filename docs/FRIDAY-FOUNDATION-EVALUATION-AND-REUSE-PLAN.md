@@ -337,3 +337,15 @@ The #1076 File/Coding Assistant capability increment is verified on both Windows
 - Preserve the existing Windows Sandbox configuration restrictions and resource limits as preparatory code only. This change does not prove a usable OS sandbox, enable guest execution, or establish a universal Tauri IPC gateway.
 
 **Next acceptance gate:** Windows and Linux CI must pass before this increment is marked complete. Physical Windows Sandbox launch/isolation validation remains a separate requirement; guest execution stays disabled until the full end-to-end boundary is independently reviewed.
+
+
+### Local user-data and skill lifecycle capability enforcement
+
+- [x] Assign distinct backend capabilities to workspace initialization and private-note read/write operations.
+- [x] Enforce separate list/read/write/delete capabilities for encrypted conversation history.
+- [x] Enforce separate list/add/update/toggle/delete capabilities for encrypted personal memory.
+- [x] Enforce separate catalogue/install/enable/load/instructions/unload/uninstall capabilities for the current first-party declarative skill lifecycle.
+- [x] Add regression coverage for allowed exact mappings and reject cross-capability substitutions.
+- [ ] Verify this increment on Windows and Linux CI.
+
+**Scope and safety note:** these are static backend command gates, not durable user grants or a complete permission centre. Skill install/enable/load remains separate from permission to use tools, access private files, invoke integrations or execute code. No skill receives those rights from this change. The existing tool approval token and file/Coding Assistant scoped-authorization mechanisms remain independently enforced. Guest execution, shell access, generic plugin execution and unattended control remain disabled.

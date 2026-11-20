@@ -151,6 +151,7 @@ fn verify_package(app: &AppHandle, skill_id: &str) -> Result<SkillManifest, Stri
 
 #[tauri::command]
 pub fn skills_catalog(app: AppHandle) -> Result<Vec<SkillView>, String> {
+    crate::permissions::authorize_command("skills.catalog.read", "skills.catalog.read")?;
     let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
     let path = registry_path(&app)?;
     let registry = read_registry(&path)?;
@@ -173,6 +174,7 @@ pub fn skills_catalog(app: AppHandle) -> Result<Vec<SkillView>, String> {
 
 #[tauri::command]
 pub fn install_skill(app: AppHandle, skill_id: String) -> Result<String, String> {
+    crate::permissions::authorize_command("skills.install", "skills.install")?;
     let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
     let (manifest, instructions) = expected_manifest(&skill_id)?;
     let registry_file = registry_path(&app)?;
@@ -201,6 +203,7 @@ pub fn install_skill(app: AppHandle, skill_id: String) -> Result<String, String>
 
 #[tauri::command]
 pub fn set_skill_enabled(app: AppHandle, skill_id: String, enabled: bool) -> Result<String, String> {
+    crate::permissions::authorize_command("skills.enable", "skills.enable")?;
     let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
     let registry_file = registry_path(&app)?;
     let mut registry = read_registry(&registry_file)?;
@@ -223,6 +226,7 @@ pub fn set_skill_enabled(app: AppHandle, skill_id: String, enabled: bool) -> Res
 
 #[tauri::command]
 pub fn load_skill(app: AppHandle, skill_id: String) -> Result<String, String> {
+    crate::permissions::authorize_command("skills.load", "skills.load")?;
     let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
     let registry = read_registry(&registry_path(&app)?)?;
     if !registry.installed.get(&skill_id).copied().unwrap_or(false) {
@@ -236,6 +240,7 @@ pub fn load_skill(app: AppHandle, skill_id: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn loaded_skill_instructions(app: AppHandle) -> Result<String, String> {
+    crate::permissions::authorize_command("skills.instructions.read", "skills.instructions.read")?;
     let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
     let ids: Vec<String> = LOADED_SKILLS.lock()
         .map_err(|_| "Skills runtime is busy.".to_string())?
@@ -257,6 +262,7 @@ pub fn loaded_skill_instructions(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub fn unload_skill(skill_id: String) -> Result<String, String> {
+    crate::permissions::authorize_command("skills.unload", "skills.unload")?;
     let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
     LOADED_SKILLS.lock().map_err(|_| "Skills runtime is busy.".to_string())?.remove(&skill_id);
     if skill_id == "file-assistant" {
@@ -270,6 +276,7 @@ pub fn unload_skill(skill_id: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn uninstall_skill(app: AppHandle, skill_id: String) -> Result<String, String> {
+    crate::permissions::authorize_command("skills.uninstall", "skills.uninstall")?;
     let _guard = SKILLS_LOCK.lock().map_err(|_| "Skills manager is busy.".to_string())?;
     if !known_skill(&skill_id) { return Err("This skill is not in FRIDAY's built-in catalogue.".into()); }
     if skill_id == "file-assistant" {

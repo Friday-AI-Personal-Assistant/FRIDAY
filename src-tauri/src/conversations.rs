@@ -81,6 +81,7 @@ fn valid_id(id: &str) -> bool {
 
 #[tauri::command]
 pub fn list_conversations(app: AppHandle) -> Result<Vec<ConversationSummary>, String> {
+    crate::permissions::authorize_command("conversations.list", "conversations.list")?;
     let _guard = STORE_LOCK.lock().map_err(|_| "Chat history is busy.".to_string())?;
     let store = read_store(&app)?;
     let mut items: Vec<_> = store.conversations.into_iter().map(|c| ConversationSummary {
@@ -93,6 +94,7 @@ pub fn list_conversations(app: AppHandle) -> Result<Vec<ConversationSummary>, St
 
 #[tauri::command]
 pub fn load_conversation(app: AppHandle, id: String) -> Result<Conversation, String> {
+    crate::permissions::authorize_command("conversations.read", "conversations.read")?;
     if !valid_id(&id) { return Err("Invalid conversation ID.".into()); }
     let _guard = STORE_LOCK.lock().map_err(|_| "Chat history is busy.".to_string())?;
     read_store(&app)?.conversations.into_iter().find(|c| c.id == id)
@@ -101,6 +103,7 @@ pub fn load_conversation(app: AppHandle, id: String) -> Result<Conversation, Str
 
 #[tauri::command]
 pub fn save_conversation(app: AppHandle, id: String, title: String, messages: Vec<ConversationMessage>) -> Result<(), String> {
+    crate::permissions::authorize_command("conversations.write", "conversations.write")?;
     if !valid_id(&id) || title.trim().is_empty() || title.len() > 160 || messages.len() > MAX_MESSAGES {
         return Err("The conversation details are invalid or exceed the allowed limits.".into());
     }
@@ -131,6 +134,7 @@ pub fn save_conversation(app: AppHandle, id: String, title: String, messages: Ve
 
 #[tauri::command]
 pub fn delete_conversation(app: AppHandle, id: String) -> Result<(), String> {
+    crate::permissions::authorize_command("conversations.delete", "conversations.delete")?;
     if !valid_id(&id) { return Err("Invalid conversation ID.".into()); }
     let _guard = STORE_LOCK.lock().map_err(|_| "Chat history is busy.".to_string())?;
     let mut store = read_store(&app)?;

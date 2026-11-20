@@ -75,6 +75,7 @@ fn write_store(app: &AppHandle, store: &MemoryStore) -> Result<(), String> {
 
 #[tauri::command]
 pub fn list_memories(app: AppHandle) -> Result<Vec<MemoryEntry>, String> {
+    crate::permissions::authorize_command("memory.list", "memory.list")?;
     let _guard = MEMORY_LOCK.lock().map_err(|_| "Personal memory is busy.".to_string())?;
     let mut entries = read_store(&app)?.entries;
     entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -83,6 +84,7 @@ pub fn list_memories(app: AppHandle) -> Result<Vec<MemoryEntry>, String> {
 
 #[tauri::command]
 pub fn add_memory(app: AppHandle, id: String, category: String, content: String) -> Result<MemoryEntry, String> {
+    crate::permissions::authorize_command("memory.add", "memory.add")?;
     if !valid_id(&id) { return Err("Invalid memory ID.".into()); }
     validate(&category, &content)?;
     let _guard = MEMORY_LOCK.lock().map_err(|_| "Personal memory is busy.".to_string())?;
@@ -98,6 +100,7 @@ pub fn add_memory(app: AppHandle, id: String, category: String, content: String)
 
 #[tauri::command]
 pub fn update_memory(app: AppHandle, id: String, category: String, content: String) -> Result<MemoryEntry, String> {
+    crate::permissions::authorize_command("memory.update", "memory.update")?;
     if !valid_id(&id) { return Err("Invalid memory ID.".into()); }
     validate(&category, &content)?;
     let _guard = MEMORY_LOCK.lock().map_err(|_| "Personal memory is busy.".to_string())?;
@@ -113,6 +116,7 @@ pub fn update_memory(app: AppHandle, id: String, category: String, content: Stri
 
 #[tauri::command]
 pub fn set_memory_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
+    crate::permissions::authorize_command("memory.toggle", "memory.toggle")?;
     if !valid_id(&id) { return Err("Invalid memory ID.".into()); }
     let _guard = MEMORY_LOCK.lock().map_err(|_| "Personal memory is busy.".to_string())?;
     let mut store = read_store(&app)?;
@@ -124,6 +128,7 @@ pub fn set_memory_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(
 
 #[tauri::command]
 pub fn delete_memory(app: AppHandle, id: String) -> Result<(), String> {
+    crate::permissions::authorize_command("memory.delete", "memory.delete")?;
     if !valid_id(&id) { return Err("Invalid memory ID.".into()); }
     let _guard = MEMORY_LOCK.lock().map_err(|_| "Personal memory is busy.".to_string())?;
     let mut store = read_store(&app)?;

@@ -82,6 +82,7 @@ pub(crate) fn decrypt_bytes(key: &[u8; 32], payload: &[u8]) -> Result<Vec<u8>, S
 
 #[tauri::command]
 pub fn initialize_workspace(app: AppHandle) -> Result<String, String> {
+    crate::permissions::authorize_command("workspace.initialize", "workspace.initialize")?;
     let directory = workspace_dir(&app)?;
     fs::create_dir_all(&directory)
         .map_err(|e| format!("Could not create the local workspace: {e}"))?;
@@ -93,6 +94,7 @@ pub fn initialize_workspace(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub fn save_private_note(app: AppHandle, note: String) -> Result<String, String> {
+    crate::permissions::authorize_command("workspace.note.write", "workspace.note.write")?;
     if note.len() > 20_000 {
         return Err("This preview note is limited to 20,000 bytes.".to_string());
     }
@@ -112,6 +114,7 @@ pub fn save_private_note(app: AppHandle, note: String) -> Result<String, String>
 
 #[tauri::command]
 pub fn read_private_note(app: AppHandle) -> Result<String, String> {
+    crate::permissions::authorize_command("workspace.note.read", "workspace.note.read")?;
     let path = workspace_dir(&app)?.join(NOTE_FILE);
     if !path.exists() {
         return Ok(String::new());

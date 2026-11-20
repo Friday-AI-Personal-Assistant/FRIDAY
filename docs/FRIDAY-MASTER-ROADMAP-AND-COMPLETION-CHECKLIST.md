@@ -832,3 +832,16 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 - [ ] Keep guest process launch, arbitrary commands, host fallback and network-enabled execution disabled.
 
 **Scope:** this is a static backend command allowlist. Guest approval endpoints manage one-use receipts only; they do not execute code. No guest process-launch command is registered or enabled. This is not a persistent user-grant manager, universal Tauri IPC gateway or proof of OS isolation. Existing snapshot ownership and filesystem protections remain mandatory.
+
+
+### Backend command coverage — workspace, history, memory and skills
+
+- [x] Gate encrypted workspace initialization and private-note read/write operations with distinct Rust-owned capabilities.
+- [x] Gate conversation list/read/write/delete operations independently.
+- [x] Gate personal-memory list/add/update/enable-disable/delete operations independently.
+- [x] Gate skill catalogue and install/enable/load/read-instructions/unload/uninstall operations independently.
+- [x] Add tests rejecting unknown capability substitutions and cross-operation privilege substitution.
+- [ ] Confirm Linux and Windows CI pass before closing this batch.
+- [ ] Build durable user grants, expiry, revocation and audit separately; static command capabilities are not user consent.
+
+**Important:** installing, enabling or loading a declarative skill does not grant it access to files, tools, accounts, network integrations or executable code.

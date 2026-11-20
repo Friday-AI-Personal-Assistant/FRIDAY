@@ -90,6 +90,29 @@ const COMMAND_POLICIES: &[CommandPolicy] = &[
     CommandPolicy { command_id: "coding_sandbox_recover_workspaces", capability: "coding.sandbox.snapshot.recover" },
     CommandPolicy { command_id: "coding_sandbox_config_preview", capability: "coding.sandbox.config.preview" },
     CommandPolicy { command_id: "coding_sandbox_discard_snapshot", capability: "coding.sandbox.snapshot.discard" },
+
+    // Local workspace, encrypted conversation history and personal-memory operations.
+    CommandPolicy { command_id: "workspace.initialize", capability: "workspace.initialize" },
+    CommandPolicy { command_id: "workspace.note.write", capability: "workspace.note.write" },
+    CommandPolicy { command_id: "workspace.note.read", capability: "workspace.note.read" },
+    CommandPolicy { command_id: "conversations.list", capability: "conversations.list" },
+    CommandPolicy { command_id: "conversations.read", capability: "conversations.read" },
+    CommandPolicy { command_id: "conversations.write", capability: "conversations.write" },
+    CommandPolicy { command_id: "conversations.delete", capability: "conversations.delete" },
+    CommandPolicy { command_id: "memory.list", capability: "memory.list" },
+    CommandPolicy { command_id: "memory.add", capability: "memory.add" },
+    CommandPolicy { command_id: "memory.update", capability: "memory.update" },
+    CommandPolicy { command_id: "memory.toggle", capability: "memory.toggle" },
+    CommandPolicy { command_id: "memory.delete", capability: "memory.delete" },
+    // Skill catalogue and local declarative-skill lifecycle. These do not grant tool permissions.
+    CommandPolicy { command_id: "skills.catalog.read", capability: "skills.catalog.read" },
+    CommandPolicy { command_id: "skills.install", capability: "skills.install" },
+    CommandPolicy { command_id: "skills.enable", capability: "skills.enable" },
+    CommandPolicy { command_id: "skills.load", capability: "skills.load" },
+    CommandPolicy { command_id: "skills.instructions.read", capability: "skills.instructions.read" },
+    CommandPolicy { command_id: "skills.unload", capability: "skills.unload" },
+    CommandPolicy { command_id: "skills.uninstall", capability: "skills.uninstall" },
+
     // These commands manage one-use approval receipts only; none launches a guest process.
     CommandPolicy { command_id: "issue_guest_run_execution_approval", capability: "coding.guest.execution.approval" },
     CommandPolicy { command_id: "consume_guest_run_execution_approval", capability: "coding.guest.execution.consume" },
@@ -182,6 +205,39 @@ mod tests {
         assert!(authorize_command("file.apply_file_edit", "files.read.granted").is_err());
         assert!(authorize_command("coding.apply_code_change", "coding.project.read").is_err());
         assert!(authorize_command("coding.read_project_files", "coding.change.apply").is_err());
+    }
+
+    
+    #[test]
+    fn workspace_conversation_memory_and_skill_commands_have_narrow_capabilities() {
+        let cases = [
+            ("workspace.initialize", "workspace.initialize"),
+            ("workspace.note.write", "workspace.note.write"),
+            ("workspace.note.read", "workspace.note.read"),
+            ("conversations.list", "conversations.list"),
+            ("conversations.read", "conversations.read"),
+            ("conversations.write", "conversations.write"),
+            ("conversations.delete", "conversations.delete"),
+            ("memory.list", "memory.list"),
+            ("memory.add", "memory.add"),
+            ("memory.update", "memory.update"),
+            ("memory.toggle", "memory.toggle"),
+            ("memory.delete", "memory.delete"),
+            ("skills.catalog.read", "skills.catalog.read"),
+            ("skills.install", "skills.install"),
+            ("skills.enable", "skills.enable"),
+            ("skills.load", "skills.load"),
+            ("skills.instructions.read", "skills.instructions.read"),
+            ("skills.unload", "skills.unload"),
+            ("skills.uninstall", "skills.uninstall"),
+        ];
+        for (command, capability) in cases {
+            assert!(authorize_command(command, capability).is_ok(), "{command}");
+            assert!(authorize_command(command, "unrelated.capability").is_err(), "{command}");
+        }
+        assert!(authorize_command("skills.install", "skills.enable").is_err());
+        assert!(authorize_command("memory.delete", "memory.list").is_err());
+        assert!(authorize_command("conversations.delete", "conversations.read").is_err());
     }
 
     #[test]
