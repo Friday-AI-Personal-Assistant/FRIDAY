@@ -52,6 +52,79 @@ FRIDAY is a modular, local-first personal AI desktop assistant. A user should be
 - [ ] Initial distribution should be usable without paid cloud services; optional paid services must be clearly labelled.
 - [ ] Commercial distribution must respect code, dependency, voice, model, and provider licences.
 
+### 1.1. The FRIDAY Four Non-Negotiable Product Guarantees
+
+These four guarantees are permanent product requirements. They apply to every feature, skill, model/provider, integration, installer, update, automation and release. They must survive new chats, handoffs, roadmap changes and architecture migrations. This section is authoritative even when a conversation is unavailable or corrupted.
+
+**Decision priority (highest to lowest): Safety → User control → Cost transparency → Reliability.** Time saved is a core product outcome and engineering objective, but it never overrides these four guarantees.
+
+A feature must not be shipped merely because it is impressive, convenient or technically possible. If it fails any applicable guarantee, keep it disabled, redesign it, or defer it. A green CI run alone does not prove these product guarantees.
+
+#### A. Safety — protect users, their devices and their data
+
+- [ ] Apply least privilege and deny-by-default to every tool, skill, agent, connector and execution path.
+- [ ] Enforce permissions in trusted backend code, not only in the UI, prompt, manifest or model instructions.
+- [ ] Treat imported skills, repositories, documents, webpages, model output and tool results as untrusted input.
+- [ ] Keep shell execution, arbitrary code execution, computer control, destructive file operations and external actions disabled until their isolation, authorization and recovery boundaries are independently tested.
+- [ ] Require explicit confirmation for consequential actions such as sending, publishing, submitting, purchasing, deleting, overwriting, moving sensitive data or initiating financial transactions.
+- [ ] Validate paths, identities, destinations, arguments, resource limits and trust boundaries at the point of use; defend against symlinks, traversal, race conditions, injection and confused-deputy behavior.
+- [ ] Protect credentials and tokens using OS-appropriate secure storage; never expose secrets in logs, prompts, telemetry, crash reports or child-process environments unnecessarily.
+- [ ] Use secure dependency practices: pinned/reproducible dependencies, provenance checks, vulnerability review, SBOM and license inventory.
+- [ ] Fail closed for protected operations if policy, authorization, signature, isolation or security checks are unavailable or fail.
+- [ ] State security limitations honestly. Do not claim absolute protection against a compromised operating system or malware running with the same user privileges.
+
+#### B. User control — the user is always in charge
+
+- [ ] Installing a feature, skill, model or connector must not silently enable it or grant it access.
+- [ ] Every permission must be understandable, purpose-specific, narrowly scoped, time/session/task bounded where practical, visible, revocable and enforced by the backend.
+- [ ] Show what resource is accessed, by which component, for what purpose, and whether data leaves the device.
+- [ ] Provide clear approve, deny, cancel and stop controls. Cancellation must stop work where technically possible and report honestly if an operation cannot be interrupted.
+- [ ] Let users inspect and manage active grants, connected accounts, scheduled jobs, background activity and pending approvals.
+- [ ] Make local/offline mode technically enforce network restrictions; do not treat a visual toggle as enforcement.
+- [ ] Never include hidden developer access, backdoors, remote file browsing, covert monitoring or central collection of private workspace contents.
+- [ ] Provide user control over local data: inspect, export, correct and delete FRIDAY-managed data, with clear retention and backup behavior.
+- [ ] Do not let an agent, skill, model, provider or remote service grant itself additional permissions or broaden an existing grant.
+
+#### C. Cost transparency — no hidden fees or surprise bills
+
+- [ ] The core FRIDAY experience must remain usable without paid cloud services wherever technically feasible.
+- [ ] Clearly distinguish free/local functionality from optional paid providers, subscriptions, usage-based APIs, hosted tools and third-party services.
+- [ ] Before enabling a paid service or making a billable request, identify the provider, what data is sent, the pricing basis and any known usage/cost limits.
+- [ ] Obtain informed user consent before the first paid use; provide a way to disable the provider and avoid accidental repeat charges.
+- [ ] Never silently fall back from a local model/provider to a cloud or paid provider.
+- [ ] Never hide API usage, subscriptions, metered storage, voice charges, data-transfer charges or other recurring costs.
+- [ ] Where exact costs cannot be known in advance, explain the uncertainty, show available estimates/usage limits and let the user set a budget or disable usage.
+- [ ] Disclose third-party licensing or commercial-use restrictions for code, models, voices, datasets, assets and services. An open-source code licence does not automatically make bundled models or services free.
+
+#### D. Reliability — predictable, recoverable and honest behavior
+
+- [ ] Define acceptance criteria and failure behavior before implementing each consequential capability.
+- [ ] Add automated unit, integration, regression and adversarial tests at the relevant trust boundaries.
+- [ ] Test supported Windows and Linux paths in CI where applicable; separately perform real-device/provider acceptance for behavior CI cannot establish.
+- [ ] Use bounded timeouts, resource limits, cancellation, retries with safe semantics and clear error reporting.
+- [ ] Make updates, writes, migrations and multi-step actions atomic or recoverable where possible; preserve backups and transaction evidence.
+- [ ] Make operations idempotent where practical and prevent duplicate submissions, charges or external actions after retries.
+- [ ] Never report success unless the operation's outcome was verified. Distinguish planned, implemented, CI-passed and physically accepted behavior.
+- [ ] Provide diagnostics that protect private data, plus a safe recovery path for failed updates, interrupted work and corrupted state.
+- [ ] Pin and review dependencies, maintain compatibility and document known limitations and support status.
+
+#### Mandatory release gate
+
+Before any feature is marked DONE or enabled for users, record evidence for all four guarantees:
+
+- [ ] Safety review completed; threat model, abuse cases and negative tests recorded.
+- [ ] User permissions, scopes, revocation, cancellation and backend enforcement tested.
+- [ ] Pricing, provider, network/data-transfer and licensing disclosures verified; paid use cannot occur without informed consent.
+- [ ] Reliability tests, failure/recovery behavior and supported-platform acceptance recorded.
+- [ ] Remaining limitations, residual risks and required user actions documented.
+- [ ] If any applicable gate is not met, mark the feature BLOCKED, LIMITED or DISABLED — never DONE.
+
+#### Reuse-first and time-saving engineering rule
+
+FRIDAY should save the user's time and avoid unnecessary development overhead. Prefer mature, maintained, well-tested open-source projects and libraries over rebuilding equivalent functionality. Before adopting anything, verify its source, maintenance, architecture, security model, platform support, dependencies, licences, assets, provider terms and hidden costs. Reuse components selectively; do not blindly replace FRIDAY or merge entire assistant applications. Preserve existing FRIDAY work, use reversible branches/migrations, and build only the gaps that are genuinely specific to FRIDAY. A faster implementation is unacceptable if it weakens any of the four guarantees.
+
+When choosing between features or implementation approaches, prioritize: (1) safety, (2) user control, (3) cost transparency, (4) reliability, then (5) usefulness and time saved. If life, device limitations or engineering capacity require scope reduction, reduce scope rather than these guarantees.
+
 ## 1.1. Coding Assistant filesystem-boundary progress (through #1055)
 
 - #1009 added a shared scan-entry budget to source snapshot collection; #1010 fixed Rust test closure annotations and Linux/Windows CI passed.
