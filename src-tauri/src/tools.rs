@@ -106,8 +106,24 @@ pub fn clear_tool_history(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn registered_tool(tool_id: &str) -> Result<&'static ToolDefinition, String> {
+    TOOLS.iter().find(|tool| tool.id == tool_id).ok_or_else(|| "This tool is not registered in FRIDAY.".into())
+}
+
+fn authorize_tool_execution(tool_id: &str, arguments: &Value, approval_token: Option<String>) -> Result<(), String> {
+    let definition = registered_tool(tool_id)?;
+    if definition.approval_required {
+        if tool_id == "desktop.open_target" { valid_target(arguments)?; }
+        consume_approval(approval_token, tool_id, arguments)?;
+    } else if approval_token.is_some() {
+        return Err("This tool does not accept an approval token.".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn issue_tool_approval(tool_id: String, arguments: Value) -> Result<String, String> {
-    let definition = TOOLS.iter().find(|tool| tool.id == tool_id).ok_or("This tool is not registered in FRIDAY.")?;
+    let definition = registered_tool(&tool_id)?;
     if !definition.approval_required { return Err("This tool does not use an approval token.".into()); }
     if tool_id == "desktop.open_target" { valid_target(&arguments)?; }
     let mut bytes = [0_u8; 32];
@@ -132,6 +148,7 @@ fn consume_approval(token: Option<String>, tool_id: &str, arguments: &Value) -> 
 
 #[tauri::command]
 pub fn execute_tool(app: AppHandle, tool_id: String, arguments: Value, approval_token: Option<String>) -> Result<String, String> {
+    authorize_tool_execution(&tool_id, &arguments, approval_token)?;
     let result = match tool_id.as_str() {
         "calculator.evaluate" => {
             let expression = arguments.get("expression").and_then(Value::as_str).ok_or("Calculator requires an expression string.")?;
@@ -140,7 +157,6 @@ pub fn execute_tool(app: AppHandle, tool_id: String, arguments: Value, approval_
         }
         "desktop.open_target" => {
             let target = valid_target(&arguments)?;
-            consume_approval(approval_token, &tool_id, &arguments)?;
             let (program, args, label) = match target {
                 "notepad" => ("notepad.exe", vec![], "Opened Notepad."),
                 "downloads" => ("explorer.exe", vec!["shell:Downloads"], "Opened Downloads."),
@@ -226,6 +242,17 @@ mod tests {
     #[test] fn registry_contains_only_explicit_tools() {
         assert_eq!(TOOLS.len(), 2);
         assert!(TOOLS.iter().any(|tool| tool.id == "desktop.open_target" && tool.approval_required));
+        assert!(registered_tool("calculator.evaluate").is_ok());
+        assert!(registered_tool("desktop.open_target").is_ok());
+        assert!(registered_tool("unknown.tool").is_err());
+    }
+    #[test] fn dispatch_authorization_fails_closed() {
+        let calculator_args = serde_json::json!({"expression":"1 + 1"});
+        assert!(authorize_tool_execution("calculator.evaluate", &calculator_args, None).is_ok());
+        assert!(authorize_tool_execution("calculator.evaluate", &calculator_args, Some("unexpected".into())).is_err());
+        let desktop_args = serde_json::json!({"target":"notepad"});
+        assert!(authorize_tool_execution("desktop.open_target", &desktop_args, None).is_err());
+        assert!(authorize_tool_execution("unknown.tool", &desktop_args, None).is_err());
     }
     #[test] fn approval_tokens_are_bound_to_arguments_and_one_use() {
         let token = "test-token".to_string();
