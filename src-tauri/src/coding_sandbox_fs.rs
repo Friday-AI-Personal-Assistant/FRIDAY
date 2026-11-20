@@ -78,6 +78,62 @@ pub(crate) fn collect_bounded_directory_entry_names(
     Ok(names)
 }
 
+#[derive(Clone)]
+struct RuntimeTreeEntry {
+    name: OsString,
+    is_directory: bool,
+    is_file: bool,
+    is_reparse: bool,
+    #[cfg(unix)]
+    identity: (u64, u64),
+    #[cfg(windows)]
+    identity: (u64, [u8; 16]),
+}
+
+#[cfg(unix)]
+fn enumerate_runtime_tree_entries(parent: &File, max_entries: usize) -> io::Result<Vec<RuntimeTreeEntry>> {
+    let mut entries = Vec::new();
+    for entry in read_dir(parent, Path::new("."))? {
+        if entries.len() >= max_entries {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle contains too many entries"));
+        }
+        let entry = entry?;
+        let name = entry.file_name();
+        let kind = entry.file_type()?;
+        let metadata = entry.metadata()?;
+        entries.push(RuntimeTreeEntry {
+            name,
+            is_directory: kind.is_dir(),
+            is_file: kind.is_file(),
+            is_reparse: kind.is_symlink() || metadata.file_type().is_symlink(),
+            identity: metadata_identity(&metadata)?,
+        });
+    }
+    Ok(entries)
+}
+
+#[cfg(windows)]
+fn enumerate_runtime_tree_entries(parent: &File, max_entries: usize) -> io::Result<Vec<RuntimeTreeEntry>> {
+    windows_identity::enumerate_directory(parent, max_entries)
+        .map(|entries| entries.into_iter().map(|(name, attributes, identity)| RuntimeTreeEntry {
+            name,
+            is_directory: attributes & 0x10 != 0,
+            is_file: attributes & 0x10 == 0,
+            is_reparse: attributes & 0x400 != 0,
+            identity,
+        }).collect())
+}
+
+#[cfg(unix)]
+fn runtime_tree_handle_matches(identity: (u64, u64), handle: &File) -> io::Result<bool> {
+    Ok(identity == handle_identity(handle)?)
+}
+
+#[cfg(windows)]
+fn runtime_tree_handle_matches(identity: (u64, [u8; 16]), handle: &File) -> io::Result<bool> {
+    Ok(identity == windows_identity::handle_file_id(handle)?)
+}
+
 fn collect_runtime_tree_directory(
     parent: &File,
     relative_directory: &Path,
@@ -88,76 +144,41 @@ fn collect_runtime_tree_directory(
     files: &mut Vec<String>,
     directories: &mut Vec<String>,
 ) -> io::Result<()> {
-    for entry in read_dir(parent, Path::new("."))? {
+    let entries = enumerate_runtime_tree_entries(parent, max_entries)?;
+    for entry in entries {
         *count = count.checked_add(1).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "runtime inventory entry count overflowed"))?;
         if *count > max_entries {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle contains too many entries"));
         }
-        let entry = entry?;
-        let name = entry.file_name();
+        let name = entry.name;
         if !is_single_normal_component(&name) {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle contains an invalid entry name"));
         }
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
+        if entry.is_reparse {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle contains a symbolic link or reparse point"));
         }
         let relative = relative_directory.join(&name);
         let relative_text = relative.to_string_lossy().replace('/', "\\");
-        if kind.is_dir() {
+        if entry.is_directory {
             if depth >= max_depth {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle exceeds its directory depth limit"));
-            }
-            // Capture the directory entry's no-follow metadata before opening it.
-            // The opened handle must still identify that exact entry; otherwise a
-            // same-type directory swap during enumeration could silently change
-            // which runtime tree is inventoried.
-            let observed_metadata = entry.metadata()?;
-            if !observed_metadata.is_dir() || observed_metadata.is_symlink() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle directory changed type or is a reparse point"));
             }
             let child = open_dir_nofollow(parent, Path::new(&name))?;
             let child_metadata = child.metadata()?;
             if !child_metadata.is_dir()
                 || is_reparse_or_symlink(&child_metadata)
-                || {
-                    // cap-primitives exposes stable directory-entry identity via
-                    // MetadataExt on Unix. Its Windows Metadata intentionally
-                    // omits volume/file IDs, so Windows relies on the held-parent
-                    // no-reparse open plus validation of the resulting handle.
-                    #[cfg(unix)]
-                    { metadata_identity(&observed_metadata)? != handle_identity(&child)? }
-                    #[cfg(windows)]
-                    { false }
-                }
+                || !runtime_tree_handle_matches(entry.identity, &child)?
             {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle directory changed identity or is a reparse point"));
             }
             directories.push(relative_text);
             collect_runtime_tree_directory(&child, &relative, depth + 1, max_depth, max_entries, count, files, directories)?;
-        } else if kind.is_file() {
-            // Re-open the enumerated name relative to the held parent and
-            // validate the resulting handle. DirEntry::file_type is only an
-            // observation; the entry may have been replaced before inventory
-            // records it. The no-follow open rejects a raced-in link/reparse
-            // point and the handle metadata confirms an ordinary regular file.
-            let observed_metadata = entry.metadata()?;
-            if !observed_metadata.is_file() || observed_metadata.is_symlink() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle file changed type or is a reparse point"));
-            }
+        } else if entry.is_file {
             let file = open_file_nofollow(parent, &name)?;
             let file_metadata = file.metadata()?;
             if !file_metadata.is_file()
                 || is_reparse_or_symlink(&file_metadata)
-                || {
-                    // See the directory case above: Unix can compare the
-                    // enumerated inode to the opened handle; Windows' cap
-                    // metadata does not expose a pre-open file ID.
-                    #[cfg(unix)]
-                    { metadata_identity(&observed_metadata)? != handle_identity(&file)? }
-                    #[cfg(windows)]
-                    { false }
-                }
+                || !runtime_tree_handle_matches(entry.identity, &file)?
             {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle file changed identity or is a reparse point"));
             }
@@ -705,6 +726,129 @@ mod windows_identity {
     pub(super) fn handle_identity(handle: &File) -> io::Result<(u32, u64)> {
         query(handle.as_raw_handle())
     }
+
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct FileId128 { identifier: [u8; 16] }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct FileIdInfo { volume_serial_number: u64, file_id: FileId128 }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandleEx(
+            file: *mut std::ffi::c_void,
+            information_class: i32,
+            information: *mut std::ffi::c_void,
+            size: u32,
+        ) -> i32;
+        fn GetLastError() -> u32;
+    }
+
+    fn query_file_id(handle: *mut std::ffi::c_void) -> io::Result<(u64, [u8; 16])> {
+        let mut info = FileIdInfo::default();
+        if unsafe {
+            GetFileInformationByHandleEx(
+                handle, 18, &mut info as *mut _ as *mut std::ffi::c_void,
+                std::mem::size_of::<FileIdInfo>() as u32,
+            )
+        } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((info.volume_serial_number, info.file_id.identifier))
+    }
+
+    pub(super) fn handle_file_id(handle: &File) -> io::Result<(u64, [u8; 16])> {
+        query_file_id(handle.as_raw_handle())
+    }
+
+    pub(super) fn enumerate_directory(
+        directory: &File,
+        max_entries: usize,
+    ) -> io::Result<Vec<(std::ffi::OsString, u32, (u64, [u8; 16]))>> {
+        use std::os::windows::ffi::OsStringExt;
+        use std::collections::HashSet;
+
+        if max_entries == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle contains too many entries"));
+        }
+        let (volume, _) = query_file_id(directory.as_raw_handle())?;
+        let mut results = Vec::new();
+        let mut names = HashSet::new();
+        let mut restart = true;
+
+        loop {
+            let mut buffer = [0u64; 8192];
+            let class = if restart { 20 } else { 19 }; // FileIdExtdDirectoryRestartInfo, then FileIdExtdDirectoryInfo.
+            let ok = unsafe {
+                GetFileInformationByHandleEx(
+                    directory.as_raw_handle(),
+                    class,
+                    buffer.as_mut_ptr() as *mut std::ffi::c_void,
+                    std::mem::size_of_val(&buffer) as u32,
+                )
+            };
+            if ok == 0 {
+                let error = unsafe { GetLastError() };
+                if error == 18 { break; } // ERROR_NO_MORE_FILES
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Windows file-ID directory enumeration failed (error {})", error),
+                ));
+            }
+            restart = false;
+            let bytes = std::mem::size_of_val(&buffer);
+            let base = buffer.as_ptr() as *const u8;
+            let mut offset = 0usize;
+            let mut parsed = 0usize;
+            loop {
+                if offset.checked_add(88).map_or(true, |end| end > bytes) {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows directory identity record is truncated"));
+                }
+                let record = unsafe { base.add(offset) };
+                let next = unsafe { std::ptr::read_unaligned(record as *const u32) } as usize;
+                let attributes = unsafe { std::ptr::read_unaligned(record.add(56) as *const u32) };
+                let name_length = unsafe { std::ptr::read_unaligned(record.add(60) as *const u32) } as usize;
+                if name_length == 0 || name_length % 2 != 0 || name_length > 510
+                    || offset.checked_add(88).and_then(|v| v.checked_add(name_length)).map_or(true, |end| end > bytes)
+                {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows directory identity record has an invalid name"));
+                }
+                let mut file_id = [0u8; 16];
+                unsafe { std::ptr::copy_nonoverlapping(record.add(72), file_id.as_mut_ptr(), 16); }
+                let name_ptr = unsafe { record.add(88) as *const u16 };
+                let wide = unsafe { std::slice::from_raw_parts(name_ptr, name_length / 2) };
+                let name = std::ffi::OsString::from_wide(wide);
+                if name != "." && name != ".." {
+                    if !names.insert(name.clone()) {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows directory enumeration returned a duplicate name"));
+                    }
+                    if results.len() >= max_entries {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle contains too many entries"));
+                    }
+                    results.push((name, attributes, (volume, file_id)));
+                }
+                parsed += 1;
+                if next == 0 { break; }
+                if next < 88 + name_length || next % 8 != 0
+                    || offset.checked_add(next).map_or(true, |end| end > bytes)
+                {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows directory identity record has an invalid next-entry offset"));
+                }
+                offset += next;
+                if parsed > bytes / 88 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows directory identity record chain is invalid"));
+                }
+            }
+            if parsed == 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows directory enumeration returned no records"));
+            }
+        }
+        Ok(results)
+    }
+
 }
 
 #[cfg(windows)]
@@ -6013,6 +6157,39 @@ mod tests {
             collect_runtime_tree_inventory(&root, 1, 3).is_err(),
             "the entry budget must include directories and regular files"
         );
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_tree_inventory_rejects_same_name_file_replacement_after_enumeration() {
+        let root_path = make_test_directory("runtime-inventory-windows-identity-swap");
+        let file_path = root_path.join("tool.exe");
+        fs::write(&file_path, b"original").unwrap();
+        let root = open_test_root(&root_path);
+
+        let entries = enumerate_runtime_tree_entries(&root, 8).unwrap();
+        let observed = entries.iter()
+            .find(|entry| entry.name == OsStr::new("tool.exe"))
+            .expect("native enumeration should return the original file")
+            .identity;
+
+        // Keep the original object alive so the filesystem cannot recycle its
+        // file ID while the directory name is replaced with a new object.
+        let original = open_file_nofollow(&root, OsStr::new("tool.exe")).unwrap();
+        fs::remove_file(&file_path).unwrap();
+        fs::write(&file_path, b"replacement").unwrap();
+        let replacement = open_file_nofollow(&root, OsStr::new("tool.exe")).unwrap();
+
+        assert!(
+            !runtime_tree_handle_matches(observed, &replacement).unwrap(),
+            "the replacement handle must not match the file ID captured by native directory enumeration"
+        );
+        assert!(runtime_tree_handle_matches(observed, &original).unwrap());
+
+        drop(replacement);
+        drop(original);
         drop(root);
         fs::remove_dir_all(root_path).unwrap();
     }
