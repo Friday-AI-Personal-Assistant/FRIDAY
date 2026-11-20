@@ -253,6 +253,20 @@ mod tests {
         assert!(authorize_tool_execution("desktop.open_target", &desktop_args, None).is_err());
         assert!(authorize_tool_execution("unknown.tool", &desktop_args, None).is_err());
     }
+    #[test] fn approval_issuance_rejects_unknown_or_unnecessary_approvals() {
+        assert!(issue_tool_approval("unknown.tool".into(), serde_json::json!({})).is_err());
+        assert!(issue_tool_approval("calculator.evaluate".into(), serde_json::json!({"expression":"1+1"})).is_err());
+        assert!(issue_tool_approval("desktop.open_target".into(), serde_json::json!({"target":"arbitrary-command"})).is_err());
+    }
+    #[test] fn expired_approval_is_rejected_and_consumed() {
+        let token = "expired-once".to_string();
+        let args = serde_json::json!({"target":"notepad"});
+        PENDING_APPROVALS.lock().unwrap().insert(token.clone(), PendingApproval {
+            tool_id: "desktop.open_target".into(), arguments: args.clone(), expires_at: now() - 1
+        });
+        assert!(consume_approval(Some(token.clone()), "desktop.open_target", &args).is_err());
+        assert!(consume_approval(Some(token), "desktop.open_target", &args).is_err());
+    }
     #[test] fn approval_tokens_are_bound_to_arguments_and_one_use() {
         let token = "test-token".to_string();
         let args = serde_json::json!({"target":"notepad"});
