@@ -5828,6 +5828,43 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
+    fn bounded_snapshot_rejects_same_name_file_replacement_after_enumeration() {
+        let root_path = make_test_directory("snapshot-source-identity-swap");
+        let file_path = root_path.join("payload.txt");
+        let held_path = root_path.join("held-original.txt");
+        fs::write(&file_path, b"original").unwrap();
+        let root = open_test_root(&root_path);
+        let mut original_handle = None;
+
+        let result = collect_bounded_snapshot_contents_with_hook(
+            &root,
+            bounded_limits(),
+            &|_| true,
+            &|_| false,
+            |relative| {
+                if relative == Path::new("payload.txt") {
+                    // Keep the enumerated object alive so its filesystem
+                    // identity cannot be recycled before the replacement opens.
+                    let original = open_file_nofollow(&root, OsStr::new("payload.txt"))?;
+                    fs::rename(&file_path, &held_path)?;
+                    fs::write(&file_path, b"replacement")?;
+                    original_handle = Some(original);
+                }
+                Ok(())
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "snapshot collection must reject a regular file substituted after enumeration"
+        );
+        assert!(original_handle.is_some());
+        drop(original_handle);
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
     fn bounded_snapshot_rejects_hard_link_added_after_enumeration() {
         let base = make_test_directory("bounded-snapshot-hardlink-race");
         let source = base.join("source");
