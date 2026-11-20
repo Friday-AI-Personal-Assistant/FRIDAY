@@ -233,3 +233,35 @@ Inspected source files at Row-Bot commit `547116cfd03b4b391813e8e2d638ffc22b8255
 **Preliminary decision:** OpenJarvis is useful for selective patterns (file sensitivity tests, event redaction/consent UX, and sandbox design research). Its current capability defaults and optional enforcement context make its Rust executor a **NO-GO for direct reuse** until rewritten/adapted to mandatory deny-by-default policy and required identity/context. No code import approved.
 
 **Comparison so far:** Row-Bot shows more elaborate approval and configuration-recovery flows; OpenJarvis has a simpler Rust-centric architecture closer to FRIDAY's existing technology choices. Neither is approved as a wholesale foundation. Continue comparing individual components against FRIDAY's own implementation, then build a tiny isolated proof of concept only after selecting a bounded component with a clear testable benefit.
+
+
+## FRIDAY baseline architecture review (2026-11-20)
+
+**Reviewed baseline:** `foundation/evaluation` commit `532a9d95687b01d99015d3d8fb178cdb51c00436` (same preserved #1056-era application baseline plus evaluation documentation).
+
+### What FRIDAY already has
+
+- A compact Tauri 2 + React desktop app with a Rust backend. The current runtime dependency set is substantially smaller than either candidate assistant's full stack.
+- Local Ollama chat integration with request-size bounds, model-name validation, connection/response timeouts and streaming support.
+- Encrypted local memory and encrypted tool activity history using the existing OS credential/keyring-backed encryption-key design.
+- A small explicit built-in tool registry (currently calculator and a fixed allowlist of desktop destinations) with a pending-approval mechanism.
+- A curated skills registry. Skills are installed/loaded as bounded instruction packages; the current Coding Assistant skill is explicitly read-only and prohibits shell, build, test and network execution.
+- Existing Web Research, PDF/file assistant and Coding Assistant modules, plus a significant Rust filesystem-boundary and Windows Sandbox preparation implementation.
+- Minimal Tauri main-window permissions (`core:default`) and a written privacy/security policy.
+
+### What this means for the foundation choice
+
+FRIDAY already has a lightweight native foundation aligned with local-first ownership. Replacing it wholesale with Row-Bot or OpenJarvis would introduce major dependency/runtime complexity and duplicate core systems before proving a user benefit.
+
+**Decision:** retain FRIDAY's Tauri/Rust/React architecture as the product foundation. Reuse from external projects only small, independently reviewed components, test patterns or designs that demonstrably improve FRIDAY. Do not port an entire assistant backend or adopt another project's tool execution framework.
+
+### Immediate gaps to address in FRIDAY itself
+
+- The current tool set is intentionally tiny; tool permission grants and approvals need to become a coherent, backend-enforced, deny-by-default capability system before adding powerful tools.
+- The skill registry must keep install, enablement and permission grants separate. A skill's prompt/manifest must never grant its own authority.
+- Encrypted storage currently uses temp-file replacement patterns in memory/tool history that deserve atomicity, backup and crash-recovery review before the store grows.
+- Provider/model management, cost estimates/budgets, local/cloud separation and explicit no-silent-fallback behavior need a first-class design.
+- Add durable, inspectable permission records, revocation, per-action audit trails and background-task stop controls before adding agents, channels or automation.
+- Keep arbitrary shell, generic plugin execution, unattended computer control, paid cloud fallback and live financial actions disabled until their individual boundaries pass the four-guarantee release gate.
+
+**Foundation direction:** build FRIDAY forward on its existing native shell. The next implementation should be a small native capability/approval foundation (design + tests first), not importing either candidate's agent runtime. Before coding it, finish a focused audit of current `tools.rs`, skill enablement and Tauri command exposure so we extend existing ownership safely.
