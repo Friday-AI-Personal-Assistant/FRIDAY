@@ -2,11 +2,14 @@
 
 > **Purpose:** durable hand-off and completion inventory. This file is the working source of truth for finishing Coding Assistant even if a development conversation is lost.
 >
-> **Audit baseline:** branch `feature/phase-2-skills`, commit `108a5573bb3343017658c826f3d682aeb845b3c0` (#988), 2026-11-18.
+> **Latest verified baseline:** branch `feature/phase-2-skills`, commit `ea72fe4aabf473a7e0fbd91131f8f7c5d4bc9c42` (#1051), 2026-11-20. GitHub Actions run [#1051](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44740178481) completed successfully.
 >
-> **Important:** this is a static repository audit of the code, UI, command registration, tests, and design documents at the baseline above. CI success is evidence that code builds/tests in those runners; it is not proof of physical Windows Sandbox behavior. Items marked `NEEDS PHYSICAL WINDOWS ACCEPTANCE` must not be called complete based on CI alone.
+> **Important:** this checklist distinguishes CI-covered implementation from production integration and physical Windows acceptance. CI success proves only the paths exercised by those runners; it does not prove physical Windows Sandbox behavior or end-to-end isolation. Never mark physical acceptance complete based on CI alone.
 
 ## 1. Executive status
+
+**Current verified repository position:** #1051 is the branch HEAD and passed CI. The checklist's historical detail below has been reconciled through #1051; the work is not complete. The strongest recent progress is in filesystem identity, bounded traversal, snapshot cleanup, project discovery/read validation and guarded file-edit/rename operations. Stage 4 guest execution remains disabled.
+
 
 Coding Assistant already has substantial working foundations:
 
@@ -88,8 +91,8 @@ The main guest-runner module is large (about 19,226 lines at this baseline) and 
 | Private per-run snapshot with allowlisted files | IMPLEMENTED — CI COVERED | Does not execute code or modify the original project. |
 | Snapshot ownership marker and conservative recovery | IMPLEMENTED — CI COVERED | Unverified/malformed entries are preserved, not deleted. Marker is accidental-ownership evidence, not cryptographic protection against same-user malware. |
 | Workspace ACL/private-directory handling | PARTIAL | Windows ACL hardening exists. Complete parent-directory race resistance and handle-relative traversal must be reviewed and proven. |
-| Handle-relative recursive traversal | NOT COMPLETE | Replace path-only recursive source traversal with directory-handle-relative traversal or fail closed. Revalidate parent/root identity to prevent path replacement races. |
-| Windows reparse point/junction race resistance | PARTIAL | Static symlink/reparse checks exist; adversarial replacement between checks and use needs a complete handle-based boundary and tests. |
+| Handle-relative recursive traversal | PARTIAL — CI COVERED PRIMITIVES | Bounded handle-relative traversal, identity binding/revalidation and rename primitives have advanced through #1051. A remaining Unix source-name substitution window exists between final identity revalidation and the rename syscall; do not claim the filesystem boundary is closed. |
+| Windows reparse point/junction race resistance | PARTIAL — MORE ACCEPTANCE REQUIRED | Identity-aware traversal and cleanup protections have expanded; continue adversarial parent/child replacement, reparse/junction and cleanup testing across the complete production call graph. |
 | Snapshot lifecycle across active sessions, restart and shutdown | PARTIAL | Must never delete a snapshot mounted by an active FRIDAY-owned Sandbox; foreign or ambiguous ownership must block cleanup. |
 
 ### 5.3 Windows Sandbox configuration and lifecycle
@@ -218,77 +221,57 @@ Until sections 6A–6F are completed and accepted, all of the following remain m
 
 ## 8. Next implementation focus
 
-The next batch must be selected only after the filesystem-boundary review in section 6A is complete. The earlier proposed “result-transfer integration” must not jump ahead of the filesystem and physical storage prerequisites. The safe next step is to audit and harden handle-relative snapshot traversal and parent identity checks while keeping execution disabled.
+Continue Stage 4A before any result-transfer or guest-runner integration. The immediate engineering focus is the approved-file-edit filesystem transaction: inspect backup creation, temporary-file creation, replacement, rollback, undo and recovery as one boundary; anchor operations to verified directory/file identities where supported; preserve no-overwrite and crash-recovery guarantees; and add adversarial Linux/Windows regression coverage. Explicitly resolve or constrain the remaining Unix source-name substitution race before describing the rename boundary as complete. Keep guest execution disabled throughout.
 
 ## 9. Handoff instructions for a new development conversation
 
-1. Open this file first.
-2. Confirm the branch and current commit; do not assume the baseline commit is still HEAD.
-3. Read the latest changes to the files listed in section 2.
-4. Find the first unchecked item in section 6 whose dependencies are complete.
-5. Implement one coherent batch, add regression tests, run Linux and Windows CI, and update this checklist with the resulting commit/workflow run.
-6. Never ask the user to choose routine engineering details. The developer/agent owns implementation decisions; ask only when a product/security decision genuinely requires the user's choice.
-7. Never mark physical Windows acceptance complete unless it was actually performed on a supported physical Windows machine.
+1. Open this file and the [FRIDAY Master Roadmap](FRIDAY-MASTER-ROADMAP-AND-COMPLETION-CHECKLIST.md).
+2. Confirm the active branch, latest commit and latest GitHub Actions result; never assume this document's baseline is still HEAD.
+3. Read the latest relevant implementation, tests and design documents before editing.
+4. Work only on Coding Assistant and its directly required dependencies; do not start unrelated FRIDAY roadmap features.
+5. Select the first dependency-ready unchecked task in section 6 and implement one coherent, reviewable batch.
+6. Add regression tests, run the relevant Linux and Windows CI jobs, diagnose/fix failures and rerun CI.
+7. Update this checklist with verified changes, commit SHA, workflow run URL, remaining limitations and the next task.
+8. Do not ask the product owner to approve routine engineering choices or to say “continue” after a successful batch. Ask only for a genuinely necessary product/security decision.
+9. Never mark physical Windows acceptance complete unless it was actually performed on a supported physical Windows machine.
+10. Never enable project-code execution until every required security gate has been completed and accepted.
 
 ---
 
-**Baseline #988:** commit `108a5573bb3343017658c826f3d682aeb845b3c0`; workflow run `44313803884`; Linux and Windows jobs completed successfully. The #988 change itself added GPT trusted-identity negative-test coverage and did not enable guest execution.
+## 10. Verified progress through #1051
 
-## 10. Latest verified progress and batched execution
+This section supersedes the stale #988/#1012 hand-off status that was previously at the end of this file. The historical commits are retained in Git history. The following are verified implementation areas, not a declaration that the complete Stage 4A boundary is finished.
 
-### #1007 — source hard-link rejection
+### Completed with CI evidence
 
-- [x] Reject snapshot source files whose opened file handle reports more than one filesystem link; recheck the link count after the bounded read.
-- [x] Add a production-path regression proving an external hard-link alias is rejected before snapshot publication and the external file remains unchanged.
-- [x] Linux unit-test job passed.
-- [x] Windows unit-test and desktop-installer build job passed.
-- Commit: `34b15036801ff13addc473252809cbb5d4c613e5`.
-- GitHub Actions run: [44555315714](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44555315714).
+- [x] **#1007 — source hard-link rejection.** Reject multiply-linked snapshot source files and verify the external hard-link alias remains unchanged. Commit `34b15036801ff13addc473252809cbb5d4c613e5`; run [#1007](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44555315714).
+- [x] **#1008 — hard-link race coverage.** Deterministically create a second hard link between enumeration and open; require fail-closed behavior. Commit `e49eb5160d5ddc713f31ca14844db55a6e421184`; run [#1008](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44557584318).
+- [x] **#1009–#1010 — bounded snapshot directory enumeration and compile correction.** Count ignored/excluded entries and reject incomplete scans. #1010 Linux and Windows CI passed. Commits `18b624d47135540689b30f86daa90c50dc63227e` and `6cd8ca12d3725f15fff402e3a592a3be02f84d61`; run [#1010](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44561234862).
+- [x] **#1011 — bounded candidate traversal.** Shared non-zero entry budget across recursive candidate traversal, including ignored names and links. Commit `a7e396f5b961e8a80c083dfe5ea8a8f7d1a14e08`; run [#1011](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44563160955).
+- [x] **#1012 — bounded snapshot inventory and cleanup preflight.** The implementation commit `6be07d2a290a2fb08b677df0f3e110e217b6afb6` is present in the branch history. Later recovery and cleanup work builds on this bound.
+- [x] **Recovery and cleanup hardening after #1012.** Added bounded workspace recovery inventory, handle/identity-aware cleanup, retention of snapshot identities through cleanup and regression fixes for Windows handle-sharing/cleanup behavior. Relevant commits include `1de880561a64af0cca2d47fe2c8480f9700a38e3`, `a991e58d5bff3ce876a13be4b422793b9e4bee7b`, `a4b7bb3873e2db2ea28e38a1c3f80c0c82c51d45`, `f31cde0f73f983c46bc606d49bab107e1e29e54c` and subsequent cleanup regression corrections through #1044.
+- [x] **Runtime inventory identity hardening.** Runtime tree inventory binds entries to opened/native file identities and includes Windows metadata compatibility corrections. Relevant commits: `c171950db998884f6a9660e527d7291c9392d859`, `68aa13baa4a99336b140328c788769bc682990dd`, `5a2a30261007956cf6f28ed7196ba8ffd44d4f46`.
+- [x] **Snapshot source identity hardening.** Bind snapshot source reads to enumerated identities and reject source identity substitution. Relevant commits: `558aa953db55e32e4fed84bca71840b3cca8aa9a`, `dd3a0cbd2cc77b928995542e759f0fa908ee4cad`.
+- [x] **Project discovery and read identity hardening.** Bind discovery scans to directory identities, release root handles safely, bind project reads to scanned identities and revalidate identities before code-edit application. Commits include `c6f4d89f9144c31400ac6c67e7ab04f84c8f80ec`, `bae9d573150b8a27887a449c624943d04f670d3e`, `7d1bf6fa59b3db9e653a4644f7bb941cabd0cc61` and #1048 `c56d99faca6c793ec4d86252312767fa5a7b0a18`.
+- [x] **#1049–#1050 — handle-relative no-replace rename primitive and regression coverage.** Added a handle-relative rename primitive and tests for verified-file movement without overwriting an existing destination or accepting a changed parent identity. Commits `2e89ca0bd6b8dee9bd0c0f7a59206b332aff56fb` and `9a2df5e875d0b892682908188935e78f200bee6f`.
+- [x] **#1051 — revalidate source identity immediately before rename mutation.** Added immediate source-name reopen and identity checks plus a source-replacement regression. Commit `ea72fe4aabf473a7e0fbd91131f8f7c5d4bc9c42`; [GitHub Actions #1051 passed](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44740178481).
 
-### Next batched work — #1008 onward
+### Remaining work — do not mark complete
 
-- [ ] Add a deterministic race regression that creates a second hard link after directory-entry enumeration but before the source file is opened; require fail-closed behavior.
-- [ ] Run the production external-hard-link regression on both Unix and Windows CI.
-- [ ] Continue the Stage 4A review of source traversal, parent/root identity, reparse points and cleanup boundaries before considering any guest-runner integration.
-- [ ] Keep physical Windows acceptance, result-transfer design and production Sandbox lifecycle gates open until actually verified.
+- [ ] Complete the filesystem trust-boundary review across snapshot traversal, project reads, approved edits, backups, temporary files, replacement, undo, rollback, recovery and cleanup.
+- [ ] Close or explicitly constrain the remaining Unix source-name substitution race between final identity revalidation and the rename syscall. Do not describe the primitive as race-free.
+- [ ] Harden backup/temp creation and the full approved-edit transaction using verified parent/file identities; preserve no-overwrite behavior, backups, undo and crash recovery.
+- [ ] Finish Windows reparse point, junction, mount-point and parent/child replacement adversarial coverage across production call sites.
+- [ ] Prove snapshot ownership/ACL/session protections cannot delete live or foreign resources.
+- [ ] Complete all physical Windows result-storage acceptance in section 6B.
+- [ ] Complete trusted result-transfer design and acceptance in section 6C.
+- [ ] Connect and validate the production Sandbox lifecycle in section 6D.
+- [ ] Connect fixed runtime and Job Object containment to the real launch path in section 6E.
+- [ ] Complete end-to-end adversarial and physical Windows acceptance in section 6F.
+- [ ] Complete documentation, skill revocation and release maintenance in section 6G.
 
-**Execution invariant:** guest execution remains disabled. CI success is evidence for the tested code paths only; it is not physical Windows Sandbox acceptance or proof of end-to-end isolation.
-## 11. #1008 and next bounded-enumeration batch
+### Next batch selection
 
-### #1008 — hard-link race coverage
+Start with the approved-file-edit transaction boundary: inspect the current implementation in `coding_assistant.rs` and filesystem helpers in `coding_sandbox_fs.rs`; map every backup, temporary-file, replacement, rollback, undo and recovery operation; then implement the smallest security-coherent improvement with regression tests. Do not jump to result transfer or guest execution.
 
-- [x] Deterministic regression creates a second hard link after directory enumeration but before the file is opened; collection fails closed.
-- [x] Production external-hard-link regression runs under both Unix and Windows CI configurations.
-- [x] Linux tests passed.
-- [x] Windows tests and desktop build passed.
-- Commit: `e49eb5160d5ddc713f31ca14844db55a6e421184`.
-- GitHub Actions run: [44557584318](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44557584318).
-
-### #1009 — bounded directory enumeration
-
-- [x] Count every enumerated directory entry, including ignored files and excluded directories.
-- [x] Stop scanning and mark the collection incomplete when the entry budget is exceeded; production publication rejects incomplete collections.
-- [x] Test ignored-file fanout, excluded-directory fanout and the exact budget boundary.
-- [x] Linux tests and Windows tests/build passed after the #1010 compile-only correction.
-- Commit: `18b624d47135540689b30f86daa90c50dc63227e` (implementation).
-- #1009 initially failed CI because several test closures needed explicit `&str` parameter types; #1010 corrected those annotations without changing the security behavior.
-- #1010 commit: `6cd8ca12d3725f15fff402e3a592a3be02f84d61`.
-- #1010 GitHub Actions run: [44561234862](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44561234862) — Linux and Windows passed.
-
-**Policy note:** production snapshot collection derives a conservative entry budget of 32 times the configured maximum file count. This bounds metadata traversal even when entries are filtered out. Revisit the ratio only with measured project-tree workloads; do not remove the independent entry cap.
-
-### #1011 — bounded candidate filesystem traversal
-
-- [x] Add a required non-zero entry budget to the candidate-file walker.
-- [x] Count every encountered entry, including ignored names and links, using one shared counter across recursive directories.
-- [x] Preserve handle-relative no-follow directory opens and update traversal race tests.
-- [x] Linux tests and Windows desktop build passed.
-- Commit: `a7e396f5b961e8a80c083dfe5ea8a8f7d1a14e08`.
-- GitHub Actions run: [44563160955](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44563160955).
-
-### #1012 — bound snapshot inventory and cleanup preflight
-
-- [ ] Add one shared checked entry counter across recursive exact-inventory traversal.
-- [ ] Apply the same bound to cleanup-progress preflight before any destructive operation.
-- [ ] Test exact-budget acceptance and nested over-budget rejection; verify cleanup preserves every entry when preflight exceeds its budget.
-- [ ] Verify Linux tests and Windows tests/build before marking this batch complete.
+**Execution-disabled invariant:** all project-code execution remains disabled. CI success does not authorize enabling it and does not prove physical Sandbox isolation.
