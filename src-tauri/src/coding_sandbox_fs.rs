@@ -1651,7 +1651,7 @@ pub(crate) fn create_destination_entry(parent: &File, name: &OsStr, directory: b
     Ok(file)
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SnapshotCleanupManifest {
     schema_version: u32,
@@ -1661,7 +1661,7 @@ struct SnapshotCleanupManifest {
     files: Vec<SnapshotCleanupFile>,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SnapshotCleanupFile {
     path: String,
@@ -2979,11 +2979,11 @@ where
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    let plan = preflight_snapshot_cleanup_plan(&root, snapshot_id, limits)?;
-    let manifest = &plan.manifest;
+    let mut plan = preflight_snapshot_cleanup_plan(&root, snapshot_id, limits)?;
+    let manifest = plan.manifest.clone();
 
     for item in &manifest.files {
-        let Some(expected_file) = plan.file_handles.get(&item.path) else {
+        let Some(expected_file) = plan.file_handles.get(&item.path).map(File::try_clone).transpose()? else {
             // A missing inventoried entry is valid during retryable cleanup.
             continue;
         };
@@ -2993,11 +2993,19 @@ where
         )? else {
             continue;
         };
-        match remove_verified_snapshot_file_bound(&parent, OsStr::new(relative.file_name().ok_or_else(|| {
+        let result = remove_verified_snapshot_file_bound(&parent, OsStr::new(relative.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "manifest file has no filename")
-        })?), item.size, Some(expected_file)) {
-            Ok(()) => after_payload_entry(&item.path)?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        })?), item.size, Some(&expected_file));
+        match result {
+            Ok(()) => {
+                drop(expected_file);
+                plan.file_handles.remove(&item.path);
+                after_payload_entry(&item.path)?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                drop(expected_file);
+                plan.file_handles.remove(&item.path);
+            }
             Err(error) => return Err(error),
         }
     }
@@ -3009,7 +3017,7 @@ where
     });
     for directory in &directories {
         let relative = Path::new(directory);
-        let Some(expected_directory) = plan.directory_handles.get(directory) else {
+        let Some(expected_directory) = plan.directory_handles.get(directory).map(File::try_clone).transpose()? else {
             // It was already absent when retry preflight ran.
             continue;
         };
@@ -3021,9 +3029,17 @@ where
         let name = relative.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "manifest directory has no filename")
         })?;
-        match remove_verified_empty_snapshot_directory(&parent, name, Some(expected_directory)) {
-            Ok(()) => after_payload_entry(directory)?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        let result = remove_verified_empty_snapshot_directory(&parent, name, Some(&expected_directory));
+        match result {
+            Ok(()) => {
+                drop(expected_directory);
+                plan.directory_handles.remove(directory);
+                after_payload_entry(directory)?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                drop(expected_directory);
+                plan.directory_handles.remove(directory);
+            }
             Err(error) => return Err(error),
         }
     }
@@ -3056,6 +3072,9 @@ where
         Some(&plan.marker_handle),
     )?;
     drop(marker);
+    // The preflight marker handle must also be released before Windows can
+    // complete its handle-based delete disposition and permit root removal.
+    drop(plan.marker_handle);
 
     // If this final operation fails, the empty unmarked directory is not
     // eligible for a later recovery pass. That is intentional fail-closed
@@ -5714,6 +5733,79 @@ mod tests {
         assert!(replaced);
         assert!(original_path.is_dir(), "replacement directory must be preserved");
         assert!(displaced_path.is_dir(), "the inventoried directory must remain available for inspection");
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_cleanup_rejects_file_replacement_after_preflight() {
+        let workspace_path = make_test_directory("cleanup-file-identity-race");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![
+                BoundedSnapshotFile { relative_path: PathBuf::from("a.txt"), contents: b"first".to_vec() },
+                BoundedSnapshotFile { relative_path: PathBuf::from("b.txt"), contents: b"original".to_vec() },
+            ],
+            bytes: 13,
+            truncated: false,
+        };
+        let id = "6".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        let root = workspace_path.join(&id);
+        let displaced = root.join("b.displaced");
+        let mut replaced = false;
+
+        let result = cleanup_owned_snapshot_with_hook(&workspace, &id, bounded_limits(), |path| {
+            if path == "a.txt" && !replaced {
+                fs::rename(root.join("b.txt"), &displaced)?;
+                fs::write(root.join("b.txt"), b"replaced")?;
+                replaced = true;
+            }
+            Ok(())
+        });
+        assert!(replaced, "the replacement must occur after preflight and the first deletion");
+        assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::InvalidData));
+        assert_eq!(fs::read(root.join("b.txt")).unwrap(), b"replaced");
+        assert_eq!(fs::read(&displaced).unwrap(), b"original");
+        assert!(root.join(".friday-snapshot-owner.json").exists());
+
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_cleanup_rejects_parent_directory_replacement_after_preflight() {
+        let workspace_path = make_test_directory("cleanup-parent-identity-race");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![
+                BoundedSnapshotFile { relative_path: PathBuf::from("a/first.txt"), contents: b"first".to_vec() },
+                BoundedSnapshotFile { relative_path: PathBuf::from("b/second.txt"), contents: b"original".to_vec() },
+            ],
+            bytes: 13,
+            truncated: false,
+        };
+        let id = "7".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        let root = workspace_path.join(&id);
+        let displaced = root.join("b.displaced");
+        let mut replaced = false;
+
+        let result = cleanup_owned_snapshot_with_hook(&workspace, &id, bounded_limits(), |path| {
+            if path == "a/first.txt" && !replaced {
+                fs::rename(root.join("b"), &displaced)?;
+                fs::create_dir(root.join("b"))?;
+                fs::write(root.join("b/second.txt"), b"replaced")?;
+                replaced = true;
+            }
+            Ok(())
+        });
+        assert!(replaced, "the parent replacement must occur after preflight");
+        assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::InvalidData));
+        assert_eq!(fs::read(root.join("b/second.txt")).unwrap(), b"replaced");
+        assert_eq!(fs::read(displaced.join("second.txt")).unwrap(), b"original");
+        assert!(root.join(".friday-snapshot-owner.json").exists());
+
         drop(workspace);
         fs::remove_dir_all(workspace_path).unwrap();
     }
