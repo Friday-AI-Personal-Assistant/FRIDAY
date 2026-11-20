@@ -70,10 +70,8 @@ fn write_history_locked(app: &AppHandle, items: &VecDeque<ToolEvent>) -> Result<
     let key = crate::workspace::encryption_key()?;
     let encrypted = crate::workspace::encrypt_bytes(&key, &plain)?;
     let destination = directory.join(HISTORY_FILE);
-    let temporary = directory.join("tool-activity.enc.tmp");
-    fs::write(&temporary, encrypted).map_err(|e| format!("Could not save encrypted tool history: {e}"))?;
-    if destination.exists() { fs::remove_file(&destination).map_err(|e| format!("Could not replace tool history: {e}"))?; }
-    fs::rename(&temporary, &destination).map_err(|e| format!("Could not finish saving tool history: {e}"))?;
+    crate::atomic_file::replace(&destination, &encrypted)
+        .map_err(|e| format!("Could not safely save encrypted tool history: {e}"))?;
     Ok(())
 }
 pub(crate) fn record(app: &AppHandle, tool_id: &str, outcome: &str, approved: bool) -> Result<(), String> {
