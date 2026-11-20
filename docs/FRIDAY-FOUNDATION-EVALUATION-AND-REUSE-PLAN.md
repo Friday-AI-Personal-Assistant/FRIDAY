@@ -265,3 +265,17 @@ FRIDAY already has a lightweight native foundation aligned with local-first owne
 - Keep arbitrary shell, generic plugin execution, unattended computer control, paid cloud fallback and live financial actions disabled until their individual boundaries pass the four-guarantee release gate.
 
 **Foundation direction:** build FRIDAY forward on its existing native shell. The next implementation should be a small native capability/approval foundation (design + tests first), not importing either candidate's agent runtime. Before coding it, finish a focused audit of current `tools.rs`, skill enablement and Tauri command exposure so we extend existing ownership safely.
+
+
+### FRIDAY native core implementation notes (source audit)
+
+Reviewed `src-tauri/src/tools.rs`, `src-tauri/src/skills.rs`, `src-tauri/src/assistant.rs`, `src-tauri/src/memory.rs`, `src-tauri/Cargo.toml` and Tauri main-window capabilities at the evaluation baseline.
+
+- **Tool approvals:** the existing implementation creates cryptographically random, 120-second, one-use tokens bound to the exact tool ID and JSON arguments; mismatches consume the token and fail. This is a sound small foundation to preserve and generalize. The current tool catalogue is intentionally only two tools.
+- **Skills:** installation, enablement and loading are distinct operations. Built-in skill packages are verified against the expected manifest and instruction SHA-256; disabling/unloading file and coding skills revokes their session access. Loading adds bounded instructions to session memory; the current skill system does not execute arbitrary skill code or connect skill-declared tools. Permission labels are therefore descriptive metadata today, not a general grant engine.
+- **Assistant:** the current chat backend is local Ollama at loopback and enforces model/message count and size bounds plus connection/response timeouts. It is not yet a multi-provider manager or cloud-cost system.
+- **Memory and activity:** local memory and tool activity are encrypted, but current replacement logic removes the prior destination before renaming a temporary file. This creates a crash window and should be hardened with atomic replacement/recovery before broader persistent state is added.
+- **Desktop permissions:** the Tauri main window has only the default core permission set; retain this minimal capability model as the app grows.
+- **Coding Assistant:** the current skill instructions remain read-only; separate filesystem and Windows Sandbox groundwork exists, but it must not be treated as an enabled execution environment.
+
+**Conclusion:** preserve the existing one-use approval token mechanism, exact built-in skill catalogue/integrity checks, local Ollama path, encryption/keyring integration, and minimal Tauri permissions. Extend them behind a coherent backend policy rather than replacing them with an external agent framework. Prioritize atomic persistence hardening and a deny-by-default permission model before adding more powerful tools.
