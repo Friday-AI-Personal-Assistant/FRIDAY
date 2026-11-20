@@ -165,3 +165,23 @@ Inspected source files at Row-Bot commit `547116cfd03b4b391813e8e2d638ffc22b8255
 - `uv.lock` (blob `17bc1ab8bd412abd709377ded400d47e3195060d`)
 
 **Preliminary assessment:** Row-Bot currently has the strongest visible investment in approvals, user-facing controls and a constrained developer network-egress design among the candidates inspected so far. That is a reason to continue source review, not proof that its controls satisfy FRIDAY. Its shell remains host command execution, computer-use documentation retains upstream telemetry, and the disclosed tool-settings fail-open advisory needs careful regression analysis. No Row-Bot code is approved for import at this checkpoint.
+
+
+### Row-Bot advisory regression review (2026-11-20)
+
+**Reviewed source revision:** `siddsachar/row-bot@547116cfd03b4b391813e8e2d638ffc22b8255ff`.
+
+**Advisory:** GHSA-68j6-243q-h2hp, published 2026-11-13, fixed in 5.3.3 according to the upstream `SECURITY.md`.
+
+**What the failure could do:** if `tools_config.json` became unreadable, the old behavior could restore default-enabled tools and lose the user's shell blocked-command settings. That is a serious user-control regression even though upstream rates the advisory Low.
+
+**Evidence of the current fix:**
+- `src/row_bot/tools/registry.py` treats a failed settings read as `None`; a tool without previously loaded settings is registered disabled rather than falling back to its default-enabled state.
+- If the registry had already loaded the user's settings, it retains the loaded enablement and tool configuration when a later reload finds the file unreadable. It does not clear the user's known blocked-command list.
+- `src/row_bot/tool_configuration.py` uses a bounded strict read, rejects malformed/duplicate-key/non-regular/symlink-like input, verifies file identity around the read, and raises a stable unavailable error rather than returning partial settings.
+- `tests/subsystem/tools/test_tool_registry_saved_reload.py` covers truncated, half-written and non-file settings; it asserts that switched-off tools remain off, the `curl` blocked-command setting remains intact when it was already loaded, and a fresh startup with unreadable settings leaves tools off. It also distinguishes a genuinely missing first-run settings file (defaults apply) from an unreadable existing file (fail closed).
+- `frontend/src/features/settings/ToolSettingsUnreadable.test.tsx` verifies the user is told every tool is off while settings are unreadable, and that reset-to-defaults is a separate, explicit confirmation. The dialog warns that blocked commands are cleared.
+
+**Assessment:** The specific advisory appears credibly addressed in the inspected source and regression tests. This is a positive signal for configuration failure handling. It is still source inspection, not an independently executed test run or a full audit of all tool execution paths. Resetting unreadable settings intentionally clears blocked commands after explicit confirmation; FRIDAY should make such a reset equally explicit and should never silently discard a user's safety preferences.
+
+**Next source-review question:** prove that every execution route (built-in, MCP, plugin, custom tool, channel, background workflow and computer use) checks the effective user/profile/workspace policy at the point of execution, and that stale approvals cannot be reused after permissions or configuration change.
