@@ -104,18 +104,8 @@ pub fn save_private_note(app: AppHandle, note: String) -> Result<String, String>
     let key = encryption_key()?;
     let encrypted = encrypt_bytes(&key, note.as_bytes())?;
     let destination = directory.join(NOTE_FILE);
-    let temporary = directory.join("private-note.enc.tmp");
-
-    fs::write(&temporary, encrypted)
-        .map_err(|e| format!("Could not write encrypted note: {e}"))?;
-
-    if destination.exists() {
-        fs::remove_file(&destination)
-            .map_err(|e| format!("Could not replace previous encrypted note: {e}"))?;
-    }
-
-    fs::rename(&temporary, &destination)
-        .map_err(|e| format!("Could not finish saving encrypted note: {e}"))?;
+    crate::atomic_file::replace(&destination, &encrypted)
+        .map_err(|e| format!("Could not safely save encrypted note: {e}"))?;
 
     Ok("Private note saved in encrypted form on this device.".to_string())
 }
