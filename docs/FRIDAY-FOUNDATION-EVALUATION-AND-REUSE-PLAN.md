@@ -151,7 +151,7 @@ This evaluation branch is a planning, source-inspection and isolated-prototype w
 
 ### Row-Bot source-review checkpoint (2026-11-20; preliminary)
 
-Inspected source files at the repository's current `main` branch, including:
+Inspected source files at Row-Bot commit `547116cfd03b4b391813e8e2d638ffc22b8255ff` (2026-11-20; `main` at time of inspection), including:
 - `SECURITY.md` (blob `8dece46f74733ef1e27aeeec316726ba2a3b8735`)
 - `docs/COMPUTER_USE_SECURITY.md` (blob `4058ca16f021acdc0d336ffaeb1b8cd31fad0089`)
 - `src/row_bot/access/policy.py` (blob `06e909eb645c89a3f410acc7f9864658ee2610db`)
