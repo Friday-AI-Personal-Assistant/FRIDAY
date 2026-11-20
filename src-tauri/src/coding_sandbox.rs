@@ -3433,7 +3433,8 @@ pub fn issue_guest_run_execution_approval(request_json: String) -> Result<GuestR
     Ok(GuestRunApprovalReceipt { token, expires_at_unix_seconds })
 }
 
-/// Consumes the one-time approval for this exact request. This does not execute it.
+/// Consumes the one-time approval for this exact request. This does not execute it
+/// or invoke a guest runner; guest execution remains disabled pending separate review.
 #[tauri::command]
 pub fn consume_guest_run_execution_approval(request_json: String, token: String) -> Result<(), String> {
     crate::permissions::authorize_command("consume_guest_run_execution_approval", "coding.guest.execution.consume")?;

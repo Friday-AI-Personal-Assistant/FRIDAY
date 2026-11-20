@@ -824,10 +824,11 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 
 - [x] Map preflight, snapshot preparation, recovery, configuration preview and snapshot discard to distinct backend capabilities.
 - [x] Enforce each capability at the start of its Rust command handler.
-- [x] Explicitly deny guest-run approval issuance, consumption and revocation until the complete execution boundary is approved.
-- [x] Add regression tests for lifecycle mappings, capability substitution and guest-approval denial.
+- [x] Give guest-run approval receipt issuance, consumption and revocation separate narrow backend capabilities.
+- [x] Confirm approval receipt endpoints do not launch guest processes; no guest process-launch command is registered.
+- [x] Add regression tests for lifecycle mappings, capability substitution and guest-approval capability separation.
 - [ ] Verify this increment with Windows and Linux CI.
 - [ ] Complete physical Windows Sandbox launch/isolation acceptance before considering any guest execution enablement.
 - [ ] Keep guest process launch, arbitrary commands, host fallback and network-enabled execution disabled.
 
-**Scope:** this is a static backend command allowlist with an explicit disabled-command set. It is not a persistent user-grant manager, universal Tauri IPC gateway or proof of OS isolation. Existing snapshot ownership and filesystem protections remain mandatory.
+**Scope:** this is a static backend command allowlist. Guest approval endpoints manage one-use receipts only; they do not execute code. No guest process-launch command is registered or enabled. This is not a persistent user-grant manager, universal Tauri IPC gateway or proof of OS isolation. Existing snapshot ownership and filesystem protections remain mandatory.

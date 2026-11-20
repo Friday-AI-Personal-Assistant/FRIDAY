@@ -332,8 +332,8 @@ The #1076 File/Coding Assistant capability increment is verified on both Windows
 
 - Add distinct backend capabilities for sandbox preflight, snapshot preparation, recovery, configuration preview and snapshot discard.
 - Enforce each capability at the start of its Rust command handler, before host inspection, filesystem access or mutation. Existing selected-project grants, current-session snapshot ownership, bounded inventory and handle-relative cleanup remain independently required.
-- Keep the three registered guest-run approval endpoints explicitly denied by backend policy: issue, consume and revoke. They are not permission to execute code, and no guest process-launch command is enabled by this change.
-- Add regression tests for all lifecycle mappings, capability substitution and explicit guest-approval denial.
+- Give the three registered guest-run approval-receipt endpoints their own narrow backend capabilities: issue, consume and revoke. These endpoints only manage one-use approval receipts; they do not launch a guest process. No guest process-launch command is registered or enabled by this change.
+- Add regression tests for all lifecycle mappings, capability substitution and narrow guest-approval receipt capabilities.
 - Preserve the existing Windows Sandbox configuration restrictions and resource limits as preparatory code only. This change does not prove a usable OS sandbox, enable guest execution, or establish a universal Tauri IPC gateway.
 
 **Next acceptance gate:** Windows and Linux CI must pass before this increment is marked complete. Physical Windows Sandbox launch/isolation validation remains a separate requirement; guest execution stays disabled until the full end-to-end boundary is independently reviewed.
