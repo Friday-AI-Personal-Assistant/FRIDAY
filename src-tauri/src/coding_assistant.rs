@@ -1758,6 +1758,7 @@ mod tests {
         assert!(!paths.iter().any(|path| path.contains("node_modules") || path.contains("secrets") || path == ".env"));
         assert!(candidates.len() <= MAX_PROJECT_CANDIDATES);
         assert_eq!(grants.len(), candidates.len());
+        drop(root_handle);
         fs::remove_dir_all(&temp).unwrap();
     }
 
