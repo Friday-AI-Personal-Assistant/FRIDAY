@@ -1,3 +1,4 @@
+mod atomic_file;
 mod workspace;
 mod assistant;
 mod skills;
