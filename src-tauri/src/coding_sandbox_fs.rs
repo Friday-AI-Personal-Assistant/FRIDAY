@@ -2984,7 +2984,9 @@ where
     if snapshot_id.len() != 32 || !snapshot_id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid snapshot identifier"));
     }
-    let root = match open_snapshot_cleanup_root(workspace, snapshot_id) {
+    let root = match open_snapshot_cleanup_root(workspace, snapshot_id).map_err(|error| {
+        io::Error::new(error.kind(), format!("snapshot cleanup root open failed: {}", error))
+    }) {
         Ok(root) => root,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
