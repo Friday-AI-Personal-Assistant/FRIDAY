@@ -10,6 +10,7 @@ pub struct ToolDefinition {
     pub name: &'static str,
     pub description: &'static str,
     pub permission: &'static str,
+    pub capability: &'static str,
     pub approval_required: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -34,8 +35,8 @@ const HISTORY_FILE: &str = "tool-activity.enc";
 const MAX_HISTORY: usize = 500;
 const MAX_HISTORY_BYTES: u64 = 512 * 1024;
 const TOOLS: &[ToolDefinition] = &[
-    ToolDefinition { id: "calculator.evaluate", name: "Calculator", description: "Evaluate a basic arithmetic expression locally.", permission: "No access (local computation)", approval_required: false },
-    ToolDefinition { id: "desktop.open_target", name: "Open desktop item", description: "Open one of FRIDAY's fixed, approved Windows destinations.", permission: "External application launch", approval_required: true },
+    ToolDefinition { id: "calculator.evaluate", name: "Calculator", description: "Evaluate a basic arithmetic expression locally.", permission: "No access (local computation)", capability: "local.compute", approval_required: false },
+    ToolDefinition { id: "desktop.open_target", name: "Open desktop item", description: "Open one of FRIDAY's fixed, approved Windows destinations.", permission: "External application launch", capability: "desktop.launch", approval_required: true },
 ];
 
 fn workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -107,9 +108,13 @@ fn registered_tool(tool_id: &str) -> Result<&'static ToolDefinition, String> {
     TOOLS.iter().find(|tool| tool.id == tool_id).ok_or_else(|| "This tool is not registered in FRIDAY.".into())
 }
 
+fn policy_requires_approval(definition: &ToolDefinition) -> Result<bool, String> {
+    crate::permissions::authorize_tool(definition.id, definition.capability, definition.approval_required)
+}
+
 fn authorize_tool_execution(tool_id: &str, arguments: &Value, approval_token: Option<String>) -> Result<(), String> {
     let definition = registered_tool(tool_id)?;
-    if definition.approval_required {
+    if policy_requires_approval(definition)? {
         if tool_id == "desktop.open_target" { valid_target(arguments)?; }
         consume_approval(approval_token, tool_id, arguments)?;
     } else if approval_token.is_some() {
@@ -121,7 +126,7 @@ fn authorize_tool_execution(tool_id: &str, arguments: &Value, approval_token: Op
 #[tauri::command]
 pub fn issue_tool_approval(tool_id: String, arguments: Value) -> Result<String, String> {
     let definition = registered_tool(&tool_id)?;
-    if !definition.approval_required { return Err("This tool does not use an approval token.".into()); }
+    if !policy_requires_approval(definition)? { return Err("This tool does not use an approval token.".into()); }
     if tool_id == "desktop.open_target" { valid_target(&arguments)?; }
     let mut bytes = [0_u8; 32];
     OsRng.try_fill_bytes(&mut bytes).map_err(|_| "Could not securely create an approval token.".to_string())?;

@@ -5,6 +5,7 @@ mod skills;
 mod conversations;
 mod memory;
 mod tools;
+mod permissions;
 mod pdf_reader;
 mod web_research;
 mod file_assistant;

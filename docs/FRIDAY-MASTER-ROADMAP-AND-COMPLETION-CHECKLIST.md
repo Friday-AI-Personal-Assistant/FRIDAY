@@ -792,3 +792,16 @@ The audit is complete, but production component reuse has **not** started. FRIDA
 - [ ] Continue the source traversal, parent identity, reparse-point and cleanup-boundary review; guest execution remains disabled.
 
 Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160d5ddc713f31ca14844db55a6e421184`, run [44557584318](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44557584318)).
+
+### Native capability policy — first increment (foundation/evaluation)
+
+- [x] Preserve the existing one-use, exact-tool-and-arguments approval tokens for consequential built-in tool actions.
+- [x] Add a Rust-owned capability policy mapping each currently registered built-in tool to an explicit capability.
+- [x] Deny unknown tool IDs, capability mismatches and approval-policy weakening by default.
+- [x] Add regression tests for allowed local computation, approval-required desktop launch, unknown-tool denial and declaration tampering.
+- [ ] Verify the new policy increment on both Windows and Linux CI before marking it complete.
+- [ ] Extend backend authorization to the file and Coding Assistant command families without bypassing their existing scoped grants, previews and transaction approvals.
+- [ ] Add durable, inspectable permission grants with narrow scopes, expiry, revocation and audit before introducing third-party executable skills or broad integrations.
+- [ ] Build the user-facing Permissions/Transparency Centre only on top of backend-enforced grants; UI visibility is not authorization.
+
+**Scope note:** the first increment covers the existing built-in tool dispatcher only. It is not yet a universal Tauri-command permission gateway or persistent permission manager. Keep shell, unrestricted plugin execution, unattended computer control and paid cloud fallback disabled until their separate gates pass.

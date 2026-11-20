@@ -259,7 +259,7 @@ FRIDAY already has a lightweight native foundation aligned with local-first owne
 
 - The current tool set is intentionally tiny; tool permission grants and approvals need to become a coherent, backend-enforced, deny-by-default capability system before adding powerful tools.
 - The skill registry must keep install, enablement and permission grants separate. A skill's prompt/manifest must never grant its own authority.
-- Encrypted storage currently uses temp-file replacement patterns in memory/tool history that deserve atomicity, backup and crash-recovery review before the store grows.
+- Atomic cross-platform file replacement is now integrated into memory, chat history, the skills registry, tool activity history and private workspace notes (#1066–#1074). Backup/restore and broader crash-recovery guarantees remain separate work.
 - Provider/model management, cost estimates/budgets, local/cloud separation and explicit no-silent-fallback behavior need a first-class design.
 - Add durable, inspectable permission records, revocation, per-action audit trails and background-task stop controls before adding agents, channels or automation.
 - Keep arbitrary shell, generic plugin execution, unattended computer control, paid cloud fallback and live financial actions disabled until their individual boundaries pass the four-guarantee release gate.
@@ -294,3 +294,19 @@ For the first capability-system increment, keep the surface deliberately small:
 - do not add broad filesystem, shell, browser-control, channel-send or paid-provider grants in this increment.
 
 The first prototype should be limited to the existing two built-in tools, with tests proving that unknown tools and missing grants fail closed and that the existing explicit approval flow remains one-use and argument-bound.
+
+
+### Native capability-policy implementation — first increment
+
+**Branch checkpoint:** `foundation/evaluation`, based on #1074 (`8721ae38b981d1026d4eb185553a0c83a36035ce`).
+
+The first implementation adds a small Rust-owned capability policy for the two existing built-in tools:
+
+- `calculator.evaluate` is explicitly mapped to `local.compute` and remains limited to local arithmetic without an approval token.
+- `desktop.open_target` is explicitly mapped to `desktop.launch` and continues to require the existing cryptographically random, exact-arguments, one-use, 120-second approval token.
+- The policy gateway rejects unknown tool IDs, capability mismatches and any attempt to weaken the backend's approval requirement. The UI's catalogue metadata is not the authority.
+- Regression tests cover known allowed behavior, consequential-action approval, unknown-tool denial and declaration-tampering attempts.
+
+**Scope and honest limitation:** this is the first central policy increment for the built-in tool dispatcher. It is not yet a durable permission centre, persistent user-grant/revocation store, or a universal authorization wrapper for every Tauri IPC command. Existing file/Coding Assistant operations retain their dedicated preview, grant and approval checks. The next increments must extend the same backend-owned policy to those command families before adding broader capabilities. Shell execution, unrestricted plugins, unattended computer control and paid-provider fallback remain disabled.
+
+The implementation must pass Windows and Linux CI before it is treated as complete. A green CI run verifies the automated checks only; it does not establish physical-device acceptance or a complete OS sandbox.
