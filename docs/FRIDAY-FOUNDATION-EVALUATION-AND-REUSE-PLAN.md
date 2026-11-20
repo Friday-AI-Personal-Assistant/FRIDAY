@@ -60,7 +60,13 @@ Sources: https://github.com/siddsachar/row-bot and the `zeroitp/Thoth` fork.
 - The project appears substantially broader and more actively maintained than the earlier `zeroitp/Thoth` fork snapshot. It is a serious candidate for a deeper architecture and component-level reuse review, not an automatic foundation choice.
 - Its advertised capabilities include agent/tool execution, shell, filesystem, browser automation, messaging channels, workflows, plugins/MCP and background tasks. These are high-risk surfaces. FRIDAY must not inherit their permission model without direct source review and adversarial tests.
 - The repository is large and Python/LangGraph-oriented, while FRIDAY already has a Rust/Tauri/React architecture. Evaluate selective components and integration cost; do not add a second full desktop/backend stack by default.
-- Required next checks: pin current commit; inspect tool registry and dispatch, authorization/approval middleware, filesystem and shell boundaries, plugin/MCP isolation, workflow persistence/cancellation, credential storage, telemetry/network behavior, updater/signing, installer scripts, dependency lockfiles/SBOM, bundled assets/models and Windows runtime behavior.
+- Source review has begun. Positive evidence: a central approval policy defaults missing/unknown stored approval levels to Ask; the documented developer network gate uses a per-workspace internal network and a separate constrained egress proxy, and fails without network when the gate cannot start; the project has a substantial `uv.lock` with hashes and explicit Python constraints; and a dedicated security policy discloses a prior security advisory rather than hiding it.
+- Important risks and costs: the current package requires Python >=3.12,<3.14; the core dependency set is already broad (FastAPI, LangChain/LangGraph, Ollama, provider SDKs, scheduler, desktop wrapper and more), with large optional extras for voice, browser, channels, MCP, embeddings and media. This conflicts with a small low-resource FRIDAY core if adopted wholesale.
+- Security policy records GHSA-68j6-243q-h2hp (published 2026-11-13): an unreadable tool settings file re-enabled switched-off tools and cleared the shell blocked-commands list; fixed in 5.3.3. This is a concrete configuration-failure regression to inspect in current source and tests. It is not by itself a disqualification, but fail-closed configuration loading and regression coverage are mandatory reuse gates.
+- Computer-use security documentation says the 5.3 rebuild removed an earlier verdict layer and relies on visibility, interruption and moment-of-action approvals; it explicitly notes residual risks and that the upstream Cua telemetry remains enabled after disclosure. FRIDAY's policy requires independent opt-in, clear disclosure and a user-controlled telemetry choice, so this integration cannot be adopted unchanged.
+- Shell tooling runs commands on the user's machine and classifies commands using blocklists/allowlists plus approval levels. This is not a general-purpose OS sandbox. Any FRIDAY reuse must keep shell disabled unless a separate isolation boundary and adversarial validation are proven.
+- The developer egress design is promising but Docker/Podman and host networking assumptions must be tested on supported Windows configurations. It is not evidence that all Row-Bot tools/plugins are sandboxed.
+- Required next checks: pin the exact current commit; trace all tool registration and dispatch call sites; inspect the fix and tests for GHSA-68j6-243q-h2hp; inspect filesystem boundary and plugin/MCP permission enforcement; verify Docker/Podman network gate and sandbox lifecycle on Windows; inspect workflow persistence/cancellation, credential storage, telemetry/network behavior, updater/signing, installer scripts, SBOM/license inventory, bundled assets/models and actual Windows runtime behavior.
 
 ### Personal Jarvis
 
@@ -141,3 +147,21 @@ The Coding Assistant is not discarded. Its bounded project reading, analysis, di
 ### Engineering guardrails
 
 This evaluation branch is a planning, source-inspection and isolated-prototype workspace. Do not merge to `main`, overwrite `feature/phase-2-skills`, replace FRIDAY wholesale, enable external agent tools, or introduce new runtime dependencies until the relevant four-guarantee release gates have evidence.
+
+
+### Row-Bot source-review checkpoint (2026-11-20; preliminary)
+
+Inspected source files at the repository's current `main` branch, including:
+- `SECURITY.md` (blob `8dece46f74733ef1e27aeeec316726ba2a3b8735`)
+- `docs/COMPUTER_USE_SECURITY.md` (blob `4058ca16f021acdc0d336ffaeb1b8cd31fad0089`)
+- `src/row_bot/access/policy.py` (blob `06e909eb645c89a3f410acc7f9864658ee2610db`)
+- `src/row_bot/access/runtime_policy.py` (blob `8300cf81e1d221522e8553c231b41718e12639e3`)
+- `src/row_bot/approval_policy.py` (blob `ce30774cef0e26c82b17a9c1d7ac18af5a200660`)
+- `src/row_bot/developer/sandbox.py` (blob `1f13dffaf7cdf63a2af569c7facf31783c84b74b`)
+- `src/row_bot/developer/sandbox_egress.py` (blob `7591fba10ffd5fb73b3d5bb96c4c33c1d322e718`)
+- `src/row_bot/tools/shell_tool.py` (blob `10c16d881b1195d135e9bd1adfdcbf2b012bcf1a`)
+- `src/row_bot/application/capability_policy_controls.py` (blob `9ad2647cfbc52a7a1d12330f7ab2123fb05a60de`)
+- `pyproject.toml` (blob `f0e9a25b86dad0ce8d6c1e2c64446e642d4a4c72`)
+- `uv.lock` (blob `17bc1ab8bd412abd709377ded400d47e3195060d`)
+
+**Preliminary assessment:** Row-Bot currently has the strongest visible investment in approvals, user-facing controls and a constrained developer network-egress design among the candidates inspected so far. That is a reason to continue source review, not proof that its controls satisfy FRIDAY. Its shell remains host command execution, computer-use documentation retains upstream telemetry, and the disclosed tool-settings fail-open advisory needs careful regression analysis. No Row-Bot code is approved for import at this checkpoint.
