@@ -805,3 +805,17 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 - [ ] Build the user-facing Permissions/Transparency Centre only on top of backend-enforced grants; UI visibility is not authorization.
 
 **Scope note:** the first increment covers the existing built-in tool dispatcher only. It is not yet a universal Tauri-command permission gateway or persistent permission manager. Keep shell, unrestricted plugin execution, unattended computer control and paid cloud fallback disabled until their separate gates pass.
+
+
+### File and Coding Assistant backend capability enforcement
+
+- [x] Assign explicit backend capability IDs to all registered File Assistant command entry points.
+- [x] Assign explicit backend capability IDs to all registered Coding Assistant command entry points.
+- [x] Add a separate capability for local Coding Assistant structural analysis.
+- [x] Deny unknown command IDs and capability substitutions in the central Rust policy.
+- [x] Preserve existing folder/project-scoped grants, per-operation previews, approvals, hash checks, backups and undo protections.
+- [ ] Verify this increment with Windows and Linux CI.
+- [ ] Extend the same audit to sandbox lifecycle and guest-execution approval commands while guest execution remains disabled.
+- [ ] Design and implement durable user-visible permission grants, revocation, expiry and audit before enabling broader integrations or executable skills.
+
+**Scope:** this is backend command classification/enforcement, not a persistent permission centre or OS-level sandbox. The UI cannot grant itself authority; feature-specific grants and operation tokens remain required where currently implemented.

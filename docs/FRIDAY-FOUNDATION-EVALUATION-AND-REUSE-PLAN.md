@@ -310,3 +310,17 @@ The first implementation adds a small Rust-owned capability policy for the two e
 **Scope and honest limitation:** this is the first central policy increment for the built-in tool dispatcher. It is not yet a durable permission centre, persistent user-grant/revocation store, or a universal authorization wrapper for every Tauri IPC command. Existing file/Coding Assistant operations retain their dedicated preview, grant and approval checks. The next increments must extend the same backend-owned policy to those command families before adding broader capabilities. Shell execution, unrestricted plugins, unattended computer control and paid-provider fallback remain disabled.
 
 The implementation must pass Windows and Linux CI before it is treated as complete. A green CI run verifies the automated checks only; it does not establish physical-device acceptance or a complete OS sandbox.
+
+
+### File Assistant and Coding Assistant IPC capability enforcement — next increment
+
+Based on #1075 (`bf5469d3b4d0bfcaae6fed78a49b717a4d3a0907`), the next implementation extends the Rust-owned policy to the File Assistant and Coding Assistant command entry points.
+
+- Every registered File Assistant operation for folder selection, file reading, edit/move previews, approval issuance, cancellation, apply, undo history and recovery is assigned a distinct backend capability.
+- Every registered Coding Assistant operation for project selection, selected-file reading, change previews, proposal validation, approval issuance, cancellation, apply, undo and history is assigned a distinct backend capability.
+- Local project structural analysis receives its own capability.
+- Unknown command IDs and capability substitutions are rejected by the central Rust policy.
+- Existing folder/project scoped grants, skill-loaded checks, path validation, hash checks, preview expiry, explicit approvals, backups and guarded undo remain in place. The new gateway supplements these controls; it does not replace them.
+- Guest execution and sandbox lifecycle commands are deliberately not expanded in this increment. Guest execution remains disabled and must receive a separate end-to-end review before enablement.
+
+**Limitations:** this is a static backend command allowlist, not yet a persistent user-editable permission store with grant expiry/revocation, nor an OS sandbox. The next stage will add durable grants, audit and revocation only after all command families are mapped. Do not infer that a capability name by itself grants a user permission.

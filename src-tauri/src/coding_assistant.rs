@@ -1356,6 +1356,7 @@ pub fn revoke_session_access() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn pick_project_folder_and_list_files(app: AppHandle) -> Result<CodingProjectScan, String> {
+    crate::permissions::authorize_command("coding.pick_project_folder_and_list_files", "coding.project.select")?;
     ensure_skill_loaded()?;
     revoke_session_access()?;
     let selected = app.dialog().file().blocking_pick_folder();
@@ -1488,6 +1489,7 @@ fn list_code_change_history_for_root(root: &Path) -> Result<Vec<CodingChangeHist
 
 #[tauri::command]
 pub async fn list_code_change_history() -> Result<Vec<CodingChangeHistoryItem>, String> {
+    crate::permissions::authorize_command("coding.list_code_change_history", "coding.history.read")?;
     ensure_skill_loaded()?;
     let root = SELECTED_PROJECT_ROOT.lock()
         .map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())?
@@ -1498,6 +1500,7 @@ pub async fn list_code_change_history() -> Result<Vec<CodingChangeHistoryItem>, 
 
 #[tauri::command]
 pub async fn preview_code_change(file_id: String, proposed_content: String) -> Result<CodingChangePreview, String> {
+    crate::permissions::authorize_command("coding.preview_code_change", "coding.change.preview")?;
     ensure_skill_loaded()?;
     if file_id.len() != 48 || !file_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("Select a project file again before creating a change preview.".into());
@@ -1563,6 +1566,7 @@ pub async fn preview_code_change(file_id: String, proposed_content: String) -> R
 /// This command does not modify project files; a later apply operation must consume the token.
 #[tauri::command]
 pub fn issue_code_change_approval(preview_id: String) -> Result<String, String> {
+    crate::permissions::authorize_command("coding.issue_code_change_approval", "coding.change.approval")?;
     ensure_skill_loaded()?;
     if preview_id.len() != 48 || !preview_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("Review the code preview again before approving it.".into());
@@ -1586,6 +1590,7 @@ pub fn issue_code_change_approval(preview_id: String) -> Result<String, String> 
 /// the UI until guarded undo is implemented and verified.
 #[tauri::command]
 pub fn apply_code_change(app: AppHandle, preview_id: String, approval_token: String) -> Result<CodingApplyResult, String> {
+    crate::permissions::authorize_command("coding.apply_code_change", "coding.change.apply")?;
     ensure_skill_loaded()?;
     if preview_id.len() != 48 || !preview_id.bytes().all(|b| b.is_ascii_hexdigit())
         || approval_token.len() != 48 || !approval_token.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -1647,6 +1652,7 @@ pub fn apply_code_change(app: AppHandle, preview_id: String, approval_token: Str
 /// Restores a previously applied change only while the target still matches FRIDAY's exact post-edit hash.
 #[tauri::command]
 pub fn undo_code_change(app: AppHandle, undo_record_id: String) -> Result<String, String> {
+    crate::permissions::authorize_command("coding.undo_code_change", "coding.change.undo")?;
     ensure_skill_loaded()?;
     if undo_record_id.len() != 48 || !undo_record_id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("The undo request is invalid.".into());
@@ -1756,6 +1762,7 @@ fn validate_multi_file_proposal(proposal_json: &str, allowed_paths: &[String]) -
 
 #[tauri::command]
 pub fn validate_multi_file_coding_proposal(proposal_json: String, allowed_paths: Vec<String>) -> Result<Vec<MultiFileProposalEntry>, String> {
+    crate::permissions::authorize_command("coding.validate_multi_file_coding_proposal", "coding.proposal.validate")?;
     ensure_skill_loaded()?;
     validate_multi_file_proposal(&proposal_json, &allowed_paths)
 }
@@ -1769,6 +1776,7 @@ fn validate_proposed_content(content: &str) -> Result<(), String> {
 
 #[tauri::command]
 pub fn cancel_code_change_preview(preview_id: String) -> Result<(), String> {
+    crate::permissions::authorize_command("coding.cancel_code_change_preview", "coding.change.cancel")?;
     ensure_skill_loaded()?;
     if preview_id.len() != 48 || !preview_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("The code preview identifier is invalid.".into());
@@ -1781,6 +1789,7 @@ pub fn cancel_code_change_preview(preview_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn read_project_files(app: AppHandle, file_ids: Vec<String>) -> Result<Vec<CodingProjectFile>, String> {
+    crate::permissions::authorize_command("coding.read_project_files", "coding.project.read")?;
     ensure_skill_loaded()?;
     if file_ids.is_empty() || file_ids.len() > MAX_SELECTED_FILES {
         return Err("Select between 1 and 25 project files to inspect.".into());

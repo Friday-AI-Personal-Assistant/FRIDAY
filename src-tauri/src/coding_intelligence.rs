@@ -154,6 +154,7 @@ fn manifest_dependencies(path: &str, content: &str, output: &mut BTreeSet<String
 
 #[tauri::command]
 pub fn analyze_project_intelligence(files: Vec<AnalysisFile>) -> Result<ProjectIntelligence, String> {
+    crate::permissions::authorize_command("coding.analyze_project_intelligence", "coding.analysis.local")?;
     if files.is_empty() || files.len() > MAX_FILES {
         return Err("Project intelligence requires between 1 and 25 selected files.".into());
     }
