@@ -1,7 +1,7 @@
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::{HashMap, VecDeque}, fs, path::PathBuf, process::Command, sync::{LazyLock, Mutex}, time::{SystemTime, UNIX_EPOCH}};
+use std::{collections::{HashMap, VecDeque}, fs, path::PathBuf, process::Command, sync::{LazyLock, Mutex}, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Serialize)]
@@ -25,7 +25,7 @@ pub struct ToolEvent {
 struct PendingApproval {
     tool_id: String,
     arguments: Value,
-    expires_at: u64,
+    expires_at: Instant,
 }
 static PENDING_APPROVALS: LazyLock<Mutex<HashMap<String, PendingApproval>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static HISTORY_LOCK: Mutex<()> = Mutex::new(());
@@ -126,12 +126,13 @@ pub fn issue_tool_approval(tool_id: String, arguments: Value) -> Result<String, 
     if !definition.approval_required { return Err("This tool does not use an approval token.".into()); }
     if tool_id == "desktop.open_target" { valid_target(&arguments)?; }
     let mut bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    OsRng.try_fill_bytes(&mut bytes).map_err(|_| "Could not securely create an approval token.".to_string())?;
     let token = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let mut approvals = PENDING_APPROVALS.lock().map_err(|_| "Approval service is temporarily unavailable.".to_string())?;
-    approvals.retain(|_, item| item.expires_at >= now());
+    let current_time = Instant::now();
+    approvals.retain(|_, item| item.expires_at > current_time);
     if approvals.len() >= 128 { return Err("Too many pending approvals. Finish or cancel an existing request.".into()); }
-    approvals.insert(token.clone(), PendingApproval { tool_id, arguments, expires_at: now() + 120 });
+    approvals.insert(token.clone(), PendingApproval { tool_id, arguments, expires_at: Instant::now() + Duration::from_secs(120) });
     Ok(token)
 }
 
@@ -139,7 +140,7 @@ fn consume_approval(token: Option<String>, tool_id: &str, arguments: &Value) -> 
     let token = token.ok_or("This action requires a fresh, one-use approval.")?;
     let mut approvals = PENDING_APPROVALS.lock().map_err(|_| "Approval service is temporarily unavailable.".to_string())?;
     let approval = approvals.remove(&token).ok_or("This approval is invalid, expired, or already used.")?;
-    if approval.expires_at < now() || approval.tool_id != tool_id || approval.arguments != *arguments {
+    if approval.expires_at <= Instant::now() || approval.tool_id != tool_id || approval.arguments != *arguments {
         return Err("Approval did not match this exact action. Please review and approve again.".into());
     }
     Ok(())
@@ -262,22 +263,32 @@ mod tests {
         let token = "expired-once".to_string();
         let args = serde_json::json!({"target":"notepad"});
         PENDING_APPROVALS.lock().unwrap().insert(token.clone(), PendingApproval {
-            tool_id: "desktop.open_target".into(), arguments: args.clone(), expires_at: now() - 1
+            tool_id: "desktop.open_target".into(), arguments: args.clone(), expires_at: Instant::now() - Duration::from_secs(1)
         });
         assert!(consume_approval(Some(token.clone()), "desktop.open_target", &args).is_err());
+        assert!(consume_approval(Some(token), "desktop.open_target", &args).is_err());
+    }
+    #[test] fn approval_tokens_are_bound_to_tool_identity() {
+        let token = "wrong-tool-once".to_string();
+        let args = serde_json::json!({"target":"notepad"});
+        PENDING_APPROVALS.lock().unwrap().insert(token.clone(), PendingApproval {
+            tool_id: "desktop.open_target".into(), arguments: args.clone(),
+            expires_at: Instant::now() + Duration::from_secs(60)
+        });
+        assert!(consume_approval(Some(token.clone()), "calculator.evaluate", &args).is_err());
         assert!(consume_approval(Some(token), "desktop.open_target", &args).is_err());
     }
     #[test] fn approval_tokens_are_bound_to_arguments_and_one_use() {
         let token = "test-token".to_string();
         let args = serde_json::json!({"target":"notepad"});
         PENDING_APPROVALS.lock().unwrap().insert(token.clone(), PendingApproval {
-            tool_id: "desktop.open_target".into(), arguments: args.clone(), expires_at: now() + 60
+            tool_id: "desktop.open_target".into(), arguments: args.clone(), expires_at: Instant::now() + Duration::from_secs(60)
         });
         assert!(consume_approval(Some(token.clone()), "desktop.open_target", &serde_json::json!({"target":"downloads"})).is_err());
         assert!(consume_approval(Some(token.clone()), "desktop.open_target", &args).is_err());
         let valid_token = "valid-once".to_string();
         PENDING_APPROVALS.lock().unwrap().insert(valid_token.clone(), PendingApproval {
-            tool_id: "desktop.open_target".into(), arguments: args.clone(), expires_at: now() + 60
+            tool_id: "desktop.open_target".into(), arguments: args.clone(), expires_at: Instant::now() + Duration::from_secs(60)
         });
         assert!(consume_approval(Some(valid_token.clone()), "desktop.open_target", &args).is_ok());
         assert!(consume_approval(Some(valid_token), "desktop.open_target", &args).is_err());
