@@ -6195,6 +6195,34 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_inventory_rejects_same_name_file_replacement_after_enumeration() {
+        let root_path = make_test_directory("snapshot-inventory-identity-swap");
+        let file_path = root_path.join("payload.txt");
+        fs::write(&file_path, b"original").unwrap();
+        let root = open_test_root(&root_path);
+
+        let entries = enumerate_runtime_tree_entries(&root, 8).unwrap();
+        let observed = entries.iter()
+            .find(|entry| entry.name == OsStr::new("payload.txt"))
+            .expect("native enumeration should return the original file")
+            .identity;
+
+        // Keep the original file handle alive to prevent file-ID reuse.
+        let original = open_file_nofollow(&root, OsStr::new("payload.txt")).unwrap();
+        fs::remove_file(&file_path).unwrap();
+        fs::write(&file_path, b"replacement").unwrap();
+        let replacement = open_file_nofollow(&root, OsStr::new("payload.txt")).unwrap();
+
+        assert!(!runtime_tree_handle_matches(observed, &replacement).unwrap());
+        assert!(runtime_tree_handle_matches(observed, &original).unwrap());
+
+        drop(replacement);
+        drop(original);
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
     fn runtime_tree_inventory_rejects_excessive_depth_and_invalid_roots() {
         let root_path = make_test_directory("runtime-inventory-depth");
         fs::create_dir_all(root_path.join("one").join("two")).unwrap();
