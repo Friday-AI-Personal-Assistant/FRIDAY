@@ -70,10 +70,8 @@ fn write_store(app: &AppHandle, store: &ConversationStore) -> Result<(), String>
     let key = encryption_key()?;
     let encrypted = encrypt_bytes(&key, &json)?;
     let path = store_path(app)?;
-    let temp = path.with_extension("enc.tmp");
-    fs::write(&temp, encrypted).map_err(|e| format!("Could not write encrypted chat history: {e}"))?;
-    if path.exists() { fs::remove_file(&path).map_err(|e| format!("Could not replace chat history: {e}"))?; }
-    fs::rename(&temp, &path).map_err(|e| format!("Could not finish saving chat history: {e}"))?;
+    crate::atomic_file::replace(&path, &encrypted)
+        .map_err(|e| format!("Could not safely save encrypted chat history: {e}"))?;
     Ok(())
 }
 
