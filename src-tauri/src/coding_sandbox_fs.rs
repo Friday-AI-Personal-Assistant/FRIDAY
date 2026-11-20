@@ -79,19 +79,19 @@ pub(crate) fn collect_bounded_directory_entry_names(
 }
 
 #[derive(Clone)]
-struct RuntimeTreeEntry {
-    name: OsString,
-    is_directory: bool,
-    is_file: bool,
-    is_reparse: bool,
+pub(crate) struct RuntimeTreeEntry {
+    pub(crate) name: OsString,
+    pub(crate) is_directory: bool,
+    pub(crate) is_file: bool,
+    pub(crate) is_reparse: bool,
     #[cfg(unix)]
-    identity: (u64, u64),
+    pub(crate) identity: (u64, u64),
     #[cfg(windows)]
-    identity: (u64, [u8; 16]),
+    pub(crate) identity: (u64, [u8; 16]),
 }
 
 #[cfg(unix)]
-fn enumerate_runtime_tree_entries(parent: &File, max_entries: usize) -> io::Result<Vec<RuntimeTreeEntry>> {
+pub(crate) fn enumerate_runtime_tree_entries(parent: &File, max_entries: usize) -> io::Result<Vec<RuntimeTreeEntry>> {
     let mut entries = Vec::new();
     for entry in read_dir(parent, Path::new("."))? {
         if entries.len() >= max_entries {
@@ -113,7 +113,7 @@ fn enumerate_runtime_tree_entries(parent: &File, max_entries: usize) -> io::Resu
 }
 
 #[cfg(windows)]
-fn enumerate_runtime_tree_entries(parent: &File, max_entries: usize) -> io::Result<Vec<RuntimeTreeEntry>> {
+pub(crate) fn enumerate_runtime_tree_entries(parent: &File, max_entries: usize) -> io::Result<Vec<RuntimeTreeEntry>> {
     windows_identity::enumerate_directory(parent, max_entries)
         .map(|entries| entries.into_iter().map(|(name, attributes, identity)| RuntimeTreeEntry {
             name,
@@ -125,12 +125,12 @@ fn enumerate_runtime_tree_entries(parent: &File, max_entries: usize) -> io::Resu
 }
 
 #[cfg(unix)]
-fn runtime_tree_handle_matches(identity: (u64, u64), handle: &File) -> io::Result<bool> {
+pub(crate) fn runtime_tree_handle_matches(identity: (u64, u64), handle: &File) -> io::Result<bool> {
     Ok(identity == handle_identity(handle)?)
 }
 
 #[cfg(windows)]
-fn runtime_tree_handle_matches(identity: (u64, [u8; 16]), handle: &File) -> io::Result<bool> {
+pub(crate) fn runtime_tree_handle_matches(identity: (u64, [u8; 16]), handle: &File) -> io::Result<bool> {
     Ok(identity == windows_identity::handle_file_id(handle)?)
 }
 
@@ -1118,7 +1118,7 @@ fn read_single_bounded_file_from_handle(
 /// Guest-written result files must have exactly one filesystem link. This
 /// prevents a result entry from aliasing another host-visible file through a
 /// hard link, even though hard links are not symlinks or reparse points.
-fn has_single_hard_link(file: &File) -> bool {
+pub(crate) fn has_single_hard_link(file: &File) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;

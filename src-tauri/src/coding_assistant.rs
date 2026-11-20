@@ -1049,49 +1049,88 @@ fn relative_path(root: &Path, path: &Path) -> Option<String> {
 }
 
 fn scan_folder(
-    current: &Path,
+    current: &std::fs::File,
+    relative_directory: &Path,
     root: &Path,
     depth: usize,
     scanned: &mut usize,
     candidates: &mut Vec<CodingFileCandidate>,
     grants: &mut BTreeMap<String, ProjectGrant>,
 ) -> Result<(), String> {
+    scan_folder_with_hook(
+        current, relative_directory, root, depth, scanned, candidates, grants, &mut |_| Ok(()),
+    )
+}
+
+fn scan_folder_with_hook<H>(
+    current: &std::fs::File,
+    relative_directory: &Path,
+    root: &Path,
+    depth: usize,
+    scanned: &mut usize,
+    candidates: &mut Vec<CodingFileCandidate>,
+    grants: &mut BTreeMap<String, ProjectGrant>,
+    before_entry_open: &mut H,
+) -> Result<(), String>
+where
+    H: FnMut(&Path) -> Result<(), String>,
+{
     if depth > MAX_PROJECT_DEPTH || candidates.len() >= MAX_PROJECT_CANDIDATES || *scanned >= MAX_SCANNED_ENTRIES {
         return Ok(());
     }
-    let entries = fs::read_dir(current).map_err(|_| "FRIDAY could not read part of the selected project folder.".to_string())?;
+    let entries = match crate::coding_sandbox_fs::enumerate_runtime_tree_entries(current, MAX_SCANNED_ENTRIES) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            *scanned = MAX_SCANNED_ENTRIES;
+            return Ok(());
+        }
+        Err(_) => return Err("FRIDAY could not safely inspect part of the selected project folder.".into()),
+    };
     for entry in entries {
         if *scanned >= MAX_SCANNED_ENTRIES || candidates.len() >= MAX_PROJECT_CANDIDATES { break; }
-        *scanned += 1;
-        let entry = match entry { Ok(value) => value, Err(_) => continue };
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        let metadata = match fs::symlink_metadata(&path) { Ok(value) => value, Err(_) => continue };
-        if is_redirected(&metadata) { continue; }
-        if metadata.is_dir() {
-            if depth < MAX_PROJECT_DEPTH && !ignored_directory(&name) {
-                let canonical = match fs::canonicalize(&path) { Ok(value) => value, Err(_) => continue };
-                if canonical.starts_with(root) {
-                    scan_folder(&canonical, root, depth + 1, scanned, candidates, grants)?;
-                }
+        *scanned = scanned.saturating_add(1);
+        let name = entry.name;
+        let Some(name_text) = name.to_str() else { continue; };
+        if entry.is_reparse { continue; }
+        let relative = relative_directory.join(&name);
+        if entry.is_directory {
+            if depth >= MAX_PROJECT_DEPTH || ignored_directory(name_text) { continue; }
+            before_entry_open(&relative)?;
+            let child = crate::coding_sandbox_fs::open_child_directory_nofollow(current, &name)
+                .map_err(|_| "A project folder changed while FRIDAY was scanning it; scan again.".to_string())?;
+            let metadata = child.metadata()
+                .map_err(|_| "FRIDAY could not verify a project subfolder.".to_string())?;
+            if !metadata.is_dir() || is_redirected(&metadata)
+                || !crate::coding_sandbox_fs::runtime_tree_handle_matches(entry.identity, &child)
+                    .map_err(|_| "FRIDAY could not verify a project subfolder.".to_string())?
+            {
+                return Err("A project folder changed while FRIDAY was scanning it; scan again.".into());
             }
+            scan_folder_with_hook(&child, &relative, root, depth + 1, scanned, candidates, grants, before_entry_open)?;
             continue;
         }
-        if !metadata.is_file() || !supported_project_file(&path) || metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES {
-            continue;
+        if !entry.is_file || !supported_project_file(&relative) { continue; }
+        before_entry_open(&relative)?;
+        let file = crate::coding_sandbox_fs::open_file_nofollow(current, &name)
+            .map_err(|_| "A project file changed while FRIDAY was scanning it; scan again.".to_string())?;
+        let metadata = file.metadata()
+            .map_err(|_| "FRIDAY could not verify a project file.".to_string())?;
+        if !metadata.is_file() || is_redirected(&metadata)
+            || !crate::coding_sandbox_fs::runtime_tree_handle_matches(entry.identity, &file)
+                .map_err(|_| "FRIDAY could not verify a project file.".to_string())?
+            || !crate::coding_sandbox_fs::has_single_hard_link(&file)
+        {
+            return Err("A project file changed or has an unsafe filesystem link; scan again.".into());
         }
-        let canonical = match fs::canonicalize(&path) { Ok(value) => value, Err(_) => continue };
-        if !canonical.starts_with(root) { continue; }
-        let relative = match relative_path(root, &canonical) { Some(value) if !value.is_empty() => value, _ => continue };
+        if metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES { continue; }
+        let candidate_path = root.join(&relative);
+        let relative_text = relative.components().map(|part| part.as_os_str().to_string_lossy().to_string()).collect::<Vec<_>>().join("/");
         let id = make_token();
         candidates.push(CodingFileCandidate {
-            id: id.clone(),
-            name,
-            relative_path: relative,
-            size_bytes: metadata.len(),
-            language: language_for(&canonical),
+            id: id.clone(), name: name_text.to_string(), relative_path: relative_text,
+            size_bytes: metadata.len(), language: language_for(&relative),
         });
-        grants.insert(id, ProjectGrant { root: root.to_path_buf(), path: canonical });
+        grants.insert(id, ProjectGrant { root: root.to_path_buf(), path: candidate_path });
     }
     Ok(())
 }
@@ -1155,8 +1194,17 @@ pub async fn pick_project_folder_and_list_files(app: AppHandle) -> Result<Coding
     let recovered_transactions = recover_project_code_transactions(&root)?;
     let mut candidates = Vec::new();
     let mut grants = BTreeMap::new();
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root)
+        .map_err(|_| "FRIDAY could not safely open the selected project folder.".to_string())?;
+    let root_identity = crate::coding_sandbox_fs::verified_directory_identity(&root, &root_handle)
+        .map_err(|_| "The selected project folder changed while FRIDAY was opening it.".to_string())?;
     let mut scanned = 0usize;
-    scan_folder(&root, &root, 0, &mut scanned, &mut candidates, &mut grants)?;
+    scan_folder(&root_handle, Path::new(""), &root, 0, &mut scanned, &mut candidates, &mut grants)?;
+    let final_root_identity = crate::coding_sandbox_fs::verified_directory_identity(&root, &root_handle)
+        .map_err(|_| "The selected project folder changed during scanning; scan again.".to_string())?;
+    if final_root_identity != root_identity {
+        return Err("The selected project folder changed during scanning; scan again.".into());
+    }
     candidates.sort_by(|a, b| a.relative_path.to_lowercase().cmp(&b.relative_path.to_lowercase()));
     let truncated = scanned >= MAX_SCANNED_ENTRIES || candidates.len() >= MAX_PROJECT_CANDIDATES;
     *PROJECT_GRANTS.lock().map_err(|_| "Coding Assistant project access is temporarily unavailable.".to_string())? = grants;
@@ -1699,10 +1747,11 @@ mod tests {
         fs::write(temp.join("secrets/token.txt"), "not-for-reading").unwrap();
         fs::write(temp.join("node_modules/pkg/index.js"), "ignored").unwrap();
         let root = fs::canonicalize(&temp).unwrap();
+        let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
         let mut candidates = Vec::new();
         let mut grants = BTreeMap::new();
         let mut scanned = 0usize;
-        scan_folder(&root, &root, 0, &mut scanned, &mut candidates, &mut grants).unwrap();
+        scan_folder(&root_handle, Path::new(""), &root, 0, &mut scanned, &mut candidates, &mut grants).unwrap();
         let paths: BTreeSet<String> = candidates.iter().map(|item| item.relative_path.clone()).collect();
         assert!(paths.contains("src/main.rs"));
         assert!(paths.contains("package.json"));
@@ -1710,6 +1759,68 @@ mod tests {
         assert!(candidates.len() <= MAX_PROJECT_CANDIDATES);
         assert_eq!(grants.len(), candidates.len());
         fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_scan_rejects_ordinary_directory_replacement_after_enumeration() {
+        let temp = std::env::temp_dir().join(format!("friday-coding-scan-race-{}", make_token()));
+        let displaced = std::env::temp_dir().join(format!("friday-coding-scan-displaced-{}", make_token()));
+        fs::create_dir_all(temp.join("replace-me")).unwrap();
+        let root = fs::canonicalize(&temp).unwrap();
+        let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let mut candidates = Vec::new();
+        let mut grants = BTreeMap::new();
+        let mut scanned = 0usize;
+        let mut replaced = false;
+        let mut hook = |relative: &Path| {
+            if relative == Path::new("replace-me") && !replaced {
+                fs::rename(root.join("replace-me"), &displaced).map_err(|_| "test directory replacement failed".to_string())?;
+                fs::create_dir(root.join("replace-me")).map_err(|_| "test replacement directory creation failed".to_string())?;
+                fs::write(root.join("replace-me").join("secret.rs"), b"must not be scanned").map_err(|_| "test replacement file creation failed".to_string())?;
+                replaced = true;
+            }
+            Ok(())
+        };
+        let result = scan_folder_with_hook(&root_handle, Path::new(""), &root, 0, &mut scanned, &mut candidates, &mut grants, &mut hook);
+        assert!(replaced, "the test must replace the ordinary directory after enumeration");
+        assert!(result.is_err(), "the replacement directory must fail identity validation");
+        assert!(candidates.is_empty(), "replacement contents must never become project candidates");
+        assert!(grants.is_empty(), "replacement contents must never receive project grants");
+        drop(root_handle);
+        fs::remove_dir_all(&temp).unwrap();
+        fs::remove_dir_all(&displaced).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_scan_rejects_ordinary_file_replacement_after_enumeration() {
+        let temp = std::env::temp_dir().join(format!("friday-coding-file-race-{}", make_token()));
+        let displaced = std::env::temp_dir().join(format!("friday-coding-file-displaced-{}", make_token()));
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("replace-me.rs"), b"original").unwrap();
+        let root = fs::canonicalize(&temp).unwrap();
+        let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let mut candidates = Vec::new();
+        let mut grants = BTreeMap::new();
+        let mut scanned = 0usize;
+        let mut replaced = false;
+        let mut hook = |relative: &Path| {
+            if relative == Path::new("replace-me.rs") && !replaced {
+                fs::rename(root.join("replace-me.rs"), &displaced).map_err(|_| "test file replacement failed".to_string())?;
+                fs::write(root.join("replace-me.rs"), b"replacement").map_err(|_| "test replacement file creation failed".to_string())?;
+                replaced = true;
+            }
+            Ok(())
+        };
+        let result = scan_folder_with_hook(&root_handle, Path::new(""), &root, 0, &mut scanned, &mut candidates, &mut grants, &mut hook);
+        assert!(replaced, "the test must replace the regular file after enumeration");
+        assert!(result.is_err(), "the replacement file must fail identity validation");
+        assert!(candidates.is_empty(), "replacement contents must never become project candidates");
+        assert!(grants.is_empty(), "replacement contents must never receive project grants");
+        drop(root_handle);
+        fs::remove_dir_all(&temp).unwrap();
+        fs::remove_file(&displaced).unwrap();
     }
 
     #[test]
