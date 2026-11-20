@@ -113,14 +113,23 @@ fn collect_runtime_tree_directory(
             // same-type directory swap during enumeration could silently change
             // which runtime tree is inventoried.
             let observed_metadata = entry.metadata()?;
-            if !observed_metadata.is_dir() || is_reparse_or_symlink(&observed_metadata) {
+            if !observed_metadata.is_dir() || observed_metadata.is_symlink() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle directory changed type or is a reparse point"));
             }
             let child = open_dir_nofollow(parent, Path::new(&name))?;
             let child_metadata = child.metadata()?;
             if !child_metadata.is_dir()
                 || is_reparse_or_symlink(&child_metadata)
-                || metadata_identity(&observed_metadata)? != handle_identity(&child)?
+                || {
+                    // cap-primitives exposes stable directory-entry identity via
+                    // MetadataExt on Unix. Its Windows Metadata intentionally
+                    // omits volume/file IDs, so Windows relies on the held-parent
+                    // no-reparse open plus validation of the resulting handle.
+                    #[cfg(unix)]
+                    { metadata_identity(&observed_metadata)? != handle_identity(&child)? }
+                    #[cfg(windows)]
+                    { false }
+                }
             {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle directory changed identity or is a reparse point"));
             }
@@ -133,14 +142,22 @@ fn collect_runtime_tree_directory(
             // records it. The no-follow open rejects a raced-in link/reparse
             // point and the handle metadata confirms an ordinary regular file.
             let observed_metadata = entry.metadata()?;
-            if !observed_metadata.is_file() || is_reparse_or_symlink(&observed_metadata) {
+            if !observed_metadata.is_file() || observed_metadata.is_symlink() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle file changed type or is a reparse point"));
             }
             let file = open_file_nofollow(parent, &name)?;
             let file_metadata = file.metadata()?;
             if !file_metadata.is_file()
                 || is_reparse_or_symlink(&file_metadata)
-                || metadata_identity(&observed_metadata)? != handle_identity(&file)?
+                || {
+                    // See the directory case above: Unix can compare the
+                    // enumerated inode to the opened handle; Windows' cap
+                    // metadata does not expose a pre-open file ID.
+                    #[cfg(unix)]
+                    { metadata_identity(&observed_metadata)? != handle_identity(&file)? }
+                    #[cfg(windows)]
+                    { false }
+                }
             {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle file changed identity or is a reparse point"));
             }
@@ -598,21 +615,9 @@ fn path_identity(path: &Path) -> io::Result<(u64, u64)> {
 }
 
 #[cfg(unix)]
-fn metadata_identity(metadata: &fs::Metadata) -> io::Result<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
+fn metadata_identity(metadata: &cap_primitives::fs::Metadata) -> io::Result<(u64, u64)> {
+    use cap_primitives::fs::MetadataExt;
     Ok((metadata.dev(), metadata.ino()))
-}
-
-#[cfg(windows)]
-fn metadata_identity(metadata: &fs::Metadata) -> io::Result<(u32, u64)> {
-    use std::os::windows::fs::MetadataExt;
-    let volume = metadata.volume_serial_number().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Unsupported, "filesystem volume identity is unavailable")
-    })?;
-    let index = metadata.file_index().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Unsupported, "filesystem file identity is unavailable")
-    })?;
-    Ok((volume, index))
 }
 
 #[cfg(unix)]
