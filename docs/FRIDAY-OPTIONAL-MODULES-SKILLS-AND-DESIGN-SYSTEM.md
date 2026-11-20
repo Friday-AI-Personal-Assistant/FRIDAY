@@ -1,0 +1,104 @@
+# FRIDAY Product Experience and Optional Skills Distribution
+
+## Status
+
+Product direction recorded on 2026-11-20. This document clarifies the intended user experience and the boundary between the small desktop application and optional capabilities. It does not claim that a remote skills marketplace or updater is already implemented.
+
+## Product experience
+
+FRIDAY is one desktop assistant with a clear navigation structure and optional capability areas. The user should not need to install a different application for every feature.
+
+The application shell provides:
+- AI Chat and the assistant's everyday home.
+- Overview / dashboard.
+- Modules or Features, showing available capabilities and their status.
+- Skills, showing installable capability packages and their permissions.
+- Settings, including model/provider, appearance, language, personality and privacy controls.
+- Privacy & Security, including permission and activity visibility.
+
+The existing Modules page and Skills Manager are early foundations of this experience. They should evolve into one understandable catalogue, not become two confusing competing stores.
+
+## Download the desktop app first; add capabilities later
+
+The intended distribution model is a small, signed FRIDAY desktop installer followed by optional capability downloads from inside FRIDAY.
+
+A user should be able to:
+1. Download and install the core FRIDAY desktop application.
+2. Open FRIDAY without being forced to install every optional feature.
+3. Browse a catalogue of available modules and skills.
+4. Read what each item does, its publisher/source, version, licence, required permissions, data handling, dependencies, size and whether it requires local resources or a paid external provider.
+5. Choose Download / Install for only the capabilities they want.
+6. Review and explicitly enable a downloaded capability.
+7. Load or start it only when appropriate; installation must not silently grant permissions or start background activity.
+8. Disable, unload, update or uninstall it, with clear explanation of what local data is retained or removed.
+
+Core safety updates and security fixes are distinct from optional feature packages. FRIDAY must not disguise a feature download as a mandatory update.
+
+## Module versus skill
+
+- **Module / feature:** a user-facing area or workflow such as Email Assistant, CV Studio, Job Hunter, Voice Assistant, Coding Assistant or Web Research.
+- **Skill:** a capability package that teaches FRIDAY how to perform a bounded task, potentially used by one or more modules.
+- **Integration / connector:** an explicitly configured connection to an external service, with its own account scopes, data-flow disclosure and revocation.
+- **Provider / model:** the selected local or remote AI engine. A remote provider may incur charges and send prompts/data outside the device.
+
+The UI should explain these distinctions simply. A downloadable skill must not be able to acquire new host powers merely by being installed.
+
+## Trust and package lifecycle
+
+The future catalogue and package installer must:
+- Use a signed or otherwise authenticated catalogue and verify package integrity before installation.
+- Pin package identity, publisher, version and content hash; reject downgrade or substitution unless the user explicitly chooses a supported rollback.
+- Verify licences and dependency licences before distribution.
+- Treat package instructions, metadata, webpages and model output as untrusted input.
+- Keep declarative instruction-only skills separate from executable extensions.
+- Run executable extensions out of process with least privilege, bounded IPC, resource limits, timeouts, cancellation and OS-enforced filesystem/network isolation.
+- Require explicit, understandable permission grants for each capability; deny unknown capabilities by default.
+- Separate install, enable, load/run and permission grant/revocation.
+- Show data access and external network requirements before installation and again before first use where relevant.
+- Provide user-visible version history, update controls, uninstall, revocation and audit events.
+- Never silently install a skill, enable a capability, grant access, switch to a paid cloud provider or send private data to a third party.
+- Preserve the four guarantees: Safety, User Control, Cost Transparency and Reliability.
+
+## Catalogue and download sources
+
+The initial catalogue can include FRIDAY-maintained packages and selected third-party open-source packages after security, licence, maintenance and compatibility review. Reuse is selective, not wholesale.
+
+The catalogue should support:
+- Official FRIDAY packages.
+- Reviewed third-party packages with visible publisher and source repository.
+- Later, user-added catalogues only behind the same trust and permission checks.
+
+No arbitrary URL or repository should be executable simply because a user added it. Third-party packages must pass the same review and verification gates.
+
+## Offline and cost behaviour
+
+- FRIDAY core and already-installed local capabilities should remain usable offline where their function permits.
+- Catalogue browsing and downloads require network access and should say so.
+- Local AI is the default where supported.
+- Any cloud model, subscription, API key, usage charge or data transfer must be disclosed before activation.
+- FRIDAY must not silently fall back from a local model to a paid or remote provider.
+- Show package download size and any known runtime/resource requirements.
+
+## Visual identity and design system
+
+The FRIDAY visual theme is a parallel product track, not something postponed until all foundation work is finished. Establish shared design tokens and reusable components before redesigning every screen:
+- typography, spacing, surfaces, borders, focus and motion;
+- consistent navigation, page headers, cards, status labels and empty/loading/error states;
+- accessible contrast, keyboard navigation and clear focus;
+- responsive layouts and clear permission/confirmation surfaces.
+
+The theme must support light/dark appearance and user preferences without weakening safety cues. Security warnings, costs and approval actions must remain clear and consistent.
+
+## Implementation sequence
+
+1. Stabilise persistence and recovery for local data.
+2. Define the capability/permission contract and package manifest format.
+3. Refactor the current built-in Skills Manager to distinguish installed, enabled, loaded and granted capabilities without breaking existing packages.
+4. Define catalogue metadata, signature verification and package download/update lifecycle.
+5. Implement the first downloadable, declarative skill from an approved source.
+6. Establish design tokens and refresh the shell, navigation, Modules/Skills catalogue and Settings.
+7. Add executable extensions only after OS-enforced isolation and permission revocation are proven.
+
+## Current implementation reality
+
+The current app already has a Modules page, a Skills Manager, and a small built-in catalogue whose package files are generated locally from hard-coded definitions. This is not yet a remote downloadable marketplace. The design above is the intended product direction; each implementation stage must be tested and marked complete separately.
