@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::{OsStr, OsString},
     fs,
+    fs::{File, OpenOptions},
     io::Write,
-    fs::OpenOptions,
     path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -292,6 +293,49 @@ fn check_code_backup_capacity(dir: &Path, additional_bytes: u64) -> Result<(), S
     Ok(())
 }
 
+#[cfg(not(windows))]
+fn open_verified_code_parent(
+    root: &Path,
+    current: &Path,
+) -> Result<(File, OsString, (u64, u64)), String> {
+    let relative = current.strip_prefix(root)
+        .map_err(|_| "The selected project file is outside the approved folder.".to_string())?;
+    let components = relative.components().collect::<Vec<_>>();
+    if components.is_empty() || components.iter().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+        return Err("The selected project path is not normalized.".into());
+    }
+    let mut parent = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "Could not safely open the approved project folder.".to_string())?;
+    for component in &components[..components.len() - 1] {
+        let std::path::Component::Normal(name) = component else { unreachable!() };
+        parent = crate::coding_sandbox_fs::open_child_directory_nofollow(&parent, name)
+            .map_err(|_| "A project parent folder changed or was redirected.".to_string())?;
+    }
+    let std::path::Component::Normal(file_name) = components[components.len() - 1] else { unreachable!() };
+    let parent_identity = crate::coding_sandbox_fs::verified_directory_handle_identity(&parent)
+        .map_err(|_| "Could not verify the selected project file's parent folder.".to_string())?;
+    Ok((parent, file_name.to_os_string(), parent_identity))
+}
+
+#[cfg(not(windows))]
+fn verified_code_child_identity(parent: &File, name: &OsStr) -> Result<crate::coding_sandbox_fs::RuntimeTreeIdentity, String> {
+    let entries = crate::coding_sandbox_fs::enumerate_runtime_tree_entries(parent, MAX_SCANNED_ENTRIES)
+        .map_err(|_| "Could not safely inspect the selected project file's parent folder.".to_string())?;
+    let entry = entries.into_iter().find(|entry| entry.name == name)
+        .ok_or("The selected project file disappeared before installation.")?;
+    if !entry.is_file || entry.is_reparse {
+        return Err("The selected project entry is no longer an ordinary regular file.".into());
+    }
+    let opened = crate::coding_sandbox_fs::open_file_nofollow(parent, name)
+        .map_err(|_| "The selected project entry could not be safely reopened.".to_string())?;
+    if !crate::coding_sandbox_fs::runtime_tree_handle_matches(entry.identity, &opened)
+        .map_err(|_| "Could not verify the selected project file identity.".to_string())?
+    {
+        return Err("The selected project file changed identity before installation.".into());
+    }
+    Ok(entry.identity)
+}
+
 fn apply_code_preview_to_disk(
     root: &Path, current: &Path, proposed: &[u8], expected_sha256: &str, token: &str, now: u64,
 ) -> Result<(PathBuf, CodingUndoRecord), String> {
@@ -413,15 +457,47 @@ fn apply_code_preview_to_disk_bound(
     }
     #[cfg(not(windows))]
     {
-        if let Err(e) = fs::rename(current, &displaced) {
-            let _ = fs::remove_file(&temporary);
-            return Err(format!("Could not safely stage the original file: {e}"));
+        let (parent_handle, current_name, parent_identity) =
+            open_verified_code_parent(root, current)?;
+        let displaced_name = displaced.file_name()
+            .ok_or("The displaced-file name is invalid.")?;
+        let temporary_name = temporary.file_name()
+            .ok_or("The replacement-file name is invalid.")?;
+        let original_identity = verified_code_child_identity(&parent_handle, &current_name)?;
+        if let Some((expected_root_identity, expected_file_identity)) = expected_identity {
+            let actual_root = crate::coding_sandbox_fs::open_verified_root_directory(root)
+                .and_then(|handle| crate::coding_sandbox_fs::verified_directory_identity(root, &handle))
+                .map_err(|_| "Could not reverify the approved project folder before installation.".to_string())?;
+            if actual_root != expected_root_identity || original_identity != expected_file_identity {
+                return Err("The approved project or source-file identity changed before installation. Recovery files were retained.".into());
+            }
         }
-        if let Err(e) = fs::rename(&temporary, current) {
-            let restored = fs::rename(&displaced, current).is_ok();
-            let _ = fs::remove_file(&temporary);
-            return Err(if restored { format!("Could not install the approved change; the original file was restored: {e}") }
-                else { format!("Could not install the change or restore the original automatically. The original remains at {}: {e}", displaced.display()) });
+        let temporary_identity = verified_code_child_identity(&parent_handle, temporary_name)?;
+        let latest_original = crate::coding_sandbox_fs::open_file_nofollow(&parent_handle, &current_name)
+            .map_err(|_| "The selected project file changed before installation.".to_string())?;
+        let mut latest_bytes = Vec::new();
+        use std::io::Read as _;
+        latest_original.take(MAX_FILE_BYTES + 1).read_to_end(&mut latest_bytes)
+            .map_err(|_| "Could not re-read the selected project file before installation.".to_string())?;
+        if sha256_hex(&latest_bytes) != original_hash {
+            return Err("The selected project file changed before installation. Recovery files were retained.".into());
+        }
+        crate::coding_sandbox_fs::rename_file_noreplace(
+            &parent_handle, &current_name, displaced_name, parent_identity, original_identity,
+        ).map_err(|error| format!(
+            "Could not stage the verified original without replacing another file: {error}. Recovery files were retained."
+        ))?;
+        if let Err(error) = crate::coding_sandbox_fs::rename_file_noreplace(
+            &parent_handle, temporary_name, current_name.as_os_str(), parent_identity, temporary_identity,
+        ) {
+            let restored = crate::coding_sandbox_fs::rename_file_noreplace(
+                &parent_handle, displaced_name, &current_name, parent_identity, original_identity,
+            ).is_ok();
+            return Err(if restored {
+                format!("Could not install the approved change; the original file was restored: {error}. Recovery files were retained.")
+            } else {
+                format!("Could not install the change or restore the original automatically. The original remains at {} and recovery files were retained: {error}", displaced.display())
+            });
         }
     }
     let installed = fs::read(current).map_err(|_| format!("The replacement was installed but could not be verified. The original backup remains at {}.", backup.display()))?;
@@ -1959,6 +2035,29 @@ mod tests {
         assert!(root.join(".friday-code-backups").join(format!("{token}.undo.json")).is_file());
         assert!(!root.join(".friday-code-backups").join(format!("{token}.txn.json")).exists(),
             "a completed Apply must remove its resolved transaction journal");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_apply_never_overwrites_an_existing_displaced_destination() {
+        let root = std::env::temp_dir().join(format!("friday-code-apply-collision-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(&root).unwrap();
+        let file = root.join("main.rs");
+        let original = b"original source";
+        fs::write(&file, original).unwrap();
+        let token = make_token();
+        let displaced = root.join(format!(".friday-code-original-{token}.tmp"));
+        fs::write(&displaced, b"pre-existing unrelated file").unwrap();
+
+        let result = apply_code_preview_to_disk(
+            &root, &file, b"proposed source", &sha256_hex(original), &token, 123,
+        );
+        assert!(result.is_err(), "Apply must fail rather than replace a pre-existing displaced destination");
+        assert_eq!(fs::read(&file).unwrap(), original, "the approved source must remain unchanged");
+        assert_eq!(fs::read(&displaced).unwrap(), b"pre-existing unrelated file",
+            "the unrelated destination must never be overwritten");
         fs::remove_dir_all(&root).unwrap();
     }
 
