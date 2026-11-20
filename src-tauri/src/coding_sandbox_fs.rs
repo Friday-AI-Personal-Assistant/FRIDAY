@@ -3096,15 +3096,15 @@ fn inspect_snapshot_directory(
     observed_files: &mut std::collections::BTreeSet<String>,
     observed_directories: &mut std::collections::BTreeSet<String>,
 ) -> io::Result<()> {
-    for entry in read_dir(parent, Path::new("."))? {
+    let entries = enumerate_runtime_tree_entries(parent, max_entries)?;
+    for entry in entries {
         *entries_scanned = entries_scanned.checked_add(1).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory entry count overflowed")
         })?;
         if *entries_scanned > max_entries {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory exceeded its entry limit"));
         }
-        let entry = entry?;
-        let name = entry.file_name();
+        let name = entry.name;
         if !is_single_normal_component(&name) {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains an ambiguous entry name"));
         }
@@ -3112,43 +3112,45 @@ fn inspect_snapshot_directory(
         let relative_path = relative_directory.join(&name);
         let portable = portable_manifest_path(&relative_path)?;
         if portable == ".friday-snapshot-owner.json" && relative_directory.as_os_str().is_empty() {
-            let kind = entry.file_type()?;
-            if !kind.is_file() {
+            if !entry.is_file || entry.is_reparse {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker is not a regular file"));
             }
-            // Re-open relative to the held root and ensure the directory entry
-            // still names the exact marker handle whose bytes were validated.
             let current_marker = open_file_nofollow(parent, &name)?;
-            if !same_handle_identity(&current_marker, marker_handle)? {
+            if !runtime_tree_handle_matches(entry.identity, &current_marker)?
+                || !same_handle_identity(&current_marker, marker_handle)?
+            {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker changed during preflight"));
             }
             continue;
         }
-
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
+        if entry.is_reparse {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a symlink or reparse entry"));
         }
-        if kind.is_dir() {
+        if entry.is_directory {
             if !expected_directories.contains(&portable) || !observed_directories.insert(portable) {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains an unknown or duplicate directory"));
             }
             let child = open_dir_nofollow(parent, Path::new(&name))?;
             let metadata = child.metadata()?;
-            if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory changed type during inspection"));
+            if !metadata.is_dir() || is_reparse_or_symlink(&metadata)
+                || !runtime_tree_handle_matches(entry.identity, &child)?
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory changed identity or type during inspection"));
             }
             inspect_snapshot_directory(&child, &relative_path, expected_files, expected_directories, marker_handle, max_entries, entries_scanned, observed_files, observed_directories)?;
             continue;
         }
-        if !kind.is_file() {
+        if !entry.is_file {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a special or unsupported entry"));
         }
         let expected_size = expected_files.get(&portable).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("snapshot contains an unknown file: {}", name_text)))?;
         let file = open_file_nofollow(parent, &name)?;
         let metadata = file.metadata()?;
-        if !metadata.is_file() || is_reparse_or_symlink(&metadata) || metadata.len() != *expected_size {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file type or size does not match its inventory"));
+        if !metadata.is_file() || is_reparse_or_symlink(&metadata)
+            || metadata.len() != *expected_size
+            || !runtime_tree_handle_matches(entry.identity, &file)?
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file changed identity, type, or size during inspection"));
         }
         if !observed_files.insert(portable) {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a duplicate file entry"));
@@ -3220,50 +3222,51 @@ fn inspect_snapshot_cleanup_progress_directory(
     max_entries: usize,
     entries_scanned: &mut usize,
 ) -> io::Result<()> {
-    for entry in read_dir(parent, Path::new("."))? {
+    let entries = enumerate_runtime_tree_entries(parent, max_entries)?;
+    for entry in entries {
         *entries_scanned = entries_scanned.checked_add(1).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "snapshot cleanup entry count overflowed")
         })?;
         if *entries_scanned > max_entries {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot cleanup exceeded its entry limit"));
         }
-        let entry = entry?;
-        let name = entry.file_name();
+        let name = entry.name;
         if !is_single_normal_component(&name) {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains an ambiguous entry name"));
         }
         let name_text = name.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a non-UTF-8 entry name"))?;
         let relative_path = relative_directory.join(&name);
         let portable = portable_manifest_path(&relative_path)?;
-
         if portable == ".friday-snapshot-owner.json" && relative_directory.as_os_str().is_empty() {
-            if !entry.file_type()?.is_file() {
+            if !entry.is_file || entry.is_reparse {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker is not a regular file"));
             }
             let current_marker = open_file_nofollow(parent, &name)?;
-            if !same_handle_identity(&current_marker, marker_handle)? {
+            if !runtime_tree_handle_matches(entry.identity, &current_marker)?
+                || !same_handle_identity(&current_marker, marker_handle)?
+            {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot inventory marker changed during cleanup preflight"));
             }
             continue;
         }
-
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
+        if entry.is_reparse {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a symlink or reparse entry"));
         }
-        if kind.is_dir() {
+        if entry.is_directory {
             if !expected_directories.contains(&portable) {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains an unknown directory"));
             }
             let child = open_dir_nofollow(parent, Path::new(&name))?;
             let metadata = child.metadata()?;
-            if !metadata.is_dir() || is_reparse_or_symlink(&metadata) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory changed type during cleanup preflight"));
+            if !metadata.is_dir() || is_reparse_or_symlink(&metadata)
+                || !runtime_tree_handle_matches(entry.identity, &child)?
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot directory changed identity or type during cleanup preflight"));
             }
             inspect_snapshot_cleanup_progress_directory(&child, &relative_path, expected_files, expected_directories, marker_handle, max_entries, entries_scanned)?;
             continue;
         }
-        if !kind.is_file() {
+        if !entry.is_file {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains a special or unsupported entry"));
         }
         let expected_size = expected_files.get(&portable).ok_or_else(|| {
@@ -3271,8 +3274,11 @@ fn inspect_snapshot_cleanup_progress_directory(
         })?;
         let file = open_file_nofollow(parent, &name)?;
         let metadata = file.metadata()?;
-        if !metadata.is_file() || is_reparse_or_symlink(&metadata) || metadata.len() != *expected_size {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file type or size does not match its inventory"));
+        if !metadata.is_file() || is_reparse_or_symlink(&metadata)
+            || metadata.len() != *expected_size
+            || !runtime_tree_handle_matches(entry.identity, &file)?
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot file changed identity, type, or size during cleanup preflight"));
         }
     }
     Ok(())
