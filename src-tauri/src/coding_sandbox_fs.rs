@@ -3065,6 +3065,11 @@ where
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains residual or unexpected entries; ownership marker preserved"));
     }
+    // The directory iterator owns a separate Windows directory handle. Release
+    // it before opening the root with DELETE access; otherwise its share mode
+    // can cause ERROR_ACCESS_DENIED despite the retained identity handle being
+    // delete-share compatible.
+    drop(remaining);
     let marker = open_file_nofollow(&root, OsStr::new(".friday-snapshot-owner.json"))?;
     if !same_handle_identity(&plan.marker_handle, &marker)? {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot ownership marker no longer matches the identity captured during preflight"));
