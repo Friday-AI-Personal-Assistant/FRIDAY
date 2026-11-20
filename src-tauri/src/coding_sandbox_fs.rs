@@ -5808,6 +5808,42 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_cleanup_rejects_file_replacement_after_preflight() {
+        let workspace_path = make_test_directory("cleanup-file-identity-race");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![
+                BoundedSnapshotFile { relative_path: PathBuf::from("a.txt"), contents: b"first".to_vec() },
+                BoundedSnapshotFile { relative_path: PathBuf::from("b.txt"), contents: b"original".to_vec() },
+            ],
+            bytes: 13,
+            truncated: false,
+        };
+        let id = "6".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        let root = workspace_path.join(&id);
+        let displaced = root.join("b.displaced");
+        let mut replaced = false;
+
+        let result = cleanup_owned_snapshot_with_hook(&workspace, &id, bounded_limits(), |path| {
+            if path == "a.txt" && !replaced {
+                fs::rename(root.join("b.txt"), &displaced)?;
+                fs::write(root.join("b.txt"), b"replaced")?;
+                replaced = true;
+            }
+            Ok(())
+        });
+        assert!(replaced, "the replacement must occur after preflight and the first deletion");
+        assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::InvalidData));
+        assert_eq!(fs::read(root.join("b.txt")).unwrap(), b"replaced");
+        assert_eq!(fs::read(&displaced).unwrap(), b"original");
+        assert!(root.join(".friday-snapshot-owner.json").exists());
+
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
     fn snapshot_cleanup_rejects_parent_directory_replacement_after_preflight() {
         let workspace_path = make_test_directory("cleanup-parent-identity-race");
         let workspace = open_verified_root_directory(&workspace_path).unwrap();
