@@ -5740,7 +5740,7 @@ mod tests {
         });
 
         assert!(result.is_err(), "cleanup must not remove a replacement at the original snapshot name");
-        assert!(replaced);
+        assert!(replaced, "final-root replacement hook was not reached; cleanup result: {:?}", result);
         assert!(original_path.is_dir(), "replacement directory must be preserved");
         assert!(displaced_path.is_dir(), "the inventoried directory must remain available for inspection");
         drop(workspace);
@@ -5810,7 +5810,7 @@ mod tests {
             }
             Ok(())
         });
-        assert!(replaced, "the parent replacement must occur after preflight");
+        assert!(replaced, "the parent replacement hook was not reached; cleanup result: {:?}", result);
         assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::InvalidData));
         assert_eq!(fs::read(root.join("b/second.txt")).unwrap(), b"replaced");
         assert_eq!(fs::read(displaced.join("second.txt")).unwrap(), b"original");
