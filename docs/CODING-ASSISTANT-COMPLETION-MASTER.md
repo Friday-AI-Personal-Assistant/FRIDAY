@@ -238,7 +238,7 @@ Continue Stage 4A before any result-transfer or guest-runner integration. The im
 
 ---
 
-## 10. Verified progress through #1051
+## 10. Verified progress through #1053
 
 This section supersedes the stale #988/#1012 hand-off status that was previously at the end of this file. The historical commits are retained in Git history. The following are verified implementation areas, not a declaration that the complete Stage 4A boundary is finished.
 
@@ -255,12 +255,15 @@ This section supersedes the stale #988/#1012 hand-off status that was previously
 - [x] **Project discovery and read identity hardening.** Bind discovery scans to directory identities, release root handles safely, bind project reads to scanned identities and revalidate identities before code-edit application. Commits include `c6f4d89f9144c31400ac6c67e7ab04f84c8f80ec`, `bae9d573150b8a27887a449c624943d04f670d3e`, `7d1bf6fa59b3db9e653a4644f7bb941cabd0cc61` and #1048 `c56d99faca6c793ec4d86252312767fa5a7b0a18`.
 - [x] **#1049–#1050 — handle-relative no-replace rename primitive and regression coverage.** Added a handle-relative rename primitive and tests for verified-file movement without overwriting an existing destination or accepting a changed parent identity. Commits `2e89ca0bd6b8dee9bd0c0f7a59206b332aff56fb` and `9a2df5e875d0b892682908188935e78f200bee6f`.
 - [x] **#1051 — revalidate source identity immediately before rename mutation.** Added immediate source-name reopen and identity checks plus a source-replacement regression. Commit `ea72fe4aabf473a7e0fbd91131f8f7c5d4bc9c42`; [GitHub Actions #1051 passed](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44740178481).
+- [x] **#1053 — verified no-replace rename for approved edits.** Added a handle-relative no-replace rename path for Unix and Windows plus a collision regression; Linux 491/491 and Windows 522/522 tests passed. Commit `63d68e69df4d89456dec9b2c31ca86daf00b84a0`; [GitHub Actions #1053 passed](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44748539237). This narrows the replacement boundary but does not eliminate the Unix final-name race.
+- [ ] **Next batch — handle-relative exclusive creation for approved-edit recovery artifacts.** Add a Unix `openat(O_CREAT|O_EXCL|O_NOFOLLOW)` primitive and use it for original backups, transaction journals, replacement temporaries and Undo records; verify backup and temporary contents through pinned directory handles. Add collision/symlink regression coverage. Windows path-based creation and later path-based verification/rollback/recovery remain explicitly unfinished.
 
 ### Remaining work — do not mark complete
 
 - [ ] Complete the filesystem trust-boundary review across snapshot traversal, project reads, approved edits, backups, temporary files, replacement, undo, rollback, recovery and cleanup.
 - [ ] Close or explicitly constrain the remaining Unix source-name substitution race between final identity revalidation and the rename syscall. Do not describe the primitive as race-free.
-- [ ] Harden backup/temp creation and the full approved-edit transaction using verified parent/file identities; preserve no-overwrite behavior, backups, undo and crash recovery.
+- [ ] Complete handle-relative backup/temp/journal/Undo creation on Unix and implement an independently reviewed Windows equivalent; preserve no-overwrite behavior, backups, undo and crash recovery. The current in-progress Unix exclusive-create primitive does not close the whole transaction boundary.
+- [ ] Replace remaining path-based installed-file verification, rollback, displaced-file cleanup, undo and recovery operations with verified handle-relative operations where supported; otherwise fail closed.
 - [ ] Finish Windows reparse point, junction, mount-point and parent/child replacement adversarial coverage across production call sites.
 - [ ] Prove snapshot ownership/ACL/session protections cannot delete live or foreign resources.
 - [ ] Complete all physical Windows result-storage acceptance in section 6B.
@@ -272,6 +275,6 @@ This section supersedes the stale #988/#1012 hand-off status that was previously
 
 ### Next batch selection
 
-Start with the approved-file-edit transaction boundary: inspect the current implementation in `coding_assistant.rs` and filesystem helpers in `coding_sandbox_fs.rs`; map every backup, temporary-file, replacement, rollback, undo and recovery operation; then implement the smallest security-coherent improvement with regression tests. Do not jump to result transfer or guest execution.
+Continue the approved-file-edit transaction boundary. The next batch introduces handle-relative exclusive creation for Unix recovery artifacts. Then harden installed-file verification and rollback, undo/recovery and cleanup; separately design and test a Windows-native equivalent. Do not jump to result transfer or guest execution.
 
 **Execution-disabled invariant:** all project-code execution remains disabled. CI success does not authorize enabling it and does not prove physical Sandbox isolation.

@@ -4058,6 +4058,41 @@ pub(crate) fn rename_file_noreplace(
     Ok(())
 }
 
+/// Create a new regular file relative to a pinned directory handle without
+/// following links or replacing an existing entry. Unix callers must retain the
+/// returned handle for all writes and verification; never reopen the path by
+/// joining it to an ambient project path.
+#[cfg(unix)]
+pub(crate) fn create_new_file_nofollow(parent: &File, name: &OsStr, mode: u32) -> io::Result<File> {
+    use std::{
+        ffi::CString,
+        os::unix::{ffi::OsStrExt, io::{AsRawFd, FromRawFd}},
+    };
+
+    if !is_single_normal_component(name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "file name must be exactly one normal path component"));
+    }
+    let name = CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            mode as libc::mode_t,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || !has_single_hard_link(&file) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "new file is not an ordinary single-link regular file"));
+    }
+    Ok(file)
+}
+
 pub(crate) fn open_child_directory_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
     if !is_single_normal_component(name) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "child directory name must be one normal component"));
@@ -4390,6 +4425,33 @@ mod tests {
             max_file_bytes: 1024 * 1024,
             max_total_bytes: 32 * 1024 * 1024,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_new_file_is_exclusive_and_does_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root_path = make_test_directory("exclusive-relative-create");
+        let root = open_verified_root_directory(&root_path).unwrap();
+
+        let mut created = create_new_file_nofollow(&root, OsStr::new("created.txt"), 0o600).unwrap();
+        use std::io::Write;
+        created.write_all(b"owned contents").unwrap();
+        created.sync_all().unwrap();
+        drop(created);
+
+        assert!(create_new_file_nofollow(&root, OsStr::new("created.txt"), 0o600).is_err(),
+            "exclusive creation must not replace an existing regular file");
+
+        fs::write(root_path.join("outside.txt"), b"outside").unwrap();
+        symlink(root_path.join("outside.txt"), root_path.join("redirect.txt")).unwrap();
+        assert!(create_new_file_nofollow(&root, OsStr::new("redirect.txt"), 0o600).is_err(),
+            "exclusive creation must not follow or replace a symbolic link");
+        assert_eq!(fs::read(root_path.join("outside.txt")).unwrap(), b"outside");
+
+        drop(root);
+        fs::remove_dir_all(&root_path).unwrap();
     }
 
     #[test]
