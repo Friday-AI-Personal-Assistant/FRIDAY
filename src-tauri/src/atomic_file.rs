@@ -17,7 +17,6 @@ pub(crate) fn replace(destination: &Path, contents: &[u8]) -> io::Result<()> {
         io::Error::new(io::ErrorKind::InvalidInput, "destination has no file name")
     })?;
 
-    let mut temporary = None;
     for _ in 0..32 {
         let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let mut temp_name = name.to_os_string();

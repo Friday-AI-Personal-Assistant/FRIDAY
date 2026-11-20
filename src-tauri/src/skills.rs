@@ -82,7 +82,7 @@ fn save_registry(path: &PathBuf, registry: &SkillRegistry) -> Result<(), String>
         .map_err(|e| format!("Could not create the local skills folder: {e}"))?;
     let contents = serde_json::to_vec_pretty(registry)
         .map_err(|e| format!("Could not prepare the skills registry: {e}"))?;
-    crate::atomic_file::replace(path, contents.as_bytes())
+    crate::atomic_file::replace(path, &contents)
         .map_err(|e| format!("Could not safely save the skills registry: {e}"))
 }
 
