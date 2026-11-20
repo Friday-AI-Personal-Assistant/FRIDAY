@@ -52,6 +52,8 @@ pub struct CodingProjectFile {
 struct ProjectGrant {
     root: PathBuf,
     path: PathBuf,
+    root_identity: (u64, u64),
+    file_identity: crate::coding_sandbox_fs::RuntimeTreeIdentity,
 }
 
 static PROJECT_GRANTS: Mutex<BTreeMap<String, ProjectGrant>> = Mutex::new(BTreeMap::new());
@@ -1052,13 +1054,14 @@ fn scan_folder(
     current: &std::fs::File,
     relative_directory: &Path,
     root: &Path,
+    root_identity: (u64, u64),
     depth: usize,
     scanned: &mut usize,
     candidates: &mut Vec<CodingFileCandidate>,
     grants: &mut BTreeMap<String, ProjectGrant>,
 ) -> Result<(), String> {
     scan_folder_with_hook(
-        current, relative_directory, root, depth, scanned, candidates, grants, &mut |_| Ok(()),
+        current, relative_directory, root, root_identity, depth, scanned, candidates, grants, &mut |_| Ok(()),
     )
 }
 
@@ -1066,6 +1069,7 @@ fn scan_folder_with_hook<H>(
     current: &std::fs::File,
     relative_directory: &Path,
     root: &Path,
+    root_identity: (u64, u64),
     depth: usize,
     scanned: &mut usize,
     candidates: &mut Vec<CodingFileCandidate>,
@@ -1106,7 +1110,7 @@ where
             {
                 return Err("A project folder changed while FRIDAY was scanning it; scan again.".into());
             }
-            scan_folder_with_hook(&child, &relative, root, depth + 1, scanned, candidates, grants, before_entry_open)?;
+            scan_folder_with_hook(&child, &relative, root, root_identity, depth + 1, scanned, candidates, grants, before_entry_open)?;
             continue;
         }
         if !entry.is_file || !supported_project_file(&relative) { continue; }
@@ -1130,7 +1134,7 @@ where
             id: id.clone(), name: name_text.to_string(), relative_path: relative_text,
             size_bytes: metadata.len(), language: language_for(&relative),
         });
-        grants.insert(id, ProjectGrant { root: root.to_path_buf(), path: candidate_path });
+        grants.insert(id, ProjectGrant { root: root.to_path_buf(), path: candidate_path, root_identity, file_identity: entry.identity });
     }
     Ok(())
 }
@@ -1199,7 +1203,7 @@ pub async fn pick_project_folder_and_list_files(app: AppHandle) -> Result<Coding
     let root_identity = crate::coding_sandbox_fs::verified_directory_identity(&root, &root_handle)
         .map_err(|_| "The selected project folder changed while FRIDAY was opening it.".to_string())?;
     let mut scanned = 0usize;
-    scan_folder(&root_handle, Path::new(""), &root, 0, &mut scanned, &mut candidates, &mut grants)?;
+    scan_folder(&root_handle, Path::new(""), &root, root_identity, 0, &mut scanned, &mut candidates, &mut grants)?;
     let final_root_identity = crate::coding_sandbox_fs::verified_directory_identity(&root, &root_handle)
         .map_err(|_| "The selected project folder changed during scanning; scan again.".to_string())?;
     if final_root_identity != root_identity {
@@ -1335,22 +1339,22 @@ pub async fn preview_code_change(file_id: String, proposed_content: String) -> R
         grants.get(&file_id).cloned().ok_or("This project file grant has expired. Select the project folder again.")?
     };
     let root = validate_granted_root(&grant.root)?;
-    let metadata = fs::symlink_metadata(&grant.path)
-        .map_err(|_| "The selected project file is no longer available. Select it again.".to_string())?;
-    if is_redirected(&metadata) || !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES {
-        return Err("The selected project file is no longer an allowed regular file.".into());
-    }
     if !supported_project_file(&grant.path) {
         return Err("This file type is not permitted for a Coding Assistant preview.".into());
     }
-    let canonical = fs::canonicalize(&grant.path)
-        .map_err(|_| "FRIDAY could not revalidate the selected project file.".to_string())?;
-    if canonical != grant.path || !canonical.starts_with(&root) {
-        return Err("The selected file moved or was redirected outside the approved project folder.".into());
+    let relative_path = grant.path.strip_prefix(&root)
+        .map_err(|_| "The selected file is outside the approved project folder.".to_string())?;
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root)
+        .map_err(|_| "FRIDAY could not safely reopen the selected project folder.".to_string())?;
+    let opened_root_identity = crate::coding_sandbox_fs::verified_directory_identity(&root, &root_handle)
+        .map_err(|_| "FRIDAY could not verify the selected project folder.".to_string())?;
+    if opened_root_identity != grant.root_identity {
+        return Err("The selected project folder changed after scanning. Select it again.".into());
     }
-    let original_bytes = fs::read(&canonical)
-        .map_err(|_| "FRIDAY could not read the current file for preview.".to_string())?;
-    if original_bytes.len() as u64 > MAX_FILE_BYTES || original_bytes.len() as u64 != metadata.len() || original_bytes.contains(&0) {
+    let original_bytes = crate::coding_sandbox_fs::read_verified_project_file(
+        &root_handle, relative_path, grant.file_identity, MAX_FILE_BYTES,
+    ).map_err(|_| "The selected project file changed identity or could not be read safely. Scan the project again.".to_string())?;
+    if original_bytes.contains(&0) {
         return Err("The current file changed or is no longer eligible for a safe preview.".into());
     }
     let original_content = String::from_utf8(original_bytes)
@@ -1362,8 +1366,8 @@ pub async fn preview_code_change(file_id: String, proposed_content: String) -> R
     let proposed_sha256 = sha256_hex(proposed_content.as_bytes());
     let proposed_size_bytes = proposed_content.len();
     let preview_id = make_token();
-    let relative = relative_path(&root, &canonical).ok_or("The selected file is outside the approved project folder.")?;
-    let file_name = canonical.file_name().and_then(|value| value.to_str()).unwrap_or("Project file").chars().take(180).collect();
+    let relative = relative_path(&root, &grant.path).ok_or("The selected file is outside the approved project folder.")?;
+    let file_name = grant.path.file_name().and_then(|value| value.to_str()).unwrap_or("Project file").chars().take(180).collect();
     let diff = unified_diff(&original_content, &proposed_content);
     let mut previews = CODE_PREVIEWS.lock().map_err(|_| "Coding Assistant preview storage is temporarily unavailable.".to_string())?;
     previews.retain(|_, preview| preview.expires_at > now);
@@ -1608,36 +1612,36 @@ pub async fn read_project_files(app: AppHandle, file_ids: Vec<String>) -> Result
     for id in &file_ids {
         let grant = grants.get(id).ok_or("This project selection has expired. Select the project folder again.")?;
         let root = validate_granted_root(&grant.root)?;
-        let metadata = fs::symlink_metadata(&grant.path).map_err(|_| "A selected project file is no longer available.".to_string())?;
-        if is_redirected(&metadata) || !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES {
-            return Err("A selected project file is no longer a supported regular file.".into());
-        }
         if !supported_project_file(&grant.path) {
             return Err("A selected project file is no longer an allowed source/configuration file.".into());
         }
-        let canonical = fs::canonicalize(&grant.path).map_err(|_| "A selected project file is no longer available.".to_string())?;
-        if canonical != grant.path || !canonical.starts_with(&root) {
-            return Err("A selected project file moved outside the approved project folder.".into());
+        let relative_path = grant.path.strip_prefix(&root)
+            .map_err(|_| "A selected project file is outside the approved folder.".to_string())?;
+        let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root)
+            .map_err(|_| "FRIDAY could not safely reopen the selected project folder.".to_string())?;
+        let opened_root_identity = crate::coding_sandbox_fs::verified_directory_identity(&root, &root_handle)
+            .map_err(|_| "FRIDAY could not verify the selected project folder.".to_string())?;
+        if opened_root_identity != grant.root_identity {
+            return Err("The selected project folder changed after scanning. Select it again.".into());
         }
         let remaining = MAX_TOTAL_BYTES.saturating_sub(total_bytes);
-        if metadata.len() as usize > remaining {
+        let bytes = crate::coding_sandbox_fs::read_verified_project_file(
+            &root_handle, relative_path, grant.file_identity, MAX_FILE_BYTES.min(remaining as u64),
+        ).map_err(|_| "A selected project file changed identity or could not be read safely. Scan the project again.".to_string())?;
+        if bytes.len() > MAX_FILE_BYTES as usize || bytes.len() > remaining {
             return Err("The selected files exceed the 180 KB combined project-reading limit. Select fewer files.".into());
-        }
-        let bytes = fs::read(&canonical).map_err(|_| "FRIDAY could not read one of the selected project files.".to_string())?;
-        if bytes.len() > MAX_FILE_BYTES as usize || bytes.len() > remaining || bytes.len() as u64 != metadata.len() {
-            return Err("A project file changed size while FRIDAY was reading it. Select the project files again.".into());
         }
         if bytes.contains(&0) {
             return Err("A selected project file appears to contain binary data and was not read.".into());
         }
         let content = String::from_utf8(bytes).map_err(|_| "A selected project file is not valid UTF-8 text and was not read.".to_string())?;
         let name = grant.path.file_name().and_then(|value| value.to_str()).unwrap_or("Project file").chars().take(180).collect();
-        let relative = relative_path(&root, &canonical).ok_or("A selected project file is outside the approved folder.")?;
+        let relative = relative_path(&root, &grant.path).ok_or("A selected project file is outside the approved folder.")?;
         total_bytes = total_bytes.saturating_add(content.len());
         files.push(CodingProjectFile {
             name,
             relative_path: relative,
-            language: language_for(&canonical),
+            language: language_for(&grant.path),
             size_bytes: content.len(),
             content,
         });
@@ -1748,10 +1752,11 @@ mod tests {
         fs::write(temp.join("node_modules/pkg/index.js"), "ignored").unwrap();
         let root = fs::canonicalize(&temp).unwrap();
         let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let root_identity = crate::coding_sandbox_fs::verified_directory_identity(&root, &root_handle).unwrap();
         let mut candidates = Vec::new();
         let mut grants = BTreeMap::new();
         let mut scanned = 0usize;
-        scan_folder(&root_handle, Path::new(""), &root, 0, &mut scanned, &mut candidates, &mut grants).unwrap();
+        scan_folder(&root_handle, Path::new(""), &root, root_identity, 0, &mut scanned, &mut candidates, &mut grants).unwrap();
         let paths: BTreeSet<String> = candidates.iter().map(|item| item.relative_path.clone()).collect();
         assert!(paths.contains("src/main.rs"));
         assert!(paths.contains("package.json"));
@@ -1770,6 +1775,7 @@ mod tests {
         fs::create_dir_all(temp.join("replace-me")).unwrap();
         let root = fs::canonicalize(&temp).unwrap();
         let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let root_identity = crate::coding_sandbox_fs::verified_directory_identity(&root, &root_handle).unwrap();
         let mut candidates = Vec::new();
         let mut grants = BTreeMap::new();
         let mut scanned = 0usize;
@@ -1783,7 +1789,7 @@ mod tests {
             }
             Ok(())
         };
-        let result = scan_folder_with_hook(&root_handle, Path::new(""), &root, 0, &mut scanned, &mut candidates, &mut grants, &mut hook);
+        let result = scan_folder_with_hook(&root_handle, Path::new(""), &root, root_identity, 0, &mut scanned, &mut candidates, &mut grants, &mut hook);
         assert!(replaced, "the test must replace the ordinary directory after enumeration");
         assert!(result.is_err(), "the replacement directory must fail identity validation");
         assert!(candidates.is_empty(), "replacement contents must never become project candidates");
@@ -1802,6 +1808,7 @@ mod tests {
         fs::write(temp.join("replace-me.rs"), b"original").unwrap();
         let root = fs::canonicalize(&temp).unwrap();
         let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let root_identity = crate::coding_sandbox_fs::verified_directory_identity(&root, &root_handle).unwrap();
         let mut candidates = Vec::new();
         let mut grants = BTreeMap::new();
         let mut scanned = 0usize;
@@ -1814,7 +1821,7 @@ mod tests {
             }
             Ok(())
         };
-        let result = scan_folder_with_hook(&root_handle, Path::new(""), &root, 0, &mut scanned, &mut candidates, &mut grants, &mut hook);
+        let result = scan_folder_with_hook(&root_handle, Path::new(""), &root, root_identity, 0, &mut scanned, &mut candidates, &mut grants, &mut hook);
         assert!(replaced, "the test must replace the regular file after enumeration");
         assert!(result.is_err(), "the replacement file must fail identity validation");
         assert!(candidates.is_empty(), "replacement contents must never become project candidates");

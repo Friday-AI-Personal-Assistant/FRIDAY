@@ -13,6 +13,11 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(unix)]
+pub(crate) type RuntimeTreeIdentity = (u64, u64);
+#[cfg(windows)]
+pub(crate) type RuntimeTreeIdentity = (u64, [u8; 16]);
+
 /// Collect candidate regular-file paths relative to an already-open root.
 ///
 /// Every directory descent is performed relative to its held parent handle and
@@ -84,10 +89,7 @@ pub(crate) struct RuntimeTreeEntry {
     pub(crate) is_directory: bool,
     pub(crate) is_file: bool,
     pub(crate) is_reparse: bool,
-    #[cfg(unix)]
-    pub(crate) identity: (u64, u64),
-    #[cfg(windows)]
-    pub(crate) identity: (u64, [u8; 16]),
+    pub(crate) identity: RuntimeTreeIdentity,
 }
 
 #[cfg(unix)]
@@ -413,10 +415,7 @@ pub(crate) fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File
 
 /// Acquire a root directory handle only when its identity agrees with the
 /// directory observed at the supplied path both before and after opening.
-///
-/// This remains a test-only prototype. The caller must still ensure the
-/// selected root path has been canonicalized and authorized by the UI/backend.
-#[allow(dead_code)]
+/// Callers must still authorize the selected root path before opening it.
 pub(crate) fn open_verified_root_directory(path: &Path) -> io::Result<File> {
     open_verified_root_directory_with_hook(path, || Ok(()))
 }
@@ -3827,6 +3826,54 @@ pub(crate) fn open_child_directory_nofollow(parent: &File, name: &OsStr) -> io::
     Ok(child)
 }
 
+/// Read a bounded selected project file by walking from a verified root handle.
+/// Every parent is opened relative to its held parent, and the final file must
+/// still have the exact identity captured by the project scan.
+pub(crate) fn read_verified_project_file(
+    root: &File,
+    relative_path: &Path,
+    expected_identity: RuntimeTreeIdentity,
+    max_bytes: u64,
+) -> io::Result<Vec<u8>> {
+    if max_bytes == 0 || relative_path.as_os_str().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "selected project path or size limit is invalid"));
+    }
+    let components = relative_path.components().collect::<Vec<_>>();
+    if components.is_empty() || components.len() > 6
+        || components.iter().any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "selected project path is not normalized"));
+    }
+    let mut parent = root.try_clone()?;
+    for component in &components[..components.len() - 1] {
+        let Component::Normal(name) = component else { unreachable!() };
+        parent = open_child_directory_nofollow(&parent, name)?;
+    }
+    let Component::Normal(file_name) = components[components.len() - 1] else { unreachable!() };
+    // Windows denies concurrent write/delete sharing while the read is active.
+    let mut file = open_result_file_nofollow(&parent, file_name)?;
+    let before = file.metadata()?;
+    if !before.is_file() || is_reparse_or_symlink(&before) || !has_single_hard_link(&file)
+        || before.len() == 0 || before.len() > max_bytes
+        || !runtime_tree_handle_matches(expected_identity, &file)?
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "selected project file is not the scanned regular file"));
+    }
+    let expected_length = before.len();
+    let capacity = usize::try_from(expected_length)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "selected project file size cannot be represented"))?;
+    let mut contents = Vec::with_capacity(capacity);
+    file.by_ref().take(max_bytes.saturating_add(1)).read_to_end(&mut contents)?;
+    let after = file.metadata()?;
+    if contents.len() as u64 != expected_length || contents.len() as u64 > max_bytes
+        || after.len() != expected_length || !after.is_file() || is_reparse_or_symlink(&after)
+        || !has_single_hard_link(&file) || !runtime_tree_handle_matches(expected_identity, &file)?
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "selected project file changed while being read"));
+    }
+    Ok(contents)
+}
+
 /// Materialize bounded in-memory source bytes below a held private workspace.
 /// The ownership marker is written last, so interrupted creation is never
 /// falsely advertised as a complete, cleanup-authorized snapshot.
@@ -6579,6 +6626,42 @@ mod tests {
         drop(file);
         drop(root);
         fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn verified_project_file_reader_reads_only_the_scanned_file_identity() {
+        let root_path = make_test_directory("project-read-identity");
+        fs::create_dir(root_path.join("src")).unwrap();
+        fs::write(root_path.join("src").join("main.rs"), b"fn main() {}\\n").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let entries = enumerate_runtime_tree_entries(&root, 16).unwrap();
+        let src = entries.iter().find(|entry| entry.name == OsStr::new("src")).unwrap();
+        let child = open_child_directory_nofollow(&root, &src.name).unwrap();
+        let files = enumerate_runtime_tree_entries(&child, 16).unwrap();
+        let selected = files.iter().find(|entry| entry.name == OsStr::new("main.rs")).unwrap();
+        let bytes = read_verified_project_file(&root, Path::new("src/main.rs"), selected.identity, 128 * 1024).unwrap();
+        assert_eq!(bytes, b"fn main() {}\\n");
+        drop(child);
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_project_file_reader_rejects_replacement_after_enumeration() {
+        let root_path = make_test_directory("project-read-replacement");
+        let displaced = root_path.with_extension("displaced");
+        fs::write(root_path.join("main.rs"), b"original source").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let entries = enumerate_runtime_tree_entries(&root, 16).unwrap();
+        let selected = entries.iter().find(|entry| entry.name == OsStr::new("main.rs")).unwrap();
+        fs::rename(root_path.join("main.rs"), &displaced).unwrap();
+        fs::write(root_path.join("main.rs"), b"replacement source").unwrap();
+        assert!(read_verified_project_file(&root, Path::new("main.rs"), selected.identity, 128 * 1024).is_err());
+        assert_eq!(fs::read(&displaced).unwrap(), b"original source");
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+        fs::remove_file(displaced).unwrap();
     }
 
     #[cfg(unix)]
