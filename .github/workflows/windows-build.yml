@@ -2,7 +2,7 @@ name: Windows desktop build
 
 on:
   push:
-    branches: [main, feature/phase-2-skills]
+    branches: [main, feature/phase-2-skills, 'foundation/**']
   pull_request:
     branches: [main]
   workflow_dispatch:
