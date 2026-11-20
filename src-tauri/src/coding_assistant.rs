@@ -1342,7 +1342,7 @@ pub async fn preview_code_change(file_id: String, proposed_content: String) -> R
     if !supported_project_file(&grant.path) {
         return Err("This file type is not permitted for a Coding Assistant preview.".into());
     }
-    let relative_path = grant.path.strip_prefix(&root)
+    let relative_file_path = grant.path.strip_prefix(&root)
         .map_err(|_| "The selected file is outside the approved project folder.".to_string())?;
     let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root)
         .map_err(|_| "FRIDAY could not safely reopen the selected project folder.".to_string())?;
@@ -1352,7 +1352,7 @@ pub async fn preview_code_change(file_id: String, proposed_content: String) -> R
         return Err("The selected project folder changed after scanning. Select it again.".into());
     }
     let original_bytes = crate::coding_sandbox_fs::read_verified_project_file(
-        &root_handle, relative_path, grant.file_identity, MAX_FILE_BYTES,
+        &root_handle, relative_file_path, grant.file_identity, MAX_FILE_BYTES,
     ).map_err(|_| "The selected project file changed identity or could not be read safely. Scan the project again.".to_string())?;
     if original_bytes.contains(&0) {
         return Err("The current file changed or is no longer eligible for a safe preview.".into());
@@ -1615,7 +1615,7 @@ pub async fn read_project_files(app: AppHandle, file_ids: Vec<String>) -> Result
         if !supported_project_file(&grant.path) {
             return Err("A selected project file is no longer an allowed source/configuration file.".into());
         }
-        let relative_path = grant.path.strip_prefix(&root)
+        let relative_file_path = grant.path.strip_prefix(&root)
             .map_err(|_| "A selected project file is outside the approved folder.".to_string())?;
         let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(&root)
             .map_err(|_| "FRIDAY could not safely reopen the selected project folder.".to_string())?;
@@ -1626,7 +1626,7 @@ pub async fn read_project_files(app: AppHandle, file_ids: Vec<String>) -> Result
         }
         let remaining = MAX_TOTAL_BYTES.saturating_sub(total_bytes);
         let bytes = crate::coding_sandbox_fs::read_verified_project_file(
-            &root_handle, relative_path, grant.file_identity, MAX_FILE_BYTES.min(remaining as u64),
+            &root_handle, relative_file_path, grant.file_identity, MAX_FILE_BYTES.min(remaining as u64),
         ).map_err(|_| "A selected project file changed identity or could not be read safely. Scan the project again.".to_string())?;
         if bytes.len() > MAX_FILE_BYTES as usize || bytes.len() > remaining {
             return Err("The selected files exceed the 180 KB combined project-reading limit. Select fewer files.".into());
