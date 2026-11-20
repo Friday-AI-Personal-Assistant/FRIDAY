@@ -2877,20 +2877,23 @@ pub(crate) fn cleanup_owned_snapshot(
     cleanup_owned_snapshot_with_hook(workspace, snapshot_id, limits, |_| Ok(()))
 }
 
-/// Open the snapshot root with delete-compatible sharing on Windows.
-/// The held inventory handle must permit a later DELETE-access handle to open
-/// the same directory; otherwise Windows reports STATUS_SHARING_VIOLATION.
+/// Open a directory relative to a held parent with delete-compatible sharing.
+/// Retained preflight handles must coexist with the later handle-based delete
+/// operation on Windows; the open remains no-follow and handle-relative.
 #[cfg(windows)]
-fn open_snapshot_cleanup_root(workspace: &File, snapshot_id: &str) -> io::Result<File> {
+fn open_snapshot_cleanup_directory(parent: &File, name: &OsStr) -> io::Result<File> {
     use std::{
         mem,
         os::windows::{ffi::OsStrExt, fs::MetadataExt, io::{AsRawHandle, FromRawHandle}},
         ptr,
     };
-    let wide: Vec<u16> = OsStr::new(snapshot_id).encode_wide().collect();
-    let byte_len = wide.len().checked_mul(mem::size_of::<u16>())
+    if !is_single_normal_component(name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot directory name must be one normal component"));
+    }
+    let wide: Vec<u16> = name.encode_wide().collect();
+    let byte_len = wide.len().checked_mul(2)
         .and_then(|length| u16::try_from(length).ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "snapshot identifier is too long"))?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "snapshot directory name is too long"))?;
     #[repr(C)] struct UnicodeString { length: u16, maximum_length: u16, buffer: *mut u16 }
     #[repr(C)] struct ObjectAttributes {
         length: u32, root_directory: *mut std::ffi::c_void,
@@ -2927,7 +2930,7 @@ fn open_snapshot_cleanup_root(workspace: &File, snapshot_id: &str) -> io::Result
     };
     let attributes = ObjectAttributes {
         length: mem::size_of::<ObjectAttributes>() as u32,
-        root_directory: workspace.as_raw_handle(), object_name: &mut unicode_name,
+        root_directory: parent.as_raw_handle(), object_name: &mut unicode_name,
         attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
         security_descriptor: ptr::null_mut(), security_quality_of_service: ptr::null_mut(),
     };
@@ -2943,23 +2946,30 @@ fn open_snapshot_cleanup_root(workspace: &File, snapshot_id: &str) -> io::Result
         )
     };
     if status < 0 || raw_handle.is_null() {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied,
-            format!("handle-relative snapshot root open failed (NTSTATUS 0x{:08X})", status as u32)));
+        let kind = match status as u32 {
+            0xC000_0034 | 0xC000_003A | 0xC000_000F => io::ErrorKind::NotFound,
+            _ => io::ErrorKind::PermissionDenied,
+        };
+        return Err(io::Error::new(kind,
+            format!("handle-relative snapshot directory open failed (NTSTATUS 0x{:08X})", status as u32)));
     }
-    let root = unsafe { File::from_raw_handle(raw_handle) };
-    let metadata = root.metadata()?;
+    let directory = unsafe { File::from_raw_handle(raw_handle) };
+    let metadata = directory.metadata()?;
     if !metadata.is_dir() || metadata.file_type().is_symlink()
         || (metadata.file_attributes() & 0x400 != 0)
     {
-        return Err(io::Error::new(io::ErrorKind::InvalidData,
-            "snapshot root is not an ordinary directory"));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot entry is not an ordinary directory"));
     }
-    Ok(root)
+    Ok(directory)
 }
 
 #[cfg(unix)]
+fn open_snapshot_cleanup_directory(parent: &File, name: &OsStr) -> io::Result<File> {
+    open_dir_nofollow(parent, Path::new(name))
+}
+
 fn open_snapshot_cleanup_root(workspace: &File, snapshot_id: &str) -> io::Result<File> {
-    open_dir_nofollow(workspace, Path::new(snapshot_id))
+    open_snapshot_cleanup_directory(workspace, OsStr::new(snapshot_id))
 }
 
 fn cleanup_owned_snapshot_with_hook<H>(
@@ -3380,7 +3390,7 @@ fn inspect_snapshot_cleanup_progress_directory(
             if !expected_directories.contains(&portable) {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains an unknown directory"));
             }
-            let child = open_dir_nofollow(parent, Path::new(&name))?;
+            let child = open_snapshot_cleanup_directory(parent, &name)?;
             let metadata = child.metadata()?;
             if !metadata.is_dir() || is_reparse_or_symlink(&metadata)
                 || !runtime_tree_handle_matches(entry.identity, &child)?
