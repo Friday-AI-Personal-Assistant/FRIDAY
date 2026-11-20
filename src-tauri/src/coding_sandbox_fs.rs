@@ -3939,6 +3939,23 @@ pub(crate) fn rename_file_noreplace(
         opened
     };
 
+    // Re-open the source name relative to the pinned parent immediately before
+    // the rename syscall. This narrows the Unix name-substitution window and
+    // makes the expected identity check explicit on every supported platform.
+    // It is not a rename-by-handle primitive on Unix: a hostile concurrent
+    // writer can still race the final name lookup and syscall. Callers must not
+    // treat this as complete TOCTOU protection.
+    let latest_source = open_file_nofollow(parent, source_name)?;
+    let latest_metadata = latest_source.metadata()?;
+    if !latest_metadata.is_file()
+        || is_reparse_or_symlink(&latest_metadata)
+        || !has_single_hard_link(&latest_source)
+        || !runtime_tree_handle_matches(expected_source_identity, &latest_source)?
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+            "source name no longer refers to the verified regular file"));
+    }
+
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::{ffi::OsStrExt, io::AsRawFd};
@@ -5376,6 +5393,30 @@ mod tests {
         assert_eq!(source, b"source");
         assert_eq!(destination, b"keep destination");
 
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn handle_relative_file_rename_rejects_source_replaced_after_inventory() {
+        let root_path = make_test_directory("handle-relative-file-rename-source-identity");
+        let source_path = root_path.join("source.txt");
+        let displaced_path = root_path.join("displaced.txt");
+        fs::write(&source_path, b"approved source").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+        let parent_identity = verified_directory_handle_identity(&root).unwrap();
+        let source_identity = enumerate_runtime_tree_entries(&root, 16).unwrap()
+            .into_iter().find(|entry| entry.name == OsStr::new("source.txt"))
+            .expect("source should be inventoried").identity;
+        fs::rename(&source_path, &displaced_path).unwrap();
+        fs::write(&source_path, b"unapproved replacement").unwrap();
+        let result = rename_file_noreplace(&root, OsStr::new("source.txt"),
+            OsStr::new("published.txt"), parent_identity, source_identity);
+        assert!(result.is_err(), "a rebound source name must be rejected");
+        assert_eq!(fs::read(&source_path).unwrap(), b"unapproved replacement");
+        assert_eq!(fs::read(&displaced_path).unwrap(), b"approved source");
+        assert!(!root_path.join("published.txt").exists());
         drop(root);
         fs::remove_dir_all(root_path).unwrap();
     }
