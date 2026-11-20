@@ -5808,6 +5808,71 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_cleanup_rejects_parent_directory_replacement_after_preflight() {
+        let workspace_path = make_test_directory("cleanup-parent-identity-race");
+        let workspace = open_verified_root_directory(&workspace_path).unwrap();
+        let contents = BoundedSnapshotContents {
+            files: vec![
+                BoundedSnapshotFile { relative_path: PathBuf::from("a/first.txt"), contents: b"first".to_vec() },
+                BoundedSnapshotFile { relative_path: PathBuf::from("b/second.txt"), contents: b"original".to_vec() },
+            ],
+            bytes: 13,
+            truncated: false,
+        };
+        let id = "7".repeat(32);
+        create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
+        let root = workspace_path.join(&id);
+        let displaced = root.join("b.displaced");
+        let mut hook_entered = false;
+        let mut replaced = false;
+        let mut rename_blocked = false;
+
+        let result = cleanup_owned_snapshot_with_hook(&workspace, &id, bounded_limits(), |path| {
+            if path == "a/first.txt" && !replaced && !rename_blocked {
+                hook_entered = true;
+                match fs::rename(root.join("b"), &displaced) {
+                    Ok(()) => {
+                        fs::create_dir(root.join("b")).map_err(|error| {
+                            io::Error::new(error.kind(), format!("parent-directory race hook replacement creation failed: {}", error))
+                        })?;
+                        fs::write(root.join("b/second.txt"), b"replaced").map_err(|error| {
+                            io::Error::new(error.kind(), format!("parent-directory race hook file creation failed: {}", error))
+                        })?;
+                        replaced = true;
+                    }
+                    Err(error) if cfg!(windows) && error.kind() == io::ErrorKind::PermissionDenied => {
+                        // Retained identity handles intentionally prevent a
+                        // Windows directory rename during the cleanup window.
+                        rename_blocked = true;
+                    }
+                    Err(error) => {
+                        return Err(io::Error::new(error.kind(), format!("parent-directory race hook rename failed: {}", error)));
+                    }
+                }
+            }
+            Ok(())
+        });
+
+        assert!(hook_entered, "parent replacement hook was never entered; cleanup result: {:?}", result);
+        if cfg!(windows) {
+            assert!(rename_blocked, "Windows should deny replacing a parent while its preflight identity handle is retained");
+            assert!(!replaced, "a replacement must not be created when Windows denies the rename");
+            assert!(result.is_ok(), "cleanup should finish after the replacement attempt is safely denied: {:?}", result);
+            assert!(!root.exists(), "the original snapshot should be removed after safe cleanup");
+            assert!(!displaced.exists(), "a displaced parent should not exist when rename was denied");
+        } else {
+            assert!(replaced, "the replacement must occur after preflight and the first deletion");
+            assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::InvalidData));
+            assert_eq!(fs::read(root.join("b/second.txt")).unwrap(), b"replaced");
+            assert_eq!(fs::read(displaced.join("second.txt")).unwrap(), b"original");
+            assert!(root.join(".friday-snapshot-owner.json").exists());
+        }
+
+        drop(workspace);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[test]
     fn snapshot_cleanup_resumes_after_interruption_and_removes_marker_last() {
         let workspace_path = make_test_directory("cleanup-retry");
         let workspace = open_verified_root_directory(&workspace_path).unwrap();
