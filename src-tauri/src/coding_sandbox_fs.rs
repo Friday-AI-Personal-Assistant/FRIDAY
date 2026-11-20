@@ -116,6 +116,16 @@ fn collect_runtime_tree_directory(
             directories.push(relative_text);
             collect_runtime_tree_directory(&child, &relative, depth + 1, max_depth, max_entries, count, files, directories)?;
         } else if kind.is_file() {
+            // Re-open the enumerated name relative to the held parent and
+            // validate the resulting handle. DirEntry::file_type is only an
+            // observation; the entry may have been replaced before inventory
+            // records it. The no-follow open rejects a raced-in link/reparse
+            // point and the handle metadata confirms an ordinary regular file.
+            let file = open_file_nofollow(parent, &name)?;
+            let file_metadata = file.metadata()?;
+            if !file_metadata.is_file() || is_reparse_or_symlink(&file_metadata) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle file changed type or is a reparse point"));
+            }
             files.push(relative_text);
         } else {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle contains a special or unsupported entry"));
@@ -5938,6 +5948,83 @@ mod tests {
         assert!(!root_path.join(".friday-marker-too-large.staging").exists());
         drop(parent);
         fs::remove_dir_all(root_path).unwrap();
+    }
+
+
+    #[test]
+    fn runtime_tree_inventory_accepts_exact_bounded_tree() {
+        let root_path = make_test_directory("runtime-inventory-exact");
+        fs::create_dir(root_path.join("bin")).unwrap();
+        fs::create_dir(root_path.join("lib")).unwrap();
+        fs::write(root_path.join("bin").join("runner.exe"), b"runner").unwrap();
+        fs::write(root_path.join("lib").join("support.dll"), b"support").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+
+        let (files, directories) = collect_runtime_tree_inventory(&root, 1, 4).unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&"bin\\runner.exe".to_owned()));
+        assert!(files.contains(&"lib\\support.dll".to_owned()));
+        assert_eq!(directories.len(), 2);
+        assert!(directories.contains(&"bin".to_owned()));
+        assert!(directories.contains(&"lib".to_owned()));
+
+        assert!(
+            collect_runtime_tree_inventory(&root, 1, 3).is_err(),
+            "the entry budget must include directories and regular files"
+        );
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[test]
+    fn runtime_tree_inventory_rejects_excessive_depth_and_invalid_roots() {
+        let root_path = make_test_directory("runtime-inventory-depth");
+        fs::create_dir_all(root_path.join("one").join("two")).unwrap();
+        fs::write(root_path.join("one").join("two").join("tool.exe"), b"tool").unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+
+        assert!(
+            collect_runtime_tree_inventory(&root, 1, 8).is_err(),
+            "nested directories beyond the configured depth must fail closed"
+        );
+        assert!(collect_runtime_tree_inventory(&root, 0, 8).is_err());
+        assert!(collect_runtime_tree_inventory(&root, 8, 0).is_err());
+
+        let file_path = root_path.join("not-a-directory");
+        fs::write(&file_path, b"file").unwrap();
+        let file = open_file_nofollow(&root, OsStr::new("not-a-directory")).unwrap();
+        assert!(collect_runtime_tree_inventory(&file, 8, 8).is_err());
+
+        drop(file);
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_tree_inventory_rejects_symlinked_files_and_directories() {
+        use std::os::unix::fs::symlink;
+
+        let root_path = make_test_directory("runtime-inventory-links");
+        let outside = make_test_directory("runtime-inventory-outside");
+        fs::write(outside.join("tool.exe"), b"outside").unwrap();
+        symlink(outside.join("tool.exe"), root_path.join("linked-file")).unwrap();
+        let root = open_verified_root_directory(&root_path).unwrap();
+
+        assert!(
+            collect_runtime_tree_inventory(&root, 4, 8).is_err(),
+            "runtime inventories must not accept a symlinked file"
+        );
+        fs::remove_file(root_path.join("linked-file")).unwrap();
+        symlink(&outside, root_path.join("linked-directory")).unwrap();
+        assert!(
+            collect_runtime_tree_inventory(&root, 4, 8).is_err(),
+            "runtime inventories must not accept a symlinked directory"
+        );
+
+        drop(root);
+        fs::remove_dir_all(root_path).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 
 }
