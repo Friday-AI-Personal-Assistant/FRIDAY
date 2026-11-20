@@ -108,10 +108,21 @@ fn collect_runtime_tree_directory(
             if depth >= max_depth {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle exceeds its directory depth limit"));
             }
+            // Capture the directory entry's no-follow metadata before opening it.
+            // The opened handle must still identify that exact entry; otherwise a
+            // same-type directory swap during enumeration could silently change
+            // which runtime tree is inventoried.
+            let observed_metadata = entry.metadata()?;
+            if !observed_metadata.is_dir() || is_reparse_or_symlink(&observed_metadata) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle directory changed type or is a reparse point"));
+            }
             let child = open_dir_nofollow(parent, Path::new(&name))?;
             let child_metadata = child.metadata()?;
-            if !child_metadata.is_dir() || is_reparse_or_symlink(&child_metadata) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle directory changed type or is a reparse point"));
+            if !child_metadata.is_dir()
+                || is_reparse_or_symlink(&child_metadata)
+                || metadata_identity(&observed_metadata)? != handle_identity(&child)?
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle directory changed identity or is a reparse point"));
             }
             directories.push(relative_text);
             collect_runtime_tree_directory(&child, &relative, depth + 1, max_depth, max_entries, count, files, directories)?;
@@ -121,10 +132,17 @@ fn collect_runtime_tree_directory(
             // observation; the entry may have been replaced before inventory
             // records it. The no-follow open rejects a raced-in link/reparse
             // point and the handle metadata confirms an ordinary regular file.
+            let observed_metadata = entry.metadata()?;
+            if !observed_metadata.is_file() || is_reparse_or_symlink(&observed_metadata) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle file changed type or is a reparse point"));
+            }
             let file = open_file_nofollow(parent, &name)?;
             let file_metadata = file.metadata()?;
-            if !file_metadata.is_file() || is_reparse_or_symlink(&file_metadata) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle file changed type or is a reparse point"));
+            if !file_metadata.is_file()
+                || is_reparse_or_symlink(&file_metadata)
+                || metadata_identity(&observed_metadata)? != handle_identity(&file)?
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime bundle file changed identity or is a reparse point"));
             }
             files.push(relative_text);
         } else {
@@ -577,6 +595,24 @@ fn path_identity(path: &Path) -> io::Result<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::symlink_metadata(path)?;
     Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(unix)]
+fn metadata_identity(metadata: &fs::Metadata) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn metadata_identity(metadata: &fs::Metadata) -> io::Result<(u32, u64)> {
+    use std::os::windows::fs::MetadataExt;
+    let volume = metadata.volume_serial_number().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::Unsupported, "filesystem volume identity is unavailable")
+    })?;
+    let index = metadata.file_index().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::Unsupported, "filesystem file identity is unavailable")
+    })?;
+    Ok((volume, index))
 }
 
 #[cfg(unix)]
