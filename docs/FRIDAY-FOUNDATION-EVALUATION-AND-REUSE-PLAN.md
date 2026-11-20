@@ -279,3 +279,18 @@ Reviewed `src-tauri/src/tools.rs`, `src-tauri/src/skills.rs`, `src-tauri/src/ass
 - **Coding Assistant:** the current skill instructions remain read-only; separate filesystem and Windows Sandbox groundwork exists, but it must not be treated as an enabled execution environment.
 
 **Conclusion:** preserve the existing one-use approval token mechanism, exact built-in skill catalogue/integrity checks, local Ollama path, encryption/keyring integration, and minimal Tauri permissions. Extend them behind a coherent backend policy rather than replacing them with an external agent framework. Prioritize atomic persistence hardening and a deny-by-default permission model before adding more powerful tools.
+
+
+### FRIDAY Tauri command-surface check
+
+Reviewed `src-tauri/src/lib.rs` at the same evaluation revision. The command handler explicitly registers assistant, tool, skill, memory, workspace, file, web-research and Coding Assistant operations. This is preferable to a dynamically exposed plugin command surface, but each registered command remains a public IPC entry point and must enforce its own backend checks; frontend hiding is not authorization.
+
+For the first capability-system increment, keep the surface deliberately small:
+- centralize metadata for built-in tool IDs and required capability names;
+- require an explicit, backend-validated capability decision for every execution path;
+- preserve exact argument-bound one-use approval tokens for consequential actions;
+- default unknown tool IDs, missing context, invalid grants and policy-read failures to deny;
+- do not let skill manifests or model-generated tool calls create grants;
+- do not add broad filesystem, shell, browser-control, channel-send or paid-provider grants in this increment.
+
+The first prototype should be limited to the existing two built-in tools, with tests proving that unknown tools and missing grants fail closed and that the existing explicit approval flow remains one-use and argument-bound.
