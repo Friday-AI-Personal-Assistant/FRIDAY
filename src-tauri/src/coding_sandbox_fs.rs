@@ -2989,11 +2989,15 @@ where
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    let mut plan = preflight_snapshot_cleanup_plan(&root, snapshot_id, limits)?;
+    let mut plan = preflight_snapshot_cleanup_plan(&root, snapshot_id, limits).map_err(|error| {
+        io::Error::new(error.kind(), format!("snapshot cleanup preflight failed: {}", error))
+    })?;
     let manifest = plan.manifest.clone();
 
     for item in &manifest.files {
-        let Some(expected_file) = plan.file_handles.get(&item.path).map(File::try_clone).transpose()? else {
+        let Some(expected_file) = plan.file_handles.get(&item.path).map(|file| file.try_clone().map_err(|error| {
+            io::Error::new(error.kind(), format!("snapshot cleanup file identity handle clone failed for {}: {}", item.path, error))
+        })).transpose()? else {
             // A missing inventoried entry is valid during retryable cleanup.
             continue;
         };
@@ -3029,7 +3033,9 @@ where
     });
     for directory in &directories {
         let relative = Path::new(directory);
-        let Some(expected_directory) = plan.directory_handles.get(directory).map(File::try_clone).transpose()? else {
+        let Some(expected_directory) = plan.directory_handles.get(directory).map(|file| file.try_clone().map_err(|error| {
+            io::Error::new(error.kind(), format!("snapshot cleanup directory identity handle clone failed for {}: {}", directory, error))
+        })).transpose()? else {
             // It was already absent when retry preflight ran.
             continue;
         };
@@ -3060,7 +3066,9 @@ where
 
     // The only remaining entry may be the validated ownership marker. Do not
     // remove it if any unexpected entry or residual payload remains.
-    let mut remaining = read_dir(&root, Path::new("."))?;
+    let mut remaining = read_dir(&root, Path::new(".")).map_err(|error| {
+        io::Error::new(error.kind(), format!("snapshot cleanup final inventory open failed: {}", error))
+    })?;
     let first = remaining.next().transpose()?.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, "snapshot ownership marker disappeared before finalization")
     })?;
@@ -3079,7 +3087,9 @@ where
     // can cause ERROR_ACCESS_DENIED despite the retained identity handle being
     // delete-share compatible.
     drop(remaining);
-    let marker = open_file_nofollow(&root, OsStr::new(".friday-snapshot-owner.json"))?;
+    let marker = open_file_nofollow(&root, OsStr::new(".friday-snapshot-owner.json")).map_err(|error| {
+        io::Error::new(error.kind(), format!("snapshot cleanup ownership marker open failed: {}", error))
+    })?;
     if !same_handle_identity(&plan.marker_handle, &marker)? {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot ownership marker no longer matches the identity captured during preflight"));
     }
@@ -3094,7 +3104,7 @@ where
         OsStr::new(".friday-snapshot-owner.json"),
         marker_metadata.len(),
         Some(&plan.marker_handle),
-    )?;
+    ).map_err(|error| io::Error::new(error.kind(), format!("snapshot cleanup ownership marker removal failed: {}", error)))?;
     drop(marker);
     // The preflight marker handle must also be released before Windows can
     // complete its handle-based delete disposition and permit root removal.
@@ -3132,7 +3142,9 @@ fn open_existing_snapshot_parent_bound(
     relative: &Path,
     expected_directories: &std::collections::BTreeMap<String, File>,
 ) -> io::Result<Option<File>> {
-    let mut current = root.try_clone()?;
+    let mut current = root.try_clone().map_err(|error| {
+        io::Error::new(error.kind(), format!("snapshot cleanup root handle clone failed: {}", error))
+    })?;
     let mut walked = PathBuf::new();
     for component in relative.components() {
         let Component::Normal(name) = component else {
