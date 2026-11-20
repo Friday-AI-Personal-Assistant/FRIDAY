@@ -5762,18 +5762,25 @@ mod tests {
 
         let original_path = workspace_path.join(&id);
         let displaced_path = workspace_path.join(format!("{id}-displaced"));
+        let mut hook_entered = false;
         let mut replaced = false;
         let result = cleanup_owned_snapshot_with_hook(&workspace, &id, bounded_limits(), |_| {
+            hook_entered = true;
             if !replaced {
-                fs::rename(&original_path, &displaced_path)?;
-                fs::create_dir(&original_path)?;
+                fs::rename(&original_path, &displaced_path).map_err(|error| {
+                    io::Error::new(error.kind(), format!("final-root race hook rename failed: {}", error))
+                })?;
+                fs::create_dir(&original_path).map_err(|error| {
+                    io::Error::new(error.kind(), format!("final-root race hook replacement creation failed: {}", error))
+                })?;
                 replaced = true;
             }
             Ok(())
         });
 
         assert!(result.is_err(), "cleanup must not remove a replacement at the original snapshot name");
-        assert!(replaced, "final-root replacement hook was not reached; cleanup result: {:?}", result);
+        assert!(hook_entered, "final-root race hook was never entered; cleanup result: {:?}", result);
+        assert!(replaced, "final-root race hook entered but replacement failed; cleanup result: {:?}", result);
         assert!(original_path.is_dir(), "replacement directory must be preserved");
         assert!(displaced_path.is_dir(), "the inventoried directory must remain available for inspection");
         drop(workspace);
@@ -5832,18 +5839,27 @@ mod tests {
         create_bounded_snapshot_destination(&workspace, &id, &contents, bounded_limits()).unwrap();
         let root = workspace_path.join(&id);
         let displaced = root.join("b.displaced");
+        let mut hook_entered = false;
         let mut replaced = false;
 
         let result = cleanup_owned_snapshot_with_hook(&workspace, &id, bounded_limits(), |path| {
             if path == "a/first.txt" && !replaced {
-                fs::rename(root.join("b"), &displaced)?;
-                fs::create_dir(root.join("b"))?;
-                fs::write(root.join("b/second.txt"), b"replaced")?;
+                hook_entered = true;
+                fs::rename(root.join("b"), &displaced).map_err(|error| {
+                    io::Error::new(error.kind(), format!("parent-directory race hook rename failed: {}", error))
+                })?;
+                fs::create_dir(root.join("b")).map_err(|error| {
+                    io::Error::new(error.kind(), format!("parent-directory race hook replacement creation failed: {}", error))
+                })?;
+                fs::write(root.join("b/second.txt"), b"replaced").map_err(|error| {
+                    io::Error::new(error.kind(), format!("parent-directory race hook file creation failed: {}", error))
+                })?;
                 replaced = true;
             }
             Ok(())
         });
-        assert!(replaced, "the parent replacement hook was not reached; cleanup result: {:?}", result);
+        assert!(hook_entered, "parent replacement hook was never entered; cleanup result: {:?}", result);
+        assert!(replaced, "parent replacement hook entered but replacement failed; cleanup result: {:?}", result);
         assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::InvalidData));
         assert_eq!(fs::read(root.join("b/second.txt")).unwrap(), b"replaced");
         assert_eq!(fs::read(displaced.join("second.txt")).unwrap(), b"original");
