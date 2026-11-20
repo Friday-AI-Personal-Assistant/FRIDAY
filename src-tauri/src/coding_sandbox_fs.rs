@@ -3064,11 +3064,16 @@ where
     let first = remaining.next().transpose()?.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, "snapshot ownership marker disappeared before finalization")
     })?;
-    if first.file_name() != OsStr::new(".friday-snapshot-owner.json")
+    let first_name = first.file_name();
+    if first_name != OsStr::new(".friday-snapshot-owner.json")
         || remaining.next().transpose()?.is_some()
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot contains residual or unexpected entries; ownership marker preserved"));
     }
+    // cap-primitives' Windows DirEntry can retain a native metadata handle
+    // independently of the iterator. Release the entry itself before opening
+    // the marker for DELETE access, not merely the ReadDir iterator.
+    drop(first);
     // The directory iterator owns a separate Windows directory handle. Release
     // it before opening the root with DELETE access; otherwise its share mode
     // can cause ERROR_ACCESS_DENIED despite the retained identity handle being
@@ -3135,10 +3140,13 @@ fn open_existing_snapshot_parent_bound(
         };
         walked.push(name);
         let portable = portable_manifest_path(&walked)?;
-        let next = match open_dir_nofollow(&current, Path::new(name)) {
+        let next = match open_snapshot_cleanup_directory(&current, name) {
             Ok(next) => next,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
+            Err(error) => return Err(io::Error::new(
+                error.kind(),
+                format!("snapshot cleanup parent directory open failed for {}: {}", portable, error),
+            )),
         };
         let expected = expected_directories.get(&portable).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "cleanup parent has no identity captured during preflight")
