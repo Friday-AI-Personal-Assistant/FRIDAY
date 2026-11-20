@@ -1344,10 +1344,20 @@ where
         return Ok(());
     }
 
-    for entry in read_dir(parent, Path::new("."))? {
-        if result.files.len() >= limits.max_files
-            || result.bytes >= limits.max_total_bytes
-        {
+    // Capture native per-entry identities while enumerating. A no-follow
+    // open alone prevents link traversal, but it does not prove that an
+    // ordinary file/directory opened moments later is the same object that was
+    // inspected in this directory listing.
+    let entries = match enumerate_runtime_tree_entries(parent, limits.max_entries) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            result.truncated = true;
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        if result.files.len() >= limits.max_files || result.bytes >= limits.max_total_bytes {
             result.truncated = true;
             break;
         }
@@ -1358,14 +1368,7 @@ where
             result.truncated = true;
             break;
         }
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => {
-                result.truncated = true;
-                continue;
-            }
-        };
-        let name = entry.file_name();
+        let name = entry.name;
         if !is_single_normal_component(&name) {
             result.truncated = true;
             continue;
@@ -1374,19 +1377,12 @@ where
             result.truncated = true;
             continue;
         };
-        let entry_type = match entry.file_type() {
-            Ok(kind) => kind,
-            Err(_) => {
-                result.truncated = true;
-                continue;
-            }
-        };
-        if entry_type.is_symlink() {
+        if entry.is_reparse {
             continue;
         }
 
         let relative_path = relative_directory.join(&name);
-        if entry_type.is_dir() {
+        if entry.is_directory {
             if exclude_directory(name_text) {
                 continue;
             }
@@ -1394,26 +1390,20 @@ where
                 result.truncated = true;
                 continue;
             }
-            // Never recurse through an ambient path. If an enumerated directory
-            // was replaced by a link/reparse point, this no-follow open fails.
             let child = open_dir_nofollow(parent, Path::new(&name))?;
             let child_metadata = child.metadata()?;
-            if !child_metadata.is_dir() || is_reparse_or_symlink(&child_metadata) {
+            if !child_metadata.is_dir()
+                || is_reparse_or_symlink(&child_metadata)
+                || !runtime_tree_handle_matches(entry.identity, &child)?
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "opened snapshot child is not an ordinary directory",
+                    "snapshot source directory changed identity or is not an ordinary directory",
                 ));
             }
             collect_bounded_directory(
-                &child,
-                &relative_path,
-                depth + 1,
-                limits,
-                include_file,
-                exclude_directory,
-                before_file_open,
-                entries_scanned,
-                result,
+                &child, &relative_path, depth + 1, limits, include_file,
+                exclude_directory, before_file_open, entries_scanned, result,
             )?;
             if result.truncated
                 && (result.files.len() >= limits.max_files
@@ -1425,13 +1415,10 @@ where
             continue;
         }
 
-        if !entry_type.is_file() || !include_file(name_text) {
+        if !entry.is_file || !include_file(name_text) {
             continue;
         }
-
         before_file_open(&relative_path)?;
-        // The filename is a single component and the parent is the held handle.
-        // No source path assembled from the displayed relative path is opened.
         let mut file = match open_file_nofollow(parent, &name) {
             Ok(file) => file,
             Err(_) => {
@@ -1440,10 +1427,13 @@ where
             }
         };
         let before = file.metadata()?;
-        if !before.is_file() || is_reparse_or_symlink(&before) {
+        if !before.is_file()
+            || is_reparse_or_symlink(&before)
+            || !runtime_tree_handle_matches(entry.identity, &file)?
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "opened snapshot source is not an ordinary regular file",
+                "opened snapshot source changed identity or is not an ordinary regular file",
             ));
         }
         // A hard link can expose content whose other name is outside the
