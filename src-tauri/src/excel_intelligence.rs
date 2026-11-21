@@ -964,7 +964,7 @@ mod tests {
         assert!(store.confirm_accounting_mapping(&id, "CSV data", 1, "accounting.gross_sales").is_err());
         assert!(store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.net_sales").is_err());
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
-        assert!(store.confirm_accounting_mapping(&id, "CSV data", 2, "gross_sales").is_err());
+        assert!(store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").is_err());
         assert!(store.confirm_accounting_mapping(&id, "Other sheet", 2, "accounting.gross_sales").is_err());
         assert!(store.confirm_accounting_mapping("00000000000000000000000000000000", "CSV data", 2, "accounting.gross_sales").is_err());
     }
