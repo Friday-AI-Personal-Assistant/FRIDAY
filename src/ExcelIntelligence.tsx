@@ -10,6 +10,8 @@ type ColumnAnalysis = {
   average: number | null;
   minimum: number | null;
   maximum: number | null;
+  topValues: { value: string; count: number }[];
+  frequencyComplete: boolean;
 };
 
 type DataQualityFinding = {
@@ -33,6 +35,14 @@ type SheetAnalysis = {
   qualityFindings: DataQualityFinding[];
 };
 
+type ExcelQuestionAnswer = {
+  status: "answered" | "clarification" | "unsupported";
+  answer: string;
+  interpretation: string;
+  evidence: string[];
+  method: string;
+};
+
 type WorkbookAnalysis = {
   fileName: string;
   format: string;
@@ -52,6 +62,9 @@ export default function ExcelIntelligence() {
   const [selectedSheet, setSelectedSheet] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [question, setQuestion] = useState("");
+  const [questionAnswer, setQuestionAnswer] = useState<ExcelQuestionAnswer | null>(null);
+  const [asking, setAsking] = useState(false);
 
   async function chooseWorkbook() {
     setBusy(true);
@@ -60,6 +73,8 @@ export default function ExcelIntelligence() {
       const result = await invoke<WorkbookAnalysis>("pick_and_analyze_workbook");
       setAnalysis(result);
       setSelectedSheet(0);
+      setQuestion("");
+      setQuestionAnswer(null);
     } catch (reason) {
       const message = String(reason);
       if (!message.toLowerCase().includes("cancel")) setError(message);
@@ -69,6 +84,32 @@ export default function ExcelIntelligence() {
   }
 
   const sheet = analysis?.sheets[selectedSheet];
+
+  async function askQuestion() {
+    if (!sheet || !question.trim() || asking) return;
+    setAsking(true);
+    setQuestionAnswer(null);
+    try {
+      const result = await invoke<ExcelQuestionAnswer>("answer_excel_question", {
+        question: question.trim(),
+        sheetName: sheet.name,
+        rowCount: sheet.rowCount,
+        columns: sheet.columns,
+      });
+      setQuestionAnswer(result);
+    } catch (reason) {
+      setQuestionAnswer({
+        status: "unsupported",
+        answer: String(reason),
+        interpretation: "FRIDAY could not complete this local analysis request.",
+        evidence: [],
+        method: "local analysis error",
+      });
+    } finally {
+      setAsking(false);
+    }
+  }
+
 
   return (
     <section className="page excel-page">
@@ -171,8 +212,35 @@ export default function ExcelIntelligence() {
             <p className="excel-table-caption">Automated checks are review hints, not proof of errors. Outliers can be valid; FRIDAY never changes or removes data.</p>
           </section>
 
+
+          <section className="excel-section excel-question-section">
+            <div className="excel-section-heading">
+              <div><span className="excel-step">05 / ASK YOUR SPREADSHEET</span><h3>What would you like to know?</h3></div>
+              <span>LOCAL · READ-ONLY</span>
+            </div>
+            <form className="excel-question-form" onSubmit={event => { event.preventDefault(); void askQuestion(); }}>
+              <input
+                value={question}
+                onChange={event => setQuestion(event.target.value)}
+                maxLength={300}
+                placeholder="e.g. What is the total revenue?"
+                aria-label="Ask a question about the selected worksheet"
+              />
+              <button type="submit" disabled={asking || !question.trim()}>{asking ? "Analyzing…" : "Ask FRIDAY"}</button>
+            </form>
+            <p className="excel-table-caption">Try totals, averages, highest or lowest numeric values, missing values, most common values, or row counts. Grouped comparisons and trend analysis are not supported yet.</p>
+            {questionAnswer && (
+              <div className={`excel-answer-card ${questionAnswer.status}`} aria-live="polite">
+                <strong>{questionAnswer.answer}</strong>
+                <p>{questionAnswer.interpretation}</p>
+                {questionAnswer.evidence.length > 0 && <ul>{questionAnswer.evidence.map((item, index) => <li key={index}>{item}</li>)}</ul>}
+                <span>{questionAnswer.method}</span>
+              </div>
+            )}
+          </section>
+
           <section className="excel-section">
-            <div className="excel-section-heading"><div><span className="excel-step">05 / COLUMN INSIGHTS</span><h3>Numeric summaries</h3></div><span>{sheet.columns.length} columns</span></div>
+            <div className="excel-section-heading"><div><span className="excel-step">06 / COLUMN INSIGHTS</span><h3>Numeric summaries</h3></div><span>{sheet.columns.length} columns</span></div>
             <div className="excel-column-grid">
               {sheet.columns.map((column, index) => (
                 <article className="excel-column-card" key={index}>
@@ -186,6 +254,7 @@ export default function ExcelIntelligence() {
                       <div><dt>Total</dt><dd>{numberLabel(column.sum)}</dd></div>
                     </dl>
                   ) : <p className="excel-muted">No numeric values detected</p>}
+                  {column.frequencyComplete && column.topValues.length > 0 && <div className="excel-top-values"><span>COMMON VALUES</span><p>{column.topValues.slice(0, 3).map(item => `${item.value} (${item.count})`).join(" · ")}</p></div>}
                 </article>
               ))}
             </div>
