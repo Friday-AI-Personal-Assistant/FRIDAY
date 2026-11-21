@@ -1033,3 +1033,375 @@ h1 em { color: #78AEEF; }
   .overview-next-milestone { flex-direction:column; gap:12px; }
   .overview-planned-tag { align-self:flex-start; }
 }
+
+
+/* Midnight Azure integration pass — unify legacy green component surfaces. */
+.app-shell .chat-panel,
+.app-shell .conversation-sidebar,
+.app-shell .memory-manager,
+.app-shell .memory-form,
+.app-shell .memory-item,
+.app-shell .pdf-reader-panel,
+.app-shell .pdf-file-summary,
+.app-shell .pdf-answer,
+.app-shell .web-research-panel,
+.app-shell .web-result,
+.app-shell .web-source-card,
+.app-shell .web-page-reader,
+.app-shell .file-assistant-panel,
+.app-shell .file-assistant-folder-list,
+.app-shell .file-assistant-file-actions,
+.app-shell .file-edit-panel,
+.app-shell .file-edit-preview,
+.app-shell .coding-panel,
+.app-shell .coding-intelligence,
+.app-shell .coding-change-preview,
+.app-shell .coding-answer,
+.app-shell .coding-project-list,
+.app-shell .coding-project-summary,
+.app-shell .coding-generated-proposals,
+.app-shell .coding-source-preview,
+.app-shell .coding-current-file,
+.app-shell .coding-diff,
+.app-shell .coding-change-diff,
+.app-shell .coding-sandbox-config,
+.app-shell .model-tool-confirm {
+  background-color: var(--az-panel);
+  border-color: var(--az-border);
+  color: var(--az-text);
+}
+.app-shell .conversation-sidebar,
+.app-shell .memory-manager,
+.app-shell .pdf-reader-panel,
+.app-shell .web-research-panel,
+.app-shell .file-assistant-panel,
+.app-shell .file-edit-panel,
+.app-shell .coding-panel,
+.app-shell .coding-intelligence,
+.app-shell .coding-change-preview,
+.app-shell .coding-answer,
+.app-shell .coding-project-list,
+.app-shell .coding-project-summary {
+  border-radius: 13px;
+}
+.app-shell .chat-top,
+.app-shell .conversation-sidebar-head,
+.app-shell .memory-form,
+.app-shell .memory-item,
+.app-shell .pdf-file-summary,
+.app-shell .coding-project-file,
+.app-shell .coding-toolbar,
+.app-shell .coding-action-row,
+.app-shell .coding-generated-proposals {
+  border-color: var(--az-border);
+}
+.app-shell .chat-welcome,
+.app-shell .chat-welcome p,
+.app-shell .chat-footnote,
+.app-shell .conversation-open,
+.app-shell .conversation-preview,
+.app-shell .history-hint,
+.app-shell .memory-manager-head p,
+.app-shell .memory-form label,
+.app-shell .memory-item-content small,
+.app-shell .pdf-reader-panel>p,
+.app-shell .pdf-file-summary span,
+.app-shell .pdf-model-label,
+.app-shell .pdf-question-label,
+.app-shell .pdf-extracted-text section p,
+.app-shell .web-page-excerpt,
+.app-shell .web-source-meta,
+.app-shell .coding-panel small,
+.app-shell .coding-safety-note,
+.app-shell .coding-project-name,
+.app-shell .coding-metrics,
+.app-shell .file-assistant-panel p,
+.app-shell .file-assistant-candidate small {
+  color: var(--az-muted);
+}
+.app-shell .chat-welcome h2,
+.app-shell .memory-manager-head strong,
+.app-shell .memory-item-content p,
+.app-shell .pdf-reader-panel>strong,
+.app-shell .pdf-file-summary strong,
+.app-shell .pdf-answer strong,
+.app-shell .pdf-answer p,
+.app-shell .pdf-extracted-text section strong,
+.app-shell .web-result strong,
+.app-shell .web-source-card strong,
+.app-shell .coding-panel strong,
+.app-shell .coding-intelligence strong,
+.app-shell .coding-project-summary strong,
+.app-shell .coding-project-file strong,
+.app-shell .coding-change-preview strong,
+.app-shell .file-assistant-panel strong {
+  color: var(--az-text);
+}
+.app-shell .chat-avatar,
+.app-shell .chat-welcome-icon,
+.app-shell .skill-icon,
+.app-shell .memory-manager-head>span,
+.app-shell .pdf-extracted-text summary,
+.app-shell .model-list-heading span {
+  color: #80B2F0;
+}
+.app-shell .chat-success,
+.app-shell .skills-message,
+.app-shell .skills-notice,
+.app-shell .pdf-answer,
+.app-shell .coding-warning,
+.app-shell .coding-action-row .action-confirm {
+  background: rgba(40,116,216,.12);
+  border-color: rgba(76,143,220,.42);
+  color: var(--az-text);
+}
+.app-shell .chat-error,
+.app-shell .skills-error,
+.app-shell .history-error {
+  background: #30212D;
+  border-color: #754657;
+  color: #F3CAD4;
+}
+.app-shell .action-confirm,
+.app-shell .model-tool-confirm,
+.app-shell .coding-warning {
+  border-color: var(--az-border);
+  border-radius: 10px;
+}
+.app-shell .memory-form input,
+.app-shell .memory-form textarea,
+.app-shell .pdf-model-label input,
+.app-shell .pdf-question-label textarea,
+.app-shell .web-query-label input,
+.app-shell .web-question-label textarea,
+.app-shell .conversation-search,
+.app-shell .model-install-row input,
+.app-shell .coding-field input,
+.app-shell .coding-field select,
+.app-shell .coding-field textarea,
+.app-shell .coding-question-label textarea,
+.app-shell .coding-change-preview select,
+.app-shell .coding-change-preview textarea,
+.app-shell .file-assistant-search input,
+.app-shell .file-edit-preview textarea {
+  background: #071326;
+  border: 1px solid #385273;
+  color: #E6EEF8;
+  border-radius: 8px;
+}
+.app-shell .memory-form input:focus,
+.app-shell .memory-form textarea:focus,
+.app-shell .pdf-model-label input:focus,
+.app-shell .pdf-question-label textarea:focus,
+.app-shell .web-query-label input:focus,
+.app-shell .web-question-label textarea:focus,
+.app-shell .coding-field input:focus,
+.app-shell .coding-field select:focus,
+.app-shell .coding-field textarea:focus,
+.app-shell .coding-question-label textarea:focus,
+.app-shell .coding-change-preview select:focus,
+.app-shell .coding-change-preview textarea:focus,
+.app-shell .file-assistant-search input:focus,
+.app-shell .file-edit-preview textarea:focus {
+  outline: 2px solid var(--az-blue);
+  outline-offset: 1px;
+}
+.app-shell .conversation-item.active,
+.app-shell .history-tabs button.active,
+.app-shell .coding-project-file.selected,
+.app-shell .web-source-select.selected {
+  background: rgba(40,116,216,.16);
+  border-color: var(--az-blue);
+}
+.app-shell .conversation-actions button:hover,
+.app-shell .message-actions button:hover:not(:disabled),
+.app-shell .history-tabs button:hover,
+.app-shell .coding-toolbar button:hover:not(:disabled),
+.app-shell .coding-actions button:hover:not(:disabled),
+.app-shell .file-assistant-file-actions button:hover:not(:disabled) {
+  border-color: var(--az-blue);
+  color: var(--az-text);
+}
+.app-shell .skill-card,
+.app-shell .installed-model,
+.app-shell .web-result,
+.app-shell .web-source-card,
+.app-shell .file-assistant-candidate,
+.app-shell .coding-project-file,
+.app-shell .coding-generated-proposals>button {
+  background: var(--az-panel);
+  border-color: var(--az-border);
+  color: var(--az-text);
+  border-radius: 10px;
+}
+.app-shell .skill-card:hover,
+.app-shell .installed-model:hover,
+.app-shell .web-result:hover,
+.app-shell .web-source-card:hover,
+.app-shell .coding-project-file:hover {
+  border-color: #477DBB;
+  box-shadow: 0 7px 22px rgba(0,0,0,.10);
+}
+.app-shell .skill-state.enabled { color: #9BC8F5; border-color: #477DBB; }
+.app-shell .skill-permissions { border-color: var(--az-border); }
+.app-shell .skill-permissions strong { color: #80B2F0; }
+.app-shell .skill-permissions span { color: var(--az-muted); }
+.app-shell .model-download-status { background: #102A48; border-color: #2C5D91; }
+.app-shell .model-download-status progress { accent-color: var(--az-blue); }
+.app-shell .model-progress-indeterminate {
+  background: linear-gradient(90deg,#183454 25%,#3986E8 50%,#183454 75%);
+}
+.app-shell .community-skill-preview {
+  background: #292316;
+  border-color: #765C32;
+  color: #F1E4C8;
+}
+.app-shell .primary-button,
+.app-shell .secondary-button,
+.app-shell .settings-action {
+  transition: background-color .16s ease, border-color .16s ease, color .16s ease;
+}
+.app-shell button:disabled { cursor: not-allowed; opacity: .55; }
+
+/* Light Azure equivalents for all integrated work areas. */
+.app-shell[data-theme="light"] .chat-panel,
+.app-shell[data-theme="light"] .conversation-sidebar,
+.app-shell[data-theme="light"] .memory-manager,
+.app-shell[data-theme="light"] .memory-form,
+.app-shell[data-theme="light"] .memory-item,
+.app-shell[data-theme="light"] .pdf-reader-panel,
+.app-shell[data-theme="light"] .pdf-file-summary,
+.app-shell[data-theme="light"] .pdf-answer,
+.app-shell[data-theme="light"] .web-result,
+.app-shell[data-theme="light"] .web-source-card,
+.app-shell[data-theme="light"] .web-page-reader,
+.app-shell[data-theme="light"] .file-assistant-panel,
+.app-shell[data-theme="light"] .file-assistant-folder-list,
+.app-shell[data-theme="light"] .file-assistant-file-actions,
+.app-shell[data-theme="light"] .file-edit-panel,
+.app-shell[data-theme="light"] .file-edit-preview,
+.app-shell[data-theme="light"] .coding-panel,
+.app-shell[data-theme="light"] .coding-intelligence,
+.app-shell[data-theme="light"] .coding-change-preview,
+.app-shell[data-theme="light"] .coding-answer,
+.app-shell[data-theme="light"] .coding-project-list,
+.app-shell[data-theme="light"] .coding-project-summary,
+.app-shell[data-theme="light"] .coding-generated-proposals,
+.app-shell[data-theme="light"] .coding-source-preview,
+.app-shell[data-theme="light"] .coding-current-file,
+.app-shell[data-theme="light"] .coding-diff,
+.app-shell[data-theme="light"] .coding-change-diff,
+.app-shell[data-theme="light"] .coding-sandbox-config,
+.app-shell[data-theme="light"] .model-tool-confirm,
+.app-shell[data-theme="light"] .skill-card,
+.app-shell[data-theme="light"] .installed-model,
+.app-shell[data-theme="light"] .coding-project-file,
+.app-shell[data-theme="light"] .coding-generated-proposals>button {
+  background: #FFFFFF;
+  border-color: #D3DEEC;
+  color: #172B45;
+}
+.app-shell[data-theme="light"] .chat-welcome,
+.app-shell[data-theme="light"] .chat-welcome p,
+.app-shell[data-theme="light"] .chat-footnote,
+.app-shell[data-theme="light"] .conversation-open,
+.app-shell[data-theme="light"] .conversation-preview,
+.app-shell[data-theme="light"] .history-hint,
+.app-shell[data-theme="light"] .memory-manager-head p,
+.app-shell[data-theme="light"] .memory-form label,
+.app-shell[data-theme="light"] .memory-item-content small,
+.app-shell[data-theme="light"] .pdf-reader-panel>p,
+.app-shell[data-theme="light"] .pdf-file-summary span,
+.app-shell[data-theme="light"] .pdf-model-label,
+.app-shell[data-theme="light"] .pdf-question-label,
+.app-shell[data-theme="light"] .pdf-extracted-text section p,
+.app-shell[data-theme="light"] .web-page-excerpt,
+.app-shell[data-theme="light"] .web-source-meta,
+.app-shell[data-theme="light"] .coding-panel small,
+.app-shell[data-theme="light"] .coding-safety-note,
+.app-shell[data-theme="light"] .coding-project-name,
+.app-shell[data-theme="light"] .coding-metrics,
+.app-shell[data-theme="light"] .file-assistant-panel p,
+.app-shell[data-theme="light"] .file-assistant-candidate small {
+  color: #536B88;
+}
+.app-shell[data-theme="light"] .chat-welcome h2,
+.app-shell[data-theme="light"] .memory-manager-head strong,
+.app-shell[data-theme="light"] .memory-item-content p,
+.app-shell[data-theme="light"] .pdf-reader-panel>strong,
+.app-shell[data-theme="light"] .pdf-file-summary strong,
+.app-shell[data-theme="light"] .pdf-answer strong,
+.app-shell[data-theme="light"] .pdf-answer p,
+.app-shell[data-theme="light"] .pdf-extracted-text section strong,
+.app-shell[data-theme="light"] .web-result strong,
+.app-shell[data-theme="light"] .web-source-card strong,
+.app-shell[data-theme="light"] .coding-panel strong,
+.app-shell[data-theme="light"] .coding-intelligence strong,
+.app-shell[data-theme="light"] .coding-project-summary strong,
+.app-shell[data-theme="light"] .coding-project-file strong,
+.app-shell[data-theme="light"] .coding-change-preview strong,
+.app-shell[data-theme="light"] .file-assistant-panel strong {
+  color: #172B45;
+}
+.app-shell[data-theme="light"] .memory-form input,
+.app-shell[data-theme="light"] .memory-form textarea,
+.app-shell[data-theme="light"] .pdf-model-label input,
+.app-shell[data-theme="light"] .pdf-question-label textarea,
+.app-shell[data-theme="light"] .web-query-label input,
+.app-shell[data-theme="light"] .web-question-label textarea,
+.app-shell[data-theme="light"] .conversation-search,
+.app-shell[data-theme="light"] .model-install-row input,
+.app-shell[data-theme="light"] .coding-field input,
+.app-shell[data-theme="light"] .coding-field select,
+.app-shell[data-theme="light"] .coding-field textarea,
+.app-shell[data-theme="light"] .coding-question-label textarea,
+.app-shell[data-theme="light"] .coding-change-preview select,
+.app-shell[data-theme="light"] .coding-change-preview textarea,
+.app-shell[data-theme="light"] .file-assistant-search input,
+.app-shell[data-theme="light"] .file-edit-preview textarea {
+  background: #FFFFFF;
+  border-color: #B9CBE1;
+  color: #172B45;
+}
+.app-shell[data-theme="light"] .chat-bubble.assistant { background: #E8EFF9; color: #172B45; }
+.app-shell[data-theme="light"] .chat-bubble.user { background: #245F9F; color: #FFFFFF; }
+.app-shell[data-theme="light"] .chat-success,
+.app-shell[data-theme="light"] .skills-message,
+.app-shell[data-theme="light"] .skills-notice,
+.app-shell[data-theme="light"] .pdf-answer {
+  background: #EAF2FD;
+  border-color: #B9D1EF;
+  color: #214C7D;
+}
+.app-shell[data-theme="light"] .chat-error,
+.app-shell[data-theme="light"] .skills-error,
+.app-shell[data-theme="light"] .history-error {
+  background: #FBEFF1;
+  border-color: #E6C2CB;
+  color: #873C4E;
+}
+.app-shell[data-theme="light"] .skill-state.enabled { color: #245C9F; border-color: #9BB9DF; }
+.app-shell[data-theme="light"] .community-skill-preview {
+  background: #FBF5E9;
+  border-color: #E6D4B2;
+  color: #5E4827;
+}
+.app-shell[data-theme="light"] .community-skill-preview p,
+.app-shell[data-theme="light"] .community-skill-preview dd,
+.app-shell[data-theme="light"] .community-skill-preview>small { color: #735D38; }
+@media(max-width:760px) {
+  .chat-layout { grid-template-columns: minmax(0,1fr); }
+  .conversation-sidebar { max-height: 300px; min-height: 180px; }
+  .coding-intelligence-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media(max-width:560px) {
+  .memory-manager,.pdf-reader-panel,.coding-panel,.coding-intelligence,.coding-change-preview { padding: 13px; }
+  .coding-intelligence-grid { grid-template-columns: minmax(0,1fr); }
+  .coding-action-row,.coding-actions { flex-wrap: wrap; }
+  .coding-action-row button,.coding-actions button { flex: 1 1 130px; }
+  .skill-card { padding: 14px; }
+}
+@media(prefers-reduced-motion:reduce) {
+  .app-shell .primary-button,.app-shell .secondary-button,.app-shell .settings-action,
+  .app-shell .skill-card,.app-shell .installed-model { transition: none; }
+}
