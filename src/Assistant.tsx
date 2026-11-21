@@ -195,14 +195,14 @@ export default function Assistant() {
   function exportConversation() {
     if (!messages.length || pending || saving) return;
     const title = (activeTitle || titleFor(messages)).trim() || "FRIDAY conversation";
-    const safeName = title.normalize("NFKD").replace(/[^a-zA-Z0-9-_ ]/g, "").trim().replace(/\\s+/g, "-").slice(0, 64) || "friday-conversation";
+    const safeName = title.normalize("NFKD").replace(/[^a-zA-Z0-9-_ ]/g, "").trim().replace(/\s+/g, "-").slice(0, 64) || "friday-conversation";
     const markdown = [
       "# " + title,
       "",
       "_Exported from FRIDAY on " + new Date().toLocaleString() + "_",
       "",
-      ...messages.map(message => (message.role === "user" ? "## You" : "## FRIDAY") + "\\n\\n" + message.content.trim() + "\\n")
-    ].join("\\n");
+      ...messages.map(message => (message.role === "user" ? "## You" : "## FRIDAY") + "\n\n" + message.content.trim() + "\n")
+    ].join("\n");
     const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -375,7 +375,7 @@ export default function Assistant() {
     const proposal = pendingToolProposal;
     const definition = availableTools.find(tool => tool.id === proposal.tool_id);
     if (!definition) { setPendingToolProposal(null); setError("FRIDAY blocked a tool that is not in its approved tool catalogue."); return; }
-    if (approve && definition.approval_required && !window.confirm("Allow FRIDAY to " + definition.name.toLowerCase() + " once?\\n\\n" + JSON.stringify(proposal.arguments, null, 2))) return;
+    if (approve && definition.approval_required && !window.confirm("Allow FRIDAY to " + definition.name.toLowerCase() + " once?\n\n" + JSON.stringify(proposal.arguments, null, 2))) return;
     setToolDecisionBusy(true);
     try {
       if (approve) {
