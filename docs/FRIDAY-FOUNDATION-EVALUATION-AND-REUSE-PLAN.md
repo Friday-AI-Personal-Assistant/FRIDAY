@@ -384,3 +384,18 @@ The #1076 File/Coding Assistant capability increment is verified on both Windows
 - [ ] Verify both Linux and Windows CI.
 
 **Scope:** this inventory verifies static command classification, not durable user consent. A capability policy recognizes a backend operation; it does not grant a skill, integration or provider access to a user resource. Existing scoped grants and one-use operation approvals remain separate. Next: persistent narrow user grants, explicit consent, expiry, revocation and audit history before broader integrations or executable skills.
+
+
+### Persistent user permission registry — initial engine (#1085)
+
+- [x] Add a versioned local grant store with bounded size, strict schema validation, atomic writes and fail-closed handling of malformed, symlinked or oversized files.
+- [x] Add exact capability + resource matching, bounded expiry (maximum one year), secure random grant IDs and duplicate-grant rejection.
+- [x] Require a native operating-system confirmation dialog before a grant can be written; closing/cancelling denies.
+- [x] Record grant and revocation events in a bounded audit history.
+- [x] Add backend commands to list grants, request a grant and revoke a grant; register each with its own static capability.
+- [x] Add regression tests for exact scope matching, expiry, corruption, duplicate IDs, unknown capabilities and invalid resources.
+- [ ] Verify Linux and Windows CI.
+- [ ] Wire each grantable capability into the corresponding resource-owning feature handler before treating a grant as operational. Existing per-action approvals and folder/project session selections must remain independent and cannot be bypassed by a persistent grant.
+- [ ] Build the Midnight Azure Permissions & Transparency Centre.
+
+**Important boundary:** this batch creates the persistent consent/audit engine, not blanket permission for every current FRIDAY command. A grant is only effective where a feature explicitly checks the exact capability and resource. Installation, enabling or loading a skill never creates a grant.

@@ -134,6 +134,9 @@ const COMMAND_POLICIES: &[CommandPolicy] = &[
     CommandPolicy { command_id: "issue_tool_approval", capability: "tools.approval.issue" },
     CommandPolicy { command_id: "execute_tool", capability: "tools.execute" },
     CommandPolicy { command_id: "cancel_ollama_chat", capability: "ai.chat.cancel" },
+    CommandPolicy { command_id: "permissions.list", capability: "permissions.list" },
+    CommandPolicy { command_id: "permissions.grant", capability: "permissions.grant" },
+    CommandPolicy { command_id: "permissions.revoke", capability: "permissions.revoke" },
 ];
 
 /// Authorize a specific IPC command against its trusted backend capability.
@@ -228,6 +231,9 @@ const REGISTERED_IPC_COMMANDS: &[IpcCommand] = &[
     IpcCommand { handler: "file_assistant::cancel_file_undo_preview", command_id: "file.cancel_file_undo_preview", capability: "files.undo.cancel", module: "file_assistant" },
     IpcCommand { handler: "file_assistant::apply_file_undo", command_id: "file.apply_file_undo", capability: "files.undo.apply", module: "file_assistant" },
     IpcCommand { handler: "skills::uninstall_skill", command_id: "skills.uninstall", capability: "skills.uninstall", module: "skills" },
+    IpcCommand { handler: "user_permissions::list_permission_grants", command_id: "permissions.list", capability: "permissions.list", module: "user_permissions" },
+    IpcCommand { handler: "user_permissions::grant_permission", command_id: "permissions.grant", capability: "permissions.grant", module: "user_permissions" },
+    IpcCommand { handler: "user_permissions::revoke_permission", command_id: "permissions.revoke", capability: "permissions.revoke", module: "user_permissions" },
 ];
 fn ipc_module_source(module: &str) -> &'static str {
     match module {
@@ -243,6 +249,7 @@ fn ipc_module_source(module: &str) -> &'static str {
         "tools" => include_str!("tools.rs"),
         "web_research" => include_str!("web_research.rs"),
         "workspace" => include_str!("workspace.rs"),
+        "user_permissions" => include_str!("user_permissions.rs"),
         _ => panic!("Unknown IPC module in command manifest"),
     }
 }

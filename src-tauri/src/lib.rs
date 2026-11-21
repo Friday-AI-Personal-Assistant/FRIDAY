@@ -6,6 +6,7 @@ mod conversations;
 mod memory;
 mod tools;
 mod permissions;
+mod user_permissions;
 mod pdf_reader;
 mod web_research;
 mod file_assistant;
@@ -93,7 +94,10 @@ pub fn run() {
             file_assistant::issue_file_undo_approval,
             file_assistant::cancel_file_undo_preview,
             file_assistant::apply_file_undo,
-            skills::uninstall_skill
+            skills::uninstall_skill,
+            user_permissions::list_permission_grants,
+            user_permissions::grant_permission,
+            user_permissions::revoke_permission
         ])
         .run(tauri::generate_context!())
         .expect("error while running FRIDAY");
