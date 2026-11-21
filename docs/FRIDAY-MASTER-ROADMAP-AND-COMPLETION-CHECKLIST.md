@@ -1055,3 +1055,19 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Physically validate the Windows save/download flow with empty history, large history and Unicode messages.
 
 **User impact:** users can take a portable copy of all their FRIDAY conversations rather than exporting chats one at a time. Active and archived chats are included, and the existing encrypted on-device history is not changed. The exported JSON is ordinary unencrypted data; FRIDAY must not describe it as an encrypted backup or automatic restore point. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
+
+
+## 24. Conversation backup and restore — batch #1108
+
+**Status:** IN PROGRESS — implementation committed; Linux/Windows CI and real Windows file-picker acceptance pending.
+
+- [x] Add a user-initiated import action beside conversation export in Chat History.
+- [x] Accept only FRIDAY JSON export format version 1; reject empty, unsupported and malformed backups.
+- [x] Validate imported IDs, duplicate IDs, timestamps, titles, message roles, per-message and per-conversation sizes, and aggregate import bounds in Rust before writing.
+- [x] Merge imports into existing encrypted local history; never overwrite existing conversations. Remap ID collisions so existing chats remain untouched.
+- [x] Preserve imported pinned/archived state and message order.
+- [x] Save through the existing encrypted store and atomic replacement path; no network transfer, AI invocation or automatic action.
+- [ ] Verify Linux and Windows CI; test valid export, malformed JSON, unsupported version, duplicate IDs, size limits and 500-chat capacity.
+- [ ] Physically validate Windows file selection and imported history display. CI does not prove the native file picker works on a user's machine.
+- [ ] Keep imported content untrusted: it is displayed as text only and does not grant tools, permissions or execute instructions.
+- [ ] Document that the JSON export itself is unencrypted and users should protect it.

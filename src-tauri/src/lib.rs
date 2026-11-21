@@ -29,6 +29,7 @@ pub fn run() {
             conversations::list_conversations,
             conversations::search_conversations,
             conversations::export_all_conversations,
+            conversations::import_conversations,
             conversations::load_conversation,
             conversations::save_conversation,
             conversations::delete_conversation,

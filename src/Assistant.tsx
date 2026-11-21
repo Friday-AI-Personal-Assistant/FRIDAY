@@ -7,7 +7,7 @@ type ToolProposal = { tool_id: string; arguments: Record<string, unknown> };
 type ModelInfo = { name: string; size: number; modified_at: string };
 type PullEvent = { status: string; completed: number | null; total: number | null; done: boolean };
 type ConversationSummary = { id: string; title: string; created_at: number; updated_at: number; message_count: number; preview: string; pinned: boolean; archived: boolean };
-type Conversation = { id: string; title: string; created_at: number; updated_at: number; messages: Message[] };
+type Conversation = { id: string; title: string; created_at: number; updated_at: number; pinned: boolean; archived: boolean; messages: Message[] };
 type MemoryEntry = { id: string; category: string; content: string; enabled: boolean; created_at: number; updated_at: number };
 const ACTIONS = [
   { id: "notepad", label: "Open Notepad", keywords: /\\b(open|launch|start)\\b.*\\b(notepad|text editor)\\b/i },
@@ -53,6 +53,7 @@ export default function Assistant() {
   const [activeTitle, setActiveTitle] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [exportingAll, setExportingAll] = useState(false);
+  const [importingAll, setImportingAll] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [historySearchResults, setHistorySearchResults] = useState<ConversationSummary[] | null>(null);
   const [historySearchLoading, setHistorySearchLoading] = useState(false);
@@ -255,6 +256,45 @@ export default function Assistant() {
     } finally {
       setExportingAll(false);
     }
+  }
+
+
+  function importAllConversations() {
+    if (!desktop || importingAll || historyLoading) return;
+    const picker = document.createElement("input");
+    picker.type = "file";
+    picker.accept = ".json,application/json";
+    picker.onchange = () => {
+      const file = picker.files?.[0];
+      if (!file) return;
+      void (async () => {
+        setImportingAll(true);
+        setHistoryError("");
+        try {
+          if (file.size <= 0 || file.size > 50_000_000) {
+            throw new Error("Choose a non-empty FRIDAY export smaller than 50 MB.");
+          }
+          const backup: unknown = JSON.parse(await file.text());
+          if (!backup || typeof backup !== "object") throw new Error("This is not a valid FRIDAY conversation export.");
+          const document = backup as { format?: unknown; version?: unknown; conversations?: unknown };
+          if (document.format !== "friday-conversation-export" || document.version !== 1 || !Array.isArray(document.conversations)) {
+            throw new Error("Unsupported backup format. Choose a JSON file exported by FRIDAY (version 1).");
+          }
+          if (document.conversations.length < 1 || document.conversations.length > 500) {
+            throw new Error("The backup must contain between 1 and 500 conversations.");
+          }
+          if (!window.confirm("Import " + document.conversations.length + " conversations into this device? Existing conversations will be kept. Matching IDs will be safely remapped. Imported messages remain local and are not sent to AI. The file will be validated before anything is saved.")) return;
+          const imported = await invoke<number>("import_conversations", { backup });
+          await refreshHistory();
+          window.alert("Successfully imported " + imported + " conversations. Your existing history was kept.");
+        } catch (e) {
+          setHistoryError("Could not import conversation history: " + String(e));
+        } finally {
+          setImportingAll(false);
+        }
+      })();
+    };
+    picker.click();
   }
 
   function exportConversation() {
@@ -586,7 +626,7 @@ export default function Assistant() {
     <div className="assistant-head"><div><div className="eyebrow">YOUR LOCAL AI ASSISTANT</div><h1>Talk to <em>FRIDAY.</em></h1><p className="intro">Your conversations are saved privately on this computer. Type <strong>calculate: 12 * (4 + 3)</strong> for safe local calculations.</p></div><button className="secondary-button" onClick={newConversation} disabled={pending || saving}>+ New chat</button></div>
     <div className="chat-layout">
       <aside className="conversation-sidebar" aria-label="Conversation history">
-        <div className="conversation-sidebar-head"><strong>CHAT HISTORY</strong><div className="history-header-actions"><button className="history-export-all" onClick={() => void exportAllConversations()} disabled={!conversations.length || historyLoading || exportingAll} title="Export all active and archived conversations">{exportingAll ? "Exporting…" : "Export all"}</button><button onClick={() => void refreshHistory()} disabled={historyLoading} aria-label="Refresh chat history">↻</button></div></div>
+        <div className="conversation-sidebar-head"><strong>CHAT HISTORY</strong><div className="history-header-actions"><button className="history-export-all" onClick={() => void exportAllConversations()} disabled={!desktop || !conversations.length || historyLoading || exportingAll || importingAll} title="Export all active and archived conversations">{exportingAll ? "Exporting…" : "Export all"}</button><button className="history-export-all" onClick={importAllConversations} disabled={!desktop || historyLoading || exportingAll || importingAll} title="Merge a FRIDAY conversation export into this device">{importingAll ? "Importing…" : "Import"}</button><button onClick={() => void refreshHistory()} disabled={historyLoading} aria-label="Refresh chat history">↻</button></div></div>
         <input className="conversation-search" aria-label="Search all saved conversations" placeholder="Search all chats and messages…" value={historySearch} maxLength={200} onChange={e => setHistorySearch(e.target.value)} />
         {historyLoading && <small className="history-hint">Loading history…</small>}
         {historySearchLoading && <small className="history-hint">Searching saved messages…</small>}

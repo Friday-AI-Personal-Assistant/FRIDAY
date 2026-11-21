@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
+use std::{collections::HashSet, fs, path::PathBuf, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
 use tauri::{AppHandle, Manager};
 
 use crate::workspace::{decrypt_bytes, encrypt_bytes, encryption_key};
@@ -8,6 +8,7 @@ const MAX_CONVERSATIONS: usize = 500;
 const MAX_MESSAGES: usize = 2_000;
 const MAX_MESSAGE_BYTES: usize = 20_000;
 const MAX_TOTAL_BYTES: usize = 2_000_000;
+const MAX_IMPORT_BYTES: usize = 45_000_000;
 const STORE_FILE: &str = "conversations.enc";
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -28,6 +29,14 @@ pub struct Conversation {
     #[serde(default)]
     pub archived: bool,
     pub messages: Vec<ConversationMessage>,
+}
+
+#[derive(Deserialize)]
+pub struct ConversationExport {
+    pub format: String,
+    pub version: u32,
+    pub exported_at: String,
+    pub conversations: Vec<Conversation>,
 }
 
 #[derive(Serialize)]
@@ -181,6 +190,83 @@ pub fn export_all_conversations(app: AppHandle) -> Result<Vec<Conversation>, Str
     Ok(read_store(&app)?.conversations)
 }
 
+
+fn validate_conversation_export(backup: &ConversationExport) -> Result<(), String> {
+    if backup.format != "friday-conversation-export" || backup.version != 1
+        || backup.exported_at.is_empty() || backup.exported_at.len() > 64 {
+        return Err("Unsupported or invalid FRIDAY conversation export.".into());
+    }
+    if backup.conversations.is_empty() || backup.conversations.len() > MAX_CONVERSATIONS {
+        return Err("A backup must contain between 1 and 500 conversations.".into());
+    }
+    let mut ids = HashSet::new();
+    let mut aggregate_bytes = 0usize;
+    let latest_allowed = now().saturating_add(86_400);
+    for conversation in &backup.conversations {
+        if !valid_id(&conversation.id) || !ids.insert(conversation.id.as_str()) {
+            return Err("The backup contains an invalid or duplicate conversation ID.".into());
+        }
+        if conversation.title.trim().is_empty() || conversation.title.len() > 160
+            || conversation.title.chars().any(char::is_control)
+            || conversation.created_at == 0
+            || conversation.updated_at < conversation.created_at
+            || conversation.updated_at > latest_allowed {
+            return Err("The backup contains invalid conversation details or timestamps.".into());
+        }
+        if conversation.messages.len() > MAX_MESSAGES {
+            return Err("A conversation in the backup exceeds the 2,000-message limit.".into());
+        }
+        let mut conversation_bytes = conversation.title.len();
+        for message in &conversation.messages {
+            if !matches!(message.role.as_str(), "user" | "assistant")
+                || message.content.len() > MAX_MESSAGE_BYTES {
+                return Err("The backup contains an unsupported message role or an oversized message.".into());
+            }
+            conversation_bytes = conversation_bytes.saturating_add(message.content.len());
+        }
+        if conversation_bytes > MAX_TOTAL_BYTES {
+            return Err("A conversation in the backup exceeds the 2 MB content limit.".into());
+        }
+        aggregate_bytes = aggregate_bytes.saturating_add(conversation_bytes);
+        if aggregate_bytes > MAX_IMPORT_BYTES {
+            return Err("The backup exceeds FRIDAY's 45 MB import-content limit.".into());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn import_conversations(app: AppHandle, backup: ConversationExport) -> Result<usize, String> {
+    crate::permissions::authorize_command("conversations.import", "conversations.import")?;
+    validate_conversation_export(&backup)?;
+    let _guard = STORE_LOCK.lock().map_err(|_| "Chat history is busy.".to_string())?;
+    let mut store = read_store(&app)?;
+    if store.conversations.len().saturating_add(backup.conversations.len()) > MAX_CONVERSATIONS {
+        return Err("Import would exceed FRIDAY's 500-conversation limit. Delete old conversations first.".into());
+    }
+
+    let mut used_ids: HashSet<String> = store.conversations.iter().map(|item| item.id.clone()).collect();
+    let mut imported = backup.conversations;
+    let imported_count = imported.len();
+    for conversation in &mut imported {
+        if used_ids.contains(&conversation.id) {
+            let mut suffix = 0u64;
+            loop {
+                let replacement = format!("import-{}-{}", now(), suffix);
+                suffix = suffix.saturating_add(1);
+                if !used_ids.contains(&replacement) {
+                    conversation.id = replacement;
+                    break;
+                }
+            }
+        }
+        used_ids.insert(conversation.id.clone());
+    }
+    store.conversations.extend(imported);
+    write_store(&app, &store)?;
+    Ok(imported_count)
+}
+
 #[tauri::command]
 pub fn load_conversation(app: AppHandle, id: String) -> Result<Conversation, String> {
     crate::permissions::authorize_command("conversations.read", "conversations.read")?;
@@ -259,7 +345,61 @@ pub fn set_conversation_archived(app: AppHandle, id: String, archived: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{valid_id, Conversation};
+    use super::{valid_id, validate_conversation_export, Conversation, ConversationExport};
+
+
+    fn valid_export() -> ConversationExport {
+        ConversationExport {
+            format: "friday-conversation-export".into(),
+            version: 1,
+            exported_at: "2026-11-21T00:00:00.000Z".into(),
+            conversations: vec![Conversation {
+                id: "backup-chat-1".into(), title: "Imported chat".into(),
+                created_at: 1, updated_at: 2, pinned: true, archived: true,
+                messages: vec![super::ConversationMessage { role: "user".into(), content: "Hello".into() }],
+            }],
+        }
+    }
+
+    #[test]
+    fn accepts_valid_version_one_export_and_preserves_archive_metadata() {
+        let backup = valid_export();
+        assert!(validate_conversation_export(&backup).is_ok());
+        assert!(backup.conversations[0].pinned);
+        assert!(backup.conversations[0].archived);
+    }
+
+    #[test]
+    fn rejects_unknown_export_versions_and_duplicate_ids() {
+        let mut backup = valid_export();
+        backup.version = 2;
+        assert!(validate_conversation_export(&backup).is_err());
+        let mut backup = valid_export();
+        let mut duplicate = backup.conversations[0].clone();
+        duplicate.title = "Duplicate".into();
+        backup.conversations.push(duplicate);
+        assert!(validate_conversation_export(&backup).is_err());
+    }
+
+    #[test]
+    fn rejects_unsupported_roles_and_oversized_messages() {
+        let mut backup = valid_export();
+        backup.conversations[0].messages[0].role = "system".into();
+        assert!(validate_conversation_export(&backup).is_err());
+        let mut backup = valid_export();
+        backup.conversations[0].messages[0].content = "x".repeat(super::MAX_MESSAGE_BYTES + 1);
+        assert!(validate_conversation_export(&backup).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_timestamps_and_empty_exports() {
+        let mut backup = valid_export();
+        backup.conversations[0].updated_at = 0;
+        assert!(validate_conversation_export(&backup).is_err());
+        let mut backup = valid_export();
+        backup.conversations.clear();
+        assert!(validate_conversation_export(&backup).is_err());
+    }
 
     #[test]
     fn legacy_conversations_default_to_unpinned_and_unarchived() {

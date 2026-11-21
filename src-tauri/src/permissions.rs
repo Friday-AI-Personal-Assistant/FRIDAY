@@ -98,6 +98,7 @@ const COMMAND_POLICIES: &[CommandPolicy] = &[
     CommandPolicy { command_id: "conversations.list", capability: "conversations.list" },
     CommandPolicy { command_id: "conversations.search", capability: "conversations.search" },
     CommandPolicy { command_id: "conversations.export", capability: "conversations.export" },
+    CommandPolicy { command_id: "conversations.import", capability: "conversations.import" },
     CommandPolicy { command_id: "conversations.read", capability: "conversations.read" },
     CommandPolicy { command_id: "conversations.write", capability: "conversations.write" },
     CommandPolicy { command_id: "conversations.delete", capability: "conversations.delete" },
@@ -169,6 +170,7 @@ const REGISTERED_IPC_COMMANDS: &[IpcCommand] = &[
     IpcCommand { handler: "conversations::list_conversations", command_id: "conversations.list", capability: "conversations.list", module: "conversations" },
     IpcCommand { handler: "conversations::search_conversations", command_id: "conversations.search", capability: "conversations.search", module: "conversations" },
     IpcCommand { handler: "conversations::export_all_conversations", command_id: "conversations.export", capability: "conversations.export", module: "conversations" },
+    IpcCommand { handler: "conversations::import_conversations", command_id: "conversations.import", capability: "conversations.import", module: "conversations" },
     IpcCommand { handler: "conversations::load_conversation", command_id: "conversations.read", capability: "conversations.read", module: "conversations" },
     IpcCommand { handler: "conversations::save_conversation", command_id: "conversations.write", capability: "conversations.write", module: "conversations" },
     IpcCommand { handler: "conversations::delete_conversation", command_id: "conversations.delete", capability: "conversations.delete", module: "conversations" },
@@ -305,6 +307,13 @@ mod tests {
         assert!(authorize_command("coding_sandbox_recover_workspaces", "coding.sandbox.snapshot.recover").is_ok());
         assert!(authorize_command("coding_sandbox_config_preview", "coding.sandbox.config.preview").is_ok());
         assert!(authorize_command("coding_sandbox_discard_snapshot", "coding.sandbox.snapshot.discard").is_ok());
+    }
+
+    #[test]
+    fn conversation_import_has_a_dedicated_backend_capability() {
+        assert!(authorize_command("conversations.import", "conversations.import").is_ok());
+        assert!(authorize_command("conversations.import", "conversations.export").is_err());
+        assert!(authorize_command("unknown.import", "conversations.import").is_err());
     }
 
     #[test]
