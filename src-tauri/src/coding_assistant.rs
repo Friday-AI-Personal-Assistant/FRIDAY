@@ -1068,6 +1068,10 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
         return Err(format!("Could not prepare the original-file restoration: {error}"));
     }
     drop(temp_file);
+    // The Undo temporary file is newly created and would otherwise inherit the
+    // project directory's DACL. Restore the original file permissions before
+    // ReplaceFileW installs it, just as crash-recovery copies do.
+    apply_recovery_permissions(&temporary, record)?;
     let prepared = fs::read(&temporary)
         .map_err(|_| "Could not verify the prepared original-file restoration.".to_string())?;
     if sha256_hex(&prepared) != record.original_sha256 {
