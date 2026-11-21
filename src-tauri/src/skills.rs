@@ -696,12 +696,12 @@ mod tests {
     fn quarantine_inventory_reinspection_is_bound_to_enumerated_directory_identity() {
         let root_path = quarantine_test_directory("quarantine-inventory-identity");
         let id = {
-            let content = b"---\\nname: inventory-skill\\ndescription: Inventory test\\n---\\n\\nUntrusted instructions.\\n";
+            let content = b"---\nname: inventory-skill\ndescription: Inventory test\n---\n\nUntrusted instructions.\n";
             format!("{:x}", Sha256::digest(content))
         };
         let item_path = root_path.join(&id);
         std::fs::create_dir(&item_path).unwrap();
-        let content = b"---\\nname: inventory-skill\\ndescription: Inventory test\\n---\\n\\nUntrusted instructions.\\n";
+        let content = b"---\nname: inventory-skill\ndescription: Inventory test\n---\n\nUntrusted instructions.\n";
         let preview = CommunitySkillPreview {
             id: id.clone(), name: "inventory-skill".into(), description: "Inventory test".into(),
             version: "unverified".into(), license: None, compatibility: None,
@@ -732,7 +732,7 @@ mod tests {
             use std::os::unix::fs::symlink;
             let root_path = quarantine_test_directory("quarantine-inventory-symlink");
             let outside = quarantine_test_directory("quarantine-inventory-outside");
-            let content = b"---\\nname: link-target\\ndescription: Link target\\n---\\n\\nUntrusted.\\n";
+            let content = b"---\nname: link-target\ndescription: Link target\n---\n\nUntrusted.\n";
             let id = format!("{:x}", Sha256::digest(content));
             symlink(&outside, root_path.join(&id)).unwrap();
             let root = crate::coding_sandbox_fs::open_verified_root_directory(&root_path).unwrap();
