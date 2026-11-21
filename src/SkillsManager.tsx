@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+type CommunitySkillPreview = { id: string; name: string; description: string; version: string; license: string | null; compatibility: string | null; contentSha256: string; status: string; permissions: string[]; executableContent: boolean };
 type Skill = {
   id: string; name: string; description: string; permissions: string[];
   version: string; installed: boolean; enabled: boolean; loaded: boolean;
@@ -59,6 +60,8 @@ export default function SkillsManager() {
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [communityPreview, setCommunityPreview] = useState<CommunitySkillPreview | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
   const [pdf, setPdf] = useState<PdfDocument | null>(null);
   const [pdfQuestion, setPdfQuestion] = useState("");
   const [pdfAnswer, setPdfAnswer] = useState("");
@@ -136,6 +139,17 @@ export default function SkillsManager() {
     if (!desktop) return;
     void invoke<string[]>("ollama_models").then(items => setPdfModel(items[0] || "")).catch(() => setPdfModel(""));
   }, [desktop]);
+
+  async function inspectCommunitySkill() {
+    if (!desktop || importBusy || !!busyId) return;
+    setImportBusy(true); setError(""); setNotice(""); setCommunityPreview(null);
+    try {
+      const result = await invoke<CommunitySkillPreview>("inspect_and_quarantine_skill");
+      setCommunityPreview(result);
+      setNotice("Skill inspected and preserved in quarantine. It is not installed, enabled, loaded, or executable.");
+    } catch (e) { const message = String(e); if (!message.toLowerCase().includes("cancel")) setError(message); }
+    finally { setImportBusy(false); }
+  }
 
   async function runAction(skill: Skill, action: "install" | "enable" | "disable" | "load" | "unload" | "uninstall") {
     if (!desktop || busyId || (skill.id === "file-assistant" && fileBusy) || (skill.id === "coding-assistant" && codingBusy)) return;
@@ -631,11 +645,12 @@ ${file.content}`
       <div><div className="eyebrow">MODULAR CAPABILITIES</div><h2>Skills Store</h2>
         <p>Install packages to disk, enable them, and load their instructions only when you need them.</p>
       </div>
-      <button className="secondary-button" onClick={() => void refresh()} disabled={!desktop || loading || !!busyId}>Refresh</button>
+      <div className="skills-header-actions"><button className="secondary-button" onClick={() => void inspectCommunitySkill()} disabled={!desktop || importBusy || !!busyId}>{importBusy ? "Inspecting…" : "Import community skill"}</button><button className="secondary-button" onClick={() => void refresh()} disabled={!desktop || loading || !!busyId}>Refresh</button></div>
     </div>
     {!desktop && <div className="skills-message">The Skills Store works in the installed FRIDAY desktop app. This browser preview cannot install or save skills.</div>}
     {error && <div className="skills-error" role="alert">{error}</div>}
     {notice && <div className="skills-notice" role="status">{notice}</div>}
+    {communityPreview && <article className="community-skill-preview"><div className="community-preview-heading"><strong>Quarantined community skill: {communityPreview.name}</strong><span>UNVERIFIED</span></div><p>{communityPreview.description}</p><dl><div><dt>Licence</dt><dd>{communityPreview.license || "Not declared"}</dd></div><div><dt>Compatibility</dt><dd>{communityPreview.compatibility || "Not declared"}</dd></div><div><dt>Content SHA-256</dt><dd>{communityPreview.contentSha256}</dd></div><div><dt>Requested permissions</dt><dd>None declared or granted</dd></div></dl><small>{communityPreview.status}. Imported instructions are untrusted and are not added to FRIDAY session memory. This initial importer accepts only a single SKILL.md file; executable files and additional package assets are rejected.</small></article>}
     {loading ? <div className="skills-empty">Loading skill catalogue…</div> : <div className="skills-grid">
       {skills.map(skill => <article className="skill-card" key={skill.id}>
         <div className="skill-card-top">
