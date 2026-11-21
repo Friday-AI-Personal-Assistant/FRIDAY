@@ -923,7 +923,8 @@ mod tests {
         ];
         let sheet = analyze_matrix("Accounts".into(), rows, 0).unwrap();
         let mappings = &sheet.accounting_field_suggestions;
-        assert_eq!(mappings[0].field_id.as_deref(), Some("accounting.gross_sales"));
+        assert!(mappings[0].field_id.is_none());
+        assert_eq!(mappings[0].possible_fields, vec!["accounting.gross_sales"]);
         assert_eq!(mappings[0].status, "ambiguous");
         assert_eq!(mappings[0].header_cell, "A1");
         assert_eq!(mappings[0].data_range, "A2:A2");
