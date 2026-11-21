@@ -102,7 +102,7 @@ fn read_selected_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
         return Err("The selected workbook changed before FRIDAY could read it.".into());
     }
     let mut bytes = Vec::with_capacity(before.len() as usize);
-    file.by_ref().take(max_bytes + 1).read_to_end(&mut bytes)
+    Read::take(&mut file, max_bytes + 1).read_to_end(&mut bytes)
         .map_err(|_| "FRIDAY could not safely read the selected workbook.".to_string())?;
     let after = file.metadata()
         .map_err(|_| "FRIDAY could not verify the workbook after reading it.".to_string())?;
