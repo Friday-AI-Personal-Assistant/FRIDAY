@@ -570,7 +570,7 @@ fn answer_question(
     let maximum = has(&["highest", "maximum", "max", "largest", "biggest"]);
     let minimum = has(&["lowest", "minimum", "min", "smallest"]);
     let frequent = q.contains("most common") || q.contains("most frequent") || q.contains("mode") || q.contains("appears most");
-    let count = has(&["count", "many", "number"]);
+    let count = !missing && has(&["count", "many", "number"]);
     let intents = [missing, sum, average, maximum, minimum, frequent, count].iter().filter(|v| **v).count();
     if intents != 1 {
         return ExcelQuestionAnswer { status: "unsupported".into(),
