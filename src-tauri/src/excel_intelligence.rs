@@ -337,7 +337,7 @@ fn analyze_matrix(
                     push_finding(&mut quality_findings, "info", "numeric_outlier",
                         "Potential numeric outliers",
                         &format!("{} value(s) in '{}' fall outside the 1.5× IQR range. These are review suggestions, not confirmed errors.", outliers.len(), header_name),
-                        outliers.len(), outliers.iter().take(MAX_FINDING_SAMPLE_ROWS).map(|(row, _)| *row + 1).collect());
+                        outliers.len(), outliers.iter().take(MAX_FINDING_SAMPLE_ROWS).map(|(row, _)| *row).collect());
                 }
             }
         }
