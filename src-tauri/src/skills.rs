@@ -722,6 +722,7 @@ mod tests {
             &crate::coding_sandbox_fs::open_verified_root_directory(&std::env::temp_dir()).unwrap()
         ).unwrap();
         assert!(reinspect_quarantine_child(&root, &id, Some(wrong_identity)).is_err());
+        drop(root);
         std::fs::remove_dir_all(&root_path).unwrap();
     }
 
