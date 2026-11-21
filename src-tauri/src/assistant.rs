@@ -421,7 +421,6 @@ pub async fn ollama_chat_stream(
     request_id: String,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
-    crate::permissions::authorize_command("ollama_chat", "ai.chat.complete")?;
     crate::permissions::authorize_command("ollama_chat_stream", "ai.chat.stream")?;
     validate_chat_request(&messages, &model)?;
     if request_id.is_empty() || request_id.len() > 80
@@ -522,6 +521,7 @@ pub async fn ollama_coding_chat(messages: Vec<Message>, model: String) -> Result
 
 #[tauri::command]
 pub async fn ollama_chat(messages: Vec<Message>, model: String) -> Result<String, String> {
+    crate::permissions::authorize_command("ollama_chat", "ai.chat.complete")?;
     validate_chat_request(&messages, &model)?;
 
     let client = reqwest::Client::builder()

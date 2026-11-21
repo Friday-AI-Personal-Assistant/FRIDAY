@@ -88,8 +88,10 @@ pub(crate) fn record(app: &AppHandle, tool_id: &str, outcome: &str, approved: bo
 }
 
 #[tauri::command]
-pub fn list_tools() -> Vec<ToolDefinition> {
-    crate::permissions::authorize_command("list_tools", "tools.catalog.read")?; TOOLS.to_vec() }
+pub fn list_tools() -> Result<Vec<ToolDefinition>, String> {
+    crate::permissions::authorize_command("list_tools", "tools.catalog.read")?;
+    Ok(TOOLS.to_vec())
+}
 
 #[tauri::command]
 pub fn tool_history(app: AppHandle) -> Result<Vec<ToolEvent>, String> {
