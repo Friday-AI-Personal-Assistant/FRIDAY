@@ -1030,3 +1030,15 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Physically validate prompt review, cancel, retry, interrupted response, tool-used turn suppression and narrow-window layout in the Windows desktop app.
 
 **User impact:** when an answer is incomplete or unsatisfactory, users can bring the exact last prompt back, review or change it, and explicitly request a new answer. The previous answer remains in the saved conversation until the user sends the retry. Turns that already executed an approved tool do not expose Retry, because repeating a request could repeat an external or consequential action. No background retry or extra model/provider cost occurs without the user's Send action. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
+
+
+### Search result excerpts — #1106
+
+- [x] Show a bounded excerpt centred on the matching phrase inside the matching message, rather than always showing only the message beginning.
+- [x] Preserve case-insensitive matching and slice the original UTF-8 text by character boundaries.
+- [x] Retain the existing 180-character excerpt bound (plus optional ellipsis markers), 100-result limit, local-only search and encrypted history storage.
+- [x] Add regression tests for late-message matches and Unicode text.
+- [ ] Verify Linux and Windows CI.
+- [ ] Physically validate search excerpts with long messages, Unicode and narrow history panels in the Windows desktop app.
+
+**User impact:** search results now reveal the part of a long message that actually contains the search phrase, making older conversations easier to identify. Search remains local to FRIDAY's encrypted history; no message content is uploaded and no new permission or paid service is introduced. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.

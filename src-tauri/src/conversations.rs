@@ -109,6 +109,39 @@ fn message_preview(content: &str) -> String {
     content.chars().take(180).collect()
 }
 
+fn matching_message_preview(content: &str, query: &str) -> String {
+    const PREVIEW_CHARS: usize = 180;
+    const CONTEXT_BEFORE: usize = 60;
+
+    let normalized_content = content.to_lowercase();
+    let normalized_query = query.to_lowercase();
+    let Some(match_byte) = normalized_content.find(&normalized_query) else {
+        return message_preview(content);
+    };
+
+    // Convert the normalized byte offset to a character offset, then slice the
+    // original text by characters so multi-byte UTF-8 content is never split.
+    let match_start = normalized_content[..match_byte].chars().count();
+    let match_length = normalized_query.chars().count();
+    let chars: Vec<char> = content.chars().collect();
+    let mut start = match_start.saturating_sub(CONTEXT_BEFORE);
+    let mut end = (start + PREVIEW_CHARS).min(chars.len());
+
+    if end - start < PREVIEW_CHARS && start > 0 {
+        start = end.saturating_sub(PREVIEW_CHARS);
+    }
+    if match_start + match_length > end {
+        end = (match_start + match_length).min(chars.len());
+        start = end.saturating_sub(PREVIEW_CHARS);
+    }
+
+    let mut preview = String::new();
+    if start > 0 { preview.push('…'); }
+    preview.extend(chars[start..end].iter());
+    if end < chars.len() { preview.push('…'); }
+    preview
+}
+
 fn matches_query(conversation: &Conversation, query: &str) -> bool {
     // Keep this helper case-insensitive for every caller, including tests and future call sites.
     let needle = query.to_lowercase();
@@ -131,7 +164,7 @@ pub fn search_conversations(app: AppHandle, query: String, archived: bool) -> Re
         .map(|conversation| {
             let matching_message = conversation.messages.iter().rev()
                 .find(|message| message.content.to_lowercase().contains(&needle));
-            let preview = matching_message.map(|message| message_preview(&message.content))
+            let preview = matching_message.map(|message| matching_message_preview(&message.content, &needle))
                 .or_else(|| conversation.messages.last().map(|message| message_preview(&message.content)))
                 .unwrap_or_default();
             conversation_summary(conversation, preview)
@@ -242,6 +275,25 @@ mod tests {
         assert!(super::matches_query(&conversation, "MIDNIGHT AZURE"));
         assert!(super::matches_query(&conversation, "project discussion"));
         assert!(!super::matches_query(&conversation, "not present"));
+    }
+
+    #[test]
+    fn search_preview_shows_context_around_a_late_match() {
+        let content = format!("{}important phrase{}", "opening context ".repeat(20), " closing context".repeat(20));
+        let preview = super::matching_message_preview(&content, "IMPORTANT PHRASE");
+        assert!(preview.contains("important phrase"));
+        assert!(preview.starts_with('…'));
+        assert!(preview.ends_with('…'));
+        assert!(preview.chars().count() <= 182);
+    }
+
+    #[test]
+    fn search_preview_handles_unicode_case_insensitively_without_splitting_characters() {
+        let content = format!("{}Café résumé{}", "前置内容".repeat(30), "尾部内容".repeat(30));
+        let preview = super::matching_message_preview(&content, "CAFÉ RÉSUMÉ");
+        assert!(preview.contains("Café résumé"));
+        assert!(preview.starts_with('…'));
+        assert!(preview.ends_with('…'));
     }
 
     #[test]
