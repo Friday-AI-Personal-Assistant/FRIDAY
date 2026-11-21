@@ -948,8 +948,8 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv("mapping.csv".into(), b"Product,Gross Sales\nTea,10\n").unwrap();
         let id = store.create(&analysis).unwrap();
-        let mapping = store.confirm_accounting_mapping(&id, "CSV data", 1, "accounting.gross_sales").unwrap();
-        assert_eq!(mapping.field_id, "gross_sales");
+        let mapping = store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        assert_eq!(mapping.field_id, "accounting.gross_sales");
         assert_eq!(mapping.header, "Gross Sales");
         assert_eq!(mapping.header_cell, "B1");
         assert_eq!(mapping.data_range, "B2:B3");
@@ -961,12 +961,12 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv("mapping.csv".into(), b"Product,Revenue,Gross Sales\nTea,10,12\n").unwrap();
         let id = store.create(&analysis).unwrap();
-        assert!(store.confirm_accounting_mapping(&id, "CSV data", 1, "accounting.gross_sales").is_err());
-        assert!(store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.net_sales").is_err());
-        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
         assert!(store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").is_err());
-        assert!(store.confirm_accounting_mapping(&id, "Other sheet", 2, "accounting.gross_sales").is_err());
-        assert!(store.confirm_accounting_mapping("00000000000000000000000000000000", "CSV data", 2, "accounting.gross_sales").is_err());
+        assert!(store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.net_sales").is_err());
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.gross_sales").unwrap();
+        assert!(store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.gross_sales").is_err());
+        assert!(store.confirm_accounting_mapping(&id, "Other sheet", 3, "accounting.gross_sales").is_err());
+        assert!(store.confirm_accounting_mapping("00000000000000000000000000000000", "CSV data", 3, "accounting.gross_sales").is_err());
     }
 
     #[test]
