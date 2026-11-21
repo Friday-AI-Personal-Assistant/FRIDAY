@@ -1099,3 +1099,57 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Continue Unix displaced-file cleanup, Undo/recovery hardening and the documented same-user rename/unlink limitation.
 - [ ] Complete physical Windows desktop acceptance; CI does not prove native desktop behavior.
 - [ ] Guest execution remains disabled; no physical Sandbox acceptance is implied.
+
+
+## 27. Coding Assistant transaction and Undo recovery hardening — batches #1116–#1124
+
+**Status:** IN PROGRESS — #1116–#1122 passed Linux/Windows CI; #1123 and #1124 failed Linux/Windows Rust unit tests and must be corrected before this work is considered complete.
+
+- [x] #1116: Restore original Windows DACL metadata after successful Undo replacement and when recovery finds the original content already installed.
+- [x] #1117–#1118: Add bounded, identity-checked reads relative to verified directory handles; route recovery-file reads through the verified parent-directory capability.
+- [x] #1119–#1120: Correct Windows replacement-file access rights so replacement files can preserve/apply required attributes; #1120 passed Linux/Windows CI.
+- [x] #1121: Create Undo recovery journal/temp entries through verified directory handles and verify staged original bytes.
+- [x] #1122: Rework normal on-disk Undo around verified directory handles, bounded reads, identity-bound no-replace renames and post-install verification.
+- [ ] #1123–#1124: Repair interrupted Undo recovery and its crash/ReplaceFileW failure-state tests. Preserve the active Undo record when recovery has not completed; archive the transaction journal without overwriting; retain only artifacts that actually exist and are needed as evidence.
+- [ ] Remove remaining unsafe path-based cleanup from the Apply/Undo recovery paths. Do not replace it with a filename-only deletion fallback.
+- [ ] Move permission restoration and Apply recovery toward verified-handle operations; verify file identity immediately before any metadata mutation.
+- [ ] Define and test the recovery artifact state machine for every transaction boundary and documented Windows replacement outcome.
+- [ ] Verify Linux and Windows CI and record the exact run IDs.
+- [ ] Perform physical Windows desktop acceptance separately; CI is not physical-device validation.
+
+**Known limitations:** some recovery copies are intentionally retained because the current cross-platform cleanup primitive cannot yet prove safe deletion under replacement races. Retention has no automatic expiry today. Do not describe these artifacts as automatically temporary or promise a cleanup interval.
+
+## 28. Recovery Storage Manager — accepted product requirement
+
+**Status:** PLANNED — product direction accepted; implementation must begin only after the underlying transaction recovery and safe-cleanup primitives are verified.
+
+**Purpose:** Give users clear visibility and safe control over FRIDAY-managed Coding Assistant recovery storage, without risking project files or deleting evidence needed to restore work.
+
+### User-facing capabilities
+
+- [ ] Add a Recovery Storage view showing total storage used, item count, and bounded per-item details.
+- [ ] Show each artifact's type, owning transaction, project association, creation time when trustworthy, size, current recovery state, and why FRIDAY is retaining it.
+- [ ] Distinguish active transaction data, recoverable backups, completed-transaction evidence, archived journals, and uncertain/corrupt artifacts.
+- [ ] Show the exact storage location and explain whether an item is inside a project recovery folder or FRIDAY-managed application storage.
+- [ ] Provide a user-initiated inspect/reveal-location action without exposing file contents unnecessarily.
+- [ ] Provide manual cleanup only for artifacts the backend independently proves are eligible; explain what will be removed before confirmation.
+- [ ] Provide configurable retention preferences for eligible completed evidence. Proposed default: retain successfully recovered evidence for 7 days; this is a future policy, not current behavior.
+- [ ] Show when cleanup is blocked and explain that unfinished, active, mismatched, corrupted, or uncertain transaction evidence is preserved.
+- [ ] Report cleanup results and reclaimed space honestly; never claim success when deletion could not be verified.
+
+### Safety and reliability requirements
+
+- [ ] Build one cross-platform safe-cleanup primitive using verified directory handles and exact file identity, with platform-specific implementations and adversarial race tests.
+- [ ] Never delete by path/name alone after a separate pre-check; prevent symlink/reparse-point redirection, hard-link surprises, parent-directory substitution and replacement races.
+- [ ] Revalidate transaction state, artifact ownership, expected identity, type, size and (where applicable) SHA-256 immediately before cleanup.
+- [ ] Never automatically delete an artifact belonging to an unfinished transaction or an uncertain/corrupted recovery state.
+- [ ] Keep backup restoration possible until the user-visible retention policy and transaction lifecycle explicitly allow cleanup.
+- [ ] Make cleanup idempotent, bounded, auditable and cancellable where practical; handle locked files and permission failures without weakening safety.
+- [ ] Keep project recovery data local; no upload, telemetry of file contents, cloud storage or paid service.
+- [ ] Keep cleanup separate from install/enable permissions and never silently broaden the Coding Assistant's project access.
+- [ ] Test Windows and Linux, including identity substitution, symlink/reparse-point, hard-link, parent replacement, locked-file and partial-cleanup scenarios.
+- [ ] Document exact retention semantics, disk-space accounting, uninstall behavior and user recovery options before release.
+
+**Retention policy proposal (not implemented):** unfinished transactions are never auto-deleted; successfully recovered evidence is retained for 7 days by default; user-pinned/user-requested recovery is retained until the user removes it; uncertain or corrupted artifacts are preserved until resolved. A timer alone is never sufficient authorization to delete an artifact.
+
+**Release gate:** the manager remains informational/read-only until the safe-cleanup primitive and state machine pass Linux/Windows adversarial tests. Manual and automatic deletion must both use the same backend safety gate. The FRIDAY Four Guarantees apply: Safety, User control, Cost transparency and Reliability.

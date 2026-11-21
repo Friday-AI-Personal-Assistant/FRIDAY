@@ -2886,7 +2886,7 @@ mod tests {
             assert_eq!(fs::read(&file).unwrap(), proposed, "Undo error {error_code}");
             assert!(active.is_file(), "Undo must remain available after error {error_code}");
             assert!(!backup_dir.join(format!("{}.undone.json", record.id)).exists());
-            assert!(!temporary.exists(), "Undo temporary for error {error_code}");
+            assert!(temporary.is_file(), "Verified original Undo temporary must remain available as recovery evidence for error {error_code}");
             assert!(!displaced.exists(), "Undo displaced file for error {error_code}");
             assert!(!journal.exists(), "Undo journal for error {error_code}");
             fs::remove_dir_all(&root).unwrap();
@@ -2972,9 +2972,20 @@ mod tests {
             }
             assert!(!backup_dir.join(format!("{}.undo-txn.json", record.id)).exists(), "stage {stage}");
             assert!(backup_dir.join(format!("{}.undo-recovered.json", record.id)).is_file(), "stage {stage}");
-            // Recovery artifacts are retained as evidence; cleanup is a separate, fail-closed operation.
-            if stage == "temporary" || stage == "first-rename" { assert!(root.join(format!(".friday-code-undo-{}.tmp", record.id)).exists(), "retained Undo temporary for {stage}"); }
-            if stage == "second-rename" || stage == "verified" { assert!(root.join(format!(".friday-code-undone-{}.tmp", record.id)).exists(), "retained displaced copy for {stage}"); }
+            // Assert the exact artifact inventory at every crash boundary. A temp that was
+            // never created must remain absent; a verified staged copy must be retained.
+            let undo_temporary = root.join(format!(".friday-code-undo-{}.tmp", record.id));
+            let displaced_copy = root.join(format!(".friday-code-undone-{}.tmp", record.id));
+            if stage == "temporary" || stage == "first-rename" {
+                assert!(undo_temporary.is_file(), "verified Undo temporary retained for {stage}");
+            } else {
+                assert!(!undo_temporary.exists(), "no Undo temporary should exist for {stage}");
+            }
+            if stage == "second-rename" || stage == "verified" {
+                assert!(displaced_copy.is_file(), "displaced edited copy retained for {stage}");
+            } else {
+                assert!(!displaced_copy.exists(), "no displaced edited copy should exist for {stage}");
+            }
             fs::remove_dir_all(&root).unwrap();
         }
     }
