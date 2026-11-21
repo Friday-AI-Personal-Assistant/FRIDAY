@@ -1004,3 +1004,16 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Physically validate clipboard access, keyboard flow, long messages and the edit/cancel/resend experience in the Windows desktop WebView.
 
 **User impact:** users can copy any message and correct an earlier prompt without manually rebuilding the conversation. Editing is non-destructive until Send is pressed; after sending, the conversation continues from the edited message and later turns are replaced. No message is sent to a remote service by these controls. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
+
+### Saved-memory opt-out enforcement across tool continuations — #1104
+
+- [x] Audit every AI Chat model-prompt construction path, including the follow-up generation after a user approves a tool proposal.
+- [x] Route initial chat and tool-continuation prompts through one shared system-context builder.
+- [x] Enforce the saved-memory inclusion preference inside the shared builder, so a disabled preference produces no saved-memory text on either path.
+- [x] Keep the existing enabled-entry, 30-entry and 12,000-character limits when inclusion is enabled; do not change stored memories or skill guidance.
+- [ ] Verify Linux and Windows CI and inspect the built frontend output.
+- [ ] Physically validate: disable memory inclusion, trigger a tool proposal, approve it, and confirm the continuation does not receive saved-memory context; repeat with inclusion enabled.
+
+**Security finding and correction:** the initial chat request respected the saved-memory opt-out, but the model continuation after an approved tool call rebuilt memory context without checking that preference. This could include saved memories in a later local-model prompt even while the UI said inclusion was disabled. Both paths now use the same preference-enforcing builder. No saved memory is deleted, no new network access is introduced, and the local Ollama model remains the only configured chat inference destination. This is a privacy hardening correction; CI and physical acceptance remain pending.
+
+The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
