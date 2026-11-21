@@ -1402,3 +1402,35 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 **Explicit non-goals:** no autonomous accounting advice, no invented accounting policy, no silent correction of source records, no automatic tax/legal conclusions, no money movement, no posting entries, no external accounting-platform connection and no cloud transmission of financial data in this milestone.
 
 **Dependency note:** The existing Excel question-answering implementation calculates only from bounded worksheet summaries supplied by the frontend. Before any accounting result is represented as authoritative, the integration must establish stronger backend-verifiable source provenance and an explicit mapping from source cells/columns to accounting concepts. The current summary-only Q&A path is not sufficient evidence for ledger-grade accounting.
+
+## 34. Formula Transparency & Regional Financial Preferences
+
+**Status:** PLANNED — accepted product direction (2026-11-21). These are first-class FRIDAY capabilities and should be designed into the shared formula engine and application settings, not implemented as isolated Excel-only features.
+
+### 34.1 Formula Transparency — Show Calculation
+
+- [ ] Make formula visibility available by default for every supported deterministic calculation.
+- [ ] Provide progressive disclosure: concise result/explanation, formula view, and detailed audit/provenance view.
+- [ ] Show the exact registered formula name, ID and version; render the symbolic formula and substitute the actual validated input values.
+- [ ] Show calculation steps/intermediate values, output, unit/currency, precision and rounding policy.
+- [ ] Show source workbook, worksheet, source cell/range or record references, confirmed field mappings, and source integrity/session identifier where available.
+- [ ] Show assumptions, missing/unknown inputs, validation warnings and limitations. Never fabricate a step or source reference.
+- [ ] Allow copying the symbolic formula and calculation summary; do not imply that a displayed formula is an Excel cell formula unless it is actually compatible with Excel syntax.
+- [ ] Preserve an immutable calculation snapshot so later preference changes or source edits cannot silently rewrite an earlier result.
+- [ ] Add accessibility and compact/mobile-friendly presentation; formula detail should be expandable rather than overwhelming the main result.
+
+### 34.2 Regional Financial Preferences — Preferred Currency
+
+- [ ] Add a global Preferred Currency setting in FRIDAY Settings, shared by Excel Intelligence and future financial features.
+- [ ] Use an explicit ISO 4217 currency code as identity (e.g. PKR, USD, EUR); symbols are presentation only and are never the currency identity.
+- [ ] During onboarding, offer a regional default based on the user's selected country or device locale, with explicit user confirmation/editing. Do not silently infer currency from IP or location.
+- [ ] Keep country/region, display locale, number grouping, date format and preferred currency as distinct settings; users can change them independently.
+- [ ] Treat preferred currency as a default for new inputs and a display preference—not proof of the currency of imported data and not an instruction to convert existing values.
+- [ ] Every monetary source value and calculation result must retain its own currency code. Preserve the original currency in saved calculation snapshots.
+- [ ] Never combine incompatible currencies or relabel an amount after a preference change. Currency conversion requires an explicit user request, dated exchange rate, named source, rate provenance and disclosed rounding; no silent or implicit conversion.
+- [ ] Support mixed-currency workbooks by identifying and grouping currencies separately; request clarification or explicit conversion instructions before cross-currency totals.
+- [ ] Use currency metadata for minor-unit/display precision (not a universal two-decimal assumption); keep internal calculation precision and presentation rounding as separate policies.
+- [ ] Add tests for PKR defaults, user overrides, locale/currency independence, currency mismatch, mixed-currency workbooks, historical snapshot stability, and explicit conversion provenance.
+
+**Design principle:** Formula Transparency answers “How did FRIDAY get this result?” Regional Financial Preferences answers “Which currency and regional conventions should FRIDAY use?” Neither feature may weaken source provenance, formula validation, or the no-silent-conversion rule.
+
