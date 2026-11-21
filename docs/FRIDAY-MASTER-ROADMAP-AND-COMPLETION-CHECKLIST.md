@@ -2,7 +2,7 @@
 
 > **Purpose:** This is the durable, cross-conversation source of truth for what FRIDAY is intended to become, what has been verified as implemented, what remains, the order of work, and the relative effort/risk of each area. A new development conversation must read this file and the Coding Assistant completion checklist before making changes.
 >
-> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`; the first read-only Excel Intelligence workspace/backend passed Linux and Windows CI in #1199 and #1200. The follow-on Excel Data Quality Intelligence batch passed Linux and Windows CI in #1202–#1205; #1201 was an earlier failed iteration superseded by the corrected implementation. The combined read-only Excel workspace and bounded data-quality review are verified; natural-language workbook analysis, charts/reports and the permissioned first-party Excel Analyst skill remain future work. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The current product focus is richer read-only Excel Analyst workflows; the next stages are workbook summaries/charts/reports and the permissioned first-party skill/tool bridge. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
+> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`; the first read-only Excel Intelligence workspace/backend passed Linux and Windows CI in #1199 and #1200. The follow-on Excel Data Quality Intelligence batch passed Linux and Windows CI in #1202–#1205; #1201 was an earlier failed iteration superseded by the corrected implementation. The roadmap update passed in #1206 (run `44930624372`). The next bounded local question-answering batch is implemented and awaiting CI; charts/reports and the permissioned first-party Excel Analyst skill remain future work. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The current product focus is richer read-only Excel Analyst workflows; the next stages are workbook summaries/charts/reports and the permissioned first-party skill/tool bridge. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
 >
 > **Do not confuse a plan with implementation.** A checkbox is complete only when code, tests, and (where required) real-device acceptance demonstrate it. Update this document after each meaningful batch with commit, CI run, and evidence.
 
@@ -1318,3 +1318,23 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] Verify the corrected implementation through Linux and Windows CI in #1202–#1205.
 
 **Next batch:** Natural-language Excel analysis over the currently selected, bounded workbook/sheet context. Prefer deterministic local query handling for supported aggregates, rankings and simple comparisons; show the evidence/columns used, and ask for clarification or explain unsupported questions rather than guessing. Do not send full workbook contents to a cloud model. Keep the workflow read-only and disclose any future provider/network use before it can occur.
+
+
+## 32. Natural-language Excel question answering — bounded local first release
+
+**Status:** IMPLEMENTED — CI PENDING. This is a deterministic, local question layer over the selected worksheet's already-computed bounded summaries. It is not a general-purpose AI analyst and does not send workbook content to a model or network service.
+
+- [x] Add bounded per-column frequency summaries (top five values) for columns with at most 512 distinct values; skip frequency answers when the distinct-value cap is exceeded.
+- [x] Add a deterministic question interpreter for row counts, totals, averages, highest/lowest numeric values, missing-value counts, non-empty counts and most-common values.
+- [x] Match explicit column names and request clarification when a column cannot be identified unambiguously.
+- [x] Return the answer, interpretation, supporting column evidence and method to the UI.
+- [x] Reject oversized questions and oversized worksheet-summary inputs; keep question handling local and bounded.
+- [x] Register a dedicated backend IPC command with a separate deny-by-default capability policy.
+- [x] Add regression tests for supported calculations, most-common values, missing-value questions, ambiguity and unsupported grouped questions.
+- [x] Add a question panel to the Excel workspace; clearly label the feature local/read-only and explain the supported question types.
+- [ ] Verify latest integrated implementation through Linux and Windows CI.
+- [ ] Expand to grouped comparisons (e.g. revenue by product), ranking, trends and time-series analysis only after a bounded row-level query engine and stronger tests are in place.
+
+**Known limitations:** The first release answers from computed worksheet summaries, not arbitrary raw-cell reasoning. It does not yet support grouped aggregations, top-selling products by a category, trends, date interpretation, formulas, charts or generated reports. Unsupported or ambiguous questions must be reported honestly rather than guessed. Frequency answers are withheld if the distinct-value cap is exceeded.
+
+**Privacy boundary:** no cloud LLM, external API, network request or workbook upload is involved. The frontend submits only the already-returned bounded column summaries to a dedicated local Rust command. No workbook writes are performed.
