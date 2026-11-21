@@ -932,6 +932,32 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_accounting_mapping_is_bound_to_session_sheet_column_and_source() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv("mapping.csv".into(), b"Product,Gross Sales\nTea,10\n").unwrap();
+        let id = store.create(&analysis).unwrap();
+        let mapping = store.confirm_accounting_mapping(&id, "CSV data", 1, "gross_sales").unwrap();
+        assert_eq!(mapping.field_id, "gross_sales");
+        assert_eq!(mapping.header, "Gross Sales");
+        assert_eq!(mapping.header_cell, "B1");
+        assert_eq!(mapping.data_range, "B2:B3");
+        assert_eq!(mapping.source_sha256, analysis.source_sha256);
+    }
+
+    #[test]
+    fn accounting_mapping_rejects_ambiguous_unknown_and_duplicate_mappings() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv("mapping.csv".into(), b"Product,Revenue,Gross Sales\nTea,10,12\n").unwrap();
+        let id = store.create(&analysis).unwrap();
+        assert!(store.confirm_accounting_mapping(&id, "CSV data", 1, "gross_sales").is_err());
+        assert!(store.confirm_accounting_mapping(&id, "CSV data", 2, "net_sales").is_err());
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "gross_sales").unwrap();
+        assert!(store.confirm_accounting_mapping(&id, "CSV data", 2, "gross_sales").is_err());
+        assert!(store.confirm_accounting_mapping(&id, "Other sheet", 2, "gross_sales").is_err());
+        assert!(store.confirm_accounting_mapping("00000000000000000000000000000000", "CSV data", 2, "gross_sales").is_err());
+    }
+
+    #[test]
     fn workbook_sessions_reject_forged_ids_and_unknown_worksheets() {
         let store = WorkbookSessionStore::default();
         let id = store.create(&session_test_analysis()).unwrap();
