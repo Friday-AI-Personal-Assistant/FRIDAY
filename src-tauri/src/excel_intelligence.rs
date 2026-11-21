@@ -1,6 +1,7 @@
 use calamine::{open_workbook_from_rs, Data, Reader, Xlsx};
 use csv::ReaderBuilder;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -33,6 +34,8 @@ const MAX_FINDING_SAMPLE_ROWS: usize = 5;
 pub struct WorkbookAnalysis {
     pub file_name: String,
     pub format: String,
+    pub source_sha256: String,
+    pub source_byte_length: u64,
     pub sheets: Vec<SheetAnalysis>,
     pub total_rows: usize,
     pub total_non_empty_cells: usize,
@@ -741,11 +744,15 @@ pub async fn pick_and_analyze_workbook(app: AppHandle) -> Result<WorkbookAnalysi
     let file_name = path.file_name().and_then(|value| value.to_str())
         .unwrap_or("Selected workbook").chars().take(180).collect::<String>();
     let bytes = read_selected_file(&path, max_bytes)?;
-    let analysis = match extension.as_str() {
+    let source_sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let source_byte_length = bytes.len() as u64;
+    let mut analysis = match extension.as_str() {
         "xlsx" => analyze_xlsx(file_name, bytes)?,
         "csv" => analyze_csv(file_name, &bytes)?,
         _ => unreachable!(),
     };
+    analysis.source_sha256 = source_sha256;
+    analysis.source_byte_length = source_byte_length;
     let _ = crate::tools::record(
         &app, "excel.workbook.analyze",
         &format!("Analyzed a user-selected {} workbook locally ({} rows, {} non-empty cells).",
