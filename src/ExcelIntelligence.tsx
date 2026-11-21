@@ -166,7 +166,7 @@ export default function ExcelIntelligence() {
 
           {analysis.sheets.length > 1 && (
             <label className="excel-sheet-picker">Worksheet
-              <select value={selectedSheet} onChange={event => setSelectedSheet(Number(event.target.value))}>
+              <select value={selectedSheet} onChange={event => { setSelectedSheet(Number(event.target.value)); setQuestionAnswer(null); }}>
                 {analysis.sheets.map((item, index) => <option key={item.name} value={index}>{item.name}</option>)}
               </select>
             </label>
