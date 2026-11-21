@@ -109,9 +109,11 @@ fn message_preview(content: &str) -> String {
     content.chars().take(180).collect()
 }
 
-fn matches_query(conversation: &Conversation, needle: &str) -> bool {
-    conversation.title.to_lowercase().contains(needle)
-        || conversation.messages.iter().any(|message| message.content.to_lowercase().contains(needle))
+fn matches_query(conversation: &Conversation, query: &str) -> bool {
+    // Keep this helper case-insensitive for every caller, including tests and future call sites.
+    let needle = query.to_lowercase();
+    conversation.title.to_lowercase().contains(&needle)
+        || conversation.messages.iter().any(|message| message.content.to_lowercase().contains(&needle))
 }
 
 #[tauri::command]
