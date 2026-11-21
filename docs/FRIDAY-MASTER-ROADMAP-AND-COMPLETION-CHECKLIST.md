@@ -1403,6 +1403,23 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 **Dependency note:** The existing Excel question-answering implementation calculates only from bounded worksheet summaries supplied by the frontend. Before any accounting result is represented as authoritative, the integration must establish stronger backend-verifiable source provenance and an explicit mapping from source cells/columns to accounting concepts. The current summary-only Q&A path is not sufficient evidence for ledger-grade accounting.
 
+### 33.5 Workbook Source Provenance & Verified Sessions
+
+**Status:** IN PROGRESS — source fingerprint foundation implemented; backend-held source sessions and verified calculation reads remain pending.
+
+- [x] Compute a SHA-256 fingerprint and exact byte length from the bytes FRIDAY actually reads for each accepted XLSX/CSV import, and return them as workbook source metadata.
+- [x] Add regression assertions that CSV and XLSX analysis metadata matches the exact imported bytes.
+- [ ] Treat the fingerprint only as a content identifier: it does not prove who authored the file, that the source data is truthful, or that the file has not changed outside FRIDAY.
+- [ ] Introduce bounded, process-local backend workbook sessions with opaque session identifiers, explicit expiry/eviction, and source metadata bound to the exact parsed workbook instance.
+- [ ] Keep authoritative worksheet summaries and cell/source references in the backend session; change question and accounting operations to accept a session identifier and bounded selectors rather than trusting frontend-supplied summaries.
+- [ ] Revalidate session existence, expiry, worksheet identity, dimensions and source fingerprint for every operation; fail closed after session eviction, application restart or source mismatch.
+- [ ] Preserve source cell/range coordinates through confirmed accounting mappings and calculation traces; do not promote header suggestions to confirmed mappings.
+- [ ] Ensure session storage is memory-bounded, avoids persisting workbook contents, clears sensitive data on eviction, and cannot be used as a path to reopen or modify source files.
+- [ ] Add adversarial tests for forged/unknown session IDs, expired/evicted sessions, worksheet substitution, stale frontend summaries, source mismatch, duplicate headers, and bounded concurrent sessions.
+- [ ] Verify Linux and Windows CI before enabling accounting calculations against workbook sessions.
+
+**Provenance boundary:** A SHA-256 fingerprint establishes byte-level identity for the imported content. It is not a digital signature, source-authenticity guarantee, accounting validation, or audit opinion. FRIDAY must not describe fingerprinted data as verified or authoritative until backend-held sessions, confirmed mappings, and source-bound calculation execution are implemented and tested.
+
 ## 34. Formula Transparency & Regional Financial Preferences
 
 **Status:** PLANNED — accepted product direction (2026-11-21). These are first-class FRIDAY capabilities and should be designed into the shared formula engine and application settings, not implemented as isolated Excel-only features.
