@@ -112,6 +112,8 @@ const COMMAND_POLICIES: &[CommandPolicy] = &[
     // Skill catalogue and local declarative-skill lifecycle. These do not grant tool permissions.
     CommandPolicy { command_id: "skills.catalog.read", capability: "skills.catalog.read" },
     CommandPolicy { command_id: "skills.import.inspect", capability: "skills.import.inspect" },
+    CommandPolicy { command_id: "skills.quarantine.reinspect", capability: "skills.quarantine.reinspect" },
+    CommandPolicy { command_id: "skills.quarantine.inventory", capability: "skills.quarantine.inventory" },
     CommandPolicy { command_id: "skills.install", capability: "skills.install" },
     CommandPolicy { command_id: "skills.enable", capability: "skills.enable" },
     CommandPolicy { command_id: "skills.load", capability: "skills.load" },
@@ -197,6 +199,8 @@ const REGISTERED_IPC_COMMANDS: &[IpcCommand] = &[
     IpcCommand { handler: "tools::clear_tool_history", command_id: "clear_tool_history", capability: "tools.history.clear", module: "tools" },
     IpcCommand { handler: "skills::skills_catalog", command_id: "skills.catalog.read", capability: "skills.catalog.read", module: "skills" },
     IpcCommand { handler: "skills::inspect_and_quarantine_skill", command_id: "skills.import.inspect", capability: "skills.import.inspect", module: "skills" },
+    IpcCommand { handler: "skills::reinspect_community_skill", command_id: "skills.quarantine.reinspect", capability: "skills.quarantine.reinspect", module: "skills" },
+    IpcCommand { handler: "skills::list_community_skills_quarantine", command_id: "skills.quarantine.inventory", capability: "skills.quarantine.inventory", module: "skills" },
     IpcCommand { handler: "skills::install_skill", command_id: "skills.install", capability: "skills.install", module: "skills" },
     IpcCommand { handler: "skills::set_skill_enabled", command_id: "skills.enable", capability: "skills.enable", module: "skills" },
     IpcCommand { handler: "skills::load_skill", command_id: "skills.load", capability: "skills.load", module: "skills" },
