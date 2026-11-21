@@ -3,6 +3,7 @@ use csv::ReaderBuilder;
 use serde::Serialize;
 use std::{
     fs,
+    fs::{File, OpenOptions},
     io::{Cursor, Read},
     path::{Path, PathBuf},
 };
@@ -77,6 +78,23 @@ fn is_redirected(metadata: &fs::Metadata) -> bool {
     }
 }
 
+fn open_selected_file_nofollow(path: &Path) -> Result<File, String> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options.open(path).map_err(|_| "FRIDAY could not safely open the selected workbook.".to_string())
+}
+
 fn read_selected_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
     let selected = fs::symlink_metadata(path)
         .map_err(|_| "FRIDAY could not inspect the selected workbook.".to_string())?;
@@ -94,11 +112,10 @@ fn read_selected_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
         return Err("The selected workbook changed or is not a regular file.".into());
     }
 
-    let mut file = fs::File::open(&canonical)
-        .map_err(|_| "FRIDAY could not open the selected workbook.".to_string())?;
+    let mut file = open_selected_file_nofollow(&canonical)?;
     let before = file.metadata()
         .map_err(|_| "FRIDAY could not verify the selected workbook.".to_string())?;
-    if !before.is_file() || before.len() != canonical_meta.len() || before.len() > max_bytes {
+    if is_redirected(&before) || !before.is_file() || before.len() != canonical_meta.len() || before.len() > max_bytes {
         return Err("The selected workbook changed before FRIDAY could read it.".into());
     }
     let mut bytes = Vec::with_capacity(before.len() as usize);
@@ -323,8 +340,8 @@ pub async fn pick_and_analyze_workbook(app: AppHandle) -> Result<WorkbookAnalysi
     };
     let _ = crate::tools::record(
         &app, "excel.workbook.analyze",
-        &format!("Analyzed selected {} workbook '{}' locally ({} rows, {} non-empty cells).",
-            analysis.format, analysis.file_name, analysis.total_rows, analysis.total_non_empty_cells),
+        &format!("Analyzed a user-selected {} workbook locally ({} rows, {} non-empty cells).",
+            analysis.format, analysis.total_rows, analysis.total_non_empty_cells),
         true,
     );
     Ok(analysis)
