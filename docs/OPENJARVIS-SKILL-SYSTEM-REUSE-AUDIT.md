@@ -140,3 +140,25 @@ A package format or independently implemented idea does not by itself require co
 - [Tool executor](https://github.com/open-jarvis/OpenJarvis/blob/5a9b5268f2432f7ea4fe402e384ecb6b64a649bb/src/openjarvis/tools/_stubs.py)
 - [Workflow engine](https://github.com/open-jarvis/OpenJarvis/blob/5a9b5268f2432f7ea4fe402e384ecb6b64a649bb/src/openjarvis/workflow/engine.py)
 - [Apache License 2.0](https://github.com/open-jarvis/OpenJarvis/blob/5a9b5268f2432f7ea4fe402e384ecb6b64a649bb/LICENSE)
+
+
+## 9. First importer implementation — committed, CI pending
+
+The first implementation increment is now present in FRIDAY:
+- `src-tauri/src/skills.rs`: strict bounded frontmatter parser and `inspect_and_quarantine_skill` command.
+- `src-tauri/src/lib.rs`: Tauri command registration.
+- `src-tauri/src/permissions.rs`: explicit deny-by-default IPC policy entry for `skills.import.inspect`.
+- `src/SkillsManager.tsx`: Import community skill action and quarantine inspection preview.
+- `src/styles.css`: visible unverified/quarantine review treatment.
+- Unit tests cover valid supported metadata, duplicate/unknown fields, nested YAML/anchors, invalid names, missing delimiters, empty body and oversized content.
+
+Current supported format is intentionally narrower than the full Agent Skills metadata surface: one folder containing exactly one `SKILL.md`; frontmatter accepts only `name`, `description`, optional `license` and optional `compatibility`. Nested `metadata`, scripts, assets, dependencies, and additional files are rejected rather than ignored.
+
+The importer stores the original content and inspection metadata under FRIDAY's local `skills/quarantine/<sha256>/` directory. It does not install, enable, load, execute, add instructions to session memory, grant permissions, access the network or invoke tools. The returned status is unverified; a SHA-256 hash establishes content identity, not publisher identity or benign behavior.
+
+**Known limitations / next hardening:**
+- The selected folder and SKILL.md are checked with filesystem metadata before reading, but this first increment does not yet provide a handle-bound no-follow read against every same-user replacement race. Treat this as an import preview/quarantine foundation, not a completed adversarial filesystem boundary.
+- Physical Windows reparse-point behavior has not been accepted on a real Windows device.
+- Licence text is self-declared and not independently verified; publisher, source repository, pinned commit and signatures are not yet collected.
+- Quarantined content has no install/approve path and cannot be run. The next batch should harden source reads, add quarantine inventory/reinspection/tamper detection and build the user trust review before any installation transition.
+- Linux/Windows CI for commits `ea60ec5` through `84886de` is pending at the time this note was written. Do not mark the importer complete until the latest coherent batch passes.
