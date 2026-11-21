@@ -529,17 +529,22 @@ fn apply_code_preview_to_disk_bound(
     }
 
     let displaced = parent.join(format!(".friday-code-original-{token}.tmp"));
+    #[cfg(not(windows))]
+    let original_identity = verified_code_child_identity(&parent_handle, &current_name)?;
+    #[cfg(not(windows))]
+    let temporary_identity = verified_code_child_identity(
+        &parent_handle, temporary.file_name().ok_or("The replacement filename is invalid.")?,
+    )?;
+    #[cfg(not(windows))]
+    let displaced_name = displaced.file_name().ok_or("The displaced-file name is invalid.")?;
     #[cfg(windows)]
     if let Err(error) = replace_file_with_backup(current, &temporary, &displaced) {
         return Err(format!("{error}. FRIDAY retained the transaction journal and recovery files; it will reconcile the transaction before another edit."));
     }
     #[cfg(not(windows))]
     {
-        let displaced_name = displaced.file_name()
-            .ok_or("The displaced-file name is invalid.")?;
         let temporary_name = temporary.file_name()
             .ok_or("The replacement-file name is invalid.")?;
-        let original_identity = verified_code_child_identity(&parent_handle, &current_name)?;
         if let Some((expected_root_identity, expected_file_identity)) = expected_identity {
             let actual_root = crate::coding_sandbox_fs::open_verified_root_directory(root)
                 .and_then(|handle| crate::coding_sandbox_fs::verified_directory_identity(root, &handle))
@@ -548,7 +553,6 @@ fn apply_code_preview_to_disk_bound(
                 return Err("The approved project or source-file identity changed before installation. Recovery files were retained.".into());
             }
         }
-        let temporary_identity = verified_code_child_identity(&parent_handle, temporary_name)?;
         let latest_original = crate::coding_sandbox_fs::open_file_nofollow(&parent_handle, &current_name)
             .map_err(|_| "The selected project file changed before installation.".to_string())?;
         let mut latest_bytes = Vec::new();
