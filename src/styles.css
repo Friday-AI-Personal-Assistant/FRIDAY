@@ -715,3 +715,100 @@ h1 em { color: #78AEEF; }
   .theme-toggle { font-size: 0; gap: 0; margin-right: 8px; }
   .theme-toggle span { font-size: 17px; }
 }
+
+
+/* Settings controls use the same Midnight Azure tokens as the rest of the app. */
+.settings-page { max-width: 920px; }
+.settings-section {
+  margin-top: 22px;
+  padding: 21px;
+  border: 1px solid var(--az-border);
+  border-radius: 14px;
+  background: var(--az-panel);
+}
+.settings-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.settings-section-heading h2 { margin: 5px 0 0; color: var(--az-text); font-size: 19px; }
+.settings-current {
+  flex: 0 0 auto;
+  border: 1px solid var(--az-border);
+  border-radius: 999px;
+  padding: 6px 9px;
+  color: var(--az-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+.settings-description { max-width: 690px; margin: 12px 0 17px; color: var(--az-muted); font-size: 12px; line-height: 1.7; }
+.settings-theme-options { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.settings-theme-option {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--az-border);
+  border-radius: 11px;
+  background: var(--az-raised);
+  color: var(--az-text);
+  text-align: left;
+  cursor: pointer;
+}
+.settings-theme-option:hover { border-color: var(--az-blue); }
+.settings-theme-option.selected { border-color: var(--az-blue); box-shadow: inset 0 0 0 1px var(--az-blue); }
+.settings-theme-option strong { font-size: 12px; }
+.settings-theme-option small { color: var(--az-muted); font-size: 10px; line-height: 1.5; }
+.theme-preview {
+  width: 100%;
+  height: 68px;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 9px;
+  border-radius: 7px;
+}
+.theme-preview i { display: block; height: 34px; flex: 1; border-radius: 4px; }
+.dark-preview { background: #050E1D; }
+.dark-preview i:nth-child(1) { background: #0E1A2D; }
+.dark-preview i:nth-child(2) { background: #192840; }
+.dark-preview i:nth-child(3) { background: #2874D8; }
+.light-preview { background: #F2F6FC; }
+.light-preview i:nth-child(1) { background: #FFFFFF; border: 1px solid #D3DEEC; }
+.light-preview i:nth-child(2) { background: #E8EFF9; }
+.light-preview i:nth-child(3) { background: #1E63B5; }
+.settings-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--az-border);
+  border-radius: 8px;
+  background: var(--az-raised);
+  color: var(--az-text);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.settings-action:hover { border-color: var(--az-blue); color: var(--az-blue); }
+.settings-coming {
+  margin-top: 22px;
+  padding: 15px 17px;
+  border-left: 3px solid var(--az-blue);
+  border-radius: 0 9px 9px 0;
+  background: var(--az-raised);
+}
+.settings-coming strong { color: var(--az-text); font-size: 12px; }
+.settings-coming p { margin: 6px 0 0; color: var(--az-muted); font-size: 11px; line-height: 1.65; }
+.app-shell[data-theme="light"] .settings-section { background: #FFFFFF; border-color: #D3DEEC; }
+.app-shell[data-theme="light"] .settings-theme-option { background: #F2F6FC; color: #172B45; }
+.app-shell[data-theme="light"] .settings-coming { background: #E8EFF9; }
+@media(max-width:560px) {
+  .settings-section { padding: 15px; }
+  .settings-section-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .settings-theme-options { grid-template-columns: 1fr; }
+}

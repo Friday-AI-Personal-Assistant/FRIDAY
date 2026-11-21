@@ -913,3 +913,15 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Continue component-by-component refinement after the first integrated visual acceptance; do not claim independent accessibility certification.
 
 **Scope note:** this batch is the first shared application-wide styling pass. It does not redesign every screen's information architecture, and browser/desktop previews are not a substitute for physical-device visual acceptance. The four guarantees remain Safety, User control, Cost transparency and Reliability.
+
+## Settings & user preference controls — first functional settings surface
+
+- [x] Replace the non-functional Settings placeholder with a real Appearance control for Midnight Azure and Light Azure.
+- [x] Keep one shared theme update path for the top-bar toggle and Settings; save the selected theme locally on the device.
+- [x] Add truthful navigation to existing AI Chat model controls and the Permissions & Transparency Centre.
+- [x] Clearly label language, voice, startup behavior, notifications, cloud-provider accounts and cross-device sync as not yet configurable.
+- [x] Add responsive theme-selection cards and selected-state accessibility semantics.
+- [ ] Validate visual contrast, keyboard operation and narrow-window layout on physical Windows hardware.
+- [ ] Future settings must use explicit, typed preferences with safe defaults; paid-provider, network and background settings require the four-guarantee release gate.
+
+This batch makes only the documented appearance preference functional. It does not imply that unsupported settings or provider integrations exist.

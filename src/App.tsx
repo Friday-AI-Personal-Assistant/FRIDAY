@@ -32,6 +32,11 @@ function App() {
   const [busy, setBusy] = useState(false);
   const isDesktopApp = "__TAURI_INTERNALS__" in window;
 
+  function updateTheme(next: "dark" | "light") {
+    setTheme(next);
+    try { window.localStorage.setItem("friday-theme", next); } catch { /* The current session still uses the selected theme. */ }
+  }
+
   async function initializeWorkspace() {
     setBusy(true);
     setWorkspaceMessage("");
@@ -88,11 +93,7 @@ function App() {
             type="button"
             aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
             aria-pressed={theme === "light"}
-            onClick={() => setTheme(current => {
-              const next = current === "dark" ? "light" : "dark";
-              try { window.localStorage.setItem("friday-theme", next); } catch { /* Theme still changes for this session. */ }
-              return next;
-            })}
+            onClick={() => updateTheme(theme === "dark" ? "light" : "dark")}
           >
             <span aria-hidden="true">{theme === "dark" ? "☼" : "☾"}</span>
             {theme === "dark" ? "Light theme" : "Dark theme"}
@@ -158,10 +159,39 @@ function App() {
           <p className="footnote">See the repository's privacy principles and local workspace design document.</p>
         </section>}
 
-        {page === "Settings" && <section className="page compact-page">
+        {page === "Settings" && <section className="page compact-page settings-page">
           <div className="eyebrow">PERSONALISE FRIDAY</div><h1>Made to work<br /><em>your way.</em></h1>
-          <p className="intro">Settings will let each person choose their AI engine, modules, language and assistant personality.</p>
-          <div className="settings-placeholder"><span>⚙</span><strong>Settings are being prepared</strong><p>No preferences are saved in this preview yet. We'll add secure local settings with the workspace foundation.</p></div>
+          <p className="intro">Manage the preferences that are available today. FRIDAY will clearly identify settings that are still being developed.</p>
+
+          <div className="settings-section">
+            <div className="settings-section-heading"><div><span className="eyebrow">01 / APPEARANCE</span><h2>Choose your theme</h2></div><span className="settings-current">{theme === "dark" ? "MIDNIGHT AZURE" : "LIGHT AZURE"}</span></div>
+            <p className="settings-description">Your appearance preference is saved on this device. Midnight Azure remains FRIDAY's default visual identity.</p>
+            <div className="settings-theme-options">
+              <button type="button" className={theme === "dark" ? "settings-theme-option selected" : "settings-theme-option"} aria-pressed={theme === "dark"} onClick={() => updateTheme("dark")}>
+                <span className="theme-preview dark-preview"><i /><i /><i /></span><strong>Midnight Azure</strong><small>Dark · Navy surfaces · Refined blue</small>
+              </button>
+              <button type="button" className={theme === "light" ? "settings-theme-option selected" : "settings-theme-option"} aria-pressed={theme === "light"} onClick={() => updateTheme("light")}>
+                <span className="theme-preview light-preview"><i /><i /><i /></span><strong>Light Azure</strong><small>Light · Soft grey · Deep blue</small>
+              </button>
+            </div>
+          </div>
+
+          <div className="settings-section">
+            <div className="settings-section-heading"><div><span className="eyebrow">02 / AI ENGINE</span><h2>Your model provider</h2></div><span className="settings-current">LOCAL-FIRST</span></div>
+            <p className="settings-description">AI Chat currently connects to Ollama on this device. Model discovery, installation and selection are managed inside AI Chat; cloud providers and automatic cloud fallback are not enabled by this setting.</p>
+            <button type="button" className="settings-action" onClick={() => setPage("AI Chat")}>Open AI Chat <span aria-hidden="true">↗</span></button>
+          </div>
+
+          <div className="settings-section">
+            <div className="settings-section-heading"><div><span className="eyebrow">03 / PRIVACY & ACCESS</span><h2>Review your permissions</h2></div><span className="settings-current">USER CONTROL</span></div>
+            <p className="settings-description">Review active Web Research grants, their expiry, and the permission activity history. You can revoke a grant at any time.</p>
+            <button type="button" className="settings-action" onClick={() => setPage("Permissions & Transparency")}>Open Permissions & Transparency <span aria-hidden="true">↗</span></button>
+          </div>
+
+          <div className="settings-coming">
+            <strong>Still in development</strong>
+            <p>Language, voice, startup behavior, notifications, model-provider accounts and cross-device sync are not presented as configurable because their settings and safeguards are not implemented yet.</p>
+          </div>
         </section>}
 
         <footer className="footer"><span>FRIDAY · YOUR PERSONAL AI</span><span>PRIVATE BY DESIGN. USER IN CONTROL.</span></footer>
