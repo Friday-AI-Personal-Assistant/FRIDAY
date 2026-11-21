@@ -794,9 +794,9 @@ fn inspect_recovery_undo_state(backup_dir: &Path, expected: &CodingUndoRecord) -
 
 fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoRecord) -> Result<(), String> {
     validate_undo_record(record)?;
-    let target = safe_recovery_target(root, record)?;
-    let target_parent = target.parent().ok_or("The recovery target has no parent folder.")?;
-    let (project_handle, target_name, project_identity) = open_verified_code_parent(root, &target)?;
+    let canonical_root = validate_granted_root(root)?;
+    let target = safe_recovery_target(&canonical_root, record)?;
+    let (project_handle, target_name, project_identity) = open_verified_code_parent(&canonical_root, &target)?;
     let backup_handle = crate::coding_sandbox_fs::open_verified_root_directory(backup_dir)
         .map_err(|_| "FRIDAY could not safely open the recovery folder. Recovery evidence was preserved.".to_string())?;
     let backup_identity = crate::coding_sandbox_fs::verified_directory_handle_identity(&backup_handle)
@@ -899,7 +899,6 @@ fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoR
     crate::coding_sandbox_fs::rename_file_noreplace(
         &backup_handle, &journal_name, &recovered_journal_name, backup_identity, journal_identity,
     ).map_err(|_| "FRIDAY reconciled the Undo state but could not safely archive its recovery journal. All recovery evidence was preserved.".to_string())?;
-    let _ = target_parent; // Keep the validated parent path explicit for diagnostics and future recovery tooling.
     Ok(())
 }
 
@@ -2974,8 +2973,8 @@ mod tests {
             assert!(!backup_dir.join(format!("{}.undo-txn.json", record.id)).exists(), "stage {stage}");
             assert!(backup_dir.join(format!("{}.undo-recovered.json", record.id)).is_file(), "stage {stage}");
             // Recovery artifacts are retained as evidence; cleanup is a separate, fail-closed operation.
-            if stage != "first-rename" { assert!(root.join(format!(".friday-code-undo-{}.tmp", record.id)).exists(), "retained Undo temporary for {stage}"); }
-            if stage == "first-rename" || stage == "second-rename" || stage == "verified" { assert!(root.join(format!(".friday-code-undone-{}.tmp", record.id)).exists(), "retained displaced copy for {stage}"); }
+            if stage == "temporary" || stage == "first-rename" { assert!(root.join(format!(".friday-code-undo-{}.tmp", record.id)).exists(), "retained Undo temporary for {stage}"); }
+            if stage == "second-rename" || stage == "verified" { assert!(root.join(format!(".friday-code-undone-{}.tmp", record.id)).exists(), "retained displaced copy for {stage}"); }
             fs::remove_dir_all(&root).unwrap();
         }
     }
