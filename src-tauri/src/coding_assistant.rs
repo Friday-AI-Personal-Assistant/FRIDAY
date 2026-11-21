@@ -508,8 +508,10 @@ fn apply_code_preview_to_disk_bound(
         false,
     ).map_err(|e| format!("Could not prepare the handle-relative replacement file: {e}"))?;
     if let Err(e) = temp_file.set_permissions(meta.permissions()).and_then(|_| temp_file.write_all(proposed)).and_then(|_| temp_file.sync_all()) {
-        drop(temp_file); let _ = fs::remove_file(&temporary);
-        return Err(format!("Could not prepare the replacement contents: {e}"));
+        // Preserve the partially written temporary. Its exact content and identity
+        // have not been fully verified, so pathname-based cleanup is not authorized.
+        drop(temp_file);
+        return Err(format!("Could not prepare the replacement contents: {e}. The partial recovery item was retained for inspection."));
     }
     drop(temp_file);
     let temp_bytes = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
@@ -519,8 +521,9 @@ fn apply_code_preview_to_disk_bound(
         MAX_SCANNED_ENTRIES,
     ).map_err(|_| "Could not verify the replacement through its verified parent directory handle.".to_string())?;
     if sha256_hex(&temp_bytes) != resulting_hash {
-        let _ = fs::remove_file(&temporary);
-        return Err("The replacement file failed SHA-256 verification. The original was not changed.".into());
+        // A hash mismatch makes this artifact uncertain recovery evidence. Keep it
+        // for inspection; do not delete by pathname or weaken the identity gate.
+        return Err("The replacement file failed SHA-256 verification. The original was not changed and the temporary was retained for inspection.".into());
     }
 
     // Re-check the scanned identity after preparing recovery data and immediately
@@ -714,12 +717,8 @@ fn recovery_hash(path: &Path, expected_limit: u64) -> Result<Option<String>, Str
 }
 
 fn remove_recovery_copy(path: &Path, expected_hash: &str) -> Result<(), String> {
-    match recovery_hash(path, MAX_FILE_BYTES.max(MAX_PROPOSED_FILE_BYTES as u64))? {
-        None => Ok(()),
-        Some(actual) if actual == expected_hash => fs::remove_file(path)
-            .map_err(|_| "FRIDAY could not safely clean up a verified recovery copy.".to_string()),
-        Some(_) => Err("A temporary recovery copy has unexpected contents. FRIDAY preserved it for manual review.".into()),
-    }
+    let _ = (path, expected_hash);
+    Err("Path-based recovery-copy deletion is disabled. Recovery evidence is preserved until an identity-bound cleanup policy is available.".into())
 }
 
 #[cfg(unix)]
@@ -1184,9 +1183,10 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
     if let Err(error) = temp_file.set_permissions(metadata.permissions())
         .and_then(|_| temp_file.write_all(&original))
         .and_then(|_| temp_file.sync_all()) {
+        // The partial Undo temporary may be needed to diagnose or resume recovery.
+        // Preserve it: no verified content digest exists for an identity-bound delete.
         drop(temp_file);
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("Could not prepare the original-file restoration: {error}"));
+        return Err(format!("Could not prepare the original-file restoration: {error}. The partial recovery item was retained for inspection."));
     }
     let temporary_identity = crate::coding_sandbox_fs::runtime_tree_identity_for_handle(&temp_file)
         .map_err(|_| "Could not capture the prepared Undo file identity.".to_string())?;
