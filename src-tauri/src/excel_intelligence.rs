@@ -827,7 +827,7 @@ mod tests {
     #[test]
     fn xlsx_import_reads_sheets_cached_values_and_formula_counts_without_execution() {
         let bytes = test_xlsx(false);
-        let analysis = analyze_xlsx("sales.xlsx".into(), bytes).unwrap();
+        let analysis = analyze_xlsx("sales.xlsx".into(), bytes.clone()).unwrap();
         assert_eq!(analysis.format, "XLSX");
         assert_eq!(analysis.source_sha256, format!("{:x}", Sha256::digest(&bytes)));
         assert_eq!(analysis.source_byte_length, bytes.len() as u64);
