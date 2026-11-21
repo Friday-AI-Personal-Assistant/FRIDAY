@@ -965,3 +965,71 @@ h1 em { color: #78AEEF; }
 .community-skill-preview dd{margin:0;font-size:9px;overflow-wrap:anywhere;color:#f0e2c4}
 .community-skill-preview>small{display:block;font-size:9px;line-height:1.65;color:#cbb88f}
 @media(max-width:600px){.skills-header-actions{flex-direction:column}.community-skill-preview dl>div{grid-template-columns:1fr;gap:3px}}
+
+/* Overview visual refinement — Midnight Azure */
+.overview-page { max-width: 1120px; }
+.overview-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  margin: -7px 0 26px;
+  padding: clamp(24px,4vw,38px);
+  border: 1px solid #29466B;
+  border-radius: 18px;
+  background:
+    radial-gradient(ellipse at 88% 12%, rgba(55,132,224,.22), transparent 43%),
+    linear-gradient(132deg, #10213A 0%, #0E1A2D 58%, #101E34 100%);
+  box-shadow: 0 16px 42px rgba(0,0,0,.16), inset 0 1px 0 rgba(202,225,255,.045);
+}
+.overview-hero::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  width: 260px;
+  height: 260px;
+  right: -115px;
+  bottom: -170px;
+  border: 1px solid rgba(112,169,235,.16);
+  border-radius: 50%;
+  box-shadow: 0 0 0 28px rgba(112,169,235,.025), 0 0 0 58px rgba(112,169,235,.02);
+  pointer-events: none;
+}
+.overview-hero h1 { margin-top: 17px; margin-bottom: 12px; }
+.overview-hero .intro { max-width: 610px; margin-bottom: 21px; }
+.overview-hero-footer { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.overview-local-status,.overview-roadmap-label,.overview-planned-tag {
+  display:inline-flex; align-items:center; gap:7px; border:1px solid #345477;
+  border-radius:30px; padding:7px 10px; color:#C3D8F1;
+  font-size:8px; font-weight:700; letter-spacing:1px;
+}
+.overview-local-status .pulse { width:6px; height:6px; }
+.overview-roadmap-label { color:#A9BBD2; border-color:rgba(169,187,210,.25); }
+.overview-next-milestone {
+  display:flex; align-items:flex-start; justify-content:space-between; gap:20px;
+  max-width:690px; margin-top:24px; padding:16px 18px;
+  border:1px solid rgba(116,163,218,.25); border-radius:12px;
+  background:rgba(5,14,29,.34); backdrop-filter:blur(8px);
+}
+.overview-next-milestone>div { min-width:0; }
+.overview-milestone-kicker { display:block; color:#82B4F0; font-size:8px; font-weight:700; letter-spacing:1.3px; margin-bottom:7px; }
+.overview-next-milestone strong { display:block; color:#F0F6FF; font:600 16px Manrope,sans-serif; }
+.overview-next-milestone p { color:#A9BBD2; font-size:11px; line-height:1.65; margin:6px 0 0; max-width:510px; }
+.overview-planned-tag { flex:0 0 auto; color:#C4D5EA; border-color:#456486; background:rgba(25,40,64,.72); }
+.app-shell[data-theme="light"] .overview-hero {
+  border-color:#C8D9EE;
+  background:
+    radial-gradient(ellipse at 88% 12%, rgba(40,116,216,.12), transparent 43%),
+    linear-gradient(132deg,#FFFFFF 0%,#F1F6FD 62%,#EAF2FC 100%);
+  box-shadow:0 12px 32px rgba(31,74,125,.08);
+}
+.app-shell[data-theme="light"] .overview-local-status { color:#245C9F; border-color:#B7CBE4; }
+.app-shell[data-theme="light"] .overview-roadmap-label { color:#536B88; border-color:#C8D6E8; }
+.app-shell[data-theme="light"] .overview-next-milestone { background:rgba(255,255,255,.78); border-color:#CAD9EA; }
+.app-shell[data-theme="light"] .overview-next-milestone strong { color:#172B45; }
+.app-shell[data-theme="light"] .overview-next-milestone p { color:#536B88; }
+.app-shell[data-theme="light"] .overview-planned-tag { color:#245C9F; background:#E8EFF9; border-color:#B7CBE4; }
+@media(max-width:560px) {
+  .overview-hero { padding:22px 19px; margin-top:0; }
+  .overview-next-milestone { flex-direction:column; gap:12px; }
+  .overview-planned-tag { align-self:flex-start; }
+}
