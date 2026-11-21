@@ -895,3 +895,52 @@ h1 em { color: #78AEEF; }
 .conversation-actions button:first-child{color:var(--az-blue,#2874D8)}
 .app-shell[data-theme="light"] .history-tabs button{background:#F2F6FC;color:#536B88;border-color:#CAD7E8}
 .app-shell[data-theme="light"] .history-tabs button.active{background:#E5EFFD;color:#173F75;border-color:#6D9BD8}
+
+
+/* Chat message actions: copy and edit with a clear resend boundary. */
+.chat-bubble { position: relative; }
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 7px;
+  opacity: .78;
+}
+.message-actions button,
+.chat-edit-notice button {
+  border: 1px solid var(--az-border, #385273);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--az-raised, #192840);
+  color: var(--az-muted, #A9BBD2);
+  font: 600 10px 'DM Sans', sans-serif;
+  cursor: pointer;
+}
+.message-actions button:hover:not(:disabled),
+.chat-edit-notice button:hover { border-color: var(--az-blue, #2874D8); color: var(--az-text, #E6EEF8); }
+.message-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.chat-edit-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 0 7px;
+  padding: 9px 11px;
+  border: 1px solid var(--az-blue, #2874D8);
+  border-radius: 9px;
+  background: rgba(40,116,216,.12);
+  color: var(--az-text, #E6EEF8);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.chat-edit-notice button { flex: 0 0 auto; }
+.app-shell[data-theme="light"] .message-actions button,
+.app-shell[data-theme="light"] .chat-edit-notice button {
+  background: #F2F6FC;
+  border-color: #CAD7E8;
+  color: #536B88;
+}
+.app-shell[data-theme="light"] .chat-edit-notice { color: #173F75; background: #EAF2FD; }
+@media(max-width:560px) {
+  .chat-edit-notice { align-items: flex-start; flex-direction: column; }
+}
