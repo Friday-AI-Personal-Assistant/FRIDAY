@@ -204,6 +204,8 @@ export default function Assistant() {
       setActiveId(chat.id);
       setActiveTitle(chat.title);
       setMessages(chat.messages);
+      setEditingMessageIndex(null);
+      setCopiedMessageIndex(null);
       setError("");
       setActionResult("");
     } catch (e) { setHistoryError(String(e)); }
@@ -238,6 +240,8 @@ export default function Assistant() {
     setActiveId(null);
     setActiveTitle(null);
     setMessages([]);
+    setEditingMessageIndex(null);
+    setCopiedMessageIndex(null);
     setInput("");
     setError("");
     setAction(null);
