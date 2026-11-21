@@ -136,6 +136,17 @@ pub(crate) fn runtime_tree_handle_matches(identity: (u64, [u8; 16]), handle: &Fi
     Ok(identity == windows_identity::handle_file_id(handle)?)
 }
 
+/// Capture stable platform identity from an already-open file handle.
+#[cfg(unix)]
+pub(crate) fn runtime_tree_identity_for_handle(handle: &File) -> io::Result<RuntimeTreeIdentity> {
+    handle_identity(handle)
+}
+
+#[cfg(windows)]
+pub(crate) fn runtime_tree_identity_for_handle(handle: &File) -> io::Result<RuntimeTreeIdentity> {
+    windows_identity::handle_file_id(handle)
+}
+
 /// Read one named backup or journal file relative to an already-open directory
 /// capability. The file identity is captured before opening, verified on the
 /// opened handle, and checked again after the bounded read. Other directory
@@ -7048,6 +7059,8 @@ mod tests {
         // Keep the original object alive so the filesystem cannot recycle its
         // file ID while the directory name is replaced with a new object.
         let original = open_file_nofollow(&root, OsStr::new("tool.exe")).unwrap();
+        let captured_from_handle = runtime_tree_identity_for_handle(&original).unwrap();
+        assert_eq!(captured_from_handle, observed);
         fs::remove_file(&file_path).unwrap();
         fs::write(&file_path, b"replacement").unwrap();
         let replacement = open_file_nofollow(&root, OsStr::new("tool.exe")).unwrap();
