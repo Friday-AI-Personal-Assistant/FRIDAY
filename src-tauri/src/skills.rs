@@ -394,6 +394,9 @@ fn validate_quarantine_payload(
 #[tauri::command]
 pub fn reinspect_community_skill(app: AppHandle, skill_id: String) -> Result<CommunitySkillPreview, String> {
     crate::permissions::authorize_command("skills.import.inspect", "skills.import.inspect")?;
+    if skill_id.len() != 64 || !skill_id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return Err("Quarantine identifier is invalid.".into());
+    }
     let root = app.path().app_data_dir()
         .map_err(|e| format!("Cannot locate FRIDAY's application data folder: {e}"))?
         .join("skills").join("quarantine");
