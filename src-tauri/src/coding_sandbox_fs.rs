@@ -1647,6 +1647,10 @@ pub(crate) fn create_destination_entry(parent: &File, name: &OsStr, directory: b
     const OBJ_CASE_INSENSITIVE: u32 = 0x40;
     const OBJ_DONT_REPARSE: u32 = 0x1000;
     const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    // Coding Assistant replacement files receive the original Unix-style
+    // permissions through this handle before installation. Keep the Windows
+    // handle capable of applying file attributes as well as writing data.
+    const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
     const FILE_WRITE_DATA: u32 = 0x2;
     const FILE_LIST_DIRECTORY: u32 = 0x1;
     const FILE_ADD_FILE: u32 = 0x2;
@@ -1676,7 +1680,7 @@ pub(crate) fn create_destination_entry(parent: &File, name: &OsStr, directory: b
     let access = if directory {
         FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE
     } else {
-        FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+        FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | SYNCHRONIZE
     };
     let options = (if directory { FILE_DIRECTORY_FILE } else { FILE_NON_DIRECTORY_FILE })
         | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT;
