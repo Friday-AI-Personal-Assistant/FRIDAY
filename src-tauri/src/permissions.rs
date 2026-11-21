@@ -117,6 +117,22 @@ const COMMAND_POLICIES: &[CommandPolicy] = &[
     CommandPolicy { command_id: "issue_guest_run_execution_approval", capability: "coding.guest.execution.approval" },
     CommandPolicy { command_id: "consume_guest_run_execution_approval", capability: "coding.guest.execution.consume" },
     CommandPolicy { command_id: "revoke_guest_run_execution_approval", capability: "coding.guest.execution.revoke" },
+    CommandPolicy { command_id: "ollama_models", capability: "ai.models.list" },
+    CommandPolicy { command_id: "ollama_model_details", capability: "ai.models.details" },
+    CommandPolicy { command_id: "ollama_pull_model", capability: "ai.models.install" },
+    CommandPolicy { command_id: "ollama_delete_model", capability: "ai.models.remove" },
+    CommandPolicy { command_id: "ollama_chat_stream", capability: "ai.chat.stream" },
+    CommandPolicy { command_id: "ollama_coding_chat", capability: "ai.coding.chat" },
+    CommandPolicy { command_id: "ollama_chat", capability: "ai.chat.complete" },
+    CommandPolicy { command_id: "pick_and_read_pdf", capability: "pdf.read.selected" },
+    CommandPolicy { command_id: "web_search", capability: "web.search" },
+    CommandPolicy { command_id: "web_read_page", capability: "web.read.page" },
+    CommandPolicy { command_id: "web_read_pages", capability: "web.read.pages" },
+    CommandPolicy { command_id: "list_tools", capability: "tools.catalog.read" },
+    CommandPolicy { command_id: "tool_history", capability: "tools.history.read" },
+    CommandPolicy { command_id: "clear_tool_history", capability: "tools.history.clear" },
+    CommandPolicy { command_id: "issue_tool_approval", capability: "tools.approval.issue" },
+    CommandPolicy { command_id: "execute_tool", capability: "tools.execute" },
 ];
 
 /// Authorize a specific IPC command against its trusted backend capability.
@@ -238,6 +254,37 @@ mod tests {
         assert!(authorize_command("skills.install", "skills.enable").is_err());
         assert!(authorize_command("memory.delete", "memory.list").is_err());
         assert!(authorize_command("conversations.delete", "conversations.read").is_err());
+    }
+
+    #[test]
+    fn ai_provider_research_pdf_and_tool_commands_have_narrow_backend_capabilities() {
+        let cases = [
+            ("ollama_models", "ai.models.list"),
+            ("ollama_model_details", "ai.models.details"),
+            ("ollama_pull_model", "ai.models.install"),
+            ("ollama_delete_model", "ai.models.remove"),
+            ("ollama_chat_stream", "ai.chat.stream"),
+            ("ollama_coding_chat", "ai.coding.chat"),
+            ("ollama_chat", "ai.chat.complete"),
+            ("pick_and_read_pdf", "pdf.read.selected"),
+            ("web_search", "web.search"),
+            ("web_read_page", "web.read.page"),
+            ("web_read_pages", "web.read.pages"),
+            ("list_tools", "tools.catalog.read"),
+            ("tool_history", "tools.history.read"),
+            ("clear_tool_history", "tools.history.clear"),
+            ("issue_tool_approval", "tools.approval.issue"),
+            ("execute_tool", "tools.execute"),
+        ];
+        for (command, capability) in cases {
+            assert!(authorize_command(command, capability).is_ok(), "{command}");
+            assert!(authorize_command(command, "unrelated.capability").is_err(), "{command}");
+        }
+        assert!(authorize_command("ollama_delete_model", "ai.models.list").is_err());
+        assert!(authorize_command("ollama_pull_model", "ai.models.remove").is_err());
+        assert!(authorize_command("web_read_pages", "web.search").is_err());
+        assert!(authorize_command("clear_tool_history", "tools.history.read").is_err());
+        assert!(authorize_command("execute_tool", "tools.approval.issue").is_err());
     }
 
     #[test]

@@ -98,6 +98,7 @@ fn upstream_error(status: reqwest::StatusCode, body: String) -> String {
 
 #[tauri::command]
 pub async fn ollama_models() -> Result<Vec<String>, String> {
+    crate::permissions::authorize_command("ollama_models", "ai.models.list")?;
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(8))
@@ -163,6 +164,7 @@ struct PullResponse {
 }
 #[tauri::command]
 pub async fn ollama_model_details() -> Result<Vec<ModelInfo>, String> {
+    crate::permissions::authorize_command("ollama_model_details", "ai.models.details")?;
     let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(12)).build()
         .map_err(|e| format!("Could not prepare the Ollama connection: {e}"))?;
@@ -180,6 +182,7 @@ pub async fn ollama_model_details() -> Result<Vec<ModelInfo>, String> {
 }
 #[tauri::command]
 pub async fn ollama_pull_model(name: String, on_event: Channel<ModelPullEvent>) -> Result<(), String> {
+    crate::permissions::authorize_command("ollama_pull_model", "ai.models.install")?;
     validate_model_name(&name)?;
     let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(7200)).build()
@@ -224,6 +227,7 @@ pub async fn ollama_pull_model(name: String, on_event: Channel<ModelPullEvent>) 
 }
 #[tauri::command]
 pub async fn ollama_delete_model(name: String) -> Result<(), String> {
+    crate::permissions::authorize_command("ollama_delete_model", "ai.models.remove")?;
     validate_model_name(&name)?;
     let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(30)).build()
@@ -417,6 +421,8 @@ pub async fn ollama_chat_stream(
     request_id: String,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
+    crate::permissions::authorize_command("ollama_chat", "ai.chat.complete")?;
+    crate::permissions::authorize_command("ollama_chat_stream", "ai.chat.stream")?;
     validate_chat_request(&messages, &model)?;
     if request_id.is_empty() || request_id.len() > 80
         || !request_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -488,6 +494,7 @@ async fn read_bounded_ollama_body(
 
 #[tauri::command]
 pub async fn ollama_coding_chat(messages: Vec<Message>, model: String) -> Result<String, String> {
+    crate::permissions::authorize_command("ollama_coding_chat", "ai.coding.chat")?;
     validate_coding_chat_request(&messages, &model)?;
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))

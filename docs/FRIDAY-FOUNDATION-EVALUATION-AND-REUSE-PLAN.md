@@ -349,3 +349,15 @@ The #1076 File/Coding Assistant capability increment is verified on both Windows
 - [ ] Verify this increment on Windows and Linux CI.
 
 **Scope and safety note:** these are static backend command gates, not durable user grants or a complete permission centre. Skill install/enable/load remains separate from permission to use tools, access private files, invoke integrations or execute code. No skill receives those rights from this change. The existing tool approval token and file/Coding Assistant scoped-authorization mechanisms remain independently enforced. Guest execution, shell access, generic plugin execution and unattended control remain disabled.
+
+
+### Backend command coverage — AI providers, research, PDF and tool activity (#1080)
+
+- [x] Add distinct Rust-owned capabilities for installed-model discovery and details, model installation/removal, chat streaming/completion and Coding Assistant model requests.
+- [x] Gate PDF selection/extraction and web search/source-reading commands at their Rust handler entry points.
+- [x] Gate tool catalogue/history access, history clearing, approval issuance and tool execution; preserve the separate exact-action one-use approval policy for consequential tools.
+- [x] Add regression coverage for every new command mapping and cross-capability substitution.
+- [ ] Verify Linux and Windows CI before closing this increment.
+- [ ] Complete a separate persistent user-grant design with explicit consent, narrow scopes, expiry, revocation and audit. These static command capabilities do not represent user consent or provider cost approval.
+
+**Scope and limitations:** model pull/removal can change the user's local Ollama installation and are now classified separately; this increment does not yet add a user-facing confirmation or resource/cost budget for those operations. Web Research explicitly contacts its configured search/source hosts; this gate is not an offline-mode guarantee. PDF extraction remains limited to a file explicitly selected through the native picker. Tool execution still relies on its own trusted tool policy and exact one-use approval for consequential actions. No shell, arbitrary plugin execution, guest process launch or cloud fallback is enabled.

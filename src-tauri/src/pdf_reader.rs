@@ -94,6 +94,7 @@ fn extract_selected_pdf(path: PathBuf) -> Result<PdfDocument, String> {
 
 #[tauri::command]
 pub async fn pick_and_read_pdf(app: AppHandle) -> Result<PdfDocument, String> {
+    crate::permissions::authorize_command("pick_and_read_pdf", "pdf.read.selected")?;
     let selected = app.dialog().file()
         .add_filter("PDF document", &["pdf"])
         .blocking_pick_file();

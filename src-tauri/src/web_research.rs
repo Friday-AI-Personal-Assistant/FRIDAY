@@ -73,6 +73,7 @@ fn parse_results(html: &str) -> Vec<WebSearchResult> {
 
 #[tauri::command]
 pub async fn web_search(_app: AppHandle, query: String) -> Result<Vec<WebSearchResult>, String> {
+    crate::permissions::authorize_command("web_search", "web.search")?;
     let query = query.trim();
     if query.is_empty() || query.len() > MAX_QUERY_BYTES || query.chars().any(char::is_control) {
         return Err("Enter a search query between 1 and 500 characters.".into());
@@ -313,6 +314,7 @@ async fn read_page_inner(url: String) -> Result<WebPage, String> {
 
 #[tauri::command]
 pub async fn web_read_page(app: AppHandle, url: String) -> Result<WebPage, String> {
+    crate::permissions::authorize_command("web_read_page", "web.read.page")?;
     let page = read_page_inner(url).await?;
     let _ = crate::tools::record(&app, "web.read_page", "Read one source webpage after explicit user selection.", true);
     Ok(page)
@@ -320,6 +322,7 @@ pub async fn web_read_page(app: AppHandle, url: String) -> Result<WebPage, Strin
 
 #[tauri::command]
 pub async fn web_read_pages(app: AppHandle, urls: Vec<String>) -> Result<Vec<WebPage>, String> {
+    crate::permissions::authorize_command("web_read_pages", "web.read.pages")?;
     if urls.is_empty() || urls.len() > 4 {
         return Err("Select between 1 and 4 sources for a research session.".into());
     }

@@ -88,16 +88,19 @@ pub(crate) fn record(app: &AppHandle, tool_id: &str, outcome: &str, approved: bo
 }
 
 #[tauri::command]
-pub fn list_tools() -> Vec<ToolDefinition> { TOOLS.to_vec() }
+pub fn list_tools() -> Vec<ToolDefinition> {
+    crate::permissions::authorize_command("list_tools", "tools.catalog.read")?; TOOLS.to_vec() }
 
 #[tauri::command]
 pub fn tool_history(app: AppHandle) -> Result<Vec<ToolEvent>, String> {
+    crate::permissions::authorize_command("tool_history", "tools.history.read")?;
     let _guard = HISTORY_LOCK.lock().map_err(|_| "Tool history is temporarily unavailable.".to_string())?;
     Ok(read_history_locked(&app)?.iter().rev().cloned().collect())
 }
 
 #[tauri::command]
 pub fn clear_tool_history(app: AppHandle) -> Result<(), String> {
+    crate::permissions::authorize_command("clear_tool_history", "tools.history.clear")?;
     let _guard = HISTORY_LOCK.lock().map_err(|_| "Tool history is temporarily unavailable.".to_string())?;
     let path = workspace_dir(&app)?.join(HISTORY_FILE);
     if path.exists() { fs::remove_file(path).map_err(|e| format!("Could not clear tool history: {e}"))?; }
@@ -125,6 +128,7 @@ fn authorize_tool_execution(tool_id: &str, arguments: &Value, approval_token: Op
 
 #[tauri::command]
 pub fn issue_tool_approval(tool_id: String, arguments: Value) -> Result<String, String> {
+    crate::permissions::authorize_command("issue_tool_approval", "tools.approval.issue")?;
     let definition = registered_tool(&tool_id)?;
     if !policy_requires_approval(definition)? { return Err("This tool does not use an approval token.".into()); }
     if tool_id == "desktop.open_target" { valid_target(&arguments)?; }
@@ -151,6 +155,7 @@ fn consume_approval(token: Option<String>, tool_id: &str, arguments: &Value) -> 
 
 #[tauri::command]
 pub fn execute_tool(app: AppHandle, tool_id: String, arguments: Value, approval_token: Option<String>) -> Result<String, String> {
+    crate::permissions::authorize_command("execute_tool", "tools.execute")?;
     authorize_tool_execution(&tool_id, &arguments, approval_token)?;
     let result = match tool_id.as_str() {
         "calculator.evaluate" => {

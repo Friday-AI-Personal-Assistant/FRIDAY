@@ -845,3 +845,15 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 - [ ] Build durable user grants, expiry, revocation and audit separately; static command capabilities are not user consent.
 
 **Important:** installing, enabling or loading a declarative skill does not grant it access to files, tools, accounts, network integrations or executable code.
+
+
+### Backend command coverage — AI, research, PDF and tool activity (#1080)
+
+- [x] Protect installed-model discovery/details, model installation/removal and local chat/Coding Assistant model requests with distinct backend capability IDs.
+- [x] Protect PDF selection/extraction and web search/source-reading entry points.
+- [x] Protect tool catalogue/history, history clearing, approval issuance and execution entry points.
+- [x] Preserve exact-action one-use approvals for consequential built-in tools; command classification does not replace user approval.
+- [ ] Verify Linux and Windows CI for this increment.
+- [ ] Add durable user grants, explicit consent, expiry, revocation and audit before broader integrations or executable skills.
+
+**Important:** these are static Rust command gates, not persistent user permissions. Model downloads/removal, external web requests and other consequential operations still need clear user-facing disclosure and controls. No silent cloud fallback, shell execution or guest process execution is enabled.
