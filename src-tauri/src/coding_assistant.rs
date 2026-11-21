@@ -149,6 +149,11 @@ extern "system" {
         security_information: u32,
         security_descriptor: *mut std::ffi::c_void,
     ) -> i32;
+    fn GetSecurityDescriptorControl(
+        security_descriptor: *mut std::ffi::c_void,
+        control: *mut u16,
+        revision: *mut u32,
+    ) -> i32;
 }
 
 #[cfg(windows)]
@@ -208,10 +213,30 @@ fn restore_windows_dacl(path: &Path, encoded: &str) -> Result<(), String> {
     if descriptor.len() < 20 {
         return Err("The saved Windows security descriptor is too short.".into());
     }
+    const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
+    const UNPROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x2000_0000;
+    const SE_DACL_PROTECTED: u16 = 0x1000;
+    let mut control = 0u16;
+    let mut revision = 0u32;
+    let control_read = unsafe {
+        GetSecurityDescriptorControl(
+            descriptor.as_mut_ptr() as *mut std::ffi::c_void,
+            &mut control,
+            &mut revision,
+        )
+    };
+    if control_read == 0 {
+        return Err(format!("Windows could not inspect the saved DACL inheritance state (error {}).", unsafe { GetLastError() }));
+    }
+    let inheritance = if control & SE_DACL_PROTECTED != 0 {
+        PROTECTED_DACL_SECURITY_INFORMATION
+    } else {
+        UNPROTECTED_DACL_SECURITY_INFORMATION
+    };
     let wide = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
     let succeeded = unsafe {
         SetFileSecurityW(
-            wide.as_ptr(), DACL_SECURITY_INFORMATION,
+            wide.as_ptr(), DACL_SECURITY_INFORMATION | inheritance,
             descriptor.as_mut_ptr() as *mut std::ffi::c_void,
         )
     };
@@ -2912,6 +2937,7 @@ mod tests {
         let identity = verified_code_child_identity(&parent, OsStr::new("installed.tmp")).unwrap();
         assert!(verify_installed_code_file(&parent, OsStr::new("installed.tmp"), identity, &sha256_hex(b"verified replacement")).is_ok());
         assert!(verify_installed_code_file(&parent, OsStr::new("installed.tmp"), identity, &sha256_hex(b"other")).is_err());
+        drop(parent);
         fs::remove_dir_all(&root).unwrap();
     }
 
