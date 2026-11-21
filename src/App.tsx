@@ -1,4 +1,13 @@
 import { useState } from "react";
+
+function readInitialTheme(): "dark" | "light" {
+  try {
+    return window.localStorage.getItem("friday-theme") === "light" ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
 import { invoke } from "@tauri-apps/api/core";
 import Assistant from "./Assistant";
 import SkillsManager from "./SkillsManager";
@@ -16,6 +25,7 @@ const modules = [
 
 function App() {
   const [page, setPage] = useState<Page>("AI Chat");
+  const [theme, setTheme] = useState<"dark" | "light">(readInitialTheme);
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [note, setNote] = useState("");
   const [workspaceMessage, setWorkspaceMessage] = useState("");
@@ -52,7 +62,7 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-theme={theme}>
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">F</div><div><strong>FRIDAY</strong><span>PERSONAL AI</span></div></div>
         <div className="side-label">WORKSPACE</div>
@@ -73,6 +83,20 @@ function App() {
       <main className="main-content">
         <header className="topbar">
           <div className="breadcrumb">FRIDAY <span>/</span> {page.toUpperCase()}</div>
+          <button
+            className="theme-toggle"
+            type="button"
+            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            aria-pressed={theme === "light"}
+            onClick={() => setTheme(current => {
+              const next = current === "dark" ? "light" : "dark";
+              try { window.localStorage.setItem("friday-theme", next); } catch { /* Theme still changes for this session. */ }
+              return next;
+            })}
+          >
+            <span aria-hidden="true">{theme === "dark" ? "☼" : "☾"}</span>
+            {theme === "dark" ? "Light theme" : "Dark theme"}
+          </button>
           <div className="profile-chip"><div className="profile-dot">U</div><span>YOUR WORKSPACE</span></div>
         </header>
 

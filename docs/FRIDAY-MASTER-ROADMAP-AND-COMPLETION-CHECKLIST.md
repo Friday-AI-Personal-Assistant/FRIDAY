@@ -900,3 +900,16 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 - [ ] Ensure skill install/enable/load never silently grants permissions.
 
 The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
+
+## Midnight Azure design system — first application-wide implementation
+
+**Design direction:** FRIDAY — Midnight Azure. The dark theme uses Midnight Navy `#050E1D`, Deep Slate Blue `#0E1A2D`, Muted Steel Blue `#192840`, Refined Electric Blue `#2874D8`, and Soft Ice Grey `#A9BBD2`. The light theme is a deliberate companion palette, not a simple inversion.
+
+- [x] Add shared design tokens for the app shell, surfaces, borders, typography, muted text and primary actions.
+- [x] Apply Midnight Azure to the global navigation, workspace shell, AI Chat, Coding Assistant, Modules/Skills, Memory, Settings and Permissions Centre.
+- [x] Add an explicit dark/light theme switch with a saved user preference; dark remains the default.
+- [x] Add visible keyboard focus treatment and respect reduced-motion preferences for theme transitions.
+- [ ] Verify the visual result at desktop and narrow mobile widths, including contrast and overflow, on physical Windows hardware.
+- [ ] Continue component-by-component refinement after the first integrated visual acceptance; do not claim independent accessibility certification.
+
+**Scope note:** this batch is the first shared application-wide styling pass. It does not redesign every screen's information architecture, and browser/desktop previews are not a substitute for physical-device visual acceptance. The four guarantees remain Safety, User control, Cost transparency and Reliability.
