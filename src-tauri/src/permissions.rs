@@ -261,6 +261,7 @@ fn ipc_module_source(module: &str) -> &'static str {
         "coding_sandbox" => include_str!("coding_sandbox.rs"),
         "conversations" => include_str!("conversations.rs"),
         "file_assistant" => include_str!("file_assistant.rs"),
+        "excel_intelligence" => include_str!("excel_intelligence.rs"),
         "memory" => include_str!("memory.rs"),
         "pdf_reader" => include_str!("pdf_reader.rs"),
         "skills" => include_str!("skills.rs"),
