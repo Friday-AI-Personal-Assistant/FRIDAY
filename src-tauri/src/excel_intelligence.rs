@@ -333,6 +333,28 @@ pub async fn pick_and_analyze_workbook(app: AppHandle) -> Result<WorkbookAnalysi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    fn test_xlsx(include_macro: bool) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        let mut entries = vec![
+            ("[Content_Types].xml", r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#),
+            ("_rels/.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#),
+            ("xl/workbook.xml", r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sales" sheetId="1" r:id="rId1"/></sheets></workbook>"#),
+            ("xl/_rels/workbook.xml.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#),
+            ("xl/worksheets/sheet1.xml", r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Product</t></is></c><c r="B1" t="inlineStr"><is><t>Units</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>Book</t></is></c><c r="B2"><f>1+2</f><v>3</v></c></row></sheetData></worksheet>"#),
+        ];
+        if include_macro {
+            entries.push(("xl/vbaProject.bin", "macro-bytes"));
+        }
+        for (name, body) in entries {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(body.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
 
     #[test]
     fn csv_analysis_counts_missing_values_and_numeric_statistics() {
@@ -364,13 +386,27 @@ mod tests {
     #[test]
     fn xlsx_validation_rejects_non_zip_and_macro_enabled_packages() {
         assert!(validate_xlsx_package(b"not a workbook").is_err());
+        let macro_workbook = test_xlsx(true);
+        assert!(validate_xlsx_package(&macro_workbook).is_err());
+    }
+
+    #[test]
+    fn xlsx_import_reads_sheets_cached_values_and_formula_counts_without_execution() {
+        let bytes = test_xlsx(false);
+        let analysis = analyze_xlsx("sales.xlsx".into(), bytes).unwrap();
+        assert_eq!(analysis.format, "XLSX");
+        assert_eq!(analysis.sheets.len(), 1);
+        assert_eq!(analysis.sheets[0].name, "Sales");
+        assert_eq!(analysis.sheets[0].formula_cells, 1);
+        assert_eq!(analysis.sheets[0].columns[1].sum, Some(3.0));
+        assert!(analysis.notes.iter().any(|note| note.contains("does not execute")));
     }
 
     #[test]
     fn matrix_preview_and_column_limits_are_bounded() {
         let rows = vec![vec!["header".to_string(); MAX_COLUMNS + 1]];
         assert!(analyze_matrix("wide".into(), rows, 0).is_err());
-        let rows = vec![vec!["x".to_string(); MAX_COLUMNS]; MAX_ROWS + 1];
+        let rows = vec![vec!["x".to_string()]; MAX_ROWS + 1];
         assert!(analyze_matrix("large".into(), rows, 0).is_err());
     }
 
