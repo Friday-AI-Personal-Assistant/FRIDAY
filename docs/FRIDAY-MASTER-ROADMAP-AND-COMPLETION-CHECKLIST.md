@@ -1135,7 +1135,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ### Handle-bound Undo state inspection — #1128
 
-**Status:** IMPLEMENTED — Linux/Windows CI pending.
+**Status:** COMPLETE IN CI — #1128 passed Linux tests and Windows build/tests.
 
 - [x] Inspect active and consumed Undo records through the already-open verified recovery-directory handle, using bounded no-follow reads instead of path-based `symlink_metadata` followed by a separate read.
 - [x] Treat missing, unsafe, malformed, duplicate active/consumed, and mismatched records as distinct fail-closed outcomes; preserve recovery evidence on uncertainty.

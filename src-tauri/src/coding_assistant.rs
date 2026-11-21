@@ -1003,7 +1003,6 @@ fn recover_apply_transaction(root: &Path, backup_dir: &Path, record: &CodingUndo
                 ).map_err(|_| "FRIDAY could not restore the displaced original without replacing an unexpected project entry. Recovery evidence was preserved.".to_string())?;
             } else if displaced_hash.is_none() {
                 let restore_name = OsString::from(format!(".friday-code-recovery-{}.tmp", record.id));
-                let restore_path = target.parent().unwrap().join(&restore_name);
                 let mut restore = crate::coding_sandbox_fs::create_destination_entry(
                     &project_handle, &restore_name, false,
                 ).map_err(|_| "FRIDAY could not safely prepare a restoration from the verified original backup. Recovery evidence was preserved.".to_string())?;
@@ -1176,8 +1175,8 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
     drop(temp_file);
     // Restore the original DACL/mode on the prepared object before it becomes
     // the project entry. The subsequent rename does not inherit target ACLs.
-    apply_recovery_permissions(&parent_handle, temporary_name, record)?;
     let temporary_name = temporary.file_name().ok_or("The Undo temporary filename is invalid.")?;
+    apply_recovery_permissions(&parent_handle, temporary_name, record)?;
     let prepared = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
         &parent_handle, temporary_name, MAX_FILE_BYTES, MAX_SCANNED_ENTRIES,
     ).map_err(|_| "Could not verify the prepared original-file restoration through its verified parent directory.".to_string())?;
