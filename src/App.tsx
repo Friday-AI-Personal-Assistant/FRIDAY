@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 function readInitialTheme(): "dark" | "light" {
   try {
@@ -16,6 +16,19 @@ import PermissionsCenter from "./PermissionsCenter";
 
 type Page = "AI Chat" | "Coding Assistant" | "Overview" | "Modules" | "Privacy & Security" | "Permissions & Transparency" | "Settings";
 
+type JourneyStatus = "available" | "in-progress" | "needs-verification" | "planned";
+
+const JOURNEY_MILESTONES: Array<{ id: string; title: string; status: JourneyStatus }> = [
+  { id: "ai-chat", title: "AI Chat", status: "available" },
+  { id: "coding-assistant", title: "Coding Assistant", status: "in-progress" },
+  { id: "skills-store", title: "Skills Store", status: "needs-verification" },
+  { id: "midnight-azure", title: "Midnight Azure", status: "needs-verification" },
+  { id: "excel-intelligence", title: "Excel Intelligence", status: "planned" },
+  { id: "recovery-storage-manager", title: "Recovery Storage Manager", status: "planned" }
+];
+
+const JOURNEY_SNAPSHOT_KEY = "friday.developmentJourney.verifiedMilestones.v1";
+
 const modules = [
   { name: "Email Assistant", detail: "Organise messages and prepare replies for your approval.", icon: "✉", status: "Planned" },
   { name: "Job Hunter", detail: "Find relevant opportunities and compare them with your experience.", icon: "⌕", status: "Planned" },
@@ -29,8 +42,39 @@ function App() {
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [note, setNote] = useState("");
   const [workspaceMessage, setWorkspaceMessage] = useState("");
+  const [milestoneCelebration, setMilestoneCelebration] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const isDesktopApp = "__TAURI_INTERNALS__" in window;
+
+  useEffect(() => {
+    const current = Object.fromEntries(JOURNEY_MILESTONES.map(item => [item.id, item.status]));
+    try {
+      const saved = window.localStorage.getItem(JOURNEY_SNAPSHOT_KEY);
+      if (!saved) {
+        window.localStorage.setItem(JOURNEY_SNAPSHOT_KEY, JSON.stringify(current));
+        return;
+      }
+
+      let previous: Record<string, JourneyStatus>;
+      try {
+        previous = JSON.parse(saved) as Record<string, JourneyStatus>;
+      } catch {
+        // An unreadable snapshot is a new baseline, never a reason to announce a milestone.
+        window.localStorage.setItem(JOURNEY_SNAPSHOT_KEY, JSON.stringify(current));
+        return;
+      }
+
+      const newlyAvailable = JOURNEY_MILESTONES
+        .filter(item => item.status === "available" && previous[item.id] !== "available")
+        .map(item => item.title);
+
+      // Persist the new snapshot before showing anything, so a reload cannot replay it.
+      window.localStorage.setItem(JOURNEY_SNAPSHOT_KEY, JSON.stringify(current));
+      if (newlyAvailable.length) setMilestoneCelebration(newlyAvailable);
+    } catch {
+      // Without durable local state, suppress celebrations rather than repeat or invent them.
+    }
+  }, []);
 
   function updateTheme(next: "dark" | "light") {
     setTheme(next);
@@ -108,7 +152,7 @@ function App() {
           <div className="overview-hero">
             <div className="eyebrow"><span className="pulse" /> YOUR PERSONAL ASSISTANT</div>
             <h1>Good to see you.<br /><em>Let's make progress.</em></h1>
-            <p className="intro">A private space for your work, ideas and everyday tasks. FRIDAY is being built to put you in control.</p>
+            <p className="intro">A private space for your work, ideas and everyday tasks. I’m FRIDAY: here to be useful, clear about what I can do, and careful with what matters to you.</p>
             <div className="overview-hero-footer">
               <span className="overview-local-status"><span className="pulse" /> LOCAL-FIRST WORKSPACE</span>
               <span className="overview-roadmap-label">ON THE ROADMAP</span>
@@ -120,6 +164,14 @@ function App() {
           </div>
 
           <section className="development-journey" aria-labelledby="development-journey-title">
+            <div className="friday-personality-note">
+              <span className="friday-personality-mark" aria-hidden="true">F</span>
+              <p><strong>A note from FRIDAY</strong><span>I’ll show you what is ready, what still needs work, and what we’re building next. No pretend progress, no surprises.</span></p>
+            </div>
+            {milestoneCelebration.length > 0 && <div className="milestone-celebration" role="status" aria-live="polite">
+              <div><span className="celebration-kicker">A VERIFIED MILESTONE</span><strong>{milestoneCelebration.length === 1 ? milestoneCelebration[0] + " is now available" : milestoneCelebration.join(", ") + " are now available"}</strong><p>This capability has moved to Available in FRIDAY’s verified development journey. Take a look whenever you’re ready.</p></div>
+              <button type="button" onClick={() => setMilestoneCelebration([])} aria-label="Dismiss milestone celebration">Dismiss</button>
+            </div>}
             <div className="journey-heading">
               <div><span className="eyebrow">THE ROAD AHEAD</span><h2 id="development-journey-title">FRIDAY Development Journey</h2><p>Real capabilities, honest progress, and the next useful things we're building.</p></div>
               <span className="journey-roadmap-tag">ROADMAP-TRACKED</span>
