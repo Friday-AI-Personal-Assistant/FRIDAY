@@ -1111,6 +1111,8 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] #1121: Create Undo recovery journal/temp entries through verified directory handles and verify staged original bytes.
 - [x] #1122: Rework normal on-disk Undo around verified directory handles, bounded reads, identity-bound no-replace renames and post-install verification.
 - [ ] #1123–#1124: Repair interrupted Undo recovery and its crash/ReplaceFileW failure-state tests. Preserve the active Undo record when recovery has not completed; archive the transaction journal without overwriting; retain only artifacts that actually exist and are needed as evidence.
+- [ ] #1126: Rework interrupted Apply recovery to use verified project/backup directory handles, bounded identity-checked reads, no-replace handle-relative restoration and journal archival. Preserve recovery artifacts instead of deleting them during automatic recovery.
+- [ ] #1126: Update Apply crash-boundary tests to verify the exact retained artifact inventory and archived journal on Linux and Windows.
 - [ ] Remove remaining unsafe path-based cleanup from the Apply/Undo recovery paths. Do not replace it with a filename-only deletion fallback.
 - [ ] Move permission restoration and Apply recovery toward verified-handle operations; verify file identity immediately before any metadata mutation.
 - [ ] Define and test the recovery artifact state machine for every transaction boundary and documented Windows replacement outcome.

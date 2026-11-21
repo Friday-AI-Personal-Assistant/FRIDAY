@@ -904,71 +904,121 @@ fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoR
 
 fn recover_apply_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoRecord) -> Result<(), String> {
     validate_undo_record(record)?;
-    let target = safe_recovery_target(root, record)?;
-    let backup = backup_dir.join(format!("{}.bak", record.id));
-    let original = read_recovery_file(&backup, MAX_FILE_BYTES)?
-        .ok_or("The original backup for an interrupted Apply is missing. Recovery files were preserved.")?;
+    let canonical_root = validate_granted_root(root)?;
+    let target = safe_recovery_target(&canonical_root, record)?;
+    let (project_handle, target_name, project_identity) =
+        open_verified_code_parent(&canonical_root, &target)?;
+    let backup_handle = crate::coding_sandbox_fs::open_verified_root_directory(backup_dir)
+        .map_err(|_| "FRIDAY could not safely open the recovery folder. Recovery evidence was preserved.".to_string())?;
+    let backup_identity = crate::coding_sandbox_fs::verified_directory_handle_identity(&backup_handle)
+        .map_err(|_| "FRIDAY could not verify the recovery folder identity.".to_string())?;
+
+    let backup_name = OsString::from(format!("{}.bak", record.id));
+    let original = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+        &backup_handle, &backup_name, MAX_FILE_BYTES, MAX_CODE_BACKUP_FILES,
+    ).map_err(|_| "The original backup for an interrupted Apply is missing or unsafe. Recovery files were preserved.".to_string())?;
     if sha256_hex(&original) != record.original_sha256 {
         return Err("The original backup for an interrupted Apply failed SHA-256 verification. Recovery files were preserved.".into());
     }
-    let target_hash = recovery_hash(&target, MAX_FILE_BYTES)?;
-    let temporary = target.parent().unwrap().join(format!(".friday-code-edit-{}.tmp", record.id));
-    let displaced = target.parent().unwrap().join(format!(".friday-code-original-{}.tmp", record.id));
-    let temporary_hash = recovery_hash(&temporary, MAX_PROPOSED_FILE_BYTES as u64)?;
-    let displaced_hash = recovery_hash(&displaced, MAX_FILE_BYTES)?;
+
+    let temporary_name = OsString::from(format!(".friday-code-edit-{}.tmp", record.id));
+    let displaced_name = OsString::from(format!(".friday-code-original-{}.tmp", record.id));
+    let journal_name = OsString::from(format!("{}.txn.json", record.id));
+    let recovered_journal_name = OsString::from(format!("{}.recovered.json", record.id));
+    let read_optional = |parent: &File, name: &OsStr, limit: u64| -> Result<Option<Vec<u8>>, String> {
+        match crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+            parent, name, limit, MAX_SCANNED_ENTRIES,
+        ) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err("A recovery item changed identity, was redirected, or exceeded its safety limits. Recovery evidence was preserved.".into()),
+        }
+    };
+    let target_bytes = read_optional(&project_handle, &target_name, MAX_FILE_BYTES)?;
+    let temporary_bytes = read_optional(&project_handle, &temporary_name, MAX_PROPOSED_FILE_BYTES as u64)?;
+    let displaced_bytes = read_optional(&project_handle, &displaced_name, MAX_FILE_BYTES)?;
+    let target_hash = target_bytes.as_ref().map(|bytes| sha256_hex(bytes));
+    let temporary_hash = temporary_bytes.as_ref().map(|bytes| sha256_hex(bytes));
+    let displaced_hash = displaced_bytes.as_ref().map(|bytes| sha256_hex(bytes));
+    if displaced_hash.as_deref().is_some_and(|hash| hash != record.original_sha256) {
+        return Err("The displaced original from an interrupted Apply failed verification. Recovery evidence was preserved.".into());
+    }
+    if temporary_hash.as_deref().is_some_and(|hash| hash != record.resulting_sha256) {
+        return Err("The replacement temporary file from an interrupted Apply has unexpected contents. Recovery evidence was preserved.".into());
+    }
 
     match target_hash.as_deref() {
         Some(hash) if hash == record.resulting_sha256 => {
-            if let Some(hash) = displaced_hash.as_deref() {
-                if hash != record.original_sha256 { return Err("The displaced original from an interrupted Apply failed verification.".into()); }
-            }
-            if let Some(hash) = temporary_hash.as_deref() {
-                if hash != record.resulting_sha256 { return Err("The replacement temporary file from an interrupted Apply has unexpected contents.".into()); }
-            }
-            let undo_path = backup_dir.join(format!("{}.undo.json", record.id));
+            let undo_name = OsString::from(format!("{}.undo.json", record.id));
             match inspect_recovery_undo_state(backup_dir, record)? {
                 Some(true) => {},
                 Some(false) => return Err("A completed Apply has already-consumed Undo state. Recovery evidence was preserved.".into()),
                 None => {
-                    let bytes = serde_json::to_vec(record).map_err(|_| "Could not prepare a recovered Undo record.".to_string())?;
-                    let mut file = OpenOptions::new().write(true).create_new(true).open(&undo_path)
-                        .map_err(|_| "FRIDAY could not create the missing Undo record after Apply recovery.".to_string())?;
+                    let bytes = serde_json::to_vec(record)
+                        .map_err(|_| "Could not prepare a recovered Undo record.".to_string())?;
+                    let mut file = crate::coding_sandbox_fs::create_destination_entry(
+                        &backup_handle, &undo_name, false,
+                    ).map_err(|_| "FRIDAY could not safely create the missing Undo record after Apply recovery. Recovery evidence was preserved.".to_string())?;
                     file.write_all(&bytes).and_then(|_| file.sync_all())
-                        .map_err(|_| "FRIDAY could not flush the recovered Undo record.".to_string())?;
+                        .map_err(|_| "FRIDAY could not flush the recovered Undo record. Recovery evidence was preserved.".to_string())?;
+                    drop(file);
+                    let verified = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+                        &backup_handle, &undo_name, 16 * 1024, MAX_SCANNED_ENTRIES,
+                    ).map_err(|_| "FRIDAY could not verify the recovered Undo record.".to_string())?;
+                    if verified != bytes {
+                        return Err("The recovered Undo record failed read-back verification. Recovery evidence was preserved.".into());
+                    }
                 }
             }
-            if displaced_hash.is_some() { remove_recovery_copy(&displaced, &record.original_sha256)?; }
-            if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.resulting_sha256)?; }
         }
-        Some(hash) if hash == record.original_sha256 => {
-            if let Some(hash) = displaced_hash.as_deref() {
-                if hash != record.original_sha256 { return Err("An interrupted Apply left an unexpected displaced file. Recovery copies were preserved.".into()); }
-                remove_recovery_copy(&displaced, &record.original_sha256)?;
-            }
-            if let Some(hash) = temporary_hash.as_deref() {
-                if hash != record.resulting_sha256 { return Err("An interrupted Apply left an unexpected replacement temporary file.".into()); }
-                remove_recovery_copy(&temporary, &record.resulting_sha256)?;
-            }
-        }
+        Some(hash) if hash == record.original_sha256 => {}
         None => {
             if displaced_hash.as_deref() == Some(record.original_sha256.as_str()) {
-                fs::rename(&displaced, &target)
-                    .map_err(|_| "FRIDAY could not restore the displaced original after interrupted Apply. The backup remains available.".to_string())?;
-                if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.resulting_sha256)?; }
+                let identity = verified_code_child_identity(&project_handle, &displaced_name)?;
+                crate::coding_sandbox_fs::rename_file_noreplace(
+                    &project_handle, &displaced_name, &target_name, project_identity, identity,
+                ).map_err(|_| "FRIDAY could not restore the displaced original without replacing an unexpected project entry. Recovery evidence was preserved.".to_string())?;
             } else if displaced_hash.is_none() {
-                let restore_temp = target.parent().unwrap().join(format!(".friday-code-recovery-{}.tmp", record.id));
-                write_recovery_copy(&restore_temp, &original, &record.original_sha256, record)?;
-                fs::rename(&restore_temp, &target)
-                    .map_err(|_| "FRIDAY could not reinstall the verified original backup. The backup remains available.".to_string())?;
-                if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.resulting_sha256)?; }
+                let restore_name = OsString::from(format!(".friday-code-recovery-{}.tmp", record.id));
+                let restore_path = target.parent().unwrap().join(&restore_name);
+                let mut restore = crate::coding_sandbox_fs::create_destination_entry(
+                    &project_handle, &restore_name, false,
+                ).map_err(|_| "FRIDAY could not safely prepare a restoration from the verified original backup. Recovery evidence was preserved.".to_string())?;
+                restore.write_all(&original)
+                    .and_then(|_| restore.sync_all())
+                    .map_err(|_| "FRIDAY could not flush the restoration from the verified original backup. Recovery evidence was preserved.".to_string())?;
+                #[cfg(unix)]
+                if let Some(mode) = record.original_unix_mode {
+                    use std::os::unix::fs::PermissionsExt;
+                    restore.set_permissions(fs::Permissions::from_mode(mode & 0o777))
+                        .map_err(|_| "FRIDAY could not restore the original file permissions.".to_string())?;
+                }
+                drop(restore);
+                #[cfg(windows)]
+                apply_recovery_permissions(&restore_path, record)?;
+                let verified = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+                    &project_handle, &restore_name, MAX_FILE_BYTES, MAX_SCANNED_ENTRIES,
+                ).map_err(|_| "FRIDAY could not verify the prepared restoration through its verified parent directory.".to_string())?;
+                if sha256_hex(&verified) != record.original_sha256 {
+                    return Err("The prepared restoration failed SHA-256 verification. Recovery evidence was preserved.".into());
+                }
+                let identity = verified_code_child_identity(&project_handle, &restore_name)?;
+                crate::coding_sandbox_fs::rename_file_noreplace(
+                    &project_handle, &restore_name, &target_name, project_identity, identity,
+                ).map_err(|_| "FRIDAY could not install the verified original without replacing an unexpected project entry. Recovery evidence was preserved.".to_string())?;
             } else {
-                return Err("The displaced original from interrupted Apply failed verification. All copies were preserved.".into());
+                return Err("The displaced original from interrupted Apply failed verification. All recovery evidence was preserved.".into());
             }
         }
         Some(_) => return Err("The project file has contents that match neither side of an interrupted Apply. FRIDAY preserved every recovery copy.".into()),
     }
-    fs::remove_file(backup_dir.join(format!("{}.txn.json", record.id)))
-        .map_err(|_| "FRIDAY resolved the Apply transaction but could not remove its journal.".to_string())?;
+
+    // Keep all transaction artifacts as recovery evidence. Archive the journal
+    // with a verified no-replace rename; never unlink evidence by pathname.
+    let journal_identity = verified_code_child_identity(&backup_handle, &journal_name)?;
+    crate::coding_sandbox_fs::rename_file_noreplace(
+        &backup_handle, &journal_name, &recovered_journal_name, backup_identity, journal_identity,
+    ).map_err(|_| "FRIDAY reconciled the Apply transaction but could not safely archive its journal. All recovery evidence was preserved.".to_string())?;
     Ok(())
 }
 
@@ -2319,8 +2369,9 @@ mod tests {
         fs::remove_file(&file).unwrap();
         assert_eq!(recover_project_code_transactions(&root).unwrap(), 1);
         assert_eq!(fs::read(&file).unwrap(), original);
-        assert!(!root.join(format!(".friday-code-edit-{token}.tmp")).exists());
+        assert!(root.join(format!(".friday-code-edit-{token}.tmp")).is_file());
         assert!(!backup_dir.join(format!("{token}.txn.json")).exists());
+        assert!(backup_dir.join(format!("{token}.recovered.json")).is_file());
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2929,8 +2980,11 @@ mod tests {
                 assert!(!backup_dir.join(format!("{}.undo.json", record.id)).exists());
             }
             assert!(!backup_dir.join(format!("{}.txn.json", record.id)).exists(), "stage {stage}");
-            assert!(!root.join(format!(".friday-code-edit-{}.tmp", record.id)).exists(), "stage {stage}");
-            assert!(!root.join(format!(".friday-code-original-{}.tmp", record.id)).exists(), "stage {stage}");
+            assert!(backup_dir.join(format!("{}.recovered.json", record.id)).is_file(), "stage {stage}");
+            let edit_temporary = root.join(format!(".friday-code-edit-{}.tmp", record.id));
+            let displaced_original = root.join(format!(".friday-code-original-{}.tmp", record.id));
+            assert_eq!(edit_temporary.is_file(), stage == "temporary" || stage == "first-rename", "edit evidence for {stage}");
+            assert_eq!(displaced_original.is_file(), stage == "first-rename" || stage == "second-rename" || stage == "verified", "displaced evidence for {stage}");
             fs::remove_dir_all(&root).unwrap();
         }
     }
