@@ -1238,7 +1238,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ## 29. OpenJarvis skill-system selective reuse — audit and adoption decision
 
-**Status:** SOURCE AUDIT COMPLETE — strict importer and tool bridge are the next implementation work; no upstream runtime code has been copied or enabled.
+**Status:** SOURCE AUDIT COMPLETE; FIRST STRICT IMPORTER/QUARANTINE IMPLEMENTATION COMMITTED — Linux/Windows CI pending. No upstream runtime code has been copied or enabled.
 
 - [x] Verify current FRIDAY branch/HEAD and latest Linux/Windows CI before this work: `foundation/evaluation`, `da6a9aa88047ed1ef0c5d132f63c3c5130814041`, #1142 run [44905619015](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44905619015).
 - [x] Pin and inspect current OpenJarvis `main`: `5a9b5268f2432f7ea4fe402e384ecb6b64a649bb`.
@@ -1246,10 +1246,10 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] Record the feature-level reuse decisions, upstream limitations, licence obligations, FRIDAY package contract, tool-execution boundary and staged acceptance criteria in [OPENJARVIS-SKILL-SYSTEM-REUSE-AUDIT.md](OPENJARVIS-SKILL-SYSTEM-REUSE-AUDIT.md).
 - [x] Decision: reuse the compatible `SKILL.md` package convention and the upstream separation of discovery, manifest, manager, adapter, executor and event concepts. Keep FRIDAY's Tauri/React shell and Rust backend as the sole authority for permissions and actual tool execution.
 - [x] Decision: do not port OpenJarvis's permissive markdown fallback, optional signature/scanner behavior, arbitrary argument-template execution, Python worker pool or general synchronous workflow engine into the first FRIDAY implementation.
-- [ ] Implement a strict, bounded, instructions-only `SKILL.md` importer/parser in Rust. Imported packages must enter quarantine and remain inert; reject malformed metadata, unsafe paths, oversized files and executable content.
-- [ ] Persist source URL/publisher/revision, licence, package hash, import time, trust status and scanner findings. Detect package tampering on reinspection.
-- [ ] Add adversarial Linux/Windows tests for duplicate/invalid metadata, path traversal, symlinks/reparse points, malformed frontmatter, oversized content, unsupported scripts and hash mismatch.
-- [ ] Add user-visible inspection/review before install; install must leave the package disabled and unloaded. No implicit permission grant, network access or execution.
+- [x] Implement the first strict, bounded, instructions-only `SKILL.md` parser and local quarantine command in Rust. It accepts exactly one `SKILL.md`, bounds content/frontmatter, rejects unsupported metadata and extra package files, and never installs, enables, loads, executes or grants access. Linux/Windows CI is pending; filesystem race hardening and physical Windows acceptance remain open.
+- [ ] Extend quarantine metadata with verified source URL/publisher/revision, licence declaration, package hash, import time and trust findings; add bounded inventory and tamper reinspection. Current first increment stores content hash and self-declared licence/compatibility only; publisher/source verification is not implemented.
+- [x] Add parser regression tests for duplicate/unknown fields, unsupported nested YAML/anchors, invalid IDs, missing delimiters, empty body and oversized content. [ ] Add adversarial filesystem tests for path traversal, symlinks/reparse points, unsupported extra files/scripts and quarantine tampering; physical Windows acceptance remains outstanding.
+- [x] Add a Skills Store import action and unverified quarantine preview. No install transition exists yet; inspected content remains inert and is not added to session context. [ ] Build trust review and explicit install-disabled transition after source/provenance hardening.
 - [ ] After importer acceptance, build a Rust-native typed tool registry and permission-checked skill-to-tool bridge. Authorize every invocation against backend-owned tool policy and current exact user grants; unknown tools fail closed.
 - [ ] Connect one bounded first-party skill/tool end-to-end, then prioritize Excel Intelligence on that shared foundation.
 - [ ] Keep executable third-party extensions blocked until OS-enforced process isolation, resource limits, cancellation and adversarial physical-platform acceptance are independently proven.
