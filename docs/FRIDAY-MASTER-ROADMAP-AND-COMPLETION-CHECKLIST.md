@@ -1161,6 +1161,21 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 
 
+### Identity-bound recovery cleanup primitive and failure-path preservation — #1137–#1141
+
+**Status:** #1137–#1139 introduced the Windows identity-bound recovery-file deletion gate and adversarial identity/hard-link tests, but all three CI runs failed because two existing Windows call sites had not been updated for the helper's new fifth argument. #1140 fixed those call sites and passed both Windows and Linux CI (commit `f39259e11c9867a7e0a2abe0efafeb22fcb46417`, run [44904582789](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44904582789)). #1141 is the next preservation-hardening increment; its CI result is pending.
+
+- [x] Add a recovery-specific deletion wrapper requiring the expected file identity; Windows checks the opened handle identity, regular-file state, single-link condition, bounded size and SHA-256 before applying handle-bound delete disposition.
+- [x] Keep Unix recovery deletion fail-closed; no name-based unlink fallback was introduced.
+- [x] Add Windows regression coverage for mismatched identity, successful identity-bound deletion and hard-link rejection; add Unix coverage proving unsupported cleanup preserves the file.
+- [x] Fix the two stale Windows helper call sites in #1140; both supported CI jobs passed.
+- [ ] #1141 removes pathname-based deletion from unverified Apply/Undo temporary failure paths and disables the unused path-based recovery-copy deletion helper. Partially written or hash-mismatched artifacts are preserved for inspection; verify Linux and Windows CI before marking complete.
+- [ ] Do not yet wire deletion into Apply/Undo journal or displaced-copy lifecycle. These remain recovery evidence until transaction ownership, retention eligibility and exact original-handle identity are carried through the complete state machine.
+- [ ] Next: add lifecycle-bound inventory/identity records for eligible transient artifacts, then integrate Windows-only identity-bound cleanup behind state and ownership checks. Unix remains preserve-only until a reviewed race-safe primitive exists.
+- [ ] Add/retain adversarial coverage for locked files, reparse/symlink substitution, parent replacement, same-name substitution and partial cleanup before any production cleanup call site is enabled.
+
+**User impact:** FRIDAY now has a tested Windows-only deletion primitive, but it is not yet authorized to delete Coding Assistant recovery evidence. Unverified or partially written temporary files are retained rather than removed by pathname. This intentionally favors recoverability over disk-space reclamation.
+
 ### Recovery cleanup and target-validation audit — #1136
 
 **Status:** AUDIT COMPLETE — unsafe cleanup call sites identified; safe deletion implementation remains blocked pending platform-specific guarantees and adversarial tests.
