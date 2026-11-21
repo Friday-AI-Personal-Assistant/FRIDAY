@@ -1017,3 +1017,16 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 **Security finding and correction:** the initial chat request respected the saved-memory opt-out, but the model continuation after an approved tool call rebuilt memory context without checking that preference. This could include saved memories in a later local-model prompt even while the UI said inclusion was disabled. Both paths now use the same preference-enforcing builder. No saved memory is deleted, no new network access is introduced, and the local Ollama model remains the only configured chat inference destination. This is a privacy hardening correction; CI and physical acceptance remain pending.
 
 The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
+
+
+### Safe response retry workflow — #1105
+
+- [x] Add a Retry action to the latest assistant response; load the previous user prompt back into the composer for review before sending.
+- [x] Preserve the previous answer and conversation history until the user explicitly presses Retry.
+- [x] Reuse the existing edit-and-resend path so a retry replaces only the selected turn and later replies after explicit submission.
+- [x] Hide retry for turns that used an approved model tool, avoiding accidental repetition of actions or side effects.
+- [x] Keep retry local to the currently configured Ollama model; do not introduce automatic retries, provider fallback, or additional network access.
+- [ ] Verify Linux and Windows CI.
+- [ ] Physically validate prompt review, cancel, retry, interrupted response, tool-used turn suppression and narrow-window layout in the Windows desktop app.
+
+**User impact:** when an answer is incomplete or unsatisfactory, users can bring the exact last prompt back, review or change it, and explicitly request a new answer. The previous answer remains in the saved conversation until the user sends the retry. Turns that already executed an approved tool do not expose Retry, because repeating a request could repeat an external or consequential action. No background retry or extra model/provider cost occurs without the user's Send action. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
