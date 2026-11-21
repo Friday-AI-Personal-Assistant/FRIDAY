@@ -305,7 +305,7 @@ pub fn uninstall_skill(app: AppHandle, skill_id: String) -> Result<String, Strin
 
 
 /// Metadata extracted from a quarantined, instructions-only community skill.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommunitySkillPreview {
     id: String, name: String, description: String, version: String,
@@ -340,6 +340,68 @@ fn read_skill_manifest_from_directory(source: &Path) -> Result<String, String> {
         return Err("SKILL.md changed or exceeded its size limit while being read.".into());
     }
     String::from_utf8(bytes).map_err(|_| "SKILL.md must be valid UTF-8.".into())
+}
+
+
+/// Read one quarantine child through the already-pinned directory handle.
+fn read_quarantine_child(directory: &std::fs::File, name: &str, limit: usize) -> Result<Vec<u8>, String> {
+    let mut file = crate::coding_sandbox_fs::open_file_nofollow(directory, std::ffi::OsStr::new(name))
+        .map_err(|_| format!("Quarantine {name} is missing or is not a safe regular file."))?;
+    let before = file.metadata().map_err(|_| format!("Could not inspect quarantine {name}."))?;
+    if !before.is_file() || before.len() as usize > limit {
+        return Err(format!("Quarantine {name} is not a regular file or exceeds its size limit."));
+    }
+    let mut bytes = Vec::with_capacity(before.len() as usize);
+    file.by_ref().take((limit + 1) as u64).read_to_end(&mut bytes)
+        .map_err(|_| format!("Could not read quarantine {name}."))?;
+    let after = file.metadata().map_err(|_| format!("Could not recheck quarantine {name}."))?;
+    if bytes.len() > limit || bytes.len() as u64 != before.len()
+        || after.len() != before.len() || !after.is_file() {
+        return Err(format!("Quarantine {name} changed while being inspected."));
+    }
+    Ok(bytes)
+}
+
+/// Verify stored files against the content-addressed directory identity.
+/// Integrity matching does not authenticate the publisher or prove safety.
+fn validate_quarantine_payload(
+    expected_id: &str,
+    content: &[u8],
+    metadata_bytes: &[u8],
+) -> Result<CommunitySkillPreview, String> {
+    if expected_id.len() != 64 || !expected_id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return Err("Quarantine identifier is invalid.".into());
+    }
+    let actual_hash = format!("{:x}", Sha256::digest(content));
+    if actual_hash != expected_id {
+        return Err("Quarantined SKILL.md does not match its content-addressed identifier.".into());
+    }
+    let content = std::str::from_utf8(content).map_err(|_| "Quarantined SKILL.md is not valid UTF-8.".to_string())?;
+    let (name, description, license, compatibility, _) = parse_skill_markdown(content)?;
+    let preview: CommunitySkillPreview = serde_json::from_slice(metadata_bytes)
+        .map_err(|_| "Quarantine inspection metadata is invalid.".to_string())?;
+    if preview.id != expected_id || preview.content_sha256 != actual_hash
+        || preview.name != name || preview.description != description
+        || preview.license != license || preview.compatibility != compatibility
+        || preview.status != "QUARANTINED — NOT INSTALLED OR ENABLED"
+        || preview.executable_content || !preview.permissions.is_empty() {
+        return Err("Quarantine metadata does not match the stored skill or its disabled state.".into());
+    }
+    Ok(preview)
+}
+
+/// Re-inspect a quarantined item without loading or executing it.
+#[tauri::command]
+pub fn reinspect_community_skill(app: AppHandle, skill_id: String) -> Result<CommunitySkillPreview, String> {
+    crate::permissions::authorize_command("skills.import.inspect", "skills.import.inspect")?;
+    let root = app.path().app_data_dir()
+        .map_err(|e| format!("Cannot locate FRIDAY's application data folder: {e}"))?
+        .join("skills").join("quarantine");
+    let directory = crate::coding_sandbox_fs::open_verified_root_directory(&root.join(&skill_id))
+        .map_err(|_| "Quarantine entry is missing or its directory path is unsafe.".to_string())?;
+    let content = read_quarantine_child(&directory, "SKILL.md", 32_768)?;
+    let metadata = read_quarantine_child(&directory, "inspection.json", 16_384)?;
+    validate_quarantine_payload(&skill_id, &content, &metadata)
 }
 
 fn parse_skill_markdown(content: &str) -> Result<(String, String, Option<String>, Option<String>, String), String> {
@@ -459,6 +521,27 @@ pub fn inspect_and_quarantine_skill(app: AppHandle) -> Result<CommunitySkillPrev
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quarantine_reinspection_detects_content_and_metadata_tampering() {
+        let content = b"---\nname: sample-skill\ndescription: A sample skill\n---\n\nUntrusted text.\n";
+        let id = format!("{:x}", Sha256::digest(content));
+        let preview = CommunitySkillPreview {
+            id: id.clone(), name: "sample-skill".into(), description: "A sample skill".into(),
+            version: "unverified".into(), license: None, compatibility: None,
+            content_sha256: id.clone(), status: "QUARANTINED — NOT INSTALLED OR ENABLED".into(),
+            permissions: Vec::new(), executable_content: false,
+        };
+        let metadata = serde_json::to_vec(&preview).unwrap();
+        assert!(validate_quarantine_payload(&id, content, &metadata).is_ok());
+        assert!(validate_quarantine_payload(&id, b"tampered", &metadata).is_err());
+        let mut changed: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
+        changed["executableContent"] = serde_json::Value::Bool(true);
+        assert!(validate_quarantine_payload(&id, content, &serde_json::to_vec(&changed).unwrap()).is_err());
+        changed["executableContent"] = serde_json::Value::Bool(false);
+        changed["status"] = serde_json::Value::String("INSTALLED".into());
+        assert!(validate_quarantine_payload(&id, content, &serde_json::to_vec(&changed).unwrap()).is_err());
+    }
 
     #[test]
     fn community_skill_parser_accepts_bounded_supported_frontmatter() {
