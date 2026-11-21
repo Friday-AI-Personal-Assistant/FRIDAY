@@ -2,7 +2,7 @@
 
 > **Purpose:** This is the durable, cross-conversation source of truth for what FRIDAY is intended to become, what has been verified as implemented, what remains, the order of work, and the relative effort/risk of each area. A new development conversation must read this file and the Coding Assistant completion checklist before making changes.
 >
-> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`; the first read-only Excel Intelligence workspace/backend passed Linux and Windows CI in #1199 and #1200. The follow-on Excel Data Quality Intelligence batch is now implemented and awaiting its own CI verification. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The current product focus is richer read-only Excel Analyst workflows; the next stages are workbook summaries/charts/reports and the permissioned first-party skill/tool bridge. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
+> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`; the first read-only Excel Intelligence workspace/backend passed Linux and Windows CI in #1199 and #1200. The follow-on Excel Data Quality Intelligence batch passed Linux and Windows CI in #1202–#1205; #1201 was an earlier failed iteration superseded by the corrected implementation. The combined read-only Excel workspace and bounded data-quality review are verified; natural-language workbook analysis, charts/reports and the permissioned first-party Excel Analyst skill remain future work. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The current product focus is richer read-only Excel Analyst workflows; the next stages are workbook summaries/charts/reports and the permissioned first-party skill/tool bridge. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
 >
 > **Do not confuse a plan with implementation.** A checkbox is complete only when code, tests, and (where required) real-device acceptance demonstrate it. Update this document after each meaningful batch with commit, CI run, and evidence.
 
@@ -142,7 +142,7 @@ When choosing between features or implementation approaches, prioritize: (1) saf
 | Skills framework | IN PROGRESS | Skill install/enable/load/unload and package integrity are implemented; tool connections and complete catalogue experience remain. |
 | Web Research skill | PLANNED / PARTIAL | Skill instructions exist; integrated research tools, citations and report workflow are not verified complete. |
 | PDF Reader skill | PLANNED / PARTIAL | Skill instructions exist; dedicated extraction, page-aware citations and complete UI workflow are not verified complete. |
-| Excel Intelligence skill | PLANNED | Explicit product goal; not counted as implemented. |
+| Excel Intelligence skill | IN PROGRESS — READ-ONLY WORKSPACE | XLSX/CSV preview, bounded summaries and data-quality hints are CI-verified; natural-language analysis, charts/reports and permissioned skill integration remain. |
 | Core assistant/chat experience | PLANNED / AUDIT REQUIRED | Audit current implementation before adding or duplicating components. |
 | Engine/provider manager | PLANNED | Unified local/cloud engine abstraction and provider lifecycle required. |
 | Model catalogue/manager | PLANNED | Install, verify, choose, display requirements/licence/cost and unload models. |
@@ -1302,3 +1302,19 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 **Product principle:** The user should regularly have something visible, testable or enjoyable to interact with. Avoid long stretches of invisible foundation-only work unless a concrete safety or reliability blocker requires it.
 
 **Excel first-slice boundary:** current support is `.xlsx` and `.csv` read-only analysis under strict input, ZIP package, worksheet, row, column and cell bounds. The preview treats row one as headers and summarizes numeric values from cached cells. It does not write files, preserve or edit workbook formatting, generate charts, interpret named ranges/tables, or provide a full natural-language analyst skill. Legacy `.xls` remains unsupported.\n\n**Milestone celebration boundary:** the UI only observes the app's versioned local roadmap-status snapshot. It does not inspect GitHub, run CI, perform background development, or independently verify feature quality. The developer must update a milestone to `Available` only after its implementation and applicable acceptance checks are complete. A clean first-run baseline is intentionally silent; no historical milestone is celebrated as if it had just shipped.
+
+
+## 31. Excel Data Quality Intelligence — first analyst-quality batch
+
+**Status:** DONE — CI VERIFIED (Linux and Windows). The initial implementation run #1201 failed; the corrected backend and integrated frontend/CSS/roadmap runs #1202, #1203, #1204 and #1205 passed. The final combined state is represented by #1205. This completes the bounded data-quality review slice, not the full Excel Analyst skill.
+
+- [x] Detect blank column headers and duplicate headers (case-insensitive after trimming).
+- [x] Flag columns containing mixed inferred value types.
+- [x] Identify repeated non-empty rows using bounded, normalized row comparisons.
+- [x] Suggest potential numeric outliers using the 1.5× IQR rule when enough numeric values exist; findings remain review hints, not confirmed errors.
+- [x] Bound the number of findings and sample row references returned to the UI.
+- [x] Display severity, category, explanation, occurrence count and sample row references in the Excel workspace.
+- [x] Keep all analysis local and read-only; never modify, delete, recalculate or upload workbook data.
+- [x] Verify the corrected implementation through Linux and Windows CI in #1202–#1205.
+
+**Next batch:** Natural-language Excel analysis over the currently selected, bounded workbook/sheet context. Prefer deterministic local query handling for supported aggregates, rankings and simple comparisons; show the evidence/columns used, and ask for clarification or explain unsupported questions rather than guessing. Do not send full workbook contents to a cloud model. Keep the workflow read-only and disclose any future provider/network use before it can occur.
