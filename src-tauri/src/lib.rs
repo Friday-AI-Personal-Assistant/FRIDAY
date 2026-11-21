@@ -27,6 +27,7 @@ pub fn run() {
             workspace::save_private_note,
             workspace::read_private_note,
             conversations::list_conversations,
+            conversations::search_conversations,
             conversations::load_conversation,
             conversations::save_conversation,
             conversations::delete_conversation,

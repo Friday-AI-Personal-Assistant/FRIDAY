@@ -96,6 +96,7 @@ const COMMAND_POLICIES: &[CommandPolicy] = &[
     CommandPolicy { command_id: "workspace.note.write", capability: "workspace.note.write" },
     CommandPolicy { command_id: "workspace.note.read", capability: "workspace.note.read" },
     CommandPolicy { command_id: "conversations.list", capability: "conversations.list" },
+    CommandPolicy { command_id: "conversations.search", capability: "conversations.search" },
     CommandPolicy { command_id: "conversations.read", capability: "conversations.read" },
     CommandPolicy { command_id: "conversations.write", capability: "conversations.write" },
     CommandPolicy { command_id: "conversations.delete", capability: "conversations.delete" },
@@ -165,6 +166,7 @@ const REGISTERED_IPC_COMMANDS: &[IpcCommand] = &[
     IpcCommand { handler: "workspace::save_private_note", command_id: "workspace.note.write", capability: "workspace.note.write", module: "workspace" },
     IpcCommand { handler: "workspace::read_private_note", command_id: "workspace.note.read", capability: "workspace.note.read", module: "workspace" },
     IpcCommand { handler: "conversations::list_conversations", command_id: "conversations.list", capability: "conversations.list", module: "conversations" },
+    IpcCommand { handler: "conversations::search_conversations", command_id: "conversations.search", capability: "conversations.search", module: "conversations" },
     IpcCommand { handler: "conversations::load_conversation", command_id: "conversations.read", capability: "conversations.read", module: "conversations" },
     IpcCommand { handler: "conversations::save_conversation", command_id: "conversations.write", capability: "conversations.write", module: "conversations" },
     IpcCommand { handler: "conversations::delete_conversation", command_id: "conversations.delete", capability: "conversations.delete", module: "conversations" },
@@ -340,6 +342,7 @@ mod tests {
             ("workspace.note.write", "workspace.note.write"),
             ("workspace.note.read", "workspace.note.read"),
             ("conversations.list", "conversations.list"),
+            ("conversations.search", "conversations.search"),
             ("conversations.read", "conversations.read"),
             ("conversations.write", "conversations.write"),
             ("conversations.delete", "conversations.delete"),
@@ -365,6 +368,7 @@ mod tests {
         assert!(authorize_command("skills.install", "skills.enable").is_err());
         assert!(authorize_command("memory.delete", "memory.list").is_err());
         assert!(authorize_command("conversations.delete", "conversations.read").is_err());
+        assert!(authorize_command("conversations.search", "conversations.delete").is_err());
         assert!(authorize_command("conversations.pin", "conversations.archive").is_err());
         assert!(authorize_command("conversations.archive", "conversations.pin").is_err());
     }

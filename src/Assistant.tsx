@@ -52,6 +52,8 @@ export default function Assistant() {
   const [activeTitle, setActiveTitle] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
+  const [historySearchResults, setHistorySearchResults] = useState<ConversationSummary[] | null>(null);
+  const [historySearchLoading, setHistorySearchLoading] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
@@ -92,6 +94,23 @@ export default function Assistant() {
   }
 
   useEffect(() => { void refreshHistory(); }, []);
+  useEffect(() => {
+    const query = historySearch.trim();
+    if (!desktop || !query) {
+      setHistorySearchResults(null);
+      setHistorySearchLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setHistorySearchLoading(true);
+    const timer = window.setTimeout(() => {
+      void invoke<ConversationSummary[]>("search_conversations", { query, archived: showArchived })
+        .then(results => { if (!cancelled) { setHistorySearchResults(results); setHistoryError(""); } })
+        .catch(error => { if (!cancelled) { setHistorySearchResults([]); setHistoryError(String(error)); } })
+        .finally(() => { if (!cancelled) setHistorySearchLoading(false); });
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [desktop, historySearch, showArchived]);
   async function refreshMemories() {
     if (!desktop) return;
     try {
@@ -279,7 +298,9 @@ export default function Assistant() {
     </div>;
   }
 
-  const matchingConversations = conversations.filter(item => item.archived === showArchived && historyMatches(item, historySearch));
+  const matchingConversations = historySearch.trim()
+    ? (historySearchResults || []).filter(item => item.archived === showArchived)
+    : conversations.filter(item => item.archived === showArchived);
   const pinnedConversations = matchingConversations.filter(item => item.pinned);
   const otherConversations = matchingConversations.filter(item => !item.pinned);
 
@@ -486,14 +507,15 @@ export default function Assistant() {
     <div className="chat-layout">
       <aside className="conversation-sidebar" aria-label="Conversation history">
         <div className="conversation-sidebar-head"><strong>CHAT HISTORY</strong><button onClick={() => void refreshHistory()} disabled={historyLoading} aria-label="Refresh chat history">↻</button></div>
-        <input className="conversation-search" aria-label="Search conversations" placeholder="Search titles and latest messages…" value={historySearch} onChange={e => setHistorySearch(e.target.value)} />
-        {historyLoading && <small className="history-hint">Loading…</small>}
+        <input className="conversation-search" aria-label="Search all saved conversations" placeholder="Search all chats and messages…" value={historySearch} onChange={e => setHistorySearch(e.target.value)} />
+        {historyLoading && <small className="history-hint">Loading history…</small>}
+        {historySearchLoading && <small className="history-hint">Searching saved messages…</small>}
         <div className="history-tabs" role="group" aria-label="Conversation history view">
           <button className={!showArchived ? "active" : ""} onClick={() => setShowArchived(false)} aria-pressed={!showArchived}>Active ({conversations.filter(item => !item.archived).length})</button>
           <button className={showArchived ? "active" : ""} onClick={() => setShowArchived(true)} aria-pressed={showArchived}>Archived ({conversations.filter(item => item.archived).length})</button>
         </div>
         {!conversations.length && !historyLoading && <p className="history-hint">Your saved chats will appear here.</p>}
-        {conversations.length > 0 && !matchingConversations.length && <p className="history-hint">{historySearch.trim() ? "No matching conversations." : showArchived ? "No archived conversations. Archive a chat to keep it out of your active history." : "No active conversations. Your archived chats are still safe."}</p>}
+        {conversations.length > 0 && !matchingConversations.length && !historySearchLoading && <p className="history-hint">{historySearch.trim() ? "No matching conversations in this view." : showArchived ? "No archived conversations. Archive a chat to keep it out of your active history." : "No active conversations. Your archived chats are still safe."}</p>}
         <div className="conversation-list">
           {!!pinnedConversations.length && <section className="conversation-group"><h3>{showArchived ? "PINNED ARCHIVES" : "PINNED"}</h3>{pinnedConversations.map(renderConversationItem)}</section>}
           {!!otherConversations.length && <section className="conversation-group"><h3>{showArchived ? "ARCHIVED" : "RECENT"}</h3>{otherConversations.map(renderConversationItem)}</section>}

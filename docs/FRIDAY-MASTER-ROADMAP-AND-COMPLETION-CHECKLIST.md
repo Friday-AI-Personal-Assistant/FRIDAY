@@ -978,3 +978,16 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Physically validate history layout, pin/archive actions, legacy-history loading and archive restoration in the Windows desktop app.
 
 **User impact:** important chats stay at the top, old chats can be moved out of the active list without being deleted, and archived conversations can be restored at any time. Existing encrypted chat files remain compatible. Permanent deletion remains a separate, explicitly confirmed action. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
+
+
+### Full-text local conversation search (#1097)
+
+- [x] Search conversation titles and every saved user/FRIDAY message, case-insensitively, within the encrypted local store.
+- [x] Keep search local-only: no cloud service, network request, third-party index or new external permission.
+- [x] Scope results to the currently selected Active or Archived history view; retain pinned-first and recent-first ordering.
+- [x] Debounce interactive search and bound queries to 1–200 characters and results to 100 conversations.
+- [x] Return bounded matching-message previews and add unit coverage for older-message and title matches.
+- [ ] Verify Linux and Windows CI.
+- [ ] Physically validate search speed, Unicode matching, archive filtering and large-history behaviour in the Windows desktop app.
+
+**User impact:** people can find older discussions and answers without opening conversations individually. Search reads the existing encrypted local history and never uploads message content. Search remains limited to the 500-conversation local history store and returns at most 100 matching conversations per query. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.

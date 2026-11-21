@@ -91,14 +91,51 @@ pub fn list_conversations(app: AppHandle) -> Result<Vec<ConversationSummary>, St
     crate::permissions::authorize_command("conversations.list", "conversations.list")?;
     let _guard = STORE_LOCK.lock().map_err(|_| "Chat history is busy.".to_string())?;
     let store = read_store(&app)?;
-    let mut items: Vec<_> = store.conversations.into_iter().map(|c| ConversationSummary {
-        id: c.id, title: c.title, created_at: c.created_at, updated_at: c.updated_at,
-        message_count: c.messages.len(),
-        preview: c.messages.last().map(|message| message.content.chars().take(180).collect()).unwrap_or_default(),
-        pinned: c.pinned,
-        archived: c.archived,
-    }).collect();
+    let mut items: Vec<_> = store.conversations.iter().map(|c| conversation_summary(
+        c, c.messages.last().map(|message| message_preview(&message.content)).unwrap_or_default()
+    )).collect();
     items.sort_by(|a,b| b.pinned.cmp(&a.pinned).then_with(|| b.updated_at.cmp(&a.updated_at)));
+    Ok(items)
+}
+
+fn conversation_summary(c: &Conversation, preview: String) -> ConversationSummary {
+    ConversationSummary {
+        id: c.id.clone(), title: c.title.clone(), created_at: c.created_at, updated_at: c.updated_at,
+        message_count: c.messages.len(), preview, pinned: c.pinned, archived: c.archived,
+    }
+}
+
+fn message_preview(content: &str) -> String {
+    content.chars().take(180).collect()
+}
+
+fn matches_query(conversation: &Conversation, query: &str) -> bool {
+    let needle = query.to_lowercase();
+    conversation.title.to_lowercase().contains(&needle)
+        || conversation.messages.iter().any(|message| message.content.to_lowercase().contains(&needle))
+}
+
+#[tauri::command]
+pub fn search_conversations(app: AppHandle, query: String, archived: bool) -> Result<Vec<ConversationSummary>, String> {
+    crate::permissions::authorize_command("conversations.search", "conversations.search")?;
+    let query = query.trim();
+    if query.is_empty() || query.len() > 200 || query.chars().any(char::is_control) {
+        return Err("Enter a search phrase of 1–200 characters.".into());
+    }
+    let _guard = STORE_LOCK.lock().map_err(|_| "Chat history is busy.".to_string())?;
+    let store = read_store(&app)?;
+    let mut items: Vec<_> = store.conversations.iter()
+        .filter(|conversation| conversation.archived == archived && matches_query(conversation, query))
+        .map(|conversation| {
+            let matching_message = conversation.messages.iter().rev()
+                .find(|message| message.content.to_lowercase().contains(&query.to_lowercase()));
+            let preview = matching_message.map(|message| message_preview(&message.content))
+                .or_else(|| conversation.messages.last().map(|message| message_preview(&message.content)))
+                .unwrap_or_default();
+            conversation_summary(conversation, preview)
+        }).collect();
+    items.sort_by(|a, b| b.pinned.cmp(&a.pinned).then_with(|| b.updated_at.cmp(&a.updated_at)));
+    items.truncate(100);
     Ok(items)
 }
 
@@ -188,6 +225,21 @@ mod tests {
         let conversation: Conversation = serde_json::from_str(legacy).expect("legacy history remains readable");
         assert!(!conversation.pinned);
         assert!(!conversation.archived);
+    }
+
+    #[test]
+    fn search_matches_titles_and_older_messages_case_insensitively() {
+        let conversation = Conversation {
+            id: "chat-1".into(), title: "Project discussion".into(), created_at: 1, updated_at: 2,
+            pinned: false, archived: false,
+            messages: vec![
+                super::ConversationMessage { role: "user".into(), content: "Remember the midnight azure palette".into() },
+                super::ConversationMessage { role: "assistant".into(), content: "We can continue tomorrow".into() },
+            ],
+        };
+        assert!(super::matches_query(&conversation, "MIDNIGHT AZURE"));
+        assert!(super::matches_query(&conversation, "project discussion"));
+        assert!(!super::matches_query(&conversation, "not present"));
     }
 
     #[test]
