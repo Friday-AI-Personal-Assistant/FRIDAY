@@ -793,6 +793,8 @@ mod tests {
         let csv = b"Product,Units,Revenue\nA,2,12.5\nB,,17.5\nC,4,20\n";
         let analysis = analyze_csv("sales.csv".into(), csv).unwrap();
         assert_eq!(analysis.format, "CSV");
+        assert_eq!(analysis.source_sha256, format!("{:x}", Sha256::digest(csv)));
+        assert_eq!(analysis.source_byte_length, csv.len() as u64);
         assert_eq!(analysis.total_rows, 4);
         assert_eq!(analysis.sheets[0].columns[1].missing, 1);
         assert_eq!(analysis.sheets[0].columns[1].sum, Some(6.0));
@@ -827,6 +829,8 @@ mod tests {
         let bytes = test_xlsx(false);
         let analysis = analyze_xlsx("sales.xlsx".into(), bytes).unwrap();
         assert_eq!(analysis.format, "XLSX");
+        assert_eq!(analysis.source_sha256, format!("{:x}", Sha256::digest(&bytes)));
+        assert_eq!(analysis.source_byte_length, bytes.len() as u64);
         assert_eq!(analysis.sheets.len(), 1);
         assert_eq!(analysis.sheets[0].name, "Sales");
         assert_eq!(analysis.sheets[0].formula_cells, 1);
