@@ -2,7 +2,7 @@
 
 > **Purpose:** This is the durable, cross-conversation source of truth for what FRIDAY is intended to become, what has been verified as implemented, what remains, the order of work, and the relative effort/risk of each area. A new development conversation must read this file and the Coding Assistant completion checklist before making changes.
 >
-> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`; the first read-only Excel Intelligence workspace/backend passed Linux and Windows CI in #1199 and #1200. The follow-on Excel Data Quality Intelligence batch passed Linux and Windows CI in #1202–#1205; #1201 was an earlier failed iteration superseded by the corrected implementation. The roadmap update passed in #1206 (run `44930624372`). The next bounded local question-answering batch is implemented and awaiting CI; charts/reports and the permissioned first-party Excel Analyst skill remain future work. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The current product focus is richer read-only Excel Analyst workflows; the next stages are workbook summaries/charts/reports and the permissioned first-party skill/tool bridge. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
+> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`; the first read-only Excel Intelligence workspace/backend passed Linux and Windows CI in #1199 and #1200. The follow-on Excel Data Quality Intelligence batch passed Linux and Windows CI in #1202–#1205; #1201 was an earlier failed iteration superseded by the corrected implementation. The roadmap update passed in #1206 (run `44930624372`). The bounded local natural-language Excel question-answering batch passed in #1211–#1215 (user-confirmed); earlier iterations #1207 and #1210 failed and were superseded. The next major product-engineering milestone is the reusable FRIDAY Domain Intelligence & Formula Engine, beginning with a strictly validated, read-only calculation core; Accounting Intelligence is its first specialist domain. Charts/reports and the permissioned first-party Excel Analyst skill remain future work. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The current product focus is richer read-only Excel Analyst workflows; the next stages are workbook summaries/charts/reports and the permissioned first-party skill/tool bridge. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
 >
 > **Do not confuse a plan with implementation.** A checkbox is complete only when code, tests, and (where required) real-device acceptance demonstrate it. Update this document after each meaningful batch with commit, CI run, and evidence.
 
@@ -1322,7 +1322,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ## 32. Natural-language Excel question answering — bounded local first release
 
-**Status:** IMPLEMENTED — CI PENDING. This is a deterministic, local question layer over the selected worksheet's already-computed bounded summaries. It is not a general-purpose AI analyst and does not send workbook content to a model or network service.
+**Status:** DONE — CI VERIFIED (Linux and Windows). The final integrated implementation passed in #1211, #1212, #1213, #1214 and #1215 (user-confirmed). Earlier iterations #1207 and #1210 failed and were superseded by the corrected commits. This is a deterministic, local question layer over the selected worksheet's already-computed bounded summaries. It is not a general-purpose AI analyst and does not send workbook content to a model or network service.
 
 - [x] Add bounded per-column frequency summaries (top five values) for columns with at most 512 distinct values; skip frequency answers when the distinct-value cap is exceeded.
 - [x] Add a deterministic question interpreter for row counts, totals, averages, highest/lowest numeric values, missing-value counts, non-empty counts and most-common values.
@@ -1332,9 +1332,65 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] Register a dedicated backend IPC command with a separate deny-by-default capability policy.
 - [x] Add regression tests for supported calculations, most-common values, missing-value questions, ambiguity and unsupported grouped questions.
 - [x] Add a question panel to the Excel workspace; clearly label the feature local/read-only and explain the supported question types.
-- [ ] Verify latest integrated implementation through Linux and Windows CI.
+- [x] Verify the final integrated implementation through Linux and Windows CI in #1211–#1215 (user-confirmed); failed earlier iterations #1207 and #1210 were superseded.
 - [ ] Expand to grouped comparisons (e.g. revenue by product), ranking, trends and time-series analysis only after a bounded row-level query engine and stronger tests are in place.
 
 **Known limitations:** The first release answers from computed worksheet summaries, not arbitrary raw-cell reasoning. It does not yet support grouped aggregations, top-selling products by a category, trends, date interpretation, formulas, charts or generated reports. Unsupported or ambiguous questions must be reported honestly rather than guessed. Frequency answers are withheld if the distinct-value cap is exceeded.
 
 **Privacy boundary:** no cloud LLM, external API, network request or workbook upload is involved. The frontend submits only the already-returned bounded column summaries to a dedicated local Rust command. No workbook writes are performed.
+
+
+## 33. FRIDAY Domain Intelligence & Formula Engine — reusable calculation foundation
+
+**Status:** PLANNED — accepted product direction. This is the next major engineering batch after the verified bounded Excel question-answering slice. It is a reusable, deterministic calculation and domain-interpretation foundation, not an LLM-generated formula feature. **Accounting Intelligence is the first specialist domain.** No financial action, workbook write, tax filing, payment, journal posting or ledger mutation is included in this milestone.
+
+### 33.1 Product and safety contract
+
+- [ ] Build a deterministic formula/calculation core with typed inputs, explicit units, decimal-safe arithmetic where financial precision is required, bounded execution and structured results.
+- [ ] Separate formula definitions from execution. Every formula must have a stable ID, domain, version, description, required inputs, output type/unit, precision/rounding policy, validation rules, provenance and applicable limitations.
+- [ ] Never infer a financial formula solely from a natural-language prompt. Resolve a request to a reviewed formula definition or ask for clarification.
+- [ ] Never silently assume currency, locale, tax jurisdiction, accounting basis, reporting period, sign convention, inclusive/exclusive tax treatment or rounding policy.
+- [ ] Preserve missing, unknown, zero and not-applicable as distinct states; never silently convert missing data to zero.
+- [ ] Reject incompatible units/currencies and invalid or non-finite values. Currency conversion requires an explicit, dated, sourced exchange-rate input and user awareness; no implicit live-rate lookup.
+- [ ] Use decimal/fixed-point arithmetic for money and define rounding at the formula/reporting boundary. Do not use binary floating-point for authoritative monetary totals.
+- [ ] Return a traceable calculation record: formula ID/version, inputs and source fields, normalized values, assumptions, intermediate steps, output unit/currency, precision/rounding and validation warnings.
+- [ ] Keep the engine pure and read-only: no workbook edits, ledger writes, file writes, network access, model calls or external actions.
+- [ ] Enforce resource bounds on input count, expression depth, row counts, precision/scale and execution time. No arbitrary code, eval, user-supplied executable formulas or unrestricted expression parser.
+- [ ] Add property-based or invariant-focused tests where practical, plus known-answer, boundary, malformed-input, adversarial and cross-platform regression tests.
+- [ ] Keep all feature claims limited to implemented and verified formula coverage; unknown or ambiguous requests must fail closed with an actionable clarification.
+
+### 33.2 Core architecture
+
+- [ ] Define typed domain-neutral primitives: Decimal/Money, Quantity, Unit, Rate, Percentage, Date/Period, Missing/Unknown and CalculationResult.
+- [ ] Define a versioned Formula Registry with reviewed formula metadata and explicit input/output contracts.
+- [ ] Define a Semantic Field Dictionary that maps user-facing labels and aliases to canonical concepts only when evidence is sufficient; expose ambiguous mappings for user confirmation.
+- [ ] Define a deterministic validation layer for required fields, sign conventions, units, currency, period alignment, duplicate/missing inputs and accounting invariants.
+- [ ] Define an explanation/provenance layer that renders the actual formula and calculation trace without inventing reasoning.
+- [ ] Keep domain packs modular: shared engine first, accounting pack second, later inventory, payroll, tax and other domains only after their own requirements and jurisdictional boundaries are reviewed.
+- [ ] Keep AI as an intent/clarification interface only. The model may help identify a requested concept, but the trusted registry and calculation engine determine whether and how a calculation executes.
+
+### 33.3 Accounting Intelligence — first specialist domain
+
+- [ ] Establish a reviewed accounting glossary and canonical field map: gross sales, discounts, returns, net sales, COGS, gross profit, operating expenses, operating income, net income, assets, liabilities, equity, receivables, payables, inventory, cash and cash flow.
+- [ ] Implement a small, explicitly scoped first formula set with documented definitions and assumptions, starting with net sales, gross profit, gross margin, accounting equation, debit/credit balance checks and receivables/payables totals.
+- [ ] Distinguish gross profit, operating profit, net profit, cash balance and cash flow; never treat them as interchangeable.
+- [ ] Distinguish cash versus accrual basis, transaction date versus posting date, and opening/closing balances versus period movements.
+- [ ] Validate accounting equation and debit/credit invariants only when the required complete inputs and accounting context are supplied; a balanced ledger is not proof that entries are correct.
+- [ ] Make tax calculations a separately gated future domain: no tax rate, filing rule, tax treatment or jurisdiction-specific advice is assumed in this first accounting slice.
+- [ ] Require explicit currency and reporting period for financial statements and comparisons; report when source data is insufficient to calculate a requested metric.
+- [ ] Show formula, source columns/accounts, values, assumptions, warnings and result together; let the user inspect the source evidence.
+
+### 33.4 Integration sequence and release gates
+
+1. [ ] Audit current Excel types, numeric handling and IPC boundaries; document precision and provenance gaps before choosing implementation primitives.
+2. [ ] Implement and test the domain-neutral typed calculation core with no UI dependency.
+3. [ ] Add formula registry, validation and calculation-trace contracts.
+4. [ ] Add the first reviewed accounting glossary and limited formula pack.
+5. [ ] Integrate read-only calculations into Excel Intelligence using explicit column/account mapping and clarification for ambiguity.
+6. [ ] Add adversarial tests for missing/duplicate fields, wrong units, mixed currencies, negative values, rounding, date-period mismatch, huge inputs and misleading natural-language prompts.
+7. [ ] Verify Linux and Windows CI and update this checklist with commit/run evidence. Complete physical-device review where UI acceptance is involved.
+8. [ ] Keep journal posting, ledger edits, financial transactions, tax filing, payroll submission and automatic workbook modification out of scope until separate permission, approval, audit and recovery designs pass review.
+
+**Explicit non-goals:** no autonomous accounting advice, no invented accounting policy, no silent correction of source records, no automatic tax/legal conclusions, no money movement, no posting entries, no external accounting-platform connection and no cloud transmission of financial data in this milestone.
+
+**Dependency note:** The existing Excel question-answering implementation calculates only from bounded worksheet summaries supplied by the frontend. Before any accounting result is represented as authoritative, the integration must establish stronger backend-verifiable source provenance and an explicit mapping from source cells/columns to accounting concepts. The current summary-only Q&A path is not sufficient evidence for ledger-grade accounting.
