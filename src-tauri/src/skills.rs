@@ -316,11 +316,13 @@ pub struct CommunitySkillPreview {
 /// Read the selected manifest through a pinned directory handle and a no-follow
 /// child-file open. Never use an ambient path read after validating metadata:
 /// the path could be replaced between the check and the read.
-fn read_skill_manifest_from_directory(source: &Path) -> Result<String, String> {
-    let directory = crate::coding_sandbox_fs::open_verified_root_directory(source)
-        .map_err(|_| "The selected skill folder changed or contains an unsafe path component.".to_string())?;
-    let mut file = crate::coding_sandbox_fs::open_file_nofollow(&directory, std::ffi::OsStr::new("SKILL.md"))
+fn read_skill_manifest_from_directory(directory: &std::fs::File, expected_identity: crate::coding_sandbox_fs::RuntimeTreeIdentity) -> Result<String, String> {
+    let mut file = crate::coding_sandbox_fs::open_file_nofollow(directory, std::ffi::OsStr::new("SKILL.md"))
         .map_err(|_| "SKILL.md must be a regular file, not a link or redirected entry.".to_string())?;
+    if !crate::coding_sandbox_fs::runtime_tree_handle_matches(expected_identity, &file)
+        .map_err(|_| "FRIDAY could not verify the selected SKILL.md identity.".to_string())? {
+        return Err("The selected SKILL.md changed after folder inspection.".into());
+    }
     let before = file.metadata()
         .map_err(|_| "FRIDAY could not inspect the opened SKILL.md file.".to_string())?;
     if !before.is_file() || before.len() > 32_768 {
@@ -394,15 +396,34 @@ fn valid_quarantine_id(skill_id: &str) -> bool {
     skill_id.len() == 64 && skill_id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
+fn reinspect_quarantine_child(
+    root: &std::fs::File,
+    skill_id: &str,
+    expected_identity: Option<crate::coding_sandbox_fs::RuntimeTreeIdentity>,
+) -> Result<CommunitySkillPreview, String> {
+    if !valid_quarantine_id(skill_id) {
+        return Err("Quarantine identifier is invalid.".into());
+    }
+    let directory = crate::coding_sandbox_fs::open_child_directory_nofollow(root, std::ffi::OsStr::new(skill_id))
+        .map_err(|_| "Quarantine entry is missing or its directory path is unsafe.".to_string())?;
+    if let Some(expected) = expected_identity {
+        if !crate::coding_sandbox_fs::runtime_tree_handle_matches(expected, &directory)
+            .map_err(|_| "Could not verify quarantine directory identity.".to_string())? {
+            return Err("Quarantine directory changed after inventory.".into());
+        }
+    }
+    let content = read_quarantine_child(&directory, "SKILL.md", 32_768)?;
+    let metadata = read_quarantine_child(&directory, "inspection.json", 16_384)?;
+    validate_quarantine_payload(skill_id, &content, &metadata)
+}
+
 fn reinspect_quarantine_entry(root: &Path, skill_id: &str) -> Result<CommunitySkillPreview, String> {
     if !valid_quarantine_id(skill_id) {
         return Err("Quarantine identifier is invalid.".into());
     }
-    let directory = crate::coding_sandbox_fs::open_verified_root_directory(&root.join(skill_id))
-        .map_err(|_| "Quarantine entry is missing or its directory path is unsafe.".to_string())?;
-    let content = read_quarantine_child(&directory, "SKILL.md", 32_768)?;
-    let metadata = read_quarantine_child(&directory, "inspection.json", 16_384)?;
-    validate_quarantine_payload(skill_id, &content, &metadata)
+    let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
+        .map_err(|_| "Quarantine root is missing or its directory path is unsafe.".to_string())?;
+    reinspect_quarantine_child(&root_handle, skill_id, None)
 }
 
 /// Re-inspect a quarantined item without loading or executing it.
@@ -433,26 +454,35 @@ pub fn list_community_skills_quarantine(app: AppHandle) -> Result<Vec<CommunityS
     let root = app.path().app_data_dir()
         .map_err(|e| format!("Cannot locate FRIDAY's application data folder: {e}"))?
         .join("skills").join("quarantine");
-    let entries = match fs::read_dir(&root) {
-        Ok(entries) => entries,
+    let root_handle = match crate::coding_sandbox_fs::open_verified_root_directory(&root) {
+        Ok(handle) => handle,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => return Err("FRIDAY could not safely enumerate the skill quarantine.".into()),
+        Err(_) => return Err("FRIDAY could not safely open the skill quarantine root.".into()),
     };
-    let mut inventory = Vec::new();
-    for entry in entries.take(MAX_ENTRIES + 1) {
-        let entry = entry.map_err(|_| "FRIDAY could not inspect a quarantine directory entry.".to_string())?;
-        let id = entry.file_name().to_string_lossy().into_owned();
-        if inventory.len() == MAX_ENTRIES {
-            return Err("Skill quarantine contains more than 200 entries; inventory is capped for safety.".into());
-        }
-        if !valid_quarantine_id(&id) {
+    let entries = crate::coding_sandbox_fs::enumerate_runtime_tree_entries(&root_handle, MAX_ENTRIES + 1)
+        .map_err(|_| "FRIDAY could not safely enumerate the skill quarantine root.".to_string())?;
+    if entries.len() > MAX_ENTRIES {
+        return Err("Skill quarantine contains more than 200 entries; inventory is capped for safety.".into());
+    }
+    let mut inventory = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let raw_name = entry.name;
+        let Some(id) = raw_name.to_str().map(str::to_owned) else {
+            inventory.push(CommunitySkillInventoryItem {
+                id: raw_name.to_string_lossy().into_owned(), name: None,
+                status: "INVALID ENTRY — BLOCKED".into(),
+                detail: Some("Directory name is not valid UTF-8.".into()),
+            });
+            continue;
+        };
+        if !valid_quarantine_id(&id) || !entry.is_directory || entry.is_reparse {
             inventory.push(CommunitySkillInventoryItem {
                 id, name: None, status: "INVALID ENTRY — BLOCKED".into(),
-                detail: Some("Directory name is not a valid content hash.".into()),
+                detail: Some("Entry name or filesystem type is not a valid quarantine directory.".into()),
             });
             continue;
         }
-        match reinspect_quarantine_entry(&root, &id) {
+        match reinspect_quarantine_child(&root_handle, &id, Some(entry.identity)) {
             Ok(preview) => inventory.push(CommunitySkillInventoryItem {
                 id, name: Some(preview.name), status: preview.status, detail: None,
             }),
@@ -530,13 +560,15 @@ pub fn inspect_and_quarantine_skill(app: AppHandle) -> Result<CommunitySkillPrev
     let selected = app.dialog().file().blocking_pick_folder();
     let Some(selected) = selected else { return Err("Community skill import was cancelled.".into()); };
     let source = selected.into_path().map_err(|_| "FRIDAY could not access the selected skill folder.".to_string())?;
-    let mut entries = fs::read_dir(&source).map_err(|_| "FRIDAY could not inspect the selected skill folder.".to_string())?;
-    let first = entries.next().ok_or("The selected folder is empty; expected one SKILL.md file.")?
-        .map_err(|_| "FRIDAY could not inspect the selected folder entry.".to_string())?;
-    if entries.next().is_some() || first.file_name() != "SKILL.md" {
-        return Err("The initial importer accepts exactly one file named SKILL.md. Scripts, assets, nested folders and additional files are not accepted.".into());
+    let source_directory = crate::coding_sandbox_fs::open_verified_root_directory(&source)
+        .map_err(|_| "The selected skill folder changed or contains an unsafe path component.".to_string())?;
+    let entries = crate::coding_sandbox_fs::enumerate_runtime_tree_entries(&source_directory, 2)
+        .map_err(|_| "FRIDAY could not safely inspect the selected skill folder; it must contain exactly one file.".to_string())?;
+    if entries.len() != 1 || entries[0].name != "SKILL.md"
+        || !entries[0].is_file || entries[0].is_reparse {
+        return Err("The initial importer accepts exactly one regular file named SKILL.md. Scripts, assets, nested folders and additional files are not accepted.".into());
     }
-    let content = read_skill_manifest_from_directory(&source)?;
+    let content = read_skill_manifest_from_directory(&source_directory, entries[0].identity)?;
     let (name, description, license, compatibility, _body) = parse_skill_markdown(&content)?;
     let content_sha256 = format!("{:x}", Sha256::digest(content.as_bytes()));
     let id = content_sha256.clone();
