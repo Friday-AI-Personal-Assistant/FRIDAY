@@ -888,7 +888,8 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 - [x] Versioned, bounded, fail-closed permission store using atomic replacement.
 - [x] Exact capability/resource grants with secure random IDs and expiry capped at one year.
 - [x] Native OS confirmation required before grant persistence; cancellation means denial.
-- [x] Bounded grant/revoke audit history and revocation API.
+- [x] Bounded grant/revoke/expiry audit history and revocation API.
+- [x] Start grant expiry after native confirmation; persist expired-grant transitions and cover expiry/revocation persistence and replay denial with tests.
 - [x] Static backend policy entries and IPC inventory coverage for permission management commands.
 - [x] Tests for expiry, exact scope, malformed storage, duplicate IDs and unknown capability denial.
 - [ ] Verify both Linux and Windows CI.

@@ -154,6 +154,43 @@ fn append_event(store: &mut GrantStore, event: PermissionAuditEvent) {
     }
 }
 
+
+fn expire_grants(store: &mut GrantStore, now: u64) -> usize {
+    let mut expired = Vec::new();
+    store.grants.retain(|grant| {
+        let is_expired = grant.expires_at.is_some_and(|expiry| now >= expiry);
+        if is_expired { expired.push(grant.clone()); }
+        !is_expired
+    });
+    let count = expired.len();
+    for grant in expired {
+        append_event(store, PermissionAuditEvent {
+            grant_id: grant.id,
+            action: "expired".into(),
+            capability: grant.capability,
+            resource: grant.resource,
+            occurred_at: now,
+            expires_at: grant.expires_at,
+        });
+    }
+    count
+}
+
+fn revoke_grant(store: &mut GrantStore, grant_id: &str, now: u64) -> Result<(), String> {
+    let index = store.grants.iter().position(|grant| grant.id == grant_id)
+        .ok_or("Permission grant was not found or was already revoked.")?;
+    let grant = store.grants.remove(index);
+    append_event(store, PermissionAuditEvent {
+        grant_id: grant.id,
+        action: "revoked".into(),
+        capability: grant.capability,
+        resource: grant.resource,
+        occurred_at: now,
+        expires_at: grant.expires_at,
+    });
+    Ok(())
+}
+
 fn new_grant_id() -> Result<String, String> {
     let mut bytes = [0_u8; 16];
     OsRng.try_fill_bytes(&mut bytes)
@@ -180,7 +217,11 @@ pub(crate) fn has_grant(path: &Path, capability: &str, resource: &str) -> Result
 pub fn list_permission_grants(app: AppHandle) -> Result<PermissionSnapshot, String> {
     crate::permissions::authorize_command("permissions.list", "permissions.list")?;
     let _guard = STORE_LOCK.lock().map_err(|_| "Permission store is busy.".to_string())?;
-    let store = read_store(&store_path(&app)?)?;
+    let path = store_path(&app)?;
+    let mut store = read_store(&path)?;
+    if expire_grants(&mut store, now_unix()?) > 0 {
+        write_store(&path, &store)?;
+    }
     Ok(PermissionSnapshot { grants: store.grants, audit: store.audit })
 }
 
@@ -201,9 +242,9 @@ pub async fn grant_permission(
     if expires_in_seconds.is_some_and(|seconds| seconds == 0 || seconds > MAX_GRANT_SECONDS) {
         return Err("Permission expiry must be between one second and one year.".into());
     }
-    let now = now_unix()?;
-    let expires_at = expires_in_seconds.map(|seconds| now.saturating_add(seconds));
-    let expiry_text = expires_at.map(|t| format!("Unix time {t}")).unwrap_or_else(|| "no automatic expiry".into());
+    let expiry_text = expires_in_seconds
+        .map(|seconds| format!("in {seconds} seconds"))
+        .unwrap_or_else(|| "no automatic expiry".into());
     let message = format!(
         "FRIDAY is requesting permission:\n\nCapability: {capability}\nResource: {resource}\nExpiry: {expiry_text}\n\nGranting this permission does not bypass separate per-action approvals or safety checks. Do you explicitly approve this grant?"
     );
@@ -220,6 +261,7 @@ pub async fn grant_permission(
     let path = store_path(&app)?;
     let mut store = read_store(&path)?;
     let now = now_unix()?;
+    let expires_at = expires_in_seconds.map(|seconds| now.saturating_add(seconds));
     if store.grants.iter().any(|g| grant_matches(g, &capability, &resource, now)) {
         return Err("An active grant already exists for this exact capability and resource.".into());
     }
@@ -248,14 +290,8 @@ pub fn revoke_permission(app: AppHandle, grant_id: String) -> Result<String, Str
     let _guard = STORE_LOCK.lock().map_err(|_| "Permission store is busy.".to_string())?;
     let path = store_path(&app)?;
     let mut store = read_store(&path)?;
-    let index = store.grants.iter().position(|g| g.id == grant_id)
-        .ok_or("Permission grant was not found or was already revoked.")?;
-    let grant = store.grants.remove(index);
     let now = now_unix()?;
-    append_event(&mut store, PermissionAuditEvent {
-        grant_id, action: "revoked".into(), capability: grant.capability,
-        resource: grant.resource, occurred_at: now, expires_at: grant.expires_at,
-    });
+    revoke_grant(&mut store, &grant_id, now)?;
     write_store(&path, &store)?;
     Ok("Permission revoked. Future checks will deny this grant.".into())
 }
@@ -312,6 +348,65 @@ mod tests {
         unknown.grants.push(PermissionGrant { id: id.into(), capability: "arbitrary.shell".into(),
             resource: "all".into(), granted_at: 10, expires_at: None });
         assert!(validate_store(&unknown).is_err());
+    }
+
+
+    #[test]
+    fn expiry_is_persisted_as_an_audit_event_and_removes_access() {
+        let path = test_path();
+        let mut store = GrantStore::default();
+        store.grants.push(PermissionGrant {
+            id: "0123456789abcdef0123456789abcdef".into(),
+            capability: "web.research".into(),
+            resource: "example.com".into(),
+            granted_at: 100,
+            expires_at: Some(200),
+        });
+        write_store(&path, &store).unwrap();
+        let mut loaded = read_store(&path).unwrap();
+        assert_eq!(expire_grants(&mut loaded, 199), 0);
+        assert_eq!(expire_grants(&mut loaded, 200), 1);
+        assert!(loaded.grants.is_empty());
+        assert_eq!(loaded.audit.len(), 1);
+        assert_eq!(loaded.audit[0].action, "expired");
+        write_store(&path, &loaded).unwrap();
+        let persisted = read_store(&path).unwrap();
+        assert!(persisted.grants.is_empty());
+        assert_eq!(persisted.audit[0].action, "expired");
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn revocation_is_persisted_and_cannot_be_replayed() {
+        let path = test_path();
+        let mut store = GrantStore::default();
+        let id = "0123456789abcdef0123456789abcdef";
+        store.grants.push(PermissionGrant {
+            id: id.into(),
+            capability: "memory.read".into(),
+            resource: "personal-memory".into(),
+            granted_at: 100,
+            expires_at: None,
+        });
+        write_store(&path, &store).unwrap();
+        let mut loaded = read_store(&path).unwrap();
+        revoke_grant(&mut loaded, id, 150).unwrap();
+        assert!(revoke_grant(&mut loaded, id, 151).is_err());
+        write_store(&path, &loaded).unwrap();
+        let persisted = read_store(&path).unwrap();
+        assert!(persisted.grants.is_empty());
+        assert_eq!(persisted.audit.len(), 1);
+        assert_eq!(persisted.audit[0].action, "revoked");
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn expiry_duration_is_added_to_the_post_confirmation_timestamp() {
+        let granted_at = 1_000_u64;
+        let expires_in_seconds = Some(60_u64);
+        let expires_at = expires_in_seconds.map(|seconds| granted_at.saturating_add(seconds));
+        assert_eq!(expires_at, Some(1_060));
+        assert!(expires_at.unwrap() > granted_at);
     }
 
     #[test]

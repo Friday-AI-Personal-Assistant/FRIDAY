@@ -391,11 +391,12 @@ The #1076 File/Coding Assistant capability increment is verified on both Windows
 - [x] Add a versioned local grant store with bounded size, strict schema validation, atomic writes and fail-closed handling of malformed, symlinked or oversized files.
 - [x] Add exact capability + resource matching, bounded expiry (maximum one year), secure random grant IDs and duplicate-grant rejection.
 - [x] Require a native operating-system confirmation dialog before a grant can be written; closing/cancelling denies.
-- [x] Record grant and revocation events in a bounded audit history.
+- [x] Record grant, revocation and expiry events in a bounded audit history; listing grants persists expiry transitions.
 - [x] Add backend commands to list grants, request a grant and revoke a grant; register each with its own static capability.
 - [x] Add regression tests for exact scope matching, expiry, corruption, duplicate IDs, unknown capabilities and invalid resources.
 - [ ] Verify Linux and Windows CI.
-- [ ] Wire each grantable capability into the corresponding resource-owning feature handler before treating a grant as operational. Existing per-action approvals and folder/project session selections must remain independent and cannot be bypassed by a persistent grant.
+- [ ] Wire each grantable capability into the corresponding resource-owning feature handler before treating a grant as operational.
+- [x] Harden grant lifecycle: start expiry only after native confirmation, persist expired-grant audit events, and test expiry/revocation round-trips and replay denial. Existing per-action approvals and folder/project session selections must remain independent and cannot be bypassed by a persistent grant.
 - [ ] Build the Midnight Azure Permissions & Transparency Centre.
 
 **Important boundary:** this batch creates the persistent consent/audit engine, not blanket permission for every current FRIDAY command. A grant is only effective where a feature explicitly checks the exact capability and resource. Installation, enabling or loading a skill never creates a grant.
