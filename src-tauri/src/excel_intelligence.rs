@@ -1,6 +1,6 @@
 use calamine::{open_workbook_from_rs, Data, Reader, Xlsx};
 use csv::ReaderBuilder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -64,7 +64,7 @@ pub struct SheetAnalysis {
     pub quality_findings: Vec<DataQualityFinding>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnAnalysis {
     pub name: String,
@@ -75,6 +75,25 @@ pub struct ColumnAnalysis {
     pub average: Option<f64>,
     pub minimum: Option<f64>,
     pub maximum: Option<f64>,
+    pub top_values: Vec<ValueFrequency>,
+    pub frequency_complete: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ValueFrequency {
+    pub value: String,
+    pub count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExcelQuestionAnswer {
+    pub status: String,
+    pub answer: String,
+    pub interpretation: String,
+    pub evidence: Vec<String>,
+    pub method: String,
 }
 
 fn is_redirected(metadata: &fs::Metadata) -> bool {
@@ -301,11 +320,23 @@ fn analyze_matrix(
         let mut maximum: Option<f64> = None;
         let mut observed_types: HashSet<&'static str> = HashSet::new();
         let mut numeric_values: Vec<(usize, f64)> = Vec::new();
+        let mut frequencies: HashMap<String, usize> = HashMap::new();
+        let mut frequency_complete = true;
         for (row_index, row) in rows.iter().enumerate().skip(1) {
             let value = row.get(column).map(String::as_str).unwrap_or("").trim();
             if value.is_empty() { continue; }
             non_empty += 1;
             observed_types.insert(infer_cell_type(value));
+            if frequency_complete {
+                if let Some(count) = frequencies.get_mut(value) {
+                    *count += 1;
+                } else if frequencies.len() < 512 {
+                    frequencies.insert(value.to_string(), 1);
+                } else {
+                    frequency_complete = false;
+                    frequencies.clear();
+                }
+            }
             if let Ok(number) = value.replace(',', "").parse::<f64>() {
                 if number.is_finite() {
                     numeric_count += 1;
@@ -341,11 +372,18 @@ fn analyze_matrix(
                 }
             }
         }
+        let mut top_values = if frequency_complete {
+            frequencies.into_iter().map(|(value, count)| ValueFrequency {
+                value: value.chars().take(100).collect(), count
+            }).collect::<Vec<_>>()
+        } else { Vec::new() };
+        top_values.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
+        top_values.truncate(5);
         columns.push(ColumnAnalysis {
             name: header_name, non_empty, missing, numeric_count,
             sum: (numeric_count > 0 && sum.is_finite()).then_some(sum),
             average: (numeric_count > 0 && sum.is_finite()).then_some(sum / numeric_count as f64),
-            minimum, maximum,
+            minimum, maximum, top_values, frequency_complete,
         });
     }
 
@@ -455,6 +493,154 @@ fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, S
             "The first row of each worksheet is treated as column headers.".into(),
         ],
     })
+}
+
+
+fn normalized_words(value: &str) -> Vec<String> {
+    value.to_lowercase().split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty()).map(str::to_string).collect()
+}
+
+fn select_question_column<'a>(
+    question: &str,
+    columns: &'a [ColumnAnalysis],
+    numeric_only: bool,
+) -> Result<&'a ColumnAnalysis, ExcelQuestionAnswer> {
+    let question_words = normalized_words(question);
+    let question_joined = question_words.join(" ");
+    let mut ranked = columns.iter().filter(|column| !numeric_only || column.numeric_count > 0)
+        .map(|column| {
+            let words = normalized_words(&column.name);
+            let phrase = words.join(" ");
+            let score = if !phrase.is_empty() && question_joined.contains(&phrase) { 100 }
+                else { words.iter().filter(|word| question_words.contains(word)).count() as i32 * 10 };
+            (column, score)
+        }).collect::<Vec<_>>();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name.cmp(&b.0.name)));
+    if ranked.is_empty() {
+        return Err(ExcelQuestionAnswer { status: "unsupported".into(),
+            answer: "I can't answer that from the available column summaries.".into(),
+            interpretation: "No suitable column is available for this question.".into(),
+            evidence: Vec::new(), method: "bounded local summary".into() });
+    }
+    if ranked[0].1 == 0 && ranked.len() == 1 { return Ok(ranked[0].0); }
+    if ranked[0].1 == 0 || (ranked.len() > 1 && ranked[0].1 == ranked[1].1) {
+        let choices = ranked.iter().take(5).map(|(column, _)| column.name.as_str()).collect::<Vec<_>>().join(", ");
+        return Err(ExcelQuestionAnswer { status: "clarification".into(),
+            answer: format!("Which column should I use? Possible columns: {choices}."),
+            interpretation: "The question doesn't identify one unambiguous column.".into(),
+            evidence: Vec::new(), method: "column-name matching".into() });
+    }
+    Ok(ranked[0].0)
+}
+
+fn answer_question(
+    question: &str,
+    sheet_name: &str,
+    row_count: usize,
+    columns: &[ColumnAnalysis],
+) -> ExcelQuestionAnswer {
+    let q = question.to_lowercase();
+    let words = normalized_words(&q);
+    let has = |terms: &[&str]| terms.iter().any(|term| words.iter().any(|word| word == term));
+    let grouped = has(&["by", "per", "group", "grouped"]) || q.contains("sold most") || q.contains("by product");
+    if grouped {
+        return ExcelQuestionAnswer { status: "unsupported".into(),
+            answer: "Grouped comparisons aren't supported in this first analysis release yet.".into(),
+            interpretation: "This question appears to require grouping rows by one column and aggregating another.".into(),
+            evidence: Vec::new(), method: "not yet supported".into() };
+    }
+    if question.trim().is_empty() || question.chars().count() > 300 {
+        return ExcelQuestionAnswer { status: "unsupported".into(),
+            answer: "Enter a question of up to 300 characters.".into(),
+            interpretation: "Question length is outside the supported range.".into(),
+            evidence: Vec::new(), method: "input validation".into() };
+    }
+    if has(&["rows", "records", "entries"]) && has(&["many", "count", "number", "total"]) {
+        let data_rows = row_count.saturating_sub(1);
+        return ExcelQuestionAnswer { status: "answered".into(),
+            answer: format!("This sheet contains {data_rows} data rows (excluding the header)."),
+            interpretation: "Count data rows in the selected worksheet.".into(),
+            evidence: vec![format!("Worksheet: {sheet_name}"), format!("Rows including header: {row_count}")],
+            method: "exact worksheet dimensions".into() };
+    }
+    let missing = has(&["missing", "blank", "empty", "null"]);
+    let sum = has(&["sum", "total", "combined"]);
+    let average = has(&["average", "avg", "mean"]);
+    let maximum = has(&["highest", "maximum", "max", "largest", "biggest"]);
+    let minimum = has(&["lowest", "minimum", "min", "smallest"]);
+    let frequent = q.contains("most common") || q.contains("most frequent") || q.contains("mode") || q.contains("appears most");
+    let count = has(&["count", "many", "number"]);
+    let intents = [missing, sum, average, maximum, minimum, frequent, count].iter().filter(|v| **v).count();
+    if intents != 1 {
+        return ExcelQuestionAnswer { status: "unsupported".into(),
+            answer: "I couldn't identify one supported calculation. Try asking for a total, average, highest or lowest value, missing values, most common value, or row count.".into(),
+            interpretation: "The question is ambiguous or outside the current deterministic analysis set.".into(),
+            evidence: Vec::new(), method: "intent classification".into() };
+    }
+    let numeric_only = sum || average || maximum || minimum;
+    let column = match select_question_column(question, columns, numeric_only) {
+        Ok(column) => column,
+        Err(answer) => return answer,
+    };
+    let label = &column.name;
+    let (answer, interpretation, evidence) = if missing {
+        (format!("Column '{label}' has {} missing value(s) across {} data rows.", column.missing, row_count.saturating_sub(1)),
+         format!("Count blank cells in '{label}'."), vec![format!("Column: {label}"), format!("Missing: {}", column.missing), format!("Filled: {}", column.non_empty)])
+    } else if sum {
+        match column.sum { Some(value) => (format!("The total for '{label}' is {value:.2}."),
+            format!("Sum numeric values in '{label}'."), vec![format!("Column: {label}"), format!("Numeric values: {}", column.numeric_count)]),
+            None => return ExcelQuestionAnswer { status: "unsupported".into(), answer: format!("Column '{label}' has no usable numeric values."),
+                interpretation: "A total requires numeric values.".into(), evidence: vec![format!("Column: {label}")], method: "local numeric summary".into() } }
+    } else if average {
+        match column.average { Some(value) => (format!("The average for '{label}' is {value:.2}."),
+            format!("Average numeric values in '{label}'."), vec![format!("Column: {label}"), format!("Numeric values: {}", column.numeric_count)]),
+            None => return ExcelQuestionAnswer { status: "unsupported".into(), answer: format!("Column '{label}' has no usable numeric values."),
+                interpretation: "An average requires numeric values.".into(), evidence: vec![format!("Column: {label}")], method: "local numeric summary".into() } }
+    } else if maximum {
+        match column.maximum { Some(value) => (format!("The highest value in '{label}' is {value:.2}."),
+            format!("Find the maximum numeric value in '{label}'."), vec![format!("Column: {label}"), format!("Numeric values: {}", column.numeric_count)]),
+            None => return ExcelQuestionAnswer { status: "unsupported".into(), answer: format!("Column '{label}' has no usable numeric values."),
+                interpretation: "A maximum requires numeric values.".into(), evidence: vec![format!("Column: {label}")], method: "local numeric summary".into() } }
+    } else if minimum {
+        match column.minimum { Some(value) => (format!("The lowest value in '{label}' is {value:.2}."),
+            format!("Find the minimum numeric value in '{label}'."), vec![format!("Column: {label}"), format!("Numeric values: {}", column.numeric_count)]),
+            None => return ExcelQuestionAnswer { status: "unsupported".into(), answer: format!("Column '{label}' has no usable numeric values."),
+                interpretation: "A minimum requires numeric values.".into(), evidence: vec![format!("Column: {label}")], method: "local numeric summary".into() } }
+    } else if frequent {
+        if !column.frequency_complete || column.top_values.is_empty() {
+            return ExcelQuestionAnswer { status: "unsupported".into(), answer: format!("I can't safely determine the most common value in '{label}' because its distinct-value summary exceeded the local limit."),
+                interpretation: "Frequency tracking is deliberately bounded.".into(), evidence: vec![format!("Column: {label}")], method: "bounded local frequency summary".into() };
+        }
+        let top = &column.top_values[0];
+        (format!("The most common value in '{label}' is '{}' ({} occurrence(s)).", top.value, top.count),
+         format!("Find the highest-frequency value in '{label}'."), vec![format!("Column: {label}"), format!("Value: {}", top.value), format!("Occurrences: {}", top.count)])
+    } else {
+        (format!("Column '{label}' contains {} non-empty value(s).", column.non_empty),
+         format!("Count non-empty cells in '{label}'."), vec![format!("Column: {label}"), format!("Missing: {}", column.missing)])
+    };
+    ExcelQuestionAnswer { status: "answered".into(), answer, interpretation, evidence, method: "deterministic local summary; no AI or network request".into() }
+}
+
+#[tauri::command]
+pub fn answer_excel_question(
+    question: String,
+    sheet_name: String,
+    row_count: usize,
+    columns: Vec<ColumnAnalysis>,
+) -> Result<ExcelQuestionAnswer, String> {
+    crate::permissions::authorize_command("excel.answer_question", "excel.analysis.local")?;
+    if sheet_name.chars().count() > 180 || row_count > MAX_ROWS || columns.len() > MAX_COLUMNS {
+        return Err("The worksheet summary exceeds FRIDAY's safe question-answering limits.".into());
+    }
+    if columns.iter().any(|column| column.name.chars().count() > 180 || column.top_values.len() > 5
+        || column.top_values.iter().any(|value| value.value.chars().count() > 100)) {
+        return Err("The supplied worksheet summary is invalid or exceeds its bounds.".into());
+    }
+    if question.chars().count() > 300 {
+        return Err("Questions must be 300 characters or fewer.".into());
+    }
+    Ok(answer_question(&question, &sheet_name, row_count, &columns))
 }
 
 #[tauri::command]
@@ -603,6 +789,40 @@ mod tests {
         }
         let result = analyze_matrix("bounded".into(), expanded, 0).unwrap();
         assert!(result.quality_findings.len() <= MAX_QUALITY_FINDINGS);
+    }
+
+
+    #[test]
+    fn local_question_answering_supports_aggregates_and_frequency() {
+        let rows = vec![
+            vec!["Product".into(), "Revenue".into()],
+            vec!["Tea".into(), "10".into()],
+            vec!["Coffee".into(), "20".into()],
+            vec!["Tea".into(), "30".into()],
+        ];
+        let sheet = analyze_matrix("Sales".into(), rows, 0).unwrap();
+        let total = answer_question("What is the total revenue?", "Sales", sheet.row_count, &sheet.columns);
+        assert_eq!(total.status, "answered");
+        assert!(total.answer.contains("60.00"));
+        let average = answer_question("average revenue", "Sales", sheet.row_count, &sheet.columns);
+        assert!(average.answer.contains("20.00"));
+        let common = answer_question("most common product", "Sales", sheet.row_count, &sheet.columns);
+        assert!(common.answer.contains("Tea"));
+        let missing = answer_question("how many missing values in Revenue", "Sales", sheet.row_count, &sheet.columns);
+        assert!(missing.answer.contains("0 missing"));
+    }
+
+    #[test]
+    fn local_question_answering_clarifies_ambiguous_and_rejects_grouped_queries() {
+        let rows = vec![
+            vec!["Sales".into(), "Cost".into()],
+            vec!["10".into(), "5".into()],
+        ];
+        let sheet = analyze_matrix("Finance".into(), rows, 0).unwrap();
+        let ambiguous = answer_question("what is the total?", "Finance", sheet.row_count, &sheet.columns);
+        assert_eq!(ambiguous.status, "clarification");
+        let grouped = answer_question("which product sold most by region?", "Finance", sheet.row_count, &sheet.columns);
+        assert_eq!(grouped.status, "unsupported");
     }
 
     #[test]
