@@ -795,37 +795,67 @@ fn inspect_recovery_undo_state(backup_dir: &Path, expected: &CodingUndoRecord) -
 fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoRecord) -> Result<(), String> {
     validate_undo_record(record)?;
     let target = safe_recovery_target(root, record)?;
-    let backup = backup_dir.join(format!("{}.bak", record.id));
-    let original = read_recovery_file(&backup, MAX_FILE_BYTES)?
-        .ok_or("The original backup for an interrupted Undo is missing. Recovery files were preserved.")?;
-    if sha256_hex(&original) != record.original_sha256 {
+    let target_parent = target.parent().ok_or("The recovery target has no parent folder.")?;
+    let (project_handle, target_name, project_identity) = open_verified_code_parent(root, &target)?;
+    let backup_handle = crate::coding_sandbox_fs::open_verified_root_directory(backup_dir)
+        .map_err(|_| "FRIDAY could not safely open the recovery folder. Recovery evidence was preserved.".to_string())?;
+    let backup_identity = crate::coding_sandbox_fs::verified_directory_handle_identity(&backup_handle)
+        .map_err(|_| "FRIDAY could not verify the recovery folder identity.".to_string())?;
+
+    let backup_name = OsString::from(format!("{}.bak", record.id));
+    let backup_bytes = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+        &backup_handle, &backup_name, MAX_FILE_BYTES, MAX_CODE_BACKUP_FILES,
+    ).map_err(|_| "The original backup for an interrupted Undo is missing or unsafe. Recovery files were preserved.".to_string())?;
+    if sha256_hex(&backup_bytes) != record.original_sha256 {
         return Err("The original backup for an interrupted Undo failed SHA-256 verification. Recovery files were preserved.".into());
     }
-    let target_hash = recovery_hash(&target, MAX_FILE_BYTES)?;
-    let displaced = target.parent().unwrap().join(format!(".friday-code-undone-{}.tmp", record.id));
-    let temporary = target.parent().unwrap().join(format!(".friday-code-undo-{}.tmp", record.id));
-    let displaced_hash = recovery_hash(&displaced, MAX_FILE_BYTES)?;
-    let temporary_hash = recovery_hash(&temporary, MAX_FILE_BYTES)?;
+
+    let displaced_name = OsString::from(format!(".friday-code-undone-{}.tmp", record.id));
+    let temporary_name = OsString::from(format!(".friday-code-undo-{}.tmp", record.id));
+    let journal_name = OsString::from(format!("{}.undo-txn.json", record.id));
+    let recovered_journal_name = OsString::from(format!("{}.undo-recovered.json", record.id));
+
+    let read_optional = |parent: &File, name: &OsStr, limit: u64| -> Result<Option<Vec<u8>>, String> {
+        match crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+            parent, name, limit, MAX_SCANNED_ENTRIES,
+        ) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err("A recovery item changed identity, was redirected, or exceeded its safety limits. Recovery evidence was preserved.".into()),
+        }
+    };
+    let target_bytes = read_optional(&project_handle, &target_name, MAX_FILE_BYTES)?;
+    let displaced_bytes = read_optional(&project_handle, &displaced_name, MAX_FILE_BYTES)?;
+    let temporary_bytes = read_optional(&project_handle, &temporary_name, MAX_FILE_BYTES)?;
+    let target_hash = target_bytes.as_ref().map(|bytes| sha256_hex(bytes));
+    let displaced_hash = displaced_bytes.as_ref().map(|bytes| sha256_hex(bytes));
+    let temporary_hash = temporary_bytes.as_ref().map(|bytes| sha256_hex(bytes));
+
+    let active_name = OsString::from(format!("{}.undo.json", record.id));
+    let consumed_name = OsString::from(format!("{}.undone.json", record.id));
+    let consume_active_record = || -> Result<(), String> {
+        let identity = verified_code_child_identity(&backup_handle, &active_name)?;
+        crate::coding_sandbox_fs::rename_file_noreplace(
+            &backup_handle, &active_name, &consumed_name, backup_identity, identity,
+        ).map_err(|_| "FRIDAY could not safely mark the recovered Undo as consumed. Recovery evidence was preserved.".to_string())
+    };
 
     match target_hash.as_deref() {
         Some(hash) if hash == record.original_sha256 => {
-            // Windows ReplaceFileW can retain the replaced file's DACL. Recovery
-            // must therefore reapply the recorded original permissions as well.
+            // Windows ReplaceFileW can retain the replaced file's DACL. Reapply
+            // the recorded permissions only after verifying the target content.
             apply_recovery_permissions(&target, record)?;
-            if let Some(hash) = displaced_hash.as_deref() { if hash != record.resulting_sha256 { return Err("An interrupted Undo left an unexpected displaced file. Nothing was deleted.".into()); } }
-            if let Some(hash) = temporary_hash.as_deref() { if hash != record.original_sha256 { return Err("An interrupted Undo left an unexpected temporary file. Nothing was deleted.".into()); } }
+            if let Some(hash) = displaced_hash.as_deref() {
+                if hash != record.resulting_sha256 { return Err("An interrupted Undo left an unexpected displaced file. Nothing was removed.".into()); }
+            }
+            if let Some(hash) = temporary_hash.as_deref() {
+                if hash != record.original_sha256 { return Err("An interrupted Undo left an unexpected temporary file. Nothing was removed.".into()); }
+            }
             match inspect_recovery_undo_state(backup_dir, record)? {
-                Some(true) => {
-                    let undo_path = backup_dir.join(format!("{}.undo.json", record.id));
-                    let consumed = backup_dir.join(format!("{}.undone.json", record.id));
-                    fs::rename(&undo_path, &consumed)
-                        .map_err(|_| "FRIDAY could not mark the recovered Undo as consumed.".to_string())?;
-                }
+                Some(true) => consume_active_record()?,
                 Some(false) => {},
                 None => return Err("The interrupted Undo has no valid active or consumed Undo record. Recovery evidence was preserved.".into()),
             }
-            if displaced_hash.is_some() { remove_recovery_copy(&displaced, &record.resulting_sha256)?; }
-            if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.original_sha256)?; }
         }
         Some(hash) if hash == record.resulting_sha256 => {
             if inspect_recovery_undo_state(backup_dir, record)? != Some(true) {
@@ -835,8 +865,7 @@ fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoR
                 return Err("An interrupted Undo has both the edited target and a displaced copy. FRIDAY preserved all files for manual review.".into());
             }
             if let Some(hash) = temporary_hash.as_deref() {
-                if hash != record.original_sha256 { return Err("An interrupted Undo temporary file has unexpected contents.".into()); }
-                remove_recovery_copy(&temporary, &record.original_sha256)?;
+                if hash != record.original_sha256 { return Err("An interrupted Undo temporary file has unexpected contents. Recovery evidence was preserved.".into()); }
             }
         }
         None => {
@@ -845,28 +874,32 @@ fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoR
                     return Err("The displaced edited file does not have one valid active Undo record. Recovery evidence was preserved.".into());
                 }
                 if hash != record.resulting_sha256 { return Err("The displaced file from an interrupted Undo failed verification.".into()); }
-                fs::rename(&displaced, &target)
-                    .map_err(|_| "FRIDAY could not restore the edited file after an interrupted Undo. Recovery copies were preserved.".to_string())?;
-                if temporary_hash.is_some() { remove_recovery_copy(&temporary, &record.original_sha256)?; }
+                let identity = verified_code_child_identity(&project_handle, &displaced_name)?;
+                crate::coding_sandbox_fs::rename_file_noreplace(
+                    &project_handle, &displaced_name, &target_name, project_identity, identity,
+                ).map_err(|_| "FRIDAY could not restore the edited file without replacing an unexpected target. Recovery copies were preserved.".to_string())?;
             } else if temporary_hash.as_deref() == Some(record.original_sha256.as_str()) {
                 let undo_state = inspect_recovery_undo_state(backup_dir, record)?
                     .ok_or("The interrupted Undo has no valid Undo state record. Recovery evidence was preserved.")?;
-                fs::rename(&temporary, &target)
-                    .map_err(|_| "FRIDAY could not finish restoring the verified original after an interrupted Undo.".to_string())?;
-                if undo_state {
-                    let undo_path = backup_dir.join(format!("{}.undo.json", record.id));
-                    let consumed = backup_dir.join(format!("{}.undone.json", record.id));
-                    fs::rename(&undo_path, &consumed)
-                        .map_err(|_| "FRIDAY restored the original but could not mark Undo as consumed.".to_string())?;
-                }
+                let identity = verified_code_child_identity(&project_handle, &temporary_name)?;
+                crate::coding_sandbox_fs::rename_file_noreplace(
+                    &project_handle, &temporary_name, &target_name, project_identity, identity,
+                ).map_err(|_| "FRIDAY could not finish restoring the verified original without replacing an unexpected target.".to_string())?;
+                if undo_state { consume_active_record()?; }
             } else {
                 return Err("The target and displaced copy are missing after an interrupted Undo. FRIDAY preserved the verified backup; manual recovery is required.".into());
             }
         }
-        Some(_) => return Err("The project file has contents that match neither side of an interrupted Undo. FRIDAY preserved every recovery copy.".into()),
+        Some(_) => return Err("The project file matches neither side of the interrupted Undo. FRIDAY preserved every recovery copy.".into()),
     }
-    let journal = backup_dir.join(format!("{}.undo-txn.json", record.id));
-    fs::remove_file(journal).map_err(|_| "FRIDAY completed recovery but could not remove the resolved Undo journal.".to_string())?;
+
+    // Recovery copies are intentionally retained as evidence. The journal is
+    // archived by a no-replace handle-relative rename instead of being unlinked.
+    let journal_identity = verified_code_child_identity(&backup_handle, &journal_name)?;
+    crate::coding_sandbox_fs::rename_file_noreplace(
+        &backup_handle, &journal_name, &recovered_journal_name, backup_identity, journal_identity,
+    ).map_err(|_| "FRIDAY reconciled the Undo state but could not safely archive its recovery journal. All recovery evidence was preserved.".to_string())?;
+    let _ = target_parent; // Keep the validated parent path explicit for diagnostics and future recovery tooling.
     Ok(())
 }
 
@@ -2939,8 +2972,10 @@ mod tests {
                 assert!(!backup_dir.join(format!("{}.undone.json", record.id)).exists(), "stage {stage}");
             }
             assert!(!backup_dir.join(format!("{}.undo-txn.json", record.id)).exists(), "stage {stage}");
-            assert!(!root.join(format!(".friday-code-undo-{}.tmp", record.id)).exists(), "stage {stage}");
-            assert!(!root.join(format!(".friday-code-undone-{}.tmp", record.id)).exists(), "stage {stage}");
+            assert!(backup_dir.join(format!("{}.undo-recovered.json", record.id)).is_file(), "stage {stage}");
+            // Recovery artifacts are retained as evidence; cleanup is a separate, fail-closed operation.
+            if stage != "first-rename" { assert!(root.join(format!(".friday-code-undo-{}.tmp", record.id)).exists(), "retained Undo temporary for {stage}"); }
+            if stage == "first-rename" || stage == "second-rename" || stage == "verified" { assert!(root.join(format!(".friday-code-undone-{}.tmp", record.id)).exists(), "retained displaced copy for {stage}"); }
             fs::remove_dir_all(&root).unwrap();
         }
     }
