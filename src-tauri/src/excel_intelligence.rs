@@ -2,14 +2,17 @@ use calamine::{open_workbook_from_rs, Data, Reader, Xlsx};
 use csv::ReaderBuilder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use rand::{rngs::OsRng, RngCore};
 use std::{
     collections::{HashMap, HashSet},
     fs,
     fs::{File, OpenOptions},
     io::{Cursor, Read},
     path::{Path, PathBuf},
+    sync::Mutex,
+    time::{Duration, Instant},
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use zip::ZipArchive;
 
@@ -28,11 +31,15 @@ const PREVIEW_COLUMNS: usize = 12;
 const MAX_PREVIEW_CELL_CHARS: usize = 180;
 const MAX_QUALITY_FINDINGS: usize = 40;
 const MAX_FINDING_SAMPLE_ROWS: usize = 5;
+const MAX_WORKBOOK_SESSIONS: usize = 8;
+const WORKBOOK_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+const MAX_SESSION_SUMMARY_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbookAnalysis {
-    pub file_name: String,
+    pub session_id: String,
+    pub file_name: String;
     pub format: String,
     pub source_sha256: String,
     pub source_byte_length: u64,
@@ -42,7 +49,7 @@ pub struct WorkbookAnalysis {
     pub notes: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DataQualityFinding {
     pub severity: String,
@@ -53,7 +60,7 @@ pub struct DataQualityFinding {
     pub sample_rows: Vec<usize>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountingFieldSuggestion {
     pub header: String,
@@ -65,7 +72,7 @@ pub struct AccountingFieldSuggestion {
     pub data_range: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SheetAnalysis {
     pub name: String,
@@ -110,6 +117,77 @@ pub struct ExcelQuestionAnswer {
     pub interpretation: String,
     pub evidence: Vec<String>,
     pub method: String,
+}
+
+struct WorkbookSession {
+    created_at: Instant,
+    source_sha256: String,
+    source_byte_length: u64,
+    format: String,
+    file_name: String,
+    sheets: Vec<SheetAnalysis>,
+    summary_bytes: usize,
+}
+
+pub struct WorkbookSessionStore {
+    sessions: Mutex<HashMap<String, WorkbookSession>>,
+}
+
+impl Default for WorkbookSessionStore {
+    fn default() -> Self { Self { sessions: Mutex::new(HashMap::new()) } }
+}
+
+impl WorkbookSessionStore {
+    fn create(&self, analysis: &WorkbookAnalysis) -> Result<String, String> {
+        let summary_bytes = serde_json::to_vec(&analysis.sheets)
+            .map_err(|_| "FRIDAY could not prepare the private workbook session.".to_string())?.len();
+        if summary_bytes > MAX_SESSION_SUMMARY_BYTES {
+            return Err("The workbook summary is too large for a safe analysis session.".into());
+        }
+        let mut sessions = self.sessions.lock()
+            .map_err(|_| "The workbook session store is unavailable. Import the workbook again.".to_string())?;
+        sessions.retain(|_, item| item.created_at.elapsed() < WORKBOOK_SESSION_TTL);
+        while sessions.len() >= MAX_WORKBOOK_SESSIONS
+            || sessions.values().map(|item| item.summary_bytes).sum::<usize>()
+                .saturating_add(summary_bytes) > MAX_SESSION_SUMMARY_BYTES {
+            let oldest = sessions.iter().min_by_key(|(_, item)| item.created_at).map(|(id, _)| id.clone());
+            if let Some(id) = oldest { sessions.remove(&id); } else { break; }
+        }
+        let mut bytes = [0_u8; 16];
+        OsRng.fill_bytes(&mut bytes);
+        let id = bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        sessions.insert(id.clone(), WorkbookSession {
+            created_at: Instant::now(),
+            source_sha256: analysis.source_sha256.clone(),
+            source_byte_length: analysis.source_byte_length,
+            format: analysis.format.clone(),
+            file_name: analysis.file_name.clone(),
+            sheets: analysis.sheets.clone(),
+            summary_bytes,
+        });
+        Ok(id)
+    }
+
+    fn answer(&self, id: &str, sheet_name: &str, question: &str) -> Result<ExcelQuestionAnswer, String> {
+        if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("This workbook analysis session is invalid. Import the workbook again.".into());
+        }
+        if sheet_name.chars().count() > 180 || question.chars().count() > 300 {
+            return Err("The worksheet name or question exceeds FRIDAY's safe limits.".into());
+        }
+        let mut sessions = self.sessions.lock()
+            .map_err(|_| "The workbook session store is unavailable. Import the workbook again.".to_string())?;
+        sessions.retain(|_, item| item.created_at.elapsed() < WORKBOOK_SESSION_TTL);
+        let session = sessions.get(id)
+            .ok_or_else(|| "This workbook analysis session has expired or was replaced. Import the workbook again.".to_string())?;
+        let sheet = session.sheets.iter().find(|sheet| sheet.name == sheet_name)
+            .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;
+        let _provenance = (&session.source_sha256, session.source_byte_length, &session.format, &session.file_name);
+        Ok(answer_question(question, &sheet.name, sheet.row_count, &sheet.columns))
+    }
+
+    #[cfg(test)]
+    fn session_count(&self) -> usize { self.sessions.lock().map(|items| items.len()).unwrap_or(0) }
 }
 
 fn is_redirected(metadata: &fs::Metadata) -> bool {
@@ -700,36 +778,16 @@ fn answer_question(
 #[tauri::command]
 pub fn answer_excel_question(
     question: String,
+    session_id: String,
     sheet_name: String,
-    row_count: usize,
-    columns: Vec<ColumnAnalysis>,
+    sessions: State<'_, WorkbookSessionStore>,
 ) -> Result<ExcelQuestionAnswer, String> {
     crate::permissions::authorize_command("excel.answer_question", "excel.analysis.local")?;
-    if sheet_name.chars().count() > 180 || row_count > MAX_ROWS || columns.len() > MAX_COLUMNS {
-        return Err("The worksheet summary exceeds FRIDAY's safe question-answering limits.".into());
-    }
-    let data_rows = row_count.saturating_sub(1);
-    if columns.iter().any(|column| {
-        column.name.chars().count() > 180
-            || column.non_empty.saturating_add(column.missing) > data_rows
-            || column.numeric_count > column.non_empty
-            || column.top_values.len() > 5
-            || column.top_values.iter().any(|value| value.value.chars().count() > 100
-                || value.count == 0 || value.count > column.non_empty)
-            || (!column.frequency_complete && !column.top_values.is_empty())
-            || [column.sum, column.average, column.minimum, column.maximum].iter()
-                .flatten().any(|value| !value.is_finite())
-    }) {
-        return Err("The supplied worksheet summary is invalid or exceeds its bounds.".into());
-    }
-    if question.chars().count() > 300 {
-        return Err("Questions must be 300 characters or fewer.".into());
-    }
-    Ok(answer_question(&question, &sheet_name, row_count, &columns))
+    sessions.answer(&session_id, &sheet_name, &question)
 }
 
 #[tauri::command]
-pub async fn pick_and_analyze_workbook(app: AppHandle) -> Result<WorkbookAnalysis, String> {
+pub async fn pick_and_analyze_workbook(app: AppHandle, sessions: State<'_, WorkbookSessionStore>) -> Result<WorkbookAnalysis, String> {
     crate::permissions::authorize_command("excel.pick_and_analyze_workbook", "excel.workbook.read")?;
     let selected = app.dialog().file()
         .add_filter("Excel workbook or CSV", &["xlsx", "csv"])
@@ -753,6 +811,9 @@ pub async fn pick_and_analyze_workbook(app: AppHandle) -> Result<WorkbookAnalysi
         "csv" => analyze_csv(file_name, &bytes)?,
         _ => unreachable!(),
     };
+    let session_id = sessions.create(&analysis)?;
+    let mut analysis = analysis;
+    analysis.session_id = session_id;
     let _ = crate::tools::record(
         &app, "excel.workbook.analyze",
         &format!("Analyzed a user-selected {} workbook locally ({} rows, {} non-empty cells).",
@@ -786,6 +847,39 @@ mod tests {
             writer.write_all(body.as_bytes()).unwrap();
         }
         writer.finish().unwrap().into_inner()
+    }
+
+    fn session_test_analysis() -> WorkbookAnalysis {
+        analyze_csv("session.csv".into(), b"Product,Revenue\\nTea,10\\nCoffee,20\\n").unwrap()
+    }
+
+    #[test]
+    fn workbook_sessions_answer_from_backend_held_analysis() {
+        let store = WorkbookSessionStore::default();
+        let id = store.create(&session_test_analysis()).unwrap();
+        let answer = store.answer(&id, "CSV data", "total revenue").unwrap();
+        assert_eq!(answer.status, "answered");
+        assert!(answer.answer.contains("30.00"));
+    }
+
+    #[test]
+    fn workbook_sessions_reject_forged_ids_and_unknown_worksheets() {
+        let store = WorkbookSessionStore::default();
+        let id = store.create(&session_test_analysis()).unwrap();
+        assert!(store.answer("00000000000000000000000000000000", "CSV data", "total revenue").is_err());
+        assert!(store.answer(&id, "Other sheet", "total revenue").is_err());
+        assert!(store.answer("not-a-session", "CSV data", "total revenue").is_err());
+    }
+
+    #[test]
+    fn workbook_sessions_are_bounded_and_evict_oldest() {
+        let store = WorkbookSessionStore::default();
+        let analysis = session_test_analysis();
+        let mut ids = Vec::new();
+        for _ in 0..=MAX_WORKBOOK_SESSIONS { ids.push(store.create(&analysis).unwrap()); }
+        assert_eq!(store.session_count(), MAX_WORKBOOK_SESSIONS);
+        assert!(store.answer(&ids[0], "CSV data", "total revenue").is_err());
+        assert!(store.answer(ids.last().unwrap(), "CSV data", "total revenue").is_ok());
     }
 
     #[test]
