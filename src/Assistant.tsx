@@ -64,6 +64,8 @@ export default function Assistant() {
   const [memoryError, setMemoryError] = useState("");
   const [saving, setSaving] = useState(false);
   const [input, setInput] = useState("");
+  const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
+  const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [pending, setPending] = useState(false);
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
   const [wasStopped, setWasStopped] = useState(false);
@@ -348,6 +350,21 @@ export default function Assistant() {
     return value.toFixed(unit >= 3 ? 1 : 0) + " " + units[unit];
   }
 
+  async function copyMessage(index: number, content: string) {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMessageIndex(index);
+      setError("");
+    } catch (e) { setError("Could not copy this message. Check clipboard permissions and try again."); }
+  }
+
+  function editMessage(index: number) {
+    if (pending || saving || messages[index]?.role !== "user") return;
+    setInput(messages[index].content);
+    setEditingMessageIndex(index);
+    setError("");
+  }
+
   async function send() {
     const text = input.trim();
     if (!text || pending || saving || action || pendingToolProposal) return;
@@ -358,7 +375,10 @@ export default function Assistant() {
       return;
     }
     setInput(""); setError(""); setActionResult("");
-    const next: Message[] = [...messages, { role: "user", content: text }];
+    const baseMessages = editingMessageIndex === null ? messages : messages.slice(0, editingMessageIndex);
+    const next: Message[] = [...baseMessages, { role: "user", content: text }];
+    setEditingMessageIndex(null);
+    setCopiedMessageIndex(null);
     const id = activeId || crypto.randomUUID();
     setActiveId(id); if (!activeTitle) setActiveTitle(titleFor(next)); setMessages(next);
     if (desktop) await persist(id, next);
@@ -553,7 +573,7 @@ export default function Assistant() {
         </section>}
         <div className="chat-history" role="log" aria-live="polite">
           {!messages.length && <div className="chat-welcome"><div className="chat-welcome-icon">✦</div><h2>How can I help?</h2><p>Ask me anything, or try “Open Notepad”, “Open Downloads”, or “Compose email”. I'll ask before touching your desktop.</p></div>}
-          {messages.map((m, i) => <div key={i} className={`chat-bubble ${m.role}`}><span>{m.content || (pending && m.role === "assistant" ? "FRIDAY is thinking…" : "")}</span></div>)}
+          {messages.map((m, i) => <div key={i} className={`chat-bubble ${m.role}`}><span>{m.content || (pending && m.role === "assistant" ? "FRIDAY is thinking…" : "")}</span>{!!m.content && <div className="message-actions"><button type="button" onClick={() => void copyMessage(i, m.content)} title="Copy message" aria-label={`Copy ${m.role === "user" ? "your" : "FRIDAY"} message ${i + 1}`}>{copiedMessageIndex === i ? "Copied" : "Copy"}</button>{m.role === "user" && <button type="button" onClick={() => editMessage(i)} disabled={pending || saving} title="Edit and resend from this message">Edit</button>}</div>}</div>)}
         </div>
         {action && <div className="action-confirm" role="alertdialog" aria-label="Confirm desktop action"><strong>Allow FRIDAY to {action.label.toLowerCase()}?</strong><p>Nothing will happen until you approve. Email will open a draft, not send it.</p><div><button className="primary-button" onClick={() => void confirmAction()}>Allow once</button><button className="secondary-button" onClick={() => setAction(null)}>Cancel</button></div></div>}
         {pendingToolProposal && <div className="action-confirm model-tool-confirm" role="alertdialog" aria-label="Review requested tool"><strong>FRIDAY wants to use: {availableTools.find(tool => tool.id === pendingToolProposal.tool_id)?.name || pendingToolProposal.tool_id}</strong><p>{availableTools.find(tool => tool.id === pendingToolProposal.tool_id)?.description || "Unknown tool"} · {availableTools.find(tool => tool.id === pendingToolProposal.tool_id)?.permission || "Not permitted"}</p><pre>{JSON.stringify(pendingToolProposal.arguments, null, 2)}</pre><div><button className="primary-button" onClick={() => void decideModelTool(true)} disabled={toolDecisionBusy}>{toolDecisionBusy ? "Working…" : "Approve once"}</button><button className="secondary-button" onClick={() => void decideModelTool(false)} disabled={toolDecisionBusy}>Deny</button></div></div>}
@@ -562,7 +582,8 @@ export default function Assistant() {
         {actionResult && <div className="chat-success" role="status">{actionResult}</div>}
         {!!availableTools.length && <details className="tool-history"><summary>Available tools ({availableTools.length})</summary><ul>{availableTools.map(tool => <li key={tool.id}><strong>{tool.name} · {tool.id}</strong><span>{tool.description}</span><small>{tool.permission}{tool.approval_required ? " · Approval required" : " · No approval needed"}</small></li>)}</ul></details>}
         {!!toolHistory.length && <><details className="tool-history"><summary>Recent tool activity ({toolHistory.length})</summary><ul>{toolHistory.slice(0,8).map(item => <li key={item.id}><strong>{item.tool_id}</strong><span>{item.outcome}</span><small>{new Date(item.timestamp * 1000).toLocaleString()} · {item.approved ? "Approved" : "No approval needed"}</small></li>)}</ul></details><button className="secondary-button" onClick={() => { if (window.confirm("Clear all saved tool activity from this device?")) void invoke("clear_tool_history").then(() => void refreshToolHistory()).catch(e => setError(String(e))); }}>Clear activity history</button></>}
-        <div className="chat-compose"><textarea aria-label="Message FRIDAY" placeholder="Message FRIDAY…" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} rows={2} maxLength={20000}/>{pending ? <button className="secondary-button stop-generation" onClick={() => void stopGeneration()} aria-label="Stop response">■ Stop</button> : <button className="primary-button" disabled={!input.trim() || !!action || !!pendingToolProposal || saving} onClick={() => void send()} aria-label="Send message">↑ Send</button>}</div>
+        {editingMessageIndex !== null && <div className="chat-edit-notice" role="status"><span>Editing an earlier message. Sending will replace it and remove the later replies from this conversation.</span><button type="button" onClick={() => { setEditingMessageIndex(null); setInput(""); }}>Cancel edit</button></div>}
+        <div className="chat-compose"><textarea aria-label="Message FRIDAY" placeholder={editingMessageIndex !== null ? "Edit your message…" : "Message FRIDAY…"} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} rows={2} maxLength={20000}/>{pending ? <button className="secondary-button stop-generation" onClick={() => void stopGeneration()} aria-label="Stop response">■ Stop</button> : <button className="primary-button" disabled={!input.trim() || !!action || !!pendingToolProposal || saving} onClick={() => void send()} aria-label="Send message">{editingMessageIndex !== null ? "↻ Resend" : "↑ Send"}</button>}</div>
         <p className="chat-footnote">Local AI · Encrypted chat and personal memory · Desktop actions require confirmation · {saving ? "Saving…" : "Saved on this device"} · Emails are never sent automatically</p>
       </div>
     </div>
