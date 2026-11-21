@@ -2,7 +2,7 @@
 
 > **Purpose:** This is the durable, cross-conversation source of truth for what FRIDAY is intended to become, what has been verified as implemented, what remains, the order of work, and the relative effort/risk of each area. A new development conversation must read this file and the Coding Assistant completion checklist before making changes.
 >
-> **Status baseline:** Coding Assistant progress is verified through #1055 on `feature/phase-2-skills`; detailed batch evidence and CI links are in `docs/CODING-ASSISTANT-COMPLETION-MASTER.md`. The Coding Assistant filesystem/approved-edit boundary remains in progress, and guest execution remains disabled. Other product areas remain planned/not verified unless repository evidence explicitly says otherwise.
+> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`, HEAD `da6a9aa88047ed1ef0c5d132f63c3c5130814041`; latest verified Linux/Windows CI is #1142 ([run 44905619015](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44905619015)). Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Skills remain instructions-only at runtime; the OpenJarvis skill-system comparison is recorded in `docs/OPENJARVIS-SKILL-SYSTEM-REUSE-AUDIT.md`. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
 >
 > **Do not confuse a plan with implementation.** A checkbox is complete only when code, tests, and (where required) real-device acceptance demonstrate it. Update this document after each meaningful batch with commit, CI run, and evidence.
 
@@ -1234,3 +1234,26 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 **Retention policy proposal (not implemented):** unfinished transactions are never auto-deleted; successfully recovered evidence is retained for 7 days by default; user-pinned/user-requested recovery is retained until the user removes it; uncertain or corrupted artifacts are preserved until resolved. A timer alone is never sufficient authorization to delete an artifact.
 
 **Release gate:** the manager remains informational/read-only until the safe-cleanup primitive and state machine pass Linux/Windows adversarial tests. Manual and automatic deletion must both use the same backend safety gate. The FRIDAY Four Guarantees apply: Safety, User control, Cost transparency and Reliability.
+
+
+## 29. OpenJarvis skill-system selective reuse — audit and adoption decision
+
+**Status:** SOURCE AUDIT COMPLETE — strict importer and tool bridge are the next implementation work; no upstream runtime code has been copied or enabled.
+
+- [x] Verify current FRIDAY branch/HEAD and latest Linux/Windows CI before this work: `foundation/evaluation`, `da6a9aa88047ed1ef0c5d132f63c3c5130814041`, #1142 run [44905619015](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44905619015).
+- [x] Pin and inspect current OpenJarvis `main`: `5a9b5268f2432f7ea4fe402e384ecb6b64a649bb`.
+- [x] Compare `skills/loader.py`, `skills/types.py`, `skills/manager.py`, `skills/executor.py`, `skills/tool_adapter.py`, `tools/_stubs.py` and `workflow/engine.py` with FRIDAY's Rust skills, persistent permissions, backend command policy and existing Skills Store UI.
+- [x] Record the feature-level reuse decisions, upstream limitations, licence obligations, FRIDAY package contract, tool-execution boundary and staged acceptance criteria in [OPENJARVIS-SKILL-SYSTEM-REUSE-AUDIT.md](OPENJARVIS-SKILL-SYSTEM-REUSE-AUDIT.md).
+- [x] Decision: reuse the compatible `SKILL.md` package convention and the upstream separation of discovery, manifest, manager, adapter, executor and event concepts. Keep FRIDAY's Tauri/React shell and Rust backend as the sole authority for permissions and actual tool execution.
+- [x] Decision: do not port OpenJarvis's permissive markdown fallback, optional signature/scanner behavior, arbitrary argument-template execution, Python worker pool or general synchronous workflow engine into the first FRIDAY implementation.
+- [ ] Implement a strict, bounded, instructions-only `SKILL.md` importer/parser in Rust. Imported packages must enter quarantine and remain inert; reject malformed metadata, unsafe paths, oversized files and executable content.
+- [ ] Persist source URL/publisher/revision, licence, package hash, import time, trust status and scanner findings. Detect package tampering on reinspection.
+- [ ] Add adversarial Linux/Windows tests for duplicate/invalid metadata, path traversal, symlinks/reparse points, malformed frontmatter, oversized content, unsupported scripts and hash mismatch.
+- [ ] Add user-visible inspection/review before install; install must leave the package disabled and unloaded. No implicit permission grant, network access or execution.
+- [ ] After importer acceptance, build a Rust-native typed tool registry and permission-checked skill-to-tool bridge. Authorize every invocation against backend-owned tool policy and current exact user grants; unknown tools fail closed.
+- [ ] Connect one bounded first-party skill/tool end-to-end, then prioritize Excel Intelligence on that shared foundation.
+- [ ] Keep executable third-party extensions blocked until OS-enforced process isolation, resource limits, cancellation and adversarial physical-platform acceptance are independently proven.
+
+**Key distinction:** OpenJarvis provides reusable architecture and package-format conventions, not a ready-made FRIDAY security boundary. Its source-level review does not establish that imported packages are benign. FRIDAY's Safety, User control, Cost transparency and Reliability guarantees remain mandatory.
+
+**Licence:** OpenJarvis's inspected repository-root licence is Apache-2.0. If any upstream source is copied/adapted, retain required licence/copyright/NOTICE material, mark modified files and record exact source commit/file provenance. The first importer should be a clean Rust implementation unless copying code has a clear measured advantage.
