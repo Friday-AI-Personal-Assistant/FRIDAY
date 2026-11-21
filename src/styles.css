@@ -812,3 +812,40 @@ h1 em { color: #78AEEF; }
   .settings-section-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
   .settings-theme-options { grid-template-columns: 1fr; }
 }
+
+
+/* Explicit control and preview for saved-memory prompt context. */
+.memory-context-controls {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border, rgba(120, 150, 190, .24));
+  border-radius: 12px;
+  background: var(--surface-raised, rgba(20, 38, 62, .45));
+}
+.memory-context-controls > label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+}
+.memory-context-controls > label input { accent-color: var(--accent, #2874D8); }
+.memory-context-controls p,
+.memory-context-controls small {
+  display: block;
+  margin: 7px 0 0;
+  color: var(--text-muted, #A9BBD2);
+  font-size: .88rem;
+  line-height: 1.5;
+}
+.memory-context-controls details { margin-top: 10px; }
+.memory-context-controls summary { cursor: pointer; color: var(--accent, #2874D8); }
+.memory-context-controls pre {
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--surface, rgba(5, 14, 29, .7));
+  font-size: .82rem;
+}

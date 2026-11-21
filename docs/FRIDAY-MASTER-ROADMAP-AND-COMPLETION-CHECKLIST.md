@@ -925,3 +925,17 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Future settings must use explicit, typed preferences with safe defaults; paid-provider, network and background settings require the four-guarantee release gate.
 
 This batch makes only the documented appearance preference functional. It does not imply that unsupported settings or provider integrations exist.
+
+
+### Saved-memory prompt controls and transparency — #1091
+
+- [x] Add a device-persisted user control to include or exclude saved memories from future local AI chat prompts.
+- [x] Preserve saved memory entries when prompt inclusion is disabled; disabling context is not deletion.
+- [x] Show a preview of the exact saved-memory text that will be included, using the same 30-entry and 12,000-character limits as chat.
+- [x] Keep the preference explicit and visible in Personal Memory; disable changes while a response is in flight so the current request cannot be misunderstood.
+- [ ] Verify Linux and Windows CI.
+- [ ] Physically validate the memory panel, preview overflow and preference persistence in the Windows desktop app.
+
+**User impact:** FRIDAY no longer requires the user to accept saved-memory context on every future chat. The user can keep memories stored locally while opting out of sending them to the local model. The control does not delete old conversation history or alter a request already in progress. No remote model provider is enabled by this change.
+
+The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
