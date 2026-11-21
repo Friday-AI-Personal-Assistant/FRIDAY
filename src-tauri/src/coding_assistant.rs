@@ -439,7 +439,6 @@ fn apply_code_preview_to_disk_bound(
 
     let backup_dir = ensure_code_backup_dir(root)?;
     check_code_backup_capacity(&backup_dir, (original.len() as u64).saturating_add(16_384))?;
-    #[cfg(unix)]
     let backup_directory_handle = {
         let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
             .map_err(|_| "Could not safely reopen the approved project folder for backup storage.".to_string())?;
@@ -447,32 +446,22 @@ fn apply_code_preview_to_disk_bound(
             .map_err(|_| "The code backup folder changed or was redirected.".to_string())?
     };
     let backup = backup_dir.join(format!("{token}.bak"));
-    #[cfg(unix)]
-    let mut backup_file = crate::coding_sandbox_fs::create_new_file_nofollow(
-        &backup_directory_handle, backup.file_name().ok_or("The backup filename is invalid.")?, 0o600,
+    let mut backup_file = crate::coding_sandbox_fs::create_destination_entry(
+        &backup_directory_handle,
+        backup.file_name().ok_or("The backup filename is invalid.")?,
+        false,
     ).map_err(|e| format!("Could not create a new handle-relative original-file backup: {e}"))?;
-    #[cfg(windows)]
-    let mut backup_file = OpenOptions::new().write(true).create_new(true).open(&backup)
-        .map_err(|e| format!("Could not create a new original-file backup: {e}"))?;
     if let Err(e) = backup_file.write_all(&original).and_then(|_| backup_file.sync_all()) {
         drop(backup_file);
         return Err(format!("Could not write the original-file backup: {e}. Any partial recovery item is retained for inspection."));
     }
     drop(backup_file);
-    #[cfg(unix)]
-    let verified_backup = {
-        let name = backup.file_name().ok_or("The backup filename is invalid.")?;
-        let mut file = crate::coding_sandbox_fs::open_file_nofollow(&backup_directory_handle, name)
-            .map_err(|_| "Could not reopen the original-file backup relative to its verified directory.".to_string())?;
-        let mut bytes = Vec::new();
-        use std::io::Read as _;
-        std::io::Read::by_ref(&mut file).take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)
-            .map_err(|_| "Could not read back the original-file backup.".to_string())?;
-        bytes
-    };
-    #[cfg(windows)]
-    let verified_backup = fs::read(&backup)
-        .map_err(|_| "Could not verify the original-file backup.".to_string())?;
+    let verified_backup = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+        &backup_directory_handle,
+        backup.file_name().ok_or("The backup filename is invalid.")?,
+        MAX_FILE_BYTES,
+        MAX_SCANNED_ENTRIES,
+    ).map_err(|_| "Could not verify the original-file backup through its verified directory handle.".to_string())?;
     if sha256_hex(&verified_backup) != original_hash {
         return Err("The original-file backup failed SHA-256 verification. The project file was not changed.".into());
     }
@@ -487,13 +476,11 @@ fn apply_code_preview_to_disk_bound(
     };
     let journal_path = backup_dir.join(format!("{token}.txn.json"));
     let journal_bytes = serde_json::to_vec(&record).map_err(|_| "Could not prepare the code-change recovery journal.".to_string())?;
-    #[cfg(unix)]
-    let mut journal = crate::coding_sandbox_fs::create_new_file_nofollow(
-        &backup_directory_handle, journal_path.file_name().ok_or("The journal filename is invalid.")?, 0o600,
+    let mut journal = crate::coding_sandbox_fs::create_destination_entry(
+        &backup_directory_handle,
+        journal_path.file_name().ok_or("The journal filename is invalid.")?,
+        false,
     ).map_err(|e| format!("Could not create the handle-relative code-change recovery journal: {e}"))?;
-    #[cfg(windows)]
-    let mut journal = OpenOptions::new().write(true).create_new(true).open(&journal_path)
-        .map_err(|e| format!("Could not create the code-change recovery journal: {e}"))?;
     journal.write_all(&journal_bytes).and_then(|_| journal.sync_all())
         .map_err(|e| format!("Could not flush the code-change recovery journal: {e}"))?;
     drop(journal);
@@ -502,32 +489,22 @@ fn apply_code_preview_to_disk_bound(
     #[cfg(any(unix, windows))]
     let (parent_handle, current_name, parent_identity) = open_verified_code_parent(root, current)?;
     let temporary = parent.join(format!(".friday-code-edit-{token}.tmp"));
-    #[cfg(unix)]
-    let mut temp_file = crate::coding_sandbox_fs::create_new_file_nofollow(
-        &parent_handle, temporary.file_name().ok_or("The replacement filename is invalid.")?, 0o600,
+    let mut temp_file = crate::coding_sandbox_fs::create_destination_entry(
+        &parent_handle,
+        temporary.file_name().ok_or("The replacement filename is invalid.")?,
+        false,
     ).map_err(|e| format!("Could not prepare the handle-relative replacement file: {e}"))?;
-    #[cfg(windows)]
-    let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temporary)
-        .map_err(|e| format!("Could not prepare the replacement file: {e}"))?;
     if let Err(e) = temp_file.set_permissions(meta.permissions()).and_then(|_| temp_file.write_all(proposed)).and_then(|_| temp_file.sync_all()) {
         drop(temp_file); let _ = fs::remove_file(&temporary);
         return Err(format!("Could not prepare the replacement contents: {e}"));
     }
     drop(temp_file);
-    #[cfg(unix)]
-    let temp_bytes = {
-        let name = temporary.file_name().ok_or("The replacement filename is invalid.")?;
-        let mut file = crate::coding_sandbox_fs::open_file_nofollow(&parent_handle, name)
-            .map_err(|_| "Could not reopen the replacement relative to its verified parent.".to_string())?;
-        let mut bytes = Vec::new();
-        use std::io::Read as _;
-        std::io::Read::by_ref(&mut file).take(MAX_PROPOSED_FILE_BYTES as u64 + 1).read_to_end(&mut bytes)
-            .map_err(|_| "Could not read back the replacement file.".to_string())?;
-        bytes
-    };
-    #[cfg(windows)]
-    let temp_bytes = fs::read(&temporary)
-        .map_err(|_| "Could not verify the replacement file.".to_string())?;
+    let temp_bytes = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+        &parent_handle,
+        temporary.file_name().ok_or("The replacement filename is invalid.")?,
+        MAX_PROPOSED_FILE_BYTES as u64,
+        MAX_SCANNED_ENTRIES,
+    ).map_err(|_| "Could not verify the replacement through its verified parent directory handle.".to_string())?;
     if sha256_hex(&temp_bytes) != resulting_hash {
         let _ = fs::remove_file(&temporary);
         return Err("The replacement file failed SHA-256 verification. The original was not changed.".into());
@@ -628,13 +605,11 @@ fn apply_code_preview_to_disk_bound(
     }
     let undo_path = backup_dir.join(format!("{token}.undo.json"));
     let undo_bytes = serde_json::to_vec(&record).map_err(|_| "Could not prepare the guarded undo record.".to_string())?;
-    #[cfg(unix)]
-    let mut undo_file = crate::coding_sandbox_fs::create_new_file_nofollow(
-        &backup_directory_handle, undo_path.file_name().ok_or("The Undo filename is invalid.")?, 0o600,
+    let mut undo_file = crate::coding_sandbox_fs::create_destination_entry(
+        &backup_directory_handle,
+        undo_path.file_name().ok_or("The Undo filename is invalid.")?,
+        false,
     ).map_err(|e| format!("The change was installed and verified, but its handle-relative Undo record could not be created: {e}. The original backup remains at {}.", backup.display()))?;
-    #[cfg(windows)]
-    let mut undo_file = OpenOptions::new().write(true).create_new(true).open(&undo_path)
-        .map_err(|e| format!("The change was installed and verified, but its undo record could not be created: {e}. The original backup remains at {}.", backup.display()))?;
     if let Err(e) = undo_file.write_all(&undo_bytes).and_then(|_| undo_file.sync_all()) {
         drop(undo_file);
         return Err(format!("The change was installed and verified, but its undo record could not be saved: {e}. The original backup remains at {}.", backup.display()));
