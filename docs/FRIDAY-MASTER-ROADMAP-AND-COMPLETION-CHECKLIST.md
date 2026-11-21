@@ -1446,6 +1446,29 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 **Initial scope:** Start with a narrowly supported XLSX/CSV workflow and clearly disclose format limitations. CSV has no multi-sheet workbook structure or Excel formulas/styles; macro-enabled and feature-rich XLSX files must remain unsupported for modification until preservation is demonstrated. Keep the existing read-only analysis path available independently.
 
 
+### 33.7 FRIDAY Smart Undo & Conversational Recovery
+
+**Status:** PLANNED — accepted product requirement (2026-11-22). Smart Undo extends permissioned Excel editing and the broader FRIDAY recovery experience. It allows users to request reversal in natural language while preserving strict transaction, provenance and user-approval boundaries.
+
+- [ ] Understand natural-language reversal requests such as “I don't need this change; put the sheet back the way it was” and resolve them against FRIDAY's recorded operation history.
+- [ ] Bind every reversible operation to a unique operation ID, exact workbook/source fingerprint, target workbook identity, worksheet and affected cell/range references, before/after values or formulas, and verified save outcome.
+- [ ] Resolve vague requests such as “reverse it” to a clearly identified candidate operation; show the workbook, sheet, affected cells/ranges, prior values and current values before asking for confirmation.
+- [ ] Require explicit user confirmation of the proposed undo immediately before writing. Natural-language intent alone is not authorization to modify a workbook.
+- [ ] Support three recovery scopes: undo the last FRIDAY operation; undo a user-selected FRIDAY operation or bounded set of operations; restore from a verified original backup. Clearly distinguish these actions in the preview.
+- [ ] Before restoring a cell or range, verify that its current value/state still matches the post-change state FRIDAY recorded. If another application or the user has changed it since, detect the conflict and do not overwrite newer work.
+- [ ] Reverse dependent multi-step or multi-cell operations in the correct order. Treat a grouped operation as one transaction: if its required preconditions cannot all be satisfied, abort the whole undo rather than leave a misleading partial reversal.
+- [ ] Preserve formulas, values, styles and workbook features within the supported format contract; never reconstruct an original workbook from incomplete journal data when a verified backup is required.
+- [ ] Prefer restoring a backup to a new file. Replacing the current workbook requires a separate, explicit confirmation after checking the current file identity and detecting newer user changes.
+- [ ] Verify the saved result by reopening/re-reading it, checking every intended restored value/formula and relevant workbook structure, then record the undo outcome against the original operation.
+- [ ] Keep an auditable, privacy-safe history of original operations and undo attempts, including operation linkage, approval, conflicts, verification and recovery artifact identity. Retention must be bounded and user-visible; never silently discard the only recovery evidence.
+- [ ] Make undo requests idempotent; reject repeated undo of an already-reversed operation unless a separately designed redo capability is available and safe.
+- [ ] Add adversarial tests for ambiguous operation selection, stale workbook identity, external edits, partial multi-cell conflicts, dependent operations, backup tampering, duplicate/retried undo, crash during restoration and failed post-undo verification.
+- [ ] Verify Linux and Windows CI and perform real-device acceptance for every supported workbook format before enabling Smart Undo for users.
+
+**Non-negotiable rule:** FRIDAY may interpret a conversational request, but it must never silently reverse a workbook. No exact operation identification, no preview and approval, no safe precondition check, or no post-restore verification means no undo. Never clobber newer user edits.
+
+
+
 ## 34. Formula Transparency & Regional Financial Preferences
 
 **Status:** PLANNED — accepted product direction (2026-11-21). These are first-class FRIDAY capabilities and should be designed into the shared formula engine and application settings, not implemented as isolated Excel-only features.
