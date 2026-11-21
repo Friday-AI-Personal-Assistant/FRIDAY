@@ -1103,7 +1103,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ## 27. Coding Assistant transaction and Undo recovery hardening — batches #1116–#1124
 
-**Status:** IN PROGRESS — #1116–#1122 and #1125, #1127 passed Linux/Windows CI. #1123–#1124 and #1126 required follow-up corrections; the corrected recovery-state expectations passed in #1127. Deeper path/handle hardening remains open.
+**Status:** IN PROGRESS — #1116–#1122, #1125, #1127, #1128 and #1132 passed Linux/Windows CI. #1123–#1124 and #1126 required follow-up corrections; deeper path/handle hardening remains open.
 
 - [x] #1116: Restore original Windows DACL metadata after successful Undo replacement and when recovery finds the original content already installed.
 - [x] #1117–#1118: Add bounded, identity-checked reads relative to verified directory handles; route recovery-file reads through the verified parent-directory capability.
@@ -1112,7 +1112,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] #1122: Rework normal on-disk Undo around verified directory handles, bounded reads, identity-bound no-replace renames and post-install verification.
 - [ ] #1123–#1124: Repair interrupted Undo recovery and its crash/ReplaceFileW failure-state tests. Preserve the active Undo record when recovery has not completed; archive the transaction journal without overwriting; retain only artifacts that actually exist and are needed as evidence.
 - [ ] Remove remaining unsafe path-based cleanup from the Apply/Undo recovery paths. Do not replace it with a filename-only deletion fallback.
-- [ ] Move permission restoration and Apply recovery toward verified-handle operations; verify file identity immediately before any metadata mutation.
+- [x] Move permission restoration to verified-handle operations; #1133 additionally binds metadata mutation to the identity captured from the original open handle. CI verification pending.
 - [ ] Define and test the recovery artifact state machine for every transaction boundary and documented Windows replacement outcome.
 - [ ] Verify Linux and Windows CI and record the exact run IDs.
 - [ ] Perform physical Windows desktop acceptance separately; CI is not physical-device validation.
@@ -1121,17 +1121,30 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ### Handle-bound permission restoration — #1129
 
-**Status:** IMPLEMENTED — Linux/Windows CI pending.
+**Status:** COMPLETE IN CI — #1132 passed Linux tests and Windows build/tests.
 
 - [x] Open the exact recovery child relative to the already-verified parent directory handle with no-reparse semantics before changing metadata.
 - [x] Restore Unix mode bits using the opened file handle rather than path-based permission mutation.
 - [x] Restore Windows DACL and inheritance protection through SetSecurityInfo on the opened file handle, not SetFileSecurityW on a path.
-- [x] Request the Windows WRITE_DAC right only in the dedicated security-restoration open path; ordinary file reads retain narrower access.
+- [x] Request READ_CONTROL and WRITE_DAC only in the dedicated security-restoration open path; ordinary file reads retain narrower access.
 - [x] Convert interrupted Undo target, interrupted Apply restoration temporary, and normal Undo prepared temporary call sites to parent-handle + child-name operations.
-- [ ] Verify Windows compilation and Linux tests; add focused tests for missing, redirected, substituted and denied security targets.
+- [x] Verify Linux tests and Windows build/tests in #1132; Windows DACL restoration passed after requesting READ_CONTROL alongside WRITE_DAC in the dedicated security handle.
 - [ ] Audit remaining path-based transaction cleanup and recovery-target validation before enabling Recovery Storage Manager cleanup.
 
 **User impact:** FRIDAY applies saved file permissions to the file it actually opened inside the approved directory, rather than reopening a pathname that could have been swapped to point at another file. Windows DACL restoration uses the verified file handle and fails closed if required access cannot be obtained. No broader project access is granted and no recovery evidence is deleted.
+
+### Identity-bound permission restoration — #1133
+
+**Status:** IMPLEMENTED — Linux/Windows CI pending.
+
+- [x] Capture stable file identity from the original open handle before closing newly created recovery/Undo temporary files.
+- [x] Require the expected identity when reopening a child for permission restoration; compare the opened handle before changing Unix mode bits or Windows DACLs.
+- [x] Bind interrupted-Undo target permission restoration to a verified identity and fail closed if the opened object differs.
+- [x] Add cross-platform regression coverage for identity captured from an open handle and same-name replacement detection.
+- [ ] Verify Linux tests and Windows build/tests; inspect platform-specific failures before proceeding.
+- [ ] Continue auditing path-based transaction cleanup and recovery-target validation; this batch does not authorize deletion or enable Recovery Storage Manager cleanup.
+
+**User impact:** FRIDAY carries the original file identity across the close/reopen boundary and refuses to change permissions if the named file was replaced. Recovery evidence remains preserved.
 
 ### Handle-bound Undo state inspection — #1128
 
