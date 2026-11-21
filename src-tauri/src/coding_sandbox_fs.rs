@@ -262,7 +262,7 @@ pub(crate) fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File
 pub(crate) fn open_file_nofollow_for_security(parent: &File, name: &OsStr) -> io::Result<File> {
     open_file_nofollow_with_share_access(
         parent, name, 0x0000_0001 | 0x0000_0002 | 0x0000_0004,
-        0x0000_0001 | 0x0000_0080 | 0x0004_0000 | 0x0010_0000,
+        0x0000_0001 | 0x0000_0080 | 0x0002_0000 | 0x0004_0000 | 0x0010_0000,
     )
 }
 
