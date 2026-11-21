@@ -2,7 +2,7 @@
 
 > **Purpose:** This is the durable, cross-conversation source of truth for what FRIDAY is intended to become, what has been verified as implemented, what remains, the order of work, and the relative effort/risk of each area. A new development conversation must read this file and the Coding Assistant completion checklist before making changes.
 >
-> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`, HEAD `c2edaf1c6b49d47f6c0921fc7d66adb7b749d17b`; latest verified Linux/Windows CI is #1171 ([run 44919038610](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44919038610)). Linux tests and Windows build/tests passed. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance and trust review are now being implemented. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
+> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`, HEAD `82cef5bae69a70a9c02dcd4d9361b1371ca0d53c`; latest verified Linux/Windows CI is #1175 ([run 44922923873](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44922923873)). Linux tests and Windows build/tests passed. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The next product-focused sequence is visual refinement, FRIDAY's visible development personality/journey, then Excel Intelligence and its first usable skill. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
 >
 > **Do not confuse a plan with implementation.** A checkbox is complete only when code, tests, and (where required) real-device acceptance demonstrate it. Update this document after each meaningful batch with commit, CI run, and evidence.
 
@@ -1238,9 +1238,9 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ## 29. OpenJarvis skill-system selective reuse — audit and adoption decision
 
-**Status:** SOURCE AUDIT COMPLETE; STRICT IMPORTER, HANDLE-BOUND QUARANTINE INVENTORY AND IDENTITY HARDENING PASSED LINUX/WINDOWS CI THROUGH #1171. No upstream runtime code has been copied or enabled.
+**Status:** SOURCE AUDIT COMPLETE; STRICT IMPORTER, HANDLE-BOUND QUARANTINE INVENTORY, IDENTITY HARDENING, PROVENANCE/TRUST METADATA AND SKILLS STORE REVIEW UI PASSED LINUX/WINDOWS CI THROUGH #1175. #1173/#1174 exposed a frontend JSX closing-brace error; #1175 corrected it and passed both jobs. No upstream runtime code has been copied or enabled.
 
-- [x] Verify current FRIDAY branch/HEAD and latest Linux/Windows CI before this work: `foundation/evaluation`, `c2edaf1c6b49d47f6c0921fc7d66adb7b749d17b`, #1171 run [44919038610](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44919038610); Linux tests and Windows build/tests passed.
+- [x] Verify current FRIDAY branch/HEAD and latest Linux/Windows CI: `foundation/evaluation`, `82cef5bae69a70a9c02dcd4d9361b1371ca0d53c`, #1175 run [44922923873](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44922923873); Linux tests and Windows build/tests passed.
 - [x] Pin and inspect current OpenJarvis `main`: `5a9b5268f2432f7ea4fe402e384ecb6b64a649bb`.
 - [x] Compare `skills/loader.py`, `skills/types.py`, `skills/manager.py`, `skills/executor.py`, `skills/tool_adapter.py`, `tools/_stubs.py` and `workflow/engine.py` with FRIDAY's Rust skills, persistent permissions, backend command policy and existing Skills Store UI.
 - [x] Record the feature-level reuse decisions, upstream limitations, licence obligations, FRIDAY package contract, tool-execution boundary and staged acceptance criteria in [OPENJARVIS-SKILL-SYSTEM-REUSE-AUDIT.md](OPENJARVIS-SKILL-SYSTEM-REUSE-AUDIT.md).
@@ -1250,7 +1250,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] Add handle-bound quarantine reinspection for an explicitly selected content-addressed item: read `SKILL.md` and `inspection.json` through a pinned directory handle and no-follow child opens; enforce size/type/read-stability bounds; recompute SHA-256; compare parsed metadata; and reject altered enabled/executable/permission state. Add regression coverage for content tampering and metadata tampering. Expose the backend command; this is integrity verification, not publisher authentication.
 - [x] Add a bounded backend quarantine inventory (maximum 200 entries) that reports verified items and explicitly labels invalid, tampered or unreadable entries as blocked; it never silently drops uncertain entries. Frontend inventory presentation and trust review are now being wired.
 - [x] Harden community-skill source inspection and quarantine inventory to enumerate through pinned directory handles, retain each entry's filesystem identity, reject reparse/symlink entries, and re-open each candidate relative to the held quarantine root before reading its bounded child files. Add Linux/Windows regression coverage for directory identity mismatch and symlinked entries; #1171 passed.
-- [ ] Extend provenance metadata with source type, import time, optional source URL/publisher/revision fields, self-declared licence and explicit trust findings. Current picker records only the user-selected local-folder source and local import time; publisher/source authentication is not implemented. Legacy metadata remains readable and is labelled unknown.
+- [x] Extend provenance metadata with source type, import time, optional source URL/publisher/revision fields, self-declared licence and explicit trust findings. Current picker records only the user-selected local-folder source and local import time; publisher/source authentication is not implemented. Legacy metadata remains readable and is labelled unknown; CI passed in #1172 and the integrated frontend correction passed in #1175.
 - [x] Add parser regression tests for duplicate/unknown fields, unsupported nested YAML/anchors, invalid IDs, missing delimiters, empty body and oversized content. [ ] Add adversarial filesystem tests for path traversal, symlinks/reparse points, unsupported extra files/scripts and quarantine tampering; physical Windows acceptance remains outstanding.
 - [x] Add a Skills Store import action and unverified quarantine preview. No install transition exists yet; inspected content remains inert and is not added to session context. [ ] Build trust review and explicit install-disabled transition after source/provenance hardening.
 - [ ] After importer acceptance, build a Rust-native typed tool registry and permission-checked skill-to-tool bridge. Authorize every invocation against backend-owned tool policy and current exact user grants; unknown tools fail closed.
@@ -1260,3 +1260,34 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 **Key distinction:** OpenJarvis provides reusable architecture and package-format conventions, not a ready-made FRIDAY security boundary. Its source-level review does not establish that imported packages are benign. FRIDAY's Safety, User control, Cost transparency and Reliability guarantees remain mandatory.
 
 **Licence:** OpenJarvis's inspected repository-root licence is Apache-2.0. If any upstream source is copied/adapted, retain required licence/copyright/NOTICE material, mark modified files and record exact source commit/file provenance. The first importer should be a clean Rust implementation unless copying code has a clear measured advantage.
+
+
+## 30. FRIDAY development personality and visible growth journey — accepted product requirement
+
+**Status:** ACCEPTED PRODUCT DIRECTION — roadmap requirement recorded; implementation planned after the first Midnight Azure visual-refinement batch. This is a user-facing product experience, not a claim that FRIDAY is conscious or independently self-aware.
+
+**Purpose:** Make FRIDAY's development feel visible, understandable and motivating. The user should be able to open the application and see what FRIDAY can genuinely do today, what is being built next, and which milestones have actually been completed. Development should feel like watching a useful assistant grow rather than watching invisible engineering activity.
+
+### Personality and experience requirements
+
+- [ ] Give FRIDAY a consistent, warm, capable, respectful assistant voice in its own UI; keep the tone natural and avoid forced jokes, excessive flattery or manipulative emotional language.
+- [ ] Create a clear "FRIDAY Development Journey" or equivalent home/dashboard experience showing current focus, completed milestones and the next planned capability.
+- [ ] Show visible milestone unlocks only when the corresponding feature is implemented and verified; distinguish **Available**, **In progress**, **Planned** and **Needs verification**.
+- [ ] Celebrate meaningful, verified milestones with tasteful UI moments (subtle animation, completion note or feature reveal); respect reduced-motion preferences and allow the user to dismiss celebrations.
+- [ ] Explain technical progress in plain language and show what the user can now try, rather than exposing commit/test jargon as the primary experience.
+- [ ] Keep the journey tied to the Master Roadmap so status survives conversation loss and does not depend on an assistant's memory or an unverified estimate.
+- [ ] Let the user explore completed capabilities and launch the relevant feature directly from the journey.
+- [ ] Keep progress honest: CI success alone does not mean a user-facing feature is complete; require working integration and applicable platform/device acceptance.
+- [ ] Do not fabricate progress percentages, background work, autonomous development, awareness, emotions or capabilities. FRIDAY must clearly identify planned or simulated content.
+- [ ] Personality and milestone celebration must never override permissions, safety checks, cost disclosure, user consent or the FRIDAY Four Guarantees.
+- [ ] Keep the experience lightweight, accessible, responsive and consistent with the official Midnight Azure design system and companion light theme.
+
+### Initial delivery sequence
+
+1. Complete the Midnight Azure visual-refinement and integration pass across the existing application; preserve the approved palette and improve consistency rather than replacing the design direction.
+2. Add the FRIDAY Development Journey to the primary Overview/home experience, backed by explicit roadmap milestone data and truthful statuses.
+3. Add FRIDAY's concise welcome/assistant personality treatment and small verified milestone celebrations.
+4. Make Excel Intelligence the first prominent capability milestone and connect its first usable Excel Analyst skill to the same journey.
+5. Validate the experience in the installed Windows application at normal and narrow window sizes; record screenshots/acceptance evidence before marking visual acceptance complete.
+
+**Product principle:** The user should regularly have something visible, testable or enjoyable to interact with. Avoid long stretches of invisible foundation-only work unless a concrete safety or reliability blocker requires it.
