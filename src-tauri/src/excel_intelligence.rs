@@ -39,7 +39,7 @@ const MAX_SESSION_SUMMARY_BYTES: usize = 32 * 1024 * 1024;
 #[serde(rename_all = "camelCase")]
 pub struct WorkbookAnalysis {
     pub session_id: String,
-    pub file_name: String;
+    pub file_name: String,
     pub format: String,
     pub source_sha256: String,
     pub source_byte_length: u64,
