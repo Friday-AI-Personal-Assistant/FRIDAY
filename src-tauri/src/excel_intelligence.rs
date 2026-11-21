@@ -129,7 +129,7 @@ fn validate_xlsx_package(bytes: &[u8]) -> Result<(), String> {
     for index in 0..archive.len() {
         let entry = archive.by_index(index)
             .map_err(|_| "FRIDAY could not safely inspect the workbook package.".to_string())?;
-        let name = entry.name().to_ascii_lowercase();
+        let name = entry.name().map_err(|_| "The workbook contains an invalid internal path.".to_string())?.to_ascii_lowercase();
         if name.ends_with("vbaproject.bin") {
             return Err("Macro-enabled workbooks are not supported. Save a macro-free .xlsx copy; FRIDAY never runs workbook macros.".into());
         }
