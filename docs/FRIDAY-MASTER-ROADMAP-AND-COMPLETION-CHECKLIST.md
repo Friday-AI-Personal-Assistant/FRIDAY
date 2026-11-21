@@ -883,7 +883,7 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 **Four guarantees remain mandatory:** Safety, User control, Cost transparency and Reliability. Command-coverage tests do not substitute for consent, OS isolation, cost disclosure or physical-device acceptance.
 
 
-### Persistent user permission engine — #1085
+### Persistent user permission engine and Web Research enforcement — #1085–#1087
 
 - [x] Versioned, bounded, fail-closed permission store using atomic replacement.
 - [x] Exact capability/resource grants with secure random IDs and expiry capped at one year.
@@ -894,7 +894,9 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 - [x] Tests for expiry, exact scope, malformed storage, duplicate IDs and unknown capability denial.
 - [ ] Verify both Linux and Windows CI.
 - [ ] Connect grants to actual resource-owning handlers; no grant may bypass a separate one-use approval.
-- [ ] Add Permissions & Transparency Centre UI in Midnight Azure.
+- [x] Add Midnight Azure Permissions & Transparency Centre UI with grant listing, native-confirmed exact-domain grants, revocation and audit history.
+- [x] Enforce exact Web Research domain grants in Rust for DuckDuckGo search and selected page reads; re-check redirect destinations.
+- [ ] Extend persistent grants to other feature handlers only when exact resource identity and safe consent UX are implemented.
 - [ ] Ensure skill install/enable/load never silently grants permissions.
 
 The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.

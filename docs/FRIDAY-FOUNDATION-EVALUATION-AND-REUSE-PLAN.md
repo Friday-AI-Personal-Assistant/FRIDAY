@@ -386,7 +386,7 @@ The #1076 File/Coding Assistant capability increment is verified on both Windows
 **Scope:** this inventory verifies static command classification, not durable user consent. A capability policy recognizes a backend operation; it does not grant a skill, integration or provider access to a user resource. Existing scoped grants and one-use operation approvals remain separate. Next: persistent narrow user grants, explicit consent, expiry, revocation and audit history before broader integrations or executable skills.
 
 
-### Persistent user permission registry — initial engine (#1085)
+### Persistent user permission registry and first runtime integration (#1085–#1087)
 
 - [x] Add a versioned local grant store with bounded size, strict schema validation, atomic writes and fail-closed handling of malformed, symlinked or oversized files.
 - [x] Add exact capability + resource matching, bounded expiry (maximum one year), secure random grant IDs and duplicate-grant rejection.
@@ -397,6 +397,8 @@ The #1076 File/Coding Assistant capability increment is verified on both Windows
 - [ ] Verify Linux and Windows CI.
 - [ ] Wire each grantable capability into the corresponding resource-owning feature handler before treating a grant as operational.
 - [x] Harden grant lifecycle: start expiry only after native confirmation, persist expired-grant audit events, and test expiry/revocation round-trips and replay denial. Existing per-action approvals and folder/project session selections must remain independent and cannot be bypassed by a persistent grant.
-- [ ] Build the Midnight Azure Permissions & Transparency Centre.
+- [x] Build the Midnight Azure Permissions & Transparency Centre with live grant listing, native-confirmed domain grants, revocation and audit history.
+- [x] Enforce exact `web.research` domain grants in Rust before contacting DuckDuckGo or reading a webpage; check every redirect destination against its own grant.
+- [ ] Extend the same exact-scope pattern to file, memory, remote-provider and desktop operations only after each handler has a resource identity and safe consent flow.
 
-**Important boundary:** this batch creates the persistent consent/audit engine, not blanket permission for every current FRIDAY command. A grant is only effective where a feature explicitly checks the exact capability and resource. Installation, enabling or loading a skill never creates a grant.
+**Important boundary:** the permission centre currently offers operational grants only for Web Research. Other grantable capability identifiers remain dormant until their feature handlers enforce them. This is not blanket permission for every current FRIDAY command. A grant is only effective where a feature explicitly checks the exact capability and resource. Installation, enabling or loading a skill never creates a grant.

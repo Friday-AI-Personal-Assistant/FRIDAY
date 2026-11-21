@@ -396,3 +396,55 @@ h1 em{font-style:normal;color:#9ce4ad}
 .secondary-button { border: 1px solid var(--border, #ccc); border-radius: 8px; padding: 10px 14px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
 .secondary-button:disabled,.primary-button:disabled { opacity: .55; cursor: not-allowed; }
 @media (max-width: 700px) { .coding-panel { padding: 13px; } .coding-metrics { gap: 6px; } }
+
+
+/* Midnight Azure — Permissions & Transparency Centre */
+.permissions-page{--az-bg:#050e1d;--az-panel:#0e1a2d;--az-raised:#192840;--az-blue:#2874d8;--az-text:#a9bbd2;color:#e6eef8}
+.permissions-page .eyebrow{color:#91a9c7}
+.permissions-page h1 em{color:#78aef2}
+.permissions-dot{width:7px;height:7px;border-radius:50%;background:#2874d8;box-shadow:0 0 12px #2874d855}
+.permissions-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px;margin:25px 0}
+.permissions-summary>div,.permissions-panel,.permissions-empty,.permissions-grant,.permissions-audit-list,.permissions-browser-notice,.permissions-guarantees{background:var(--az-panel);border:1px solid #263a56;border-radius:11px}
+.permissions-summary>div{padding:15px}
+.permissions-summary span,.permissions-panel-heading,.permissions-section-heading>div>span{display:block;color:#8fa8c7;font-size:8px;font-weight:700;letter-spacing:1.5px}
+.permissions-summary strong{display:block;margin-top:9px;color:#e6eef8;font:600 18px Manrope,sans-serif}
+.permissions-panel{padding:20px;margin:18px 0 28px;background:linear-gradient(145deg,#0e1a2d,#101f35)}
+.permissions-panel-heading{display:flex;justify-content:space-between;gap:10px}
+.permissions-panel-heading small{color:#829bb9;font-size:9px;letter-spacing:0}
+.permissions-panel h2,.permissions-section-heading h2{font:600 18px Manrope,sans-serif;color:#e7eff9;margin:9px 0}
+.permissions-panel>p{font-size:10px;line-height:1.7;color:#a1b3ca;max-width:690px}
+.permissions-form{display:grid;grid-template-columns:minmax(0,1fr) 170px auto;align-items:end;gap:10px;margin:16px 0 12px}
+.permissions-form label{display:grid;gap:6px;color:#a9bbd2;font-size:10px}
+.permissions-form input,.permissions-form select{width:100%;min-width:0;background:#071326;border:1px solid #385273;border-radius:8px;color:#e8f1fb;padding:11px;font:11px 'DM Sans',sans-serif}
+.permissions-form input:focus,.permissions-form select:focus{outline:2px solid #2874d8;outline-offset:1px}
+.permissions-primary,.permissions-secondary{border:1px solid #4385df;background:#2874d8;color:#fff;border-radius:8px;padding:11px 13px;font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap}
+.permissions-primary:disabled,.permissions-secondary:disabled,.permissions-revoke:disabled{opacity:.5;cursor:wait}
+.permissions-disclosure{font-size:9px!important;color:#8fa8c7!important;margin:12px 0 0}
+.permissions-disclosure code{color:#c2d9f5;background:#192840;padding:2px 4px;border-radius:4px}
+.permissions-section-heading{display:flex;align-items:end;justify-content:space-between;margin:26px 0 12px}
+.permissions-section-heading h2{margin:5px 0 0}
+.permissions-secondary{background:#192840;border-color:#385273;color:#c6d9f0;padding:8px 12px}
+.permissions-empty{padding:16px;color:#9fb2cb;font-size:10px;line-height:1.7}
+.permissions-grant-list{display:grid;gap:8px}
+.permissions-grant{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 15px}
+.permissions-grant-copy{min-width:0}
+.permissions-grant-copy>span{display:block;color:#80b2f0;font-size:8px;letter-spacing:1px}
+.permissions-grant-copy strong{display:block;color:#e7eff9;font-size:12px;margin:4px 0;overflow-wrap:anywhere}
+.permissions-grant-copy small,.permissions-audit-row small{display:block;color:#8fa8c7;font-size:9px;line-height:1.5}
+.permissions-revoke{border:1px solid #89545b;background:#30202b;color:#f1c2c8;border-radius:7px;padding:8px 11px;font-size:9px;cursor:pointer;flex-shrink:0}
+.permissions-audit-list{padding:5px 14px}
+.permissions-audit-row{display:flex;align-items:center;gap:12px;padding:11px 2px;border-bottom:1px solid #263a56}
+.permissions-audit-row:last-child{border-bottom:0}
+.permissions-audit-row strong{display:block;color:#dbe7f6;font-size:10px;margin-bottom:4px}
+.permissions-event-dot{width:7px;height:7px;border-radius:50%;background:#8fa8c7;flex-shrink:0}
+.permissions-event-dot.granted{background:#4d9bea}.permissions-event-dot.revoked{background:#d28b94}.permissions-event-dot.expired{background:#d5ad65}
+.permissions-message,.permissions-error{padding:12px 14px;border-radius:8px;font-size:10px;line-height:1.6;margin:14px 0}
+.permissions-message{background:#102a48;border:1px solid #2c5d91;color:#c8e1ff}
+.permissions-error{background:#39252d;border:1px solid #8c5360;color:#ffd4dc;overflow-wrap:anywhere}
+.permissions-browser-notice{padding:17px;color:#dce9f8}
+.permissions-browser-notice strong{font-size:12px}.permissions-browser-notice p{color:#a9bbd2;font-size:10px;line-height:1.7;margin:6px 0 0}
+.permissions-guarantees{display:grid;gap:7px;margin-top:28px;padding:16px;background:#0b1729}
+.permissions-guarantees strong{color:#c8d9ef;font-size:10px}
+.permissions-guarantees span{color:#80b2f0;font-size:10px}
+.permissions-guarantees p{color:#91a7c2;font-size:9px;line-height:1.6;margin:0}
+@media(max-width:760px){.permissions-summary{grid-template-columns:1fr 1fr}.permissions-form{grid-template-columns:1fr}.permissions-primary{width:100%}.permissions-panel{padding:15px}.permissions-grant{align-items:flex-start}.permissions-grant-copy small{max-width:230px}}
