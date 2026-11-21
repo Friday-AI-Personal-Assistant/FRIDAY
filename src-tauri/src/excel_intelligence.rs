@@ -182,8 +182,11 @@ impl WorkbookSessionStore {
             .ok_or_else(|| "This workbook analysis session has expired or was replaced. Import the workbook again.".to_string())?;
         let sheet = session.sheets.iter().find(|sheet| sheet.name == sheet_name)
             .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;
-        let _provenance = (&session.source_sha256, session.source_byte_length, &session.format, &session.file_name);
-        Ok(answer_question(question, &sheet.name, sheet.row_count, &sheet.columns))
+        let mut answer = answer_question(question, &sheet.name, sheet.row_count, &sheet.columns);
+        answer.evidence.push(format!("Workbook: {} ({})", session.file_name, session.format));
+        answer.evidence.push(format!("Source SHA-256: {}… ({} bytes)", &session.source_sha256[..12], session.source_byte_length));
+        answer.method.push_str("; bound to the imported workbook session");
+        Ok(answer)
     }
 
     #[cfg(test)]
@@ -871,6 +874,28 @@ mod tests {
         assert!(store.answer("00000000000000000000000000000000", "CSV data", "total revenue").is_err());
         assert!(store.answer(&id, "Other sheet", "total revenue").is_err());
         assert!(store.answer("not-a-session", "CSV data", "total revenue").is_err());
+    }
+
+    #[test]
+    fn workbook_sessions_expire_and_require_reimport() {
+        let store = WorkbookSessionStore::default();
+        let id = store.create(&session_test_analysis()).unwrap();
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            sessions.get_mut(&id).unwrap().created_at = Instant::now() - WORKBOOK_SESSION_TTL - Duration::from_secs(1);
+        }
+        assert!(store.answer(&id, "CSV data", "total revenue").is_err());
+        assert_eq!(store.session_count(), 0);
+    }
+
+    #[test]
+    fn workbook_answers_include_bound_source_fingerprint() {
+        let store = WorkbookSessionStore::default();
+        let analysis = session_test_analysis();
+        let expected = analysis.source_sha256[..12].to_string();
+        let id = store.create(&analysis).unwrap();
+        let answer = store.answer(&id, "CSV data", "total revenue").unwrap();
+        assert!(answer.evidence.iter().any(|item| item.contains(&expected)));
     }
 
     #[test]
