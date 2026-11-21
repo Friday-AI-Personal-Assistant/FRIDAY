@@ -17,6 +17,9 @@ ambient-authority = "=0.0.2"
 cap-primitives = "=4.0.3"
 tauri = { version = "2", features = [] }
 chacha20poly1305 = "0.10"
+calamine = "0.38"
+csv = "1.4"
+zip = { version = "9.0", default-features = false }
 rand = "0.8"
 keyring = { version = "3", features = ["windows-native"] }
 
