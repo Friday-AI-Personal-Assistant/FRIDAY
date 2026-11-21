@@ -46,6 +46,16 @@ type SheetAnalysis = {
   accountingFieldSuggestions: AccountingFieldSuggestion[];
 };
 
+type ConfirmedAccountingMapping = {
+  fieldId: string;
+  sheetName: string;
+  header: string;
+  sourceColumnIndex: number;
+  headerCell: string;
+  dataRange: string;
+  sourceSha256: string;
+};
+
 type ExcelQuestionAnswer = {
   status: "answered" | "clarification" | "unsupported";
   answer: string;
@@ -77,6 +87,9 @@ export default function ExcelIntelligence() {
   const [question, setQuestion] = useState("");
   const [questionAnswer, setQuestionAnswer] = useState<ExcelQuestionAnswer | null>(null);
   const [asking, setAsking] = useState(false);
+  const [confirmedMappings, setConfirmedMappings] = useState<ConfirmedAccountingMapping[]>([]);
+  const [mappingBusy, setMappingBusy] = useState<number | null>(null);
+  const [mappingMessage, setMappingMessage] = useState("");
 
   async function chooseWorkbook() {
     setBusy(true);
@@ -87,6 +100,8 @@ export default function ExcelIntelligence() {
       setSelectedSheet(0);
       setQuestion("");
       setQuestionAnswer(null);
+      setConfirmedMappings([]);
+      setMappingMessage("");
     } catch (reason) {
       const message = String(reason);
       if (!message.toLowerCase().includes("cancel")) setError(message);
@@ -96,6 +111,28 @@ export default function ExcelIntelligence() {
   }
 
   const sheet = analysis?.sheets[selectedSheet];
+
+  async function confirmAccountingMapping(item: AccountingFieldSuggestion) {
+    if (!analysis || !sheet || item.status !== "suggested" || !item.fieldId || mappingBusy !== null) return;
+    setMappingBusy(item.sourceColumnIndex);
+    setMappingMessage("");
+    try {
+      const mapping = await invoke<ConfirmedAccountingMapping>("confirm_excel_accounting_mapping", {
+        sessionId: analysis.sessionId,
+        sheetName: sheet.name,
+        sourceColumnIndex: item.sourceColumnIndex,
+        fieldId: item.fieldId,
+      });
+      setConfirmedMappings(current => [...current.filter(existing =>
+        !(existing.sheetName === mapping.sheetName && existing.sourceColumnIndex === mapping.sourceColumnIndex)
+      ), mapping]);
+      setMappingMessage("Confirmed " + mapping.header + " as " + mapping.fieldId + ". Source: " + mapping.sheetName + "!" + mapping.headerCell + " and " + mapping.dataRange + ".");
+    } catch (reason) {
+      setMappingMessage(String(reason));
+    } finally {
+      setMappingBusy(null);
+    }
+  }
 
   async function askQuestion() {
     if (!sheet || !question.trim() || asking) return;
@@ -236,13 +273,19 @@ export default function ExcelIntelligence() {
                 <article className="excel-column-card" key={item.headerCell + "-" + index}>
                   <strong>{item.header}</strong>
                   <div className="excel-column-stats">
-                    <span>{item.status === "suggested" ? "POSSIBLE MATCH" : "NEEDS REVIEW"}</span>
+                    <span>{confirmedMappings.some(mapping => mapping.sheetName === sheet.name && mapping.sourceColumnIndex === item.sourceColumnIndex) ? "CONFIRMED IN THIS SESSION" : item.status === "suggested" ? "POSSIBLE MATCH" : "NEEDS REVIEW"}</span>
                     <b>{item.status === "suggested" ? item.fieldId : item.possibleFields.join(" / ")}</b>
                   </div>
                   <p className="excel-muted">Source: {sheet.name}!{item.headerCell} · Values: {sheet.name}!{item.dataRange}</p>
+                  {item.status === "suggested" && !confirmedMappings.some(mapping => mapping.sheetName === sheet.name && mapping.sourceColumnIndex === item.sourceColumnIndex) && (
+                    <button type="button" className="secondary-button" onClick={() => void confirmAccountingMapping(item)} disabled={mappingBusy !== null}>
+                      {mappingBusy === item.sourceColumnIndex ? "Confirming…" : "Confirm this field"}
+                    </button>
+                  )}
                 </article>
               ))}
             </div>
+            {mappingMessage && <p className="excel-table-caption" role="status">{mappingMessage}</p>}
             {sheet.accountingFieldSuggestions.every(item => item.status === "unmapped") && (
               <p className="excel-muted">No known accounting headers were recognized. FRIDAY will not guess from generic column names.</p>
             )}
