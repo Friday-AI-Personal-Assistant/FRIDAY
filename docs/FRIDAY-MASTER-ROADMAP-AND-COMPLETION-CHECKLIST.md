@@ -1342,6 +1342,11 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ## 33. FRIDAY Domain Intelligence & Formula Engine — reusable calculation foundation
 
+**Phase 1 verification (2026-11-21):** User-confirmed and independently checked: workflow runs #1217–#1220 completed successfully on Linux and Windows. The backend-only fixed-point formula core and reviewed initial accounting formulas are compile/test verified. It is not yet exposed through IPC or a user-facing accounting calculation workflow.
+
+**Phase 2 implementation in progress (2026-11-21):** Commits `d28fa9449a802ba4ab11afde592624a579f9a98d`, `3b117fda977b42e021bc37beb0185632f1388e25` and `0439136eff618877fbb58081c5fa8cd08b301f7d` add deterministic accounting-header suggestions to Excel Intelligence, explicit ambiguous/unmapped states, and worksheet cell/range references for each suggestion. Duplicate headers are forced to review; generic labels such as “Revenue” or “Sales” are not silently assigned to one concept. The UI labels these as suggestions only. **This is not yet backend-verifiable source-session provenance and must not be used as authority for financial calculations. CI verification pending.**
+
+
 **Implementation progress (2026-11-21):** Phase 1 backend core has been added on `foundation/evaluation` in commits `f25cc7d8bcfde9b2c7716d2bd3835855482188f1`, `e73c4fa10db0a4e68ec1c43dceed44e54c536455` and `468913bbe57e2d4f6ebff5e133eab0cb59eb51b6`. It introduces a deterministic fixed-point decimal core (six fractional places, checked i128 operations, no floating-point arithmetic), a versioned allowlisted formula registry, explicit input states (provided/missing/unknown/not applicable), required-field and currency checks, and traceable outputs. The first reviewed formula definitions are net sales, gross profit and gross margin. This is backend-only and not yet exposed to the UI or IPC. **CI verification is pending; do not treat this phase as complete until Linux and Windows checks pass.**
 
 
