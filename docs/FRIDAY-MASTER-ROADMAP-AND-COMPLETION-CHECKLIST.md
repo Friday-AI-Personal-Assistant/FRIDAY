@@ -1264,7 +1264,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ## 30. FRIDAY development personality and visible growth journey — accepted product requirement
 
-**Status:** ACCEPTED PRODUCT DIRECTION — roadmap requirement recorded; implementation planned after the first Midnight Azure visual-refinement batch. This is a user-facing product experience, not a claim that FRIDAY is conscious or independently self-aware.
+**Status:** INITIAL OVERVIEW JOURNEY IMPLEMENTED; Linux/Windows CI pending. The first Midnight Azure workspace integration batch passed #1179 (run `44924968988`); installed-app visual acceptance remains outstanding. This is a user-facing product experience, not a claim that FRIDAY is conscious or independently self-aware.
 
 **Purpose:** Make FRIDAY's development feel visible, understandable and motivating. The user should be able to open the application and see what FRIDAY can genuinely do today, what is being built next, and which milestones have actually been completed. Development should feel like watching a useful assistant grow rather than watching invisible engineering activity.
 
@@ -1282,11 +1282,13 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Personality and milestone celebration must never override permissions, safety checks, cost disclosure, user consent or the FRIDAY Four Guarantees.
 - [ ] Keep the experience lightweight, accessible, responsive and consistent with the official Midnight Azure design system and companion light theme.
 
+- [x] Add the initial roadmap-backed Development Journey to Overview: AI Chat (Available), Coding Assistant (In progress), Skills Store and Midnight Azure (Needs verification), Excel Intelligence and Recovery Storage Manager (Planned). Keep the journey explicit that CI success is not equivalent to full user-facing acceptance.
+
 ### Initial delivery sequence
 
-1. Complete the Midnight Azure visual-refinement and integration pass across the existing application; preserve the approved palette and improve consistency rather than replacing the design direction.
-2. Add the FRIDAY Development Journey to the primary Overview/home experience, backed by explicit roadmap milestone data and truthful statuses.
-3. Add FRIDAY's concise welcome/assistant personality treatment and small verified milestone celebrations.
+1. [x] Complete the first Midnight Azure visual-refinement and integration pass across existing workspaces; #1179 passed Linux and Windows. Installed-app and narrow-window visual acceptance remains open.
+2. [x] Add the initial FRIDAY Development Journey to Overview with explicit, truthful milestone statuses and navigation to available workspaces. CI verification is pending.
+3. Add FRIDAY's concise welcome/assistant personality treatment and small verified milestone celebrations. Only celebrate milestones after applicable implementation and acceptance checks.
 4. Make Excel Intelligence the first prominent capability milestone and connect its first usable Excel Analyst skill to the same journey.
 5. Validate the experience in the installed Windows application at normal and narrow window sizes; record screenshots/acceptance evidence before marking visual acceptance complete.
 
