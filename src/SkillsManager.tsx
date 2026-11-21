@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-type CommunitySkillPreview = { id: string; name: string; description: string; version: string; license: string | null; compatibility: string | null; contentSha256: string; status: string; permissions: string[]; executableContent: boolean };
+type CommunitySkillPreview = {
+  id: string; name: string; description: string; version: string; license: string | null;
+  compatibility: string | null; contentSha256: string; status: string; permissions: string[];
+  executableContent: boolean; importedAtUnixSecs: number; sourceKind: string;
+  sourceUrl: string | null; publisher: string | null; revision: string | null; trustFindings: string[];
+};
+type CommunitySkillInventoryItem = { id: string; name: string | null; status: string; detail: string | null; preview: CommunitySkillPreview | null };
 type Skill = {
   id: string; name: string; description: string; permissions: string[];
   version: string; installed: boolean; enabled: boolean; loaded: boolean;
@@ -61,7 +67,9 @@ export default function SkillsManager() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [communityPreview, setCommunityPreview] = useState<CommunitySkillPreview | null>(null);
+  const [communityInventory, setCommunityInventory] = useState<CommunitySkillInventoryItem[]>([]);
   const [importBusy, setImportBusy] = useState(false);
+  const [inventoryBusy, setInventoryBusy] = useState(false);
   const [pdf, setPdf] = useState<PdfDocument | null>(null);
   const [pdfQuestion, setPdfQuestion] = useState("");
   const [pdfAnswer, setPdfAnswer] = useState("");
@@ -140,6 +148,14 @@ export default function SkillsManager() {
     void invoke<string[]>("ollama_models").then(items => setPdfModel(items[0] || "")).catch(() => setPdfModel(""));
   }, [desktop]);
 
+  async function refreshCommunityInventory() {
+    if (!desktop || inventoryBusy) return;
+    setInventoryBusy(true);
+    try { setCommunityInventory(await invoke<CommunitySkillInventoryItem[]>("list_community_skills_quarantine")); }
+    catch (e) { setError(String(e)); }
+    finally { setInventoryBusy(false); }
+  }
+
   async function inspectCommunitySkill() {
     if (!desktop || importBusy || !!busyId) return;
     setImportBusy(true); setError(""); setNotice(""); setCommunityPreview(null);
@@ -147,6 +163,7 @@ export default function SkillsManager() {
       const result = await invoke<CommunitySkillPreview>("inspect_and_quarantine_skill");
       setCommunityPreview(result);
       setNotice("Skill inspected and preserved in quarantine. It is not installed, enabled, loaded, or executable.");
+      await refreshCommunityInventory();
     } catch (e) { const message = String(e); if (!message.toLowerCase().includes("cancel")) setError(message); }
     finally { setImportBusy(false); }
   }
@@ -650,7 +667,34 @@ ${file.content}`
     {!desktop && <div className="skills-message">The Skills Store works in the installed FRIDAY desktop app. This browser preview cannot install or save skills.</div>}
     {error && <div className="skills-error" role="alert">{error}</div>}
     {notice && <div className="skills-notice" role="status">{notice}</div>}
-    {communityPreview && <article className="community-skill-preview"><div className="community-preview-heading"><strong>Quarantined community skill: {communityPreview.name}</strong><span>UNVERIFIED</span></div><p>{communityPreview.description}</p><dl><div><dt>Licence</dt><dd>{communityPreview.license || "Not declared"}</dd></div><div><dt>Compatibility</dt><dd>{communityPreview.compatibility || "Not declared"}</dd></div><div><dt>Content SHA-256</dt><dd>{communityPreview.contentSha256}</dd></div><div><dt>Requested permissions</dt><dd>None declared or granted</dd></div></dl><small>{communityPreview.status}. Imported instructions are untrusted and are not added to FRIDAY session memory. This initial importer accepts only a single SKILL.md file; executable files and additional package assets are rejected.</small></article>}
+    <section className="community-skill-preview">
+      <div className="community-preview-heading"><strong>Community skill quarantine</strong><span>REVIEW ONLY · NO EXECUTION</span></div>
+      <p>Imported skills remain isolated here. Review does not install, enable, load or trust their instructions.</p>
+      <button className="secondary-button" type="button" disabled={!desktop || inventoryBusy} onClick={() => void refreshCommunityInventory()}>{inventoryBusy ? "Checking…" : "Refresh quarantine inventory"}</button>
+      {communityPreview && <article className="community-skill-record">
+        <h3>{communityPreview.name}</h3><p>{communityPreview.description}</p>
+        <dl>
+          <div><dt>Imported</dt><dd>{communityPreview.importedAtUnixSecs ? new Date(communityPreview.importedAtUnixSecs * 1000).toLocaleString() : "Unavailable (legacy record)"}</dd></div>
+          <div><dt>Source</dt><dd>{communityPreview.sourceKind === "local-folder" ? "User-selected local folder" : "Unknown (legacy record)"}</dd></div>
+          <div><dt>Publisher</dt><dd>{communityPreview.publisher || "Not supplied / not authenticated"}</dd></div>
+          <div><dt>Source URL / revision</dt><dd>{communityPreview.sourceUrl || "Not supplied"} · {communityPreview.revision || "Not supplied"}</dd></div>
+          <div><dt>Licence declaration</dt><dd>{communityPreview.license || "Not declared"} (unverified)</dd></div>
+          <div><dt>Compatibility</dt><dd>{communityPreview.compatibility || "Not declared"}</dd></div>
+          <div><dt>Content SHA-256</dt><dd>{communityPreview.contentSha256}</dd></div>
+          <div><dt>Permissions</dt><dd>None granted</dd></div>
+        </dl>
+        <strong>Trust findings</strong><ul>{communityPreview.trustFindings.map((finding, index) => <li key={index}>{finding}</li>)}</ul>
+        <small>{communityPreview.status}. The hash detects content changes but does not authenticate the publisher or prove the instructions safe. Scripts and extra files are rejected.</small>
+      </article>}
+      {communityInventory.length > 0 && <div className="community-inventory">
+        <h3>Quarantined items ({communityInventory.length})</h3>
+        {communityInventory.map(item => <article key={item.id}>
+          <strong>{item.name || "Unverified / blocked entry"}</strong><span>{item.status}</span>
+          {item.preview && <small>{item.preview.sourceKind === "local-folder" ? "Local folder" : "Legacy source"} · {item.preview.importedAtUnixSecs ? new Date(item.preview.importedAtUnixSecs * 1000).toLocaleString() : "Time unavailable"} · {item.preview.license || "No licence declared"} (unverified)</small>}
+          {item.detail && <small>{item.detail}</small>}
+        </article>)}
+      </div>}
+    </section>}
     {loading ? <div className="skills-empty">Loading skill catalogue…</div> : <div className="skills-grid">
       {skills.map(skill => <article className="skill-card" key={skill.id}>
         <div className="skill-card-top">
