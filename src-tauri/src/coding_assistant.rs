@@ -186,7 +186,7 @@ fn original_windows_dacl(path: &Path) -> Result<Option<String>, String> {
     Ok(Some(encoded))
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(not(windows))]
 fn original_windows_dacl(_path: &Path) -> Result<Option<String>, String> { Ok(None) }
 
 #[cfg(windows)]
