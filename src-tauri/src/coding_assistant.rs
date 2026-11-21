@@ -2912,9 +2912,10 @@ mod tests {
             }
             assert_eq!(recover_project_code_transactions(&root).unwrap(), 1, "Apply error {error_code}");
             assert_eq!(fs::read(&file).unwrap(), original, "Apply error {error_code}");
-            assert!(!temporary.exists(), "Apply temporary for error {error_code}");
-            assert!(!displaced.exists(), "Apply displaced file for error {error_code}");
+            assert!(temporary.is_file(), "Apply replacement evidence for error {error_code}");
+            assert!(!displaced.exists(), "The displaced original is restored to the target for error {error_code}");
             assert!(!journal.exists(), "Apply journal for error {error_code}");
+            assert!(backup_dir.join(format!("{}.recovered.json", record.id)).is_file(), "Archived Apply journal for error {error_code}");
             fs::remove_dir_all(&root).unwrap();
         }
 
@@ -2984,7 +2985,7 @@ mod tests {
             let edit_temporary = root.join(format!(".friday-code-edit-{}.tmp", record.id));
             let displaced_original = root.join(format!(".friday-code-original-{}.tmp", record.id));
             assert_eq!(edit_temporary.is_file(), stage == "temporary" || stage == "first-rename", "edit evidence for {stage}");
-            assert_eq!(displaced_original.is_file(), stage == "first-rename" || stage == "second-rename" || stage == "verified", "displaced evidence for {stage}");
+            assert_eq!(displaced_original.is_file(), stage == "second-rename" || stage == "verified", "displaced evidence for {stage}");
             fs::remove_dir_all(&root).unwrap();
         }
     }
