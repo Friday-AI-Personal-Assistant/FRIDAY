@@ -251,7 +251,24 @@ fn collect_runtime_tree_directory(
 /// request, the caller must fail closed rather than fall back to a path open.
 #[cfg(windows)]
 pub(crate) fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
-    open_file_nofollow_with_share(parent, name, 0x0000_0001 | 0x0000_0002 | 0x0000_0004)
+    open_file_nofollow_with_share_access(
+        parent, name, 0x0000_0001 | 0x0000_0002 | 0x0000_0004,
+        0x0000_0001 | 0x0000_0080 | 0x0010_0000,
+    )
+}
+
+/// Open a verified child with the additional right needed to restore its DACL.
+#[cfg(windows)]
+pub(crate) fn open_file_nofollow_for_security(parent: &File, name: &OsStr) -> io::Result<File> {
+    open_file_nofollow_with_share_access(
+        parent, name, 0x0000_0001 | 0x0000_0002 | 0x0000_0004,
+        0x0000_0001 | 0x0000_0080 | 0x0004_0000 | 0x0010_0000,
+    )
+}
+
+#[cfg(unix)]
+pub(crate) fn open_file_nofollow_for_security(parent: &File, name: &OsStr) -> io::Result<File> {
+    open_file_nofollow(parent, name)
 }
 
 /// Open a result file while denying concurrent write and delete sharing on
@@ -259,14 +276,15 @@ pub(crate) fn open_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File
 /// file until it is closed; if a writer is already active, acquisition fails.
 #[cfg(windows)]
 fn open_result_file_nofollow(parent: &File, name: &OsStr) -> io::Result<File> {
-    open_file_nofollow_with_share(parent, name, 0x0000_0001)
+    open_file_nofollow_with_share_access(parent, name, 0x0000_0001, 0x0000_0001 | 0x0000_0080 | 0x0010_0000)
 }
 
 #[cfg(windows)]
-fn open_file_nofollow_with_share(
+fn open_file_nofollow_with_share_access(
     parent: &File,
     name: &OsStr,
     share_access: u32,
+    desired_access: u32,
 ) -> io::Result<File> {
     use std::{
         mem,
@@ -369,7 +387,7 @@ fn open_file_nofollow_with_share(
     let status = unsafe {
         NtCreateFile(
             &mut handle,
-            FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            desired_access,
             &object_attributes,
             &mut io_status,
             ptr::null(),

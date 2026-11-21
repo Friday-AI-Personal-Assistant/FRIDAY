@@ -1119,6 +1119,20 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 **Known limitations:** some recovery copies are intentionally retained because the current cross-platform cleanup primitive cannot yet prove safe deletion under replacement races. Retention has no automatic expiry today. Do not describe these artifacts as automatically temporary or promise a cleanup interval.
 
+### Handle-bound permission restoration — #1129
+
+**Status:** IMPLEMENTED — Linux/Windows CI pending.
+
+- [x] Open the exact recovery child relative to the already-verified parent directory handle with no-reparse semantics before changing metadata.
+- [x] Restore Unix mode bits using the opened file handle rather than path-based permission mutation.
+- [x] Restore Windows DACL and inheritance protection through SetSecurityInfo on the opened file handle, not SetFileSecurityW on a path.
+- [x] Request the Windows WRITE_DAC right only in the dedicated security-restoration open path; ordinary file reads retain narrower access.
+- [x] Convert interrupted Undo target, interrupted Apply restoration temporary, and normal Undo prepared temporary call sites to parent-handle + child-name operations.
+- [ ] Verify Windows compilation and Linux tests; add focused tests for missing, redirected, substituted and denied security targets.
+- [ ] Audit remaining path-based transaction cleanup and recovery-target validation before enabling Recovery Storage Manager cleanup.
+
+**User impact:** FRIDAY applies saved file permissions to the file it actually opened inside the approved directory, rather than reopening a pathname that could have been swapped to point at another file. Windows DACL restoration uses the verified file handle and fails closed if required access cannot be obtained. No broader project access is granted and no recovery evidence is deleted.
+
 ### Handle-bound Undo state inspection — #1128
 
 **Status:** IMPLEMENTED — Linux/Windows CI pending.

@@ -144,11 +144,21 @@ extern "system" {
         descriptor_length: u32,
         length_needed: *mut u32,
     ) -> i32;
-    fn SetFileSecurityW(
-        file_name: *const u16,
-        security_information: u32,
+    fn GetSecurityDescriptorDacl(
         security_descriptor: *mut std::ffi::c_void,
+        dacl_present: *mut i32,
+        dacl: *mut *mut std::ffi::c_void,
+        dacl_defaulted: *mut i32,
     ) -> i32;
+    fn SetSecurityInfo(
+        handle: *mut std::ffi::c_void,
+        object_type: u32,
+        security_information: u32,
+        owner: *mut std::ffi::c_void,
+        group: *mut std::ffi::c_void,
+        dacl: *mut std::ffi::c_void,
+        sacl: *mut std::ffi::c_void,
+    ) -> u32;
     fn GetSecurityDescriptorControl(
         security_descriptor: *mut std::ffi::c_void,
         control: *mut u16,
@@ -195,9 +205,13 @@ fn original_windows_dacl(path: &Path) -> Result<Option<String>, String> {
 fn original_windows_dacl(_path: &Path) -> Result<Option<String>, String> { Ok(None) }
 
 #[cfg(windows)]
-fn restore_windows_dacl(path: &Path, encoded: &str) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
+fn restore_windows_dacl_handle(file: &File, encoded: &str) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
     const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
+    const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
+    const UNPROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x2000_0000;
+    const SE_DACL_PROTECTED: u16 = 0x1000;
+    const SE_FILE_OBJECT: u32 = 1;
     if encoded.is_empty() || encoded.len() % 2 != 0 || encoded.len() > 128 * 1024 {
         return Err("The saved Windows DACL metadata is malformed or outside its size limit.".into());
     }
@@ -213,39 +227,38 @@ fn restore_windows_dacl(path: &Path, encoded: &str) -> Result<(), String> {
     if descriptor.len() < 20 {
         return Err("The saved Windows security descriptor is too short.".into());
     }
-    const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
-    const UNPROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x2000_0000;
-    const SE_DACL_PROTECTED: u16 = 0x1000;
+    let descriptor_ptr = descriptor.as_mut_ptr() as *mut std::ffi::c_void;
     let mut control = 0u16;
     let mut revision = 0u32;
-    let control_read = unsafe {
-        GetSecurityDescriptorControl(
-            descriptor.as_mut_ptr() as *mut std::ffi::c_void,
-            &mut control,
-            &mut revision,
-        )
-    };
-    if control_read == 0 {
+    if unsafe { GetSecurityDescriptorControl(descriptor_ptr, &mut control, &mut revision) } == 0 {
         return Err(format!("Windows could not inspect the saved DACL inheritance state (error {}).", unsafe { GetLastError() }));
+    }
+    let mut dacl_present = 0i32;
+    let mut dacl_defaulted = 0i32;
+    let mut dacl = std::ptr::null_mut();
+    if unsafe { GetSecurityDescriptorDacl(descriptor_ptr, &mut dacl_present, &mut dacl, &mut dacl_defaulted) } == 0 {
+        return Err(format!("Windows could not read the saved DACL (error {}).", unsafe { GetLastError() }));
+    }
+    if dacl_present == 0 {
+        return Err("The saved Windows security descriptor does not contain an explicit DACL.".into());
     }
     let inheritance = if control & SE_DACL_PROTECTED != 0 {
         PROTECTED_DACL_SECURITY_INFORMATION
     } else {
         UNPROTECTED_DACL_SECURITY_INFORMATION
     };
-    let wide = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
-    let succeeded = unsafe {
-        SetFileSecurityW(
-            wide.as_ptr(), DACL_SECURITY_INFORMATION | inheritance,
-            descriptor.as_mut_ptr() as *mut std::ffi::c_void,
+    let status = unsafe {
+        SetSecurityInfo(
+            file.as_raw_handle() as *mut std::ffi::c_void, SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | inheritance,
+            std::ptr::null_mut(), std::ptr::null_mut(), dacl, std::ptr::null_mut(),
         )
     };
-    if succeeded == 0 {
-        return Err(format!("Windows could not restore the original file DACL (error {}).", unsafe { GetLastError() }));
+    if status != 0 {
+        return Err(format!("Windows could not restore the original file DACL through its verified handle (error {status})."));
     }
     Ok(())
 }
-
 #[cfg(windows)]
 #[link(name = "Kernel32")]
 extern "system" {
@@ -720,19 +733,21 @@ fn original_unix_mode(_metadata: &fs::Metadata) -> Option<u32> {
     None
 }
 
-fn apply_recovery_permissions(path: &Path, record: &CodingUndoRecord) -> Result<(), String> {
+fn apply_recovery_permissions(parent: &File, name: &OsStr, record: &CodingUndoRecord) -> Result<(), String> {
+    let file = crate::coding_sandbox_fs::open_file_nofollow_for_security(parent, name)
+        .map_err(|_| "FRIDAY could not safely open the verified recovery file to restore its permissions.".to_string())?;
     #[cfg(unix)]
     if let Some(mode) = record.original_unix_mode {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o777))
-            .map_err(|_| "FRIDAY could not restore the original file permissions.".to_string())?;
+        file.set_permissions(fs::Permissions::from_mode(mode & 0o777))
+            .map_err(|_| "FRIDAY could not restore the original file permissions through its verified handle.".to_string())?;
     }
     #[cfg(windows)]
     if let Some(ref dacl) = record.original_windows_dacl {
-        restore_windows_dacl(path, dacl)?;
+        restore_windows_dacl_handle(&file, dacl)?;
     }
     #[cfg(not(any(unix, windows)))]
-    let _ = (path, record);
+    let _ = (file, record);
     Ok(())
 }
 
@@ -852,7 +867,7 @@ fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoR
         Some(hash) if hash == record.original_sha256 => {
             // Windows ReplaceFileW can retain the replaced file's DACL. Reapply
             // the recorded permissions only after verifying the target content.
-            apply_recovery_permissions(&target, record)?;
+            apply_recovery_permissions(&project_handle, &target_name, record)?;
             if let Some(hash) = displaced_hash.as_deref() {
                 if hash != record.resulting_sha256 { return Err("An interrupted Undo left an unexpected displaced file. Nothing was removed.".into()); }
             }
@@ -1003,7 +1018,7 @@ fn recover_apply_transaction(root: &Path, backup_dir: &Path, record: &CodingUndo
                 }
                 drop(restore);
                 #[cfg(windows)]
-                apply_recovery_permissions(&restore_path, record)?;
+                apply_recovery_permissions(&project_handle, &restore_name, record)?;
                 let verified = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
                     &project_handle, &restore_name, MAX_FILE_BYTES, MAX_SCANNED_ENTRIES,
                 ).map_err(|_| "FRIDAY could not verify the prepared restoration through its verified parent directory.".to_string())?;
@@ -1161,7 +1176,7 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
     drop(temp_file);
     // Restore the original DACL/mode on the prepared object before it becomes
     // the project entry. The subsequent rename does not inherit target ACLs.
-    apply_recovery_permissions(&temporary, record)?;
+    apply_recovery_permissions(&parent_handle, temporary_name, record)?;
     let temporary_name = temporary.file_name().ok_or("The Undo temporary filename is invalid.")?;
     let prepared = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
         &parent_handle, temporary_name, MAX_FILE_BYTES, MAX_SCANNED_ENTRIES,
