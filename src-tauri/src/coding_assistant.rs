@@ -4,7 +4,7 @@ use std::{
     ffi::{OsStr, OsString},
     fs,
     fs::{File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
