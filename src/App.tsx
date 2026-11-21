@@ -13,8 +13,9 @@ import Assistant from "./Assistant";
 import SkillsManager from "./SkillsManager";
 import CodingAssistant from "./CodingAssistant";
 import PermissionsCenter from "./PermissionsCenter";
+import ExcelIntelligence from "./ExcelIntelligence";
 
-type Page = "AI Chat" | "Coding Assistant" | "Overview" | "Modules" | "Privacy & Security" | "Permissions & Transparency" | "Settings";
+type Page = "AI Chat" | "Coding Assistant" | "Excel Intelligence" | "Overview" | "Modules" | "Privacy & Security" | "Permissions & Transparency" | "Settings";
 
 type JourneyStatus = "available" | "in-progress" | "needs-verification" | "planned";
 
@@ -23,7 +24,7 @@ const JOURNEY_MILESTONES: Array<{ id: string; title: string; status: JourneyStat
   { id: "coding-assistant", title: "Coding Assistant", status: "in-progress" },
   { id: "skills-store", title: "Skills Store", status: "needs-verification" },
   { id: "midnight-azure", title: "Midnight Azure", status: "needs-verification" },
-  { id: "excel-intelligence", title: "Excel Intelligence", status: "planned" },
+  { id: "excel-intelligence", title: "Excel Intelligence", status: "in-progress" },
   { id: "recovery-storage-manager", title: "Recovery Storage Manager", status: "planned" }
 ];
 
@@ -125,9 +126,9 @@ function App() {
         <div className="brand"><div className="brand-mark">F</div><div><strong>FRIDAY</strong><span>PERSONAL AI</span></div></div>
         <div className="side-label">WORKSPACE</div>
         <nav>
-          {(["AI Chat", "Coding Assistant", "Overview", "Modules", "Permissions & Transparency", "Privacy & Security", "Settings"] as Page[]).map(item => (
+          {(["AI Chat", "Coding Assistant", "Excel Intelligence", "Overview", "Modules", "Permissions & Transparency", "Privacy & Security", "Settings"] as Page[]).map(item => (
             <button key={item} className={page === item ? "nav-item active" : "nav-item"} onClick={() => setPage(item)}>
-              <span className="nav-icon">{item === "AI Chat" ? "✦" : item === "Coding Assistant" ? "⌘" : item === "Overview" ? "⌂" : item === "Modules" ? "▦" : item === "Privacy & Security" ? "◇" : item === "Permissions & Transparency" ? "⛨" : "⚙"}</span>{item}
+              <span className="nav-icon">{item === "AI Chat" ? "✦" : item === "Coding Assistant" ? "⌘" : item === "Excel Intelligence" ? "▦" : item === "Overview" ? "⌂" : item === "Modules" ? "▦" : item === "Privacy & Security" ? "◇" : item === "Permissions & Transparency" ? "⛨" : "⚙"}</span>{item}
             </button>
           ))}
         </nav>
@@ -156,6 +157,7 @@ function App() {
 
         {page === "AI Chat" && <Assistant />}
         {page === "Coding Assistant" && <CodingAssistant />}
+        {page === "Excel Intelligence" && <ExcelIntelligence />}
 
         {page === "Overview" && <section className="page overview-page">
           <div className="overview-hero">
@@ -167,8 +169,8 @@ function App() {
               <span className="overview-roadmap-label">ON THE ROADMAP</span>
             </div>
             <div className="overview-next-milestone">
-              <div><span className="overview-milestone-kicker">NEXT PRODUCT MILESTONE</span><strong>Excel Intelligence</strong><p>Our first practical skill: understand spreadsheets, uncover useful insights and help create reports.</p></div>
-              <span className="overview-planned-tag">PLANNED</span>
+              <div><span className="overview-milestone-kicker">NEXT PRODUCT MILESTONE</span><strong>Excel Intelligence</strong><p>Our first practical skill: understand spreadsheets, uncover useful insights and help create reports.</p><button className="overview-milestone-action" type="button" onClick={() => setPage("Excel Intelligence")}>Open Excel Intelligence <span aria-hidden="true">↗</span></button></div>
+              <span className="overview-planned-tag">IN DEVELOPMENT</span>
             </div>
           </div>
 
