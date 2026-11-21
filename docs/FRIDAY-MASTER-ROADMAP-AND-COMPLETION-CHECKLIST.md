@@ -1420,6 +1420,32 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 **Provenance boundary:** A SHA-256 fingerprint establishes byte-level identity for the imported content. It is not a digital signature, source-authenticity guarantee, accounting validation, or audit opinion. FRIDAY must not describe fingerprinted data as verified or authoritative until backend-held sessions, confirmed mappings, and source-bound calculation execution are implemented and tested.
 
+
+### 33.6 Permissioned Excel Editing, Verified Backups & Recovery
+
+**Status:** PLANNED — accepted product requirement (2026-11-22). FRIDAY must eventually support authorized edits to Excel workbooks, including natural-language requests that identify source ranges, matching records, calculation fields and destination cells. This is a separate write capability; the existing Excel Intelligence and formula-engine work remains read-only.
+
+- [ ] Interpret bounded natural-language edit requests such as “search D22:M55 for Adnan Traders, sum the correct amount field, and place the result in J10”; resolve worksheet, range, match column, amount column, currency, aggregation and destination explicitly.
+- [ ] Treat cell references and ranges as untrusted selectors: validate worksheet identity, bounds, merged cells, hidden rows/columns, filters, formulas, protected cells/sheets, tables, named ranges and destination-cell suitability before proposing a change.
+- [ ] Never guess which numeric column to total when multiple plausible amount fields exist; ask for clarification and show the selected source rows/values before proceeding.
+- [ ] Keep Analysis/Preview mode read-only. Editing mode must be a distinct, permissioned capability with a narrowly scoped approval for the exact workbook, worksheet, source range, operation and destination.
+- [ ] Before every approved modification, create a separate, recoverable backup of the original workbook. Verify backup completion and byte-level identity against the exact original source before allowing the write; if backup creation or verification fails, abort without modifying the source.
+- [ ] Preserve the original file and its workbook features as far as the selected library/format safely supports; detect unsupported or lossy formats/features (including macros, formulas, external links, drawings, pivots and workbook protection) and refuse or require an explicit safe alternative rather than silently dropping content.
+- [ ] Prepare changes in a bounded temporary output, validate the result, and use an atomic/recoverable replacement strategy where supported. Never partially overwrite the original during calculation or serialization.
+- [ ] Show a change preview containing original and proposed destination values, exact source rows/cells, matched-record count, formula/method, currency, warnings and backup location; require explicit user approval immediately before applying.
+- [ ] After saving, reopen/re-read the output and verify the intended destination value, workbook readability, expected sheet structure and preservation invariants. Report success only after verification.
+- [ ] Maintain a privacy-safe change journal with operation ID, source fingerprint, backup fingerprint/location, target identity, source references, old/new values, calculation/formula version, approval and verification outcome. Do not log unrelated workbook contents.
+- [ ] Provide a user-controlled recovery workflow. Before restoring, verify the backup identity and inspect whether the current workbook has changed since the failed edit; never silently overwrite newer user work. Prefer restoring to a new file or require explicit confirmation for replacement.
+- [ ] Make operations idempotent or detect duplicate/retried requests; handle cancellation, process crash, disk-full, permission loss, concurrent modification and interrupted replacement without claiming success.
+- [ ] Keep backups under a bounded, user-visible retention/storage policy with explicit cleanup controls; never silently delete the only recoverable copy. Integrate with Recovery Storage Manager only after its identity-bound cleanup safety gates pass.
+- [ ] Add adversarial tests for backup failure/tampering, destination substitution, source changes between preview and apply, duplicate matches, ambiguous amount columns, formula cells, protected sheets, macro-enabled workbooks, serialization loss, disk-full, crash recovery, concurrent edits, rollback and backup retention.
+- [ ] Verify Linux and Windows CI and perform real-device acceptance for supported Excel formats before enabling workbook modification for users.
+
+**Non-negotiable rule:** No verified backup, no write. No explicit approval for the exact proposed change, no write. No post-save verification, no success claim. Recovery must protect newer user changes and must never silently replace a workbook with a stale backup.
+
+**Initial scope:** Start with a narrowly supported XLSX/CSV workflow and clearly disclose format limitations. CSV has no multi-sheet workbook structure or Excel formulas/styles; macro-enabled and feature-rich XLSX files must remain unsupported for modification until preservation is demonstrated. Keep the existing read-only analysis path available independently.
+
+
 ## 34. Formula Transparency & Regional Financial Preferences
 
 **Status:** PLANNED — accepted product direction (2026-11-21). These are first-class FRIDAY capabilities and should be designed into the shared formula engine and application settings, not implemented as isolated Excel-only features.
