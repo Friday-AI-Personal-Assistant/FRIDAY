@@ -684,6 +684,67 @@ mod tests {
         assert!(parse_skill_markdown(&input).is_err());
     }
 
+    fn quarantine_test_directory(label: &str) -> std::path::PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("friday-{label}-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn quarantine_inventory_reinspection_is_bound_to_enumerated_directory_identity() {
+        let root_path = quarantine_test_directory("quarantine-inventory-identity");
+        let id = {
+            let content = b"---\\nname: inventory-skill\\ndescription: Inventory test\\n---\\n\\nUntrusted instructions.\\n";
+            format!("{:x}", Sha256::digest(content))
+        };
+        let item_path = root_path.join(&id);
+        std::fs::create_dir(&item_path).unwrap();
+        let content = b"---\\nname: inventory-skill\\ndescription: Inventory test\\n---\\n\\nUntrusted instructions.\\n";
+        let preview = CommunitySkillPreview {
+            id: id.clone(), name: "inventory-skill".into(), description: "Inventory test".into(),
+            version: "unverified".into(), license: None, compatibility: None,
+            content_sha256: id.clone(), status: "QUARANTINED — NOT INSTALLED OR ENABLED".into(),
+            permissions: Vec::new(), executable_content: false,
+        };
+        std::fs::write(item_path.join("SKILL.md"), content).unwrap();
+        std::fs::write(item_path.join("inspection.json"), serde_json::to_vec(&preview).unwrap()).unwrap();
+
+        let root = crate::coding_sandbox_fs::open_verified_root_directory(&root_path).unwrap();
+        let entries = crate::coding_sandbox_fs::enumerate_runtime_tree_entries(&root, 8).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_directory && !entries[0].is_reparse);
+        let inspected = reinspect_quarantine_child(&root, &id, Some(entries[0].identity)).unwrap();
+        assert_eq!(inspected.id, id);
+
+        let wrong_identity = crate::coding_sandbox_fs::runtime_tree_identity_for_handle(
+            &crate::coding_sandbox_fs::open_verified_root_directory(&std::env::temp_dir()).unwrap()
+        ).unwrap();
+        assert!(reinspect_quarantine_child(&root, &id, Some(wrong_identity)).is_err());
+        std::fs::remove_dir_all(&root_path).unwrap();
+    }
+
+    #[test]
+    fn quarantine_inventory_rejects_symlinked_entry_directories() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let root_path = quarantine_test_directory("quarantine-inventory-symlink");
+            let outside = quarantine_test_directory("quarantine-inventory-outside");
+            let content = b"---\\nname: link-target\\ndescription: Link target\\n---\\n\\nUntrusted.\\n";
+            let id = format!("{:x}", Sha256::digest(content));
+            symlink(&outside, root_path.join(&id)).unwrap();
+            let root = crate::coding_sandbox_fs::open_verified_root_directory(&root_path).unwrap();
+            let entries = crate::coding_sandbox_fs::enumerate_runtime_tree_entries(&root, 8).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert!(entries[0].is_reparse || !entries[0].is_directory);
+            assert!(reinspect_quarantine_child(&root, &id, Some(entries[0].identity)).is_err());
+            std::fs::remove_dir_all(&root_path).unwrap();
+            std::fs::remove_dir_all(&outside).unwrap();
+        }
+    }
+
     #[test]
     fn catalogue_has_unique_ids_and_declared_permissions() {
         let mut ids = BTreeSet::new();
