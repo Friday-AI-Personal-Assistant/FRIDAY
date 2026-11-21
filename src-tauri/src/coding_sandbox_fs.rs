@@ -136,6 +136,57 @@ pub(crate) fn runtime_tree_handle_matches(identity: (u64, [u8; 16]), handle: &Fi
     Ok(identity == windows_identity::handle_file_id(handle)?)
 }
 
+/// Read one named backup or journal file relative to an already-open directory
+/// capability. The file identity is captured before opening, verified on the
+/// opened handle, and checked again after the bounded read. Other directory
+/// entries are allowed, but the target itself must remain the same ordinary,
+/// single-link regular file throughout the operation.
+pub(crate) fn read_bounded_file_from_directory_handle(
+    parent: &File,
+    name: &OsStr,
+    max_bytes: u64,
+    max_entries: usize,
+) -> io::Result<Vec<u8>> {
+    if max_bytes == 0 || max_entries == 0 || !is_single_normal_component(name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "backup filename and read limits must be valid"));
+    }
+    let before_entries = enumerate_runtime_tree_entries(parent, max_entries)?;
+    let before = before_entries.iter().find(|entry| entry.name == name)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "backup file does not exist"))?;
+    if !before.is_file || before.is_reparse {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "backup entry is not an ordinary regular file"));
+    }
+    let expected_identity = before.identity;
+    let mut file = open_file_nofollow(parent, name)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || is_reparse_or_symlink(&metadata)
+        || !has_single_hard_link(&file) || metadata.len() == 0 || metadata.len() > max_bytes
+        || !runtime_tree_handle_matches(expected_identity, &file)?
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "backup file identity or metadata is unsafe"));
+    }
+    let expected_length = metadata.len();
+    let capacity = usize::try_from(expected_length)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "backup file size cannot be represented"))?;
+    let mut contents = Vec::with_capacity(capacity);
+    file.by_ref().take(max_bytes.saturating_add(1)).read_to_end(&mut contents)?;
+    let after = file.metadata()?;
+    if contents.is_empty() || contents.len() as u64 != expected_length
+        || contents.len() as u64 > max_bytes || after.len() != expected_length
+        || !after.is_file() || is_reparse_or_symlink(&after) || !has_single_hard_link(&file)
+        || !runtime_tree_handle_matches(expected_identity, &file)?
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "backup file changed while being read"));
+    }
+    let after_entries = enumerate_runtime_tree_entries(parent, max_entries)?;
+    let after = after_entries.iter().find(|entry| entry.name == name)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "backup file disappeared while being read"))?;
+    if !after.is_file || after.is_reparse || after.identity != expected_identity {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "backup directory entry changed while being read"));
+    }
+    Ok(contents)
+}
+
 fn collect_runtime_tree_directory(
     parent: &File,
     relative_directory: &Path,

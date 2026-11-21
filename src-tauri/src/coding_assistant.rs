@@ -1037,16 +1037,14 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
 
     let backup_dir = ensure_code_backup_dir(&canonical_root)?;
     let backup = backup_dir.join(format!("{}.bak", record.id));
-    let backup_meta = fs::symlink_metadata(&backup)
-        .map_err(|_| "The verified original backup is missing. Undo was refused.".to_string())?;
-    if is_redirected(&backup_meta) || !backup_meta.is_file() || backup_meta.len() == 0
-        || backup_meta.len() > MAX_FILE_BYTES {
-        return Err("The original backup is not a safe regular file. Undo was refused.".into());
-    }
-    let original = fs::read(&backup)
-        .map_err(|_| "FRIDAY could not read the original backup.".to_string())?;
-    if original.len() as u64 != backup_meta.len() || original.contains(&0)
-        || std::str::from_utf8(&original).is_err() || sha256_hex(&original) != record.original_sha256 {
+    let backup_name = format!("{}.bak", record.id);
+    let backup_handle = crate::coding_sandbox_fs::open_verified_root_directory(&backup_dir)
+        .map_err(|_| "FRIDAY could not safely open its code backup folder.".to_string())?;
+    let original = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+        &backup_handle, OsStr::new(&backup_name), MAX_FILE_BYTES, MAX_CODE_BACKUP_FILES,
+    ).map_err(|_| "FRIDAY could not safely read the original backup. Undo was refused.".to_string())?;
+    if original.contains(&0) || std::str::from_utf8(&original).is_err()
+        || sha256_hex(&original) != record.original_sha256 {
         return Err("The original backup failed integrity verification. Undo was refused.".into());
     }
 
@@ -1747,17 +1745,13 @@ pub fn undo_code_change(app: AppHandle, undo_record_id: String) -> Result<String
         // Resolve interrupted Apply/Undo journals before looking up an active Undo record.
         recover_project_code_transactions(&root)?;
         let backup_dir = ensure_code_backup_dir(&root)?;
-        let record_path = backup_dir.join(format!("{}.undo.json", undo_record_id));
-        match fs::symlink_metadata(&record_path) {
-            Ok(meta) => {
-                if is_redirected(&meta) || !meta.is_file() || meta.len() == 0 || meta.len() > 16 * 1024 {
-                    return Err("The guarded undo record is not a safe bounded regular file.".into());
-                }
-                let bytes = fs::read(&record_path)
-                    .map_err(|_| "FRIDAY could not read the guarded undo record.".to_string())?;
-                if bytes.len() as u64 != meta.len() {
-                    return Err("The guarded undo record changed while FRIDAY was reading it.".into());
-                }
+        let record_name = format!("{}.undo.json", undo_record_id);
+        let backup_handle = crate::coding_sandbox_fs::open_verified_root_directory(&backup_dir)
+            .map_err(|_| "FRIDAY could not safely open its code backup folder.".to_string())?;
+        match crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+            &backup_handle, OsStr::new(&record_name), 16 * 1024, MAX_CODE_BACKUP_FILES,
+        ) {
+            Ok(bytes) => {
                 let record: CodingUndoRecord = serde_json::from_slice(&bytes)
                     .map_err(|_| "The guarded undo record is invalid or damaged.".to_string())?;
                 validate_undo_record(&record)?;
@@ -1768,7 +1762,7 @@ pub fn undo_code_change(app: AppHandle, undo_record_id: String) -> Result<String
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err("FRIDAY could not inspect the guarded undo record.".into()),
+            Err(_) => return Err("FRIDAY could not safely read the guarded undo record.".into()),
         }
     }
     drop(grants);
