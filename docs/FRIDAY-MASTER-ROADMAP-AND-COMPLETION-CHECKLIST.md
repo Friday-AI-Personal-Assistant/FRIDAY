@@ -991,3 +991,16 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Physically validate search speed, Unicode matching, archive filtering and large-history behaviour in the Windows desktop app.
 
 **User impact:** people can find older discussions and answers without opening conversations individually. Search reads the existing encrypted local history and never uploads message content. Search remains limited to the 500-conversation local history store and returns at most 100 matching conversations per query. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
+
+
+### Chat message control and correction workflow — #1100
+
+- [x] Add an explicit Copy action to each populated user and FRIDAY message; report clipboard failures without claiming success.
+- [x] Let users edit an earlier user message and resend from that point, replacing the later messages in the active conversation.
+- [x] Keep the existing saved conversation unchanged until the user actually sends the edited message.
+- [x] Clearly warn that sending an edit removes subsequent replies from the active conversation; provide a cancel path before sending.
+- [x] Disable editing while generation or persistence is in progress; retain the existing local encrypted conversation persistence path.
+- [ ] Verify Linux and Windows CI.
+- [ ] Physically validate clipboard access, keyboard flow, long messages and the edit/cancel/resend experience in the Windows desktop WebView.
+
+**User impact:** users can copy any message and correct an earlier prompt without manually rebuilding the conversation. Editing is non-destructive until Send is pressed; after sending, the conversation continues from the edited message and later turns are replaced. No message is sent to a remote service by these controls. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
