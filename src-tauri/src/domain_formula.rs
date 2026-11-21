@@ -366,8 +366,8 @@ fn calculate(formula_id: &str, inputs: Vec<CalculationInput>) -> Result<Calculat
             }
             trace.push("Calculation: ((net_sales - cost_of_goods_sold) / net_sales) * 100".into());
             get("net_sales")?.checked_sub(get("cost_of_goods_sold")?)?
-                .checked_div(sales)?
                 .checked_mul(Decimal { micros: 100 * DECIMAL_FACTOR })?
+                .checked_div(sales)?
         }
         _ => return Err("The registered formula has no deterministic implementation.".into()),
     };
