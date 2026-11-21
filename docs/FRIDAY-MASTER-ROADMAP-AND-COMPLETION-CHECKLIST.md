@@ -1434,3 +1434,24 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 **Design principle:** Formula Transparency answers “How did FRIDAY get this result?” Regional Financial Preferences answers “Which currency and regional conventions should FRIDAY use?” Neither feature may weaken source provenance, formula validation, or the no-silent-conversion rule.
 
+### 34.3 Professional Financial Reporting — three presentation levels
+
+**Status:** PLANNED — accepted product direction (2026-11-21). This presentation model applies to formal accounting outputs and future financial reports, not only Excel Intelligence.
+
+- [ ] Provide three coordinated presentation levels over the same trusted calculation result and immutable calculation snapshot:
+  1. **Professional Report:** clean, publication-ready financial statements and management reports. Keep formula mechanics out of the main statement by default; present appropriate headings, reporting entity, reporting period/date, currency, comparative columns where supported, subtotals, totals, notes and validation status.
+  2. **Working Papers:** reviewer-facing schedules that expose each material figure's registered formula, formula ID/version, applied input values, intermediate calculations, source accounts/columns/cells/ranges, mapping confirmations, assumptions, rounding and exceptions.
+  3. **Audit Trail:** detailed evidence and history, including source-session/integrity references, source locations, confirmed mappings and who/what confirmed them where identity is available, formula versions, calculation snapshot identifiers, validation outcomes, warnings, overrides/adjustments with reasons, and reproducible calculation inputs.
+- [ ] Make Professional Report the default presentation when the user requests a formal financial statement or report; keep formula details available through Working Papers and evidence through Audit Trail without cluttering the report.
+- [ ] Allow users to switch presentation levels without recalculating, mutating or silently changing the underlying result. Any genuine change to inputs, mappings, formula version or accounting policy must create a new calculation snapshot and be clearly distinguished from a presentation-only change.
+- [ ] Support the same underlying figures consistently across all three views. Reconcile totals, labels, currency, reporting period, signs, precision and rounding; do not let a view independently recalculate or reinterpret values.
+- [ ] Design professional templates for balance sheets/statements of financial position, income statements/statements of profit or loss, cash-flow statements, trial balances, general-ledger reports, receivables/payables ageing, budgets, forecasts and management reports. Add each report type only after its accounting definitions and required data are reviewed.
+- [ ] Separate arithmetic checks, accounting-invariant checks, source-data completeness/classification checks and reporting-framework/policy checks. Display exactly which checks were performed and which remain outstanding.
+- [ ] Never equate a mathematically balanced balance sheet or ledger with proof that the accounts are correct, complete, compliant or audited. Do not label a report “audit approved”, “compliant” or equivalent without a separately defined and evidenced authorization/review process.
+- [ ] Provide honest report states such as Draft, Review Required and Validated, with explicit criteria and explanations. “Validated” must identify the validations passed and must not imply external audit assurance.
+- [ ] Keep report generation read-only with respect to source workbooks and accounting records unless a separate, permissioned export workflow is explicitly designed and approved. Generated documents must disclose source period, currency, relevant limitations and preparation status.
+- [ ] Add regression tests proving that the three views render the same calculation snapshot, presentation switching does not change values, changed inputs create a distinct snapshot, formula/source evidence remains consistent, mixed currencies are not combined, and a balanced-but-incomplete dataset is not misrepresented as fully validated.
+
+**Design principle:** One trusted calculation engine and one immutable result; three purpose-built experiences. Professional presentation should be clean, Working Papers should explain the numbers, and the Audit Trail should preserve the evidence. Presentation must never overstate accounting correctness or assurance.
+
+
