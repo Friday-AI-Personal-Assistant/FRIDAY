@@ -52,6 +52,18 @@ pub struct DataQualityFinding {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AccountingFieldSuggestion {
+    pub header: String,
+    pub field_id: Option<String>,
+    pub possible_fields: Vec<String>,
+    pub status: String,
+    pub source_column_index: usize,
+    pub header_cell: String,
+    pub data_range: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SheetAnalysis {
     pub name: String,
     pub row_count: usize,
@@ -62,6 +74,7 @@ pub struct SheetAnalysis {
     pub preview: Vec<Vec<String>>,
     pub columns: Vec<ColumnAnalysis>,
     pub quality_findings: Vec<DataQualityFinding>,
+    pub accounting_field_suggestions: Vec<AccountingFieldSuggestion>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -259,6 +272,59 @@ fn percentile(sorted: &[f64], fraction: f64) -> f64 {
     }
 }
 
+fn excel_column_label(index: usize) -> String {
+    let mut value = index + 1;
+    let mut label = String::new();
+    while value > 0 {
+        let remainder = (value - 1) % 26;
+        label.insert(0, (b'A' + remainder as u8) as char);
+        value = (value - 1) / 26;
+    }
+    label
+}
+
+fn accounting_field_suggestions(header: &[String], row_count: usize, column_count: usize) -> Vec<AccountingFieldSuggestion> {
+    let mut suggestions = Vec::new();
+    for column in 0..column_count {
+        let name = header.get(column).map(|value| value.trim()).unwrap_or("");
+        let normalized = normalized_words(name).join(" ");
+        let candidates: Vec<&str> = match normalized.as_str() {
+            "gross sales" | "gross revenue" | "total sales" => vec!["accounting.gross_sales"],
+            "discounts" | "sales discounts" | "discount allowed" => vec!["accounting.discounts"],
+            "sales returns" | "returns and allowances" | "sales refunds" => vec!["accounting.sales_returns"],
+            "cost of goods sold" | "cogs" | "cost of sales" => vec!["accounting.cost_of_goods_sold"],
+            "net sales" | "net revenue" => vec!["accounting.net_sales"],
+            "revenue" | "sales" | "total revenue" => vec!["accounting.gross_sales", "accounting.net_sales"],
+            _ => Vec::new(),
+        };
+        let letter = excel_column_label(column);
+        let field_id = if candidates.len() == 1 { Some(candidates[0].to_string()) } else { None };
+        let status = if candidates.len() > 1 { "ambiguous" } else if candidates.len() == 1 { "suggested" } else { "unmapped" };
+        suggestions.push(AccountingFieldSuggestion {
+            header: if name.is_empty() { format!("Column {}", column + 1) } else { name.chars().take(180).collect() },
+            field_id,
+            possible_fields: candidates.iter().map(|candidate| candidate.to_string()).collect(),
+            status: status.into(),
+            source_column_index: column + 1,
+            header_cell: format!("{letter}1"),
+            data_range: if row_count > 1 { format!("{letter}2:{letter}{row_count}") } else { format!("{letter}2 (no data rows)") },
+        });
+    }
+    let mut field_counts: HashMap<String, usize> = HashMap::new();
+    for suggestion in &suggestions {
+        if let Some(field) = &suggestion.field_id {
+            *field_counts.entry(field.clone()).or_default() += 1;
+        }
+    }
+    for suggestion in &mut suggestions {
+        if suggestion.field_id.as_ref().is_some_and(|field| field_counts.get(field).copied().unwrap_or(0) > 1) {
+            suggestion.status = "ambiguous".into();
+            suggestion.possible_fields = suggestion.field_id.take().into_iter().collect();
+        }
+    }
+    suggestions
+}
+
 fn analyze_matrix(
     name: String,
     rows: Vec<Vec<String>>,
@@ -268,6 +334,7 @@ fn analyze_matrix(
         return Ok(SheetAnalysis {
             name, row_count: 0, column_count: 0, non_empty_cells: 0,
             blank_cells: 0, formula_cells, preview: Vec::new(), columns: Vec::new(), quality_findings: Vec::new(),
+            accounting_field_suggestions: Vec::new(),
         });
     }
     if rows.len() > MAX_ROWS {
@@ -416,9 +483,10 @@ fn analyze_matrix(
     let preview = rows.iter().take(PREVIEW_ROWS).map(|row| {
         row.iter().take(PREVIEW_COLUMNS).map(|value| cell_text(value)).collect()
     }).collect();
+    let accounting_field_suggestions = accounting_field_suggestions(&header, rows.len(), column_count);
     Ok(SheetAnalysis {
         name, row_count: rows.len(), column_count, non_empty_cells, blank_cells,
-        formula_cells, preview, columns, quality_findings,
+        formula_cells, preview, columns, quality_findings, accounting_field_suggestions,
     })
 }
 
@@ -845,6 +913,33 @@ mod tests {
         assert_eq!(ambiguous.status, "clarification");
         let grouped = answer_question("which product sold most by region?", "Finance", sheet.row_count, &sheet.columns);
         assert_eq!(grouped.status, "unsupported");
+    }
+
+    #[test]
+    fn accounting_field_mapping_is_explicit_ambiguous_and_source_located() {
+        let rows = vec![
+            vec!["Gross Sales".into(), "Revenue".into(), "COGS".into(), "Gross Sales".into()],
+            vec!["100".into(), "100".into(), "60".into(), "90".into()],
+        ];
+        let sheet = analyze_matrix("Accounts".into(), rows, 0).unwrap();
+        let mappings = &sheet.accounting_field_suggestions;
+        assert_eq!(mappings[0].field_id.as_deref(), Some("accounting.gross_sales"));
+        assert_eq!(mappings[0].status, "ambiguous");
+        assert_eq!(mappings[0].header_cell, "A1");
+        assert_eq!(mappings[0].data_range, "A2:A2");
+        assert_eq!(mappings[1].status, "ambiguous");
+        assert_eq!(mappings[1].possible_fields.len(), 2);
+        assert_eq!(mappings[2].field_id.as_deref(), Some("accounting.cost_of_goods_sold"));
+        assert_eq!(mappings[2].header_cell, "C1");
+        assert_eq!(mappings[3].status, "ambiguous");
+    }
+
+    #[test]
+    fn accounting_field_mapping_does_not_guess_generic_headers() {
+        let rows = vec![vec!["Amount".into()], vec!["100".into()]];
+        let sheet = analyze_matrix("Unknown".into(), rows, 0).unwrap();
+        assert_eq!(sheet.accounting_field_suggestions[0].status, "unmapped");
+        assert!(sheet.accounting_field_suggestions[0].field_id.is_none());
     }
 
     #[test]
