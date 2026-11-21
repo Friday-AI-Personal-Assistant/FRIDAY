@@ -1441,3 +1441,56 @@ h1 em { color: #78AEEF; }
   .journey-card { padding:14px; }
 }
 @media(prefers-reduced-motion:reduce) { .journey-card button { transition:none; } }
+
+
+/* FRIDAY voice and milestone moments: quiet, dismissible and motion-aware. */
+.friday-personality-note {
+  display:flex; align-items:center; gap:12px; margin:0 0 18px; padding:13px 15px;
+  border:1px solid var(--az-border,#385273); border-radius:11px;
+  background:linear-gradient(110deg,rgba(40,116,216,.12),rgba(14,26,45,.55));
+}
+.friday-personality-mark {
+  width:34px; height:34px; flex:0 0 34px; display:grid; place-items:center;
+  border-radius:10px; background:var(--az-blue,#2874D8); color:#FFFFFF;
+  font:800 17px Manrope,sans-serif;
+}
+.friday-personality-note p { display:grid; gap:3px; margin:0; }
+.friday-personality-note strong { color:var(--az-text,#E6EEF8); font:600 11px Manrope,sans-serif; }
+.friday-personality-note p span { color:var(--az-muted,#A9BBD2); font-size:10px; line-height:1.55; }
+.milestone-celebration {
+  display:flex; align-items:center; justify-content:space-between; gap:16px; margin:0 0 18px;
+  padding:15px 17px; border:1px solid #477DBB; border-radius:12px;
+  background:linear-gradient(115deg,rgba(40,116,216,.2),rgba(14,26,45,.88));
+}
+.milestone-celebration>div { min-width:0; }
+.celebration-kicker { display:block; margin-bottom:5px; color:#9BC8F5; font-size:8px; font-weight:800; letter-spacing:1.2px; }
+.milestone-celebration strong { display:block; color:var(--az-text,#E6EEF8); font:600 15px Manrope,sans-serif; }
+.milestone-celebration p { margin:5px 0 0; color:var(--az-muted,#A9BBD2); font-size:10px; line-height:1.55; }
+.milestone-celebration button {
+  flex:0 0 auto; border:1px solid #5D83B4; border-radius:7px; padding:7px 10px;
+  background:rgba(5,14,29,.35); color:#DCEBFA; font-size:9px; font-weight:700; cursor:pointer;
+}
+.milestone-celebration button:hover { border-color:#9BC8F5; }
+.app-shell[data-theme="light"] .friday-personality-note { background:linear-gradient(110deg,#EAF2FD,#FFFFFF); border-color:#C8D8EC; }
+.app-shell[data-theme="light"] .friday-personality-note strong { color:#172B45; }
+.app-shell[data-theme="light"] .friday-personality-note p span { color:#536B88; }
+.app-shell[data-theme="light"] .milestone-celebration { background:linear-gradient(115deg,#EAF2FD,#FFFFFF); border-color:#9BB9DF; }
+.app-shell[data-theme="light"] .celebration-kicker { color:#245C9F; }
+.app-shell[data-theme="light"] .milestone-celebration strong { color:#172B45; }
+.app-shell[data-theme="light"] .milestone-celebration p { color:#536B88; }
+.app-shell[data-theme="light"] .milestone-celebration button { background:#F2F6FC; border-color:#B9CBE1; color:#214C7D; }
+@media(max-width:560px) {
+  .friday-personality-note { align-items:flex-start; padding:12px; }
+  .milestone-celebration { align-items:flex-start; flex-direction:column; padding:13px; }
+}
+@media(prefers-reduced-motion:no-preference) {
+  .milestone-celebration { animation:friday-milestone-arrive .32s ease-out both; }
+  @keyframes friday-milestone-arrive {
+    from { opacity:0; transform:translateY(5px); }
+    to { opacity:1; transform:translateY(0); }
+  }
+}
+@media(prefers-reduced-motion:reduce) {
+  .milestone-celebration { animation:none; }
+  .milestone-celebration button { transition:none; }
+}
