@@ -5992,6 +5992,10 @@ mod tests {
         wrong.0 = wrong.0.wrapping_add(1);
         assert!(remove_verified_recovery_file(&parent, name, wrong, payload.len() as u64, &digest).is_err());
         assert_eq!(fs::read(workspace_path.join("recovery.bak")).unwrap(), payload);
+        fs::hard_link(workspace_path.join("recovery.bak"), workspace_path.join("recovery-alias.bak")).unwrap();
+        assert!(remove_verified_recovery_file(&parent, name, identity, payload.len() as u64, &digest).is_err());
+        assert_eq!(fs::read(workspace_path.join("recovery-alias.bak")).unwrap(), payload);
+        fs::remove_file(workspace_path.join("recovery-alias.bak")).unwrap();
         remove_verified_recovery_file(&parent, name, identity, payload.len() as u64, &digest).unwrap();
         assert!(!workspace_path.join("recovery.bak").exists());
         drop(parent);
