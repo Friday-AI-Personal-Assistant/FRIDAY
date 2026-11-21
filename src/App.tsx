@@ -208,10 +208,10 @@ function App() {
                 <h3>Midnight Azure</h3><p>The visual system is integrated. Installed-app and narrow-window visual acceptance still remain.</p>
                 <button type="button" onClick={() => setPage("Settings")}>View appearance <span aria-hidden="true">↗</span></button>
               </article>
-              <article className="journey-card journey-planned">
+              <article className="journey-card journey-progress">
                 <div className="journey-card-top"><span className="journey-step">05</span><span className="journey-status">{journeyStatusLabel("excel-intelligence")}</span></div>
-                <h3>Excel Intelligence</h3><p>Our first practical skill: analyze spreadsheets, spot issues and prepare useful summaries with approval before edits.</p>
-                <span className="journey-no-action">NEXT PRODUCT CAPABILITY</span>
+                <h3>Excel Intelligence</h3><p>Analyze XLSX workbooks and CSV files locally, inspect missing values and review numeric summaries without changing the source file.</p>
+                <button type="button" onClick={() => setPage("Excel Intelligence")}>Open workspace <span aria-hidden="true">↗</span></button>
               </article>
               <article className="journey-card journey-planned">
                 <div className="journey-card-top"><span className="journey-step">06</span><span className="journey-status">{journeyStatusLabel("recovery-storage-manager")}</span></div>
