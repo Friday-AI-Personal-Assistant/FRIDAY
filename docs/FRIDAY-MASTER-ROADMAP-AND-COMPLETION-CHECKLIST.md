@@ -1342,6 +1342,9 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ## 33. FRIDAY Domain Intelligence & Formula Engine — reusable calculation foundation
 
+**Implementation progress (2026-11-21):** Phase 1 backend core has been added on `foundation/evaluation` in commits `f25cc7d8bcfde9b2c7716d2bd3835855482188f1`, `e73c4fa10db0a4e68ec1c43dceed44e54c536455` and `468913bbe57e2d4f6ebff5e133eab0cb59eb51b6`. It introduces a deterministic fixed-point decimal core (six fractional places, checked i128 operations, no floating-point arithmetic), a versioned allowlisted formula registry, explicit input states (provided/missing/unknown/not applicable), required-field and currency checks, and traceable outputs. The first reviewed formula definitions are net sales, gross profit and gross margin. This is backend-only and not yet exposed to the UI or IPC. **CI verification is pending; do not treat this phase as complete until Linux and Windows checks pass.**
+
+
 **Status:** PLANNED — accepted product direction. This is the next major engineering batch after the verified bounded Excel question-answering slice. It is a reusable, deterministic calculation and domain-interpretation foundation, not an LLM-generated formula feature. **Accounting Intelligence is the first specialist domain.** No financial action, workbook write, tax filing, payment, journal posting or ledger mutation is included in this milestone.
 
 ### 33.1 Product and safety contract
