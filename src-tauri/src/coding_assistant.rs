@@ -336,6 +336,34 @@ fn verified_code_child_identity(parent: &File, name: &OsStr) -> Result<crate::co
     Ok(entry.identity)
 }
 
+
+#[cfg(not(windows))]
+fn verify_installed_code_file(
+    parent: &File,
+    name: &OsStr,
+    expected_identity: crate::coding_sandbox_fs::RuntimeTreeIdentity,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    let mut file = crate::coding_sandbox_fs::open_file_nofollow(parent, name)
+        .map_err(|_| "The installed project file could not be safely reopened relative to its verified parent.".to_string())?;
+    let metadata = file.metadata()
+        .map_err(|_| "Could not inspect the installed project file.".to_string())?;
+    if !metadata.is_file() || is_redirected(&metadata)
+        || metadata.len() == 0 || metadata.len() > MAX_PROPOSED_FILE_BYTES as u64
+        || !crate::coding_sandbox_fs::runtime_tree_handle_matches(expected_identity, &file)
+            .map_err(|_| "Could not verify the installed project file identity.".to_string())?
+    {
+        return Err("The installed project file does not match the verified replacement identity.".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PROPOSED_FILE_BYTES as u64 + 1).read_to_end(&mut bytes)
+        .map_err(|_| "Could not read the installed project file through its verified handle.".to_string())?;
+    if bytes.len() as u64 != metadata.len() || sha256_hex(&bytes) != expected_sha256 {
+        return Err("The installed project file failed its identity-bound content verification.".into());
+    }
+    Ok(())
+}
+
 fn apply_code_preview_to_disk(
     root: &Path, current: &Path, proposed: &[u8], expected_sha256: &str, token: &str, now: u64,
 ) -> Result<(PathBuf, CodingUndoRecord), String> {
@@ -548,14 +576,50 @@ fn apply_code_preview_to_disk_bound(
             });
         }
     }
-    let installed = fs::read(current).map_err(|_| format!("The replacement was installed but could not be verified. The original backup remains at {}.", backup.display()))?;
-    if sha256_hex(&installed) != resulting_hash {
-        let failed = parent.join(format!(".friday-code-failed-{token}.tmp"));
-        let _ = fs::rename(current, &failed);
-        let restored = fs::rename(&displaced, current).is_ok();
-        let _ = fs::remove_file(&failed);
-        return Err(if restored { "The installed file failed verification; FRIDAY restored the original.".into() }
-            else { format!("The installed file failed verification and automatic restore failed. The original backup remains at {}.", backup.display()) });
+    #[cfg(not(windows))]
+    let installed_verification = verify_installed_code_file(
+        &parent_handle, &current_name, temporary_identity, &resulting_hash,
+    );
+    #[cfg(windows)]
+    let installed_verification = fs::read(current)
+        .map_err(|_| "The replacement was installed but could not be verified.".to_string())
+        .and_then(|bytes| if sha256_hex(&bytes) == resulting_hash {
+            Ok(())
+        } else {
+            Err("The installed file failed content verification.".into())
+        });
+    if let Err(error) = installed_verification {
+        #[cfg(not(windows))]
+        {
+            let failed_name = format!(".friday-code-failed-{token}.tmp");
+            let failed_move = verified_code_child_identity(&parent_handle, &current_name)
+                .ok()
+                .filter(|identity| *identity == temporary_identity)
+                .and_then(|identity| crate::coding_sandbox_fs::rename_file_noreplace(
+                    &parent_handle, &current_name, OsStr::new(&failed_name), parent_identity, identity,
+                ).ok())
+                .is_some();
+            let restored = crate::coding_sandbox_fs::rename_file_noreplace(
+                &parent_handle, displaced_name, &current_name, parent_identity, original_identity,
+            ).is_ok();
+            return Err(if restored {
+                format!("The installed file failed verification ({error}); FRIDAY restored the original using verified handle-relative operations.")
+            } else {
+                format!("The installed file failed verification ({error}) and automatic restore could not be proven safe. The original remains at {}. The failed replacement was preserved: {}.", displaced.display(), if failed_move { failed_name } else { "current project entry left untouched".into() })
+            });
+        }
+        #[cfg(windows)]
+        {
+            let failed = parent.join(format!(".friday-code-failed-{token}.tmp"));
+            let _ = fs::rename(current, &failed);
+            let restored = fs::rename(&displaced, current).is_ok();
+            let _ = fs::remove_file(&failed);
+            return Err(if restored {
+                "The installed file failed verification; FRIDAY restored the original.".into()
+            } else {
+                format!("The installed file failed verification and automatic restore failed. The original backup remains at {}.", backup.display())
+            });
+        }
     }
     let undo_path = backup_dir.join(format!("{token}.undo.json"));
     let undo_bytes = serde_json::to_vec(&record).map_err(|_| "Could not prepare the guarded undo record.".to_string())?;
@@ -2855,6 +2919,28 @@ mod tests {
             assert!(!root.join(format!(".friday-code-undone-{}.tmp", record.id)).exists(), "stage {stage}");
             fs::remove_dir_all(&root).unwrap();
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_code_verification_binds_content_to_the_expected_file_identity() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("friday-installed-identity-{}", make_token()));
+        let outside = std::env::temp_dir().join(format!("friday-installed-outside-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let installed = root.join("installed.tmp");
+        fs::write(&installed, b"verified replacement").unwrap();
+        let identity = verified_code_child_identity(&parent, OsStr::new("installed.tmp")).unwrap();
+        assert!(verify_installed_code_file(&parent, OsStr::new("installed.tmp"), identity, &sha256_hex(b"verified replacement")).is_ok());
+        assert!(verify_installed_code_file(&parent, OsStr::new("installed.tmp"), identity, &sha256_hex(b"other")).is_err());
+        fs::write(&outside, b"outside private data").unwrap();
+        fs::remove_file(&installed).unwrap();
+        symlink(&outside, &installed).unwrap();
+        assert!(verify_installed_code_file(&parent, OsStr::new("installed.tmp"), identity, &sha256_hex(b"outside private data")).is_err());
+        assert_eq!(fs::read(&outside).unwrap(), b"outside private data");
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_file(&outside).unwrap();
     }
 
     #[test]

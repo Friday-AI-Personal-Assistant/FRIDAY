@@ -263,7 +263,7 @@ This section supersedes the stale #988/#1012 hand-off status that was previously
 - [ ] Complete the filesystem trust-boundary review across snapshot traversal, project reads, approved edits, backups, temporary files, replacement, undo, rollback, recovery and cleanup.
 - [ ] Close or explicitly constrain the remaining Unix source-name substitution race between final identity revalidation and the rename syscall. Do not describe the primitive as race-free.
 - [ ] Complete handle-relative backup/temp/journal/Undo creation on Unix and implement an independently reviewed Windows equivalent; preserve no-overwrite behavior, backups, undo and crash recovery. Unix exclusive creation is now CI-covered through #1055, but it does not close the whole transaction boundary; Windows equivalents and later verification/rollback/recovery remain.
-- [ ] Replace remaining path-based installed-file verification, rollback, displaced-file cleanup, undo and recovery operations with verified handle-relative operations where supported; otherwise fail closed.
+- [ ] Replace remaining path-based displaced-file cleanup, undo and recovery operations with verified handle-relative operations where supported; otherwise fail closed. #1109 adds handle-relative Unix installed-file verification and failed-install rollback, but this checklist item remains open until the wider transaction and cleanup paths are covered.
 - [ ] Finish Windows reparse point, junction, mount-point and parent/child replacement adversarial coverage across production call sites.
 - [ ] Prove snapshot ownership/ACL/session protections cannot delete live or foreign resources.
 - [ ] Complete all physical Windows result-storage acceptance in section 6B.
@@ -275,6 +275,8 @@ This section supersedes the stale #988/#1012 hand-off status that was previously
 
 ### Next batch selection
 
+#1109 hardens Unix post-install verification and failed-install rollback: the installed replacement is reopened relative to its pinned parent, checked against the exact temporary-file identity, and read through that handle before its content hash is accepted. If verification fails, FRIDAY moves only that exact replacement to a unique failed name and restores the displaced original through the same pinned parent with no-replace semantics. Regression coverage rejects content mismatch and symlink substitution. This does not eliminate the documented same-user Unix rename/unlink race, and Windows remains on its separately pending path-based implementation. CI and physical Windows acceptance remain pending.
+
 Continue the approved-file-edit transaction boundary. Unix handle-relative exclusive creation is now implemented and CI-covered. Next, harden installed-file verification and rollback, undo/recovery and cleanup; separately design and test a Windows-native equivalent. Do not jump to result transfer or guest execution.
 
-**Execution-disabled invariant:** all project-code execution remains disabled. CI success does not authorize enabling it and does not prove physical Sandbox isolation.
+**Execution-disabled invariant:** all project-code execution remains disabled. #1109 is not guest execution and does not change this invariant. CI success does not authorize enabling it and does not prove physical Sandbox isolation.

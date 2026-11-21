@@ -1071,3 +1071,18 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Physically validate Windows file selection and imported history display. CI does not prove the native file picker works on a user's machine.
 - [ ] Keep imported content untrusted: it is displayed as text only and does not grant tools, permissions or execute instructions.
 - [ ] Document that the JSON export itself is unencrypted and users should protect it.
+
+
+## 25. Coding Assistant approved-edit verification — batch #1109
+
+**Status:** IN PROGRESS — Linux/Windows CI pending; physical Windows acceptance not performed.
+
+- [x] Verify the installed Unix replacement by reopening it relative to the held parent directory handle.
+- [x] Bind post-install verification to the exact temporary-file identity captured before the no-replace rename.
+- [x] Read and hash the installed content through the verified handle; reject type, identity, size, read and content mismatches.
+- [x] On verification failure, move only the exact installed replacement to a unique failed name and restore the displaced original using handle-relative no-replace renames.
+- [x] Preserve substituted entries and displaced originals when safe automatic restoration cannot be proven.
+- [x] Add regression tests for content mismatch and symlink substitution without reading outside target contents.
+- [ ] Verify Linux tests and Windows build/tests.
+- [ ] Continue the remaining transaction review: Windows handle-relative equivalent, displaced-file cleanup, Undo/recovery paths, and the documented Unix same-user name-substitution limitation.
+- [ ] Guest execution remains disabled; no physical Sandbox acceptance is implied.
