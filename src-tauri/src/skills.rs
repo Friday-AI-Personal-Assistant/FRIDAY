@@ -390,21 +390,80 @@ fn validate_quarantine_payload(
     Ok(preview)
 }
 
+fn valid_quarantine_id(skill_id: &str) -> bool {
+    skill_id.len() == 64 && skill_id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+fn reinspect_quarantine_entry(root: &Path, skill_id: &str) -> Result<CommunitySkillPreview, String> {
+    if !valid_quarantine_id(skill_id) {
+        return Err("Quarantine identifier is invalid.".into());
+    }
+    let directory = crate::coding_sandbox_fs::open_verified_root_directory(&root.join(skill_id))
+        .map_err(|_| "Quarantine entry is missing or its directory path is unsafe.".to_string())?;
+    let content = read_quarantine_child(&directory, "SKILL.md", 32_768)?;
+    let metadata = read_quarantine_child(&directory, "inspection.json", 16_384)?;
+    validate_quarantine_payload(skill_id, &content, &metadata)
+}
+
 /// Re-inspect a quarantined item without loading or executing it.
 #[tauri::command]
 pub fn reinspect_community_skill(app: AppHandle, skill_id: String) -> Result<CommunitySkillPreview, String> {
     crate::permissions::authorize_command("skills.import.inspect", "skills.import.inspect")?;
-    if skill_id.len() != 64 || !skill_id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
-        return Err("Quarantine identifier is invalid.".into());
-    }
     let root = app.path().app_data_dir()
         .map_err(|e| format!("Cannot locate FRIDAY's application data folder: {e}"))?
         .join("skills").join("quarantine");
-    let directory = crate::coding_sandbox_fs::open_verified_root_directory(&root.join(&skill_id))
-        .map_err(|_| "Quarantine entry is missing or its directory path is unsafe.".to_string())?;
-    let content = read_quarantine_child(&directory, "SKILL.md", 32_768)?;
-    let metadata = read_quarantine_child(&directory, "inspection.json", 16_384)?;
-    validate_quarantine_payload(&skill_id, &content, &metadata)
+    reinspect_quarantine_entry(&root, &skill_id)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunitySkillInventoryItem {
+    id: String,
+    name: Option<String>,
+    status: String,
+    detail: Option<String>,
+}
+
+/// Enumerate a bounded number of quarantine entries. Unreadable or tampered
+/// entries are reported as blocked rather than silently omitted.
+#[tauri::command]
+pub fn list_community_skills_quarantine(app: AppHandle) -> Result<Vec<CommunitySkillInventoryItem>, String> {
+    crate::permissions::authorize_command("skills.import.inspect", "skills.import.inspect")?;
+    const MAX_ENTRIES: usize = 200;
+    let root = app.path().app_data_dir()
+        .map_err(|e| format!("Cannot locate FRIDAY's application data folder: {e}"))?
+        .join("skills").join("quarantine");
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("FRIDAY could not safely enumerate the skill quarantine.".into()),
+    };
+    let mut inventory = Vec::new();
+    for entry in entries.take(MAX_ENTRIES + 1) {
+        let entry = entry.map_err(|_| "FRIDAY could not inspect a quarantine directory entry.".to_string())?;
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if inventory.len() == MAX_ENTRIES {
+            return Err("Skill quarantine contains more than 200 entries; inventory is capped for safety.".into());
+        }
+        if !valid_quarantine_id(&id) {
+            inventory.push(CommunitySkillInventoryItem {
+                id, name: None, status: "INVALID ENTRY — BLOCKED".into(),
+                detail: Some("Directory name is not a valid content hash.".into()),
+            });
+            continue;
+        }
+        match reinspect_quarantine_entry(&root, &id) {
+            Ok(preview) => inventory.push(CommunitySkillInventoryItem {
+                id, name: Some(preview.name), status: preview.status, detail: None,
+            }),
+            Err(error) => inventory.push(CommunitySkillInventoryItem {
+                id, name: None, status: "TAMPERED OR UNREADABLE — BLOCKED".into(),
+                detail: Some(error),
+            }),
+        }
+    }
+    inventory.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(inventory)
 }
 
 fn parse_skill_markdown(content: &str) -> Result<(String, String, Option<String>, Option<String>, String), String> {
