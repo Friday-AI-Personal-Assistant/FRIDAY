@@ -494,6 +494,8 @@ fn analyze_matrix(
 }
 
 fn analyze_csv(file_name: String, bytes: &[u8]) -> Result<WorkbookAnalysis, String> {
+    let source_sha256 = format!("{:x}", Sha256::digest(bytes));
+    let source_byte_length = bytes.len() as u64;
     let mut reader = ReaderBuilder::new().has_headers(false).flexible(true).from_reader(bytes);
     let mut rows = Vec::new();
     let mut total_cells = 0usize;
@@ -515,7 +517,7 @@ fn analyze_csv(file_name: String, bytes: &[u8]) -> Result<WorkbookAnalysis, Stri
     let total_rows = sheet.row_count;
     let total_non_empty_cells = sheet.non_empty_cells;
     Ok(WorkbookAnalysis {
-        file_name, format: "CSV".into(), sheets: vec![sheet], total_rows,
+        file_name, format: "CSV".into(), source_sha256, source_byte_length, sheets: vec![sheet], total_rows,
         total_non_empty_cells,
         notes: vec![
             "The first row is treated as column headers.".into(),
@@ -526,6 +528,8 @@ fn analyze_csv(file_name: String, bytes: &[u8]) -> Result<WorkbookAnalysis, Stri
 }
 
 fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, String> {
+    let source_sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let source_byte_length = bytes.len() as u64;
     validate_xlsx_package(&bytes)?;
     let mut workbook: Xlsx<_> = open_workbook_from_rs(Cursor::new(bytes))
         .map_err(|_| "FRIDAY could not read this XLSX workbook. It may be damaged or use unsupported workbook features.".to_string())?;
@@ -555,7 +559,7 @@ fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, S
     let total_rows = sheets.iter().map(|sheet| sheet.row_count).sum();
     let total_non_empty_cells = sheets.iter().map(|sheet| sheet.non_empty_cells).sum();
     Ok(WorkbookAnalysis {
-        file_name, format: "XLSX".into(), sheets, total_rows, total_non_empty_cells,
+        file_name, format: "XLSX".into(), source_sha256, source_byte_length, sheets, total_rows, total_non_empty_cells,
         notes: vec![
             "Analysis runs locally on this device; the workbook is not uploaded.".into(),
             "Formulas are counted and displayed as metadata; FRIDAY does not execute or recalculate formulas.".into(),
@@ -744,15 +748,11 @@ pub async fn pick_and_analyze_workbook(app: AppHandle) -> Result<WorkbookAnalysi
     let file_name = path.file_name().and_then(|value| value.to_str())
         .unwrap_or("Selected workbook").chars().take(180).collect::<String>();
     let bytes = read_selected_file(&path, max_bytes)?;
-    let source_sha256 = format!("{:x}", Sha256::digest(&bytes));
-    let source_byte_length = bytes.len() as u64;
-    let mut analysis = match extension.as_str() {
+    let analysis = match extension.as_str() {
         "xlsx" => analyze_xlsx(file_name, bytes)?,
         "csv" => analyze_csv(file_name, &bytes)?,
         _ => unreachable!(),
     };
-    analysis.source_sha256 = source_sha256;
-    analysis.source_byte_length = source_byte_length;
     let _ = crate::tools::record(
         &app, "excel.workbook.analyze",
         &format!("Analyzed a user-selected {} workbook locally ({} rows, {} non-empty cells).",
