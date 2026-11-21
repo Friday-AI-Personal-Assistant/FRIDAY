@@ -10,6 +10,7 @@ mod user_permissions;
 mod pdf_reader;
 mod web_research;
 mod file_assistant;
+mod excel_intelligence;
 mod coding_assistant;
 mod coding_intelligence;
 mod coding_sandbox;
@@ -85,6 +86,7 @@ pub fn run() {
             coding_sandbox::consume_guest_run_execution_approval,
             coding_sandbox::revoke_guest_run_execution_approval,
             file_assistant::pick_and_read_text_files,
+            excel_intelligence::pick_and_analyze_workbook,
             file_assistant::pick_folder_and_list_text_files,
             file_assistant::read_granted_text_files,
             file_assistant::prepare_file_edit,
