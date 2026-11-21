@@ -119,6 +119,46 @@ function App() {
             </div>
           </div>
 
+          <section className="development-journey" aria-labelledby="development-journey-title">
+            <div className="journey-heading">
+              <div><span className="eyebrow">THE ROAD AHEAD</span><h2 id="development-journey-title">FRIDAY Development Journey</h2><p>Real capabilities, honest progress, and the next useful things we're building.</p></div>
+              <span className="journey-roadmap-tag">ROADMAP-TRACKED</span>
+            </div>
+            <div className="journey-grid">
+              <article className="journey-card journey-available">
+                <div className="journey-card-top"><span className="journey-step">01</span><span className="journey-status">AVAILABLE</span></div>
+                <h3>AI Chat</h3><p>Chat with a local Ollama model when the model service is running on your device.</p>
+                <button type="button" onClick={() => setPage("AI Chat")}>Open AI Chat <span aria-hidden="true">↗</span></button>
+              </article>
+              <article className="journey-card journey-progress">
+                <div className="journey-card-top"><span className="journey-step">02</span><span className="journey-status">IN PROGRESS</span></div>
+                <h3>Coding Assistant</h3><p>Project-aware coding help and guarded change proposals are being developed and refined.</p>
+                <button type="button" onClick={() => setPage("Coding Assistant")}>Explore workspace <span aria-hidden="true">↗</span></button>
+              </article>
+              <article className="journey-card journey-verify">
+                <div className="journey-card-top"><span className="journey-step">03</span><span className="journey-status">NEEDS VERIFICATION</span></div>
+                <h3>Skills Store</h3><p>Imported community skills can be inspected in quarantine; they remain inert and cannot execute.</p>
+                <button type="button" onClick={() => setPage("Modules")}>Review skills <span aria-hidden="true">↗</span></button>
+              </article>
+              <article className="journey-card journey-verify">
+                <div className="journey-card-top"><span className="journey-step">04</span><span className="journey-status">NEEDS VERIFICATION</span></div>
+                <h3>Midnight Azure</h3><p>The visual system is integrated. Installed-app and narrow-window visual acceptance still remain.</p>
+                <button type="button" onClick={() => setPage("Settings")}>View appearance <span aria-hidden="true">↗</span></button>
+              </article>
+              <article className="journey-card journey-planned">
+                <div className="journey-card-top"><span className="journey-step">05</span><span className="journey-status">PLANNED</span></div>
+                <h3>Excel Intelligence</h3><p>Our first practical skill: analyze spreadsheets, spot issues and prepare useful summaries with approval before edits.</p>
+                <span className="journey-no-action">NEXT PRODUCT CAPABILITY</span>
+              </article>
+              <article className="journey-card journey-planned">
+                <div className="journey-card-top"><span className="journey-step">06</span><span className="journey-status">PLANNED</span></div>
+                <h3>Recovery Storage Manager</h3><p>Understand FRIDAY-managed recovery storage and preserve user work through safe, verified controls.</p>
+                <span className="journey-no-action">SAFETY-FIRST FEATURE</span>
+              </article>
+            </div>
+            <p className="journey-footnote">Statuses reflect the development roadmap, not autonomous background work. A successful build alone does not make a feature fully accepted.</p>
+          </section>
+
           <div className="notice">
             <div className="notice-icon">i</div>
             <div><strong>Early development preview</strong><p>The local encrypted-note foundation is now being implemented. AI Chat is available on Windows when Ollama is running. Accounts and full email integrations are not active yet.</p></div>
