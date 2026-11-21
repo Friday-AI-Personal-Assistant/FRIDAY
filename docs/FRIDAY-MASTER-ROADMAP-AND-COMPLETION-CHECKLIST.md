@@ -939,3 +939,15 @@ This batch makes only the documented appearance preference functional. It does n
 **User impact:** FRIDAY no longer requires the user to accept saved-memory context on every future chat. The user can keep memories stored locally while opting out of sending them to the local model. The control does not delete old conversation history or alter a request already in progress. No remote model provider is enabled by this change.
 
 The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
+
+
+### Chat history discovery and usability — #1092
+
+- [x] Include a bounded preview of each conversation's latest message in the encrypted-history listing response.
+- [x] Let users search saved conversations by title or latest-message preview without loading every full conversation into the frontend.
+- [x] Show message count and last-updated date in each history item; keep full conversation content loaded only when the user opens that chat.
+- [x] Keep previews bounded to 180 Unicode characters and reuse the existing encrypted local store; no new network access or data export.
+- [ ] Verify Linux and Windows CI.
+- [ ] Physically validate history readability, truncation and narrow-window layout in the Windows desktop app.
+
+**User impact:** users can recognise and find saved chats more easily without opening each one. Search intentionally covers the title and latest message preview, not every historical message. Full messages remain encrypted at rest and are fetched only when a conversation is opened. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.

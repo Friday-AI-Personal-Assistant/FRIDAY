@@ -33,6 +33,7 @@ pub struct ConversationSummary {
     pub created_at: u64,
     pub updated_at: u64,
     pub message_count: usize,
+    pub preview: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -87,6 +88,7 @@ pub fn list_conversations(app: AppHandle) -> Result<Vec<ConversationSummary>, St
     let mut items: Vec<_> = store.conversations.into_iter().map(|c| ConversationSummary {
         id: c.id, title: c.title, created_at: c.created_at, updated_at: c.updated_at,
         message_count: c.messages.len(),
+        preview: c.messages.last().map(|message| message.content.chars().take(180).collect()).unwrap_or_default(),
     }).collect();
     items.sort_by(|a,b| b.updated_at.cmp(&a.updated_at));
     Ok(items)

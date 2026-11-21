@@ -849,3 +849,28 @@ h1 em { color: #78AEEF; }
   background: var(--surface, rgba(5, 14, 29, .7));
   font-size: .82rem;
 }
+
+
+/* Conversation history: searchable latest-message previews and readable metadata. */
+.conversation-open { display: block; }
+.conversation-preview {
+  display: -webkit-box;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--az-muted, #A9BBD2);
+  font-size: 9px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.conversation-open small { color: var(--az-muted, #A9BBD2); }
+.conversation-item { align-items: flex-start; }
+.conversation-actions { flex: 0 0 auto; }
+.conversation-search { border-color: var(--az-border, #385273); background: var(--az-raised, #192840); color: var(--az-text, #E6EEF8); }
+.conversation-search:focus { outline: 2px solid var(--az-blue, #2874D8); }
+.app-shell[data-theme="light"] .conversation-open { color: #172B45; }
+.app-shell[data-theme="light"] .conversation-preview,
+.app-shell[data-theme="light"] .conversation-open small { color: #536B88; }
+.app-shell[data-theme="light"] .conversation-item.active { background: #E8EFF9; border-color: #9BB9DF; }

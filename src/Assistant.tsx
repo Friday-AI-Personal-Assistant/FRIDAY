@@ -6,7 +6,7 @@ type StreamEvent = { event: "token" | "done" | "stopped" | "tool_proposal"; cont
 type ToolProposal = { tool_id: string; arguments: Record<string, unknown> };
 type ModelInfo = { name: string; size: number; modified_at: string };
 type PullEvent = { status: string; completed: number | null; total: number | null; done: boolean };
-type ConversationSummary = { id: string; title: string; created_at: number; updated_at: number; message_count: number };
+type ConversationSummary = { id: string; title: string; created_at: number; updated_at: number; message_count: number; preview: string };
 type Conversation = { id: string; title: string; created_at: number; updated_at: number; messages: Message[] };
 type MemoryEntry = { id: string; category: string; content: string; enabled: boolean; created_at: number; updated_at: number };
 const ACTIONS = [
@@ -19,6 +19,16 @@ const ACTIONS = [
   { id: "email", label: "Compose email", keywords: /\\b(compose|write|send|open)\\b.*\\b(email|mail)\\b/i }
 ];
 const SYSTEM = "You are FRIDAY, a friendly, helpful and slightly humorous local Windows desktop assistant. Be concise, honest and privacy-conscious. Do not claim you performed computer actions unless the app confirms success. You cannot send emails automatically. You can help draft email text for the user to review.";
+
+function historyMatches(item: ConversationSummary, query: string) {
+  const needle = query.trim().toLocaleLowerCase();
+  return !needle || item.title.toLocaleLowerCase().includes(needle) || item.preview.toLocaleLowerCase().includes(needle);
+}
+
+function formatHistoryDate(timestamp: number) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "Date unavailable";
+  return new Date(timestamp * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
 
 function buildMemoryContext(entries: MemoryEntry[]) {
   return entries.filter(item => item.enabled).slice(0, 30)
@@ -417,12 +427,12 @@ export default function Assistant() {
     <div className="chat-layout">
       <aside className="conversation-sidebar" aria-label="Conversation history">
         <div className="conversation-sidebar-head"><strong>CHAT HISTORY</strong><button onClick={() => void refreshHistory()} disabled={historyLoading} aria-label="Refresh chat history">↻</button></div>
-        <input className="conversation-search" aria-label="Search conversations" placeholder="Search saved chats…" value={historySearch} onChange={e => setHistorySearch(e.target.value)} />
+        <input className="conversation-search" aria-label="Search conversations" placeholder="Search titles and latest messages…" value={historySearch} onChange={e => setHistorySearch(e.target.value)} />
         {historyLoading && <small className="history-hint">Loading…</small>}
         {!conversations.length && !historyLoading && <p className="history-hint">Your saved chats will appear here.</p>}
-        {conversations.length > 0 && !conversations.some(item => item.title.toLowerCase().includes(historySearch.trim().toLowerCase())) && historySearch.trim() && <p className="history-hint">No matching conversations.</p>}
-        <div className="conversation-list">{conversations.filter(item => item.title.toLowerCase().includes(historySearch.trim().toLowerCase())).map(item => <div className={activeId === item.id ? "conversation-item active" : "conversation-item"} key={item.id}>
-          <button className="conversation-open" onClick={() => void openConversation(item.id)} disabled={pending || saving}><strong>{item.title}</strong><small>{item.message_count} messages</small></button>
+        {conversations.length > 0 && !conversations.some(item => historyMatches(item, historySearch)) && historySearch.trim() && <p className="history-hint">No matching conversations.</p>}
+        <div className="conversation-list">{conversations.filter(item => historyMatches(item, historySearch)).map(item => <div className={activeId === item.id ? "conversation-item active" : "conversation-item"} key={item.id}>
+          <button className="conversation-open" onClick={() => void openConversation(item.id)} disabled={pending || saving}><strong>{item.title}</strong><span className="conversation-preview">{item.preview || "No messages yet"}</span><small>{item.message_count} messages · {formatHistoryDate(item.updated_at)}</small></button>
           <div className="conversation-actions"><button onClick={() => void renameConversation(item)} title="Rename chat" aria-label={"Rename " + item.title}>✎</button><button onClick={() => void removeConversation(item)} title="Delete chat" aria-label={"Delete " + item.title}>×</button></div>
         </div>)}</div>
         {historyError && <p className="history-error" role="alert">{historyError}</p>}
