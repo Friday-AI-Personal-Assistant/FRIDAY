@@ -23,6 +23,16 @@ type DataQualityFinding = {
   sampleRows: number[];
 };
 
+type AccountingFieldSuggestion = {
+  header: string;
+  fieldId: string | null;
+  possibleFields: string[];
+  status: "suggested" | "ambiguous" | "unmapped" | string;
+  sourceColumnIndex: number;
+  headerCell: string;
+  dataRange: string;
+};
+
 type SheetAnalysis = {
   name: string;
   rowCount: number;
@@ -33,6 +43,7 @@ type SheetAnalysis = {
   preview: string[][];
   columns: ColumnAnalysis[];
   qualityFindings: DataQualityFinding[];
+  accountingFieldSuggestions: AccountingFieldSuggestion[];
 };
 
 type ExcelQuestionAnswer = {
@@ -213,9 +224,33 @@ export default function ExcelIntelligence() {
           </section>
 
 
+
+          <section className="excel-section">
+            <div className="excel-section-heading">
+              <div><span className="excel-step">05 / ACCOUNTING FIELD REVIEW</span><h3>Possible accounting fields</h3></div>
+              <span>REVIEW BEFORE USE</span>
+            </div>
+            <p className="excel-table-caption">FRIDAY compares column headers with a small reviewed glossary. These are suggestions—not confirmed accounting classifications or permission to calculate.</p>
+            <div className="excel-column-grid">
+              {sheet.accountingFieldSuggestions.filter(item => item.status !== "unmapped").map((item, index) => (
+                <article className="excel-column-card" key={item.headerCell + "-" + index}>
+                  <strong>{item.header}</strong>
+                  <div className="excel-column-stats">
+                    <span>{item.status === "suggested" ? "POSSIBLE MATCH" : "NEEDS REVIEW"}</span>
+                    <b>{item.status === "suggested" ? item.fieldId : item.possibleFields.join(" / ")}</b>
+                  </div>
+                  <p className="excel-muted">Source: {sheet.name}!{item.headerCell} · Values: {sheet.name}!{item.dataRange}</p>
+                </article>
+              ))}
+            </div>
+            {sheet.accountingFieldSuggestions.every(item => item.status === "unmapped") && (
+              <p className="excel-muted">No known accounting headers were recognized. FRIDAY will not guess from generic column names.</p>
+            )}
+          </section>
+
           <section className="excel-section excel-question-section">
             <div className="excel-section-heading">
-              <div><span className="excel-step">05 / ASK YOUR SPREADSHEET</span><h3>What would you like to know?</h3></div>
+              <div><span className="excel-step">06 / ASK YOUR SPREADSHEET</span><h3>What would you like to know?</h3></div>
               <span>LOCAL · READ-ONLY</span>
             </div>
             <form className="excel-question-form" onSubmit={event => { event.preventDefault(); void askQuestion(); }}>
