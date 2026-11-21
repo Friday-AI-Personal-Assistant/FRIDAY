@@ -55,6 +55,7 @@ type ExcelQuestionAnswer = {
 };
 
 type WorkbookAnalysis = {
+  sessionId: string;
   fileName: string;
   format: string;
   sheets: SheetAnalysis[];
@@ -103,9 +104,8 @@ export default function ExcelIntelligence() {
     try {
       const result = await invoke<ExcelQuestionAnswer>("answer_excel_question", {
         question: question.trim(),
+        sessionId: analysis!.sessionId,
         sheetName: sheet.name,
-        rowCount: sheet.rowCount,
-        columns: sheet.columns,
       });
       setQuestionAnswer(result);
     } catch (reason) {
