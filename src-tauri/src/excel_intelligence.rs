@@ -119,6 +119,18 @@ pub struct ExcelQuestionAnswer {
     pub method: String,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmedAccountingMapping {
+    pub field_id: String,
+    pub sheet_name: String,
+    pub header: String,
+    pub source_column_index: usize,
+    pub header_cell: String,
+    pub data_range: String,
+    pub source_sha256: String,
+}
+
 struct WorkbookSession {
     created_at: Instant,
     source_sha256: String,
@@ -126,6 +138,7 @@ struct WorkbookSession {
     format: String,
     file_name: String,
     sheets: Vec<SheetAnalysis>,
+    confirmed_mappings: HashMap<String, ConfirmedAccountingMapping>,
     summary_bytes: usize,
 }
 
@@ -163,6 +176,7 @@ impl WorkbookSessionStore {
             format: analysis.format.clone(),
             file_name: analysis.file_name.clone(),
             sheets: analysis.sheets.clone(),
+            confirmed_mappings: HashMap::new(),
             summary_bytes,
         });
         Ok(id)
@@ -187,6 +201,56 @@ impl WorkbookSessionStore {
         answer.evidence.push(format!("Source SHA-256: {}… ({} bytes)", &session.source_sha256[..12], session.source_byte_length));
         answer.method.push_str("; bound to the imported workbook session");
         Ok(answer)
+    }
+
+    fn confirm_accounting_mapping(
+        &self,
+        id: &str,
+        sheet_name: &str,
+        source_column_index: usize,
+        field_id: &str,
+    ) -> Result<ConfirmedAccountingMapping, String> {
+        const ALLOWED_FIELDS: &[&str] = &[
+            "gross_sales", "discounts", "sales_returns", "cost_of_goods_sold", "net_sales",
+        ];
+        if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("This workbook analysis session is invalid. Import the workbook again.".into());
+        }
+        if !ALLOWED_FIELDS.contains(&field_id) || sheet_name.chars().count() > 180 {
+            return Err("The accounting field or worksheet selector is not supported.".into());
+        }
+        let mut sessions = self.sessions.lock()
+            .map_err(|_| "The workbook session store is unavailable. Import the workbook again.".to_string())?;
+        sessions.retain(|_, item| item.created_at.elapsed() < WORKBOOK_SESSION_TTL);
+        let session = sessions.get_mut(id)
+            .ok_or_else(|| "This workbook analysis session has expired or was replaced. Import the workbook again.".to_string())?;
+        let sheet = session.sheets.iter().find(|sheet| sheet.name == sheet_name)
+            .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;
+        let suggestion = sheet.accounting_field_suggestions.iter()
+            .find(|item| item.source_column_index == source_column_index)
+            .ok_or_else(|| "That source column is not part of the selected worksheet.".to_string())?;
+        if suggestion.status != "suggested" || suggestion.field_id.as_deref() != Some(field_id) {
+            return Err("Only an unambiguous FRIDAY suggestion can be confirmed. Ambiguous or unmapped fields require a separate review flow.".into());
+        }
+        if session.confirmed_mappings.values().any(|mapping|
+            mapping.field_id == field_id || (mapping.sheet_name == sheet_name && mapping.source_column_index == source_column_index)
+        ) {
+            return Err("This accounting field or source column already has a confirmed mapping in this workbook session.".into());
+        }
+        let mapping = ConfirmedAccountingMapping {
+            field_id: field_id.to_string(),
+            sheet_name: sheet.name.clone(),
+            header: suggestion.header.clone(),
+            source_column_index,
+            header_cell: suggestion.header_cell.clone(),
+            data_range: suggestion.data_range.clone(),
+            source_sha256: session.source_sha256.clone(),
+        };
+        session.confirmed_mappings.insert(
+            format!("{}:{}:{}", sheet_name, source_column_index, field_id),
+            mapping.clone(),
+        );
+        Ok(mapping)
     }
 
     #[cfg(test)]
