@@ -856,6 +856,18 @@ pub fn answer_excel_question(
 }
 
 #[tauri::command]
+pub fn confirm_excel_accounting_mapping(
+    session_id: String,
+    sheet_name: String,
+    source_column_index: usize,
+    field_id: String,
+    sessions: State<'_, WorkbookSessionStore>,
+) -> Result<ConfirmedAccountingMapping, String> {
+    crate::permissions::authorize_command("excel.confirm_accounting_mapping", "excel.mapping.confirm")?;
+    sessions.confirm_accounting_mapping(&session_id, &sheet_name, source_column_index, &field_id)
+}
+
+#[tauri::command]
 pub async fn pick_and_analyze_workbook(app: AppHandle, sessions: State<'_, WorkbookSessionStore>) -> Result<WorkbookAnalysis, String> {
     crate::permissions::authorize_command("excel.pick_and_analyze_workbook", "excel.workbook.read")?;
     let selected = app.dialog().file()
