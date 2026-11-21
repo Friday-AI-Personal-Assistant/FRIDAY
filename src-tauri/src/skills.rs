@@ -339,9 +339,13 @@ fn parse_skill_markdown(content: &str) -> Result<(String, String, Option<String>
         }
         if fields.contains_key(key) { return Err(format!("Duplicate frontmatter field '{key}'.")); }
         let value = raw.trim();
+        // This intentionally accepts only plain scalars. Reject YAML anchors and aliases
+        // wherever they can begin a token, including the common "&name value" form.
         if value.is_empty() || value.chars().any(|c| c.is_control())
-            || value.contains("& ") || value.contains("* ") || value.starts_with('!')
-            || value.starts_with('{') || value.starts_with('[') || value.starts_with('|') || value.starts_with('>') {
+            || value.starts_with('&') || value.starts_with('*')
+            || value.contains(" &") || value.contains(" *")
+            || value.starts_with('!') || value.starts_with('{') || value.starts_with('[')
+            || value.starts_with('|') || value.starts_with('>') {
             return Err(format!("Frontmatter field '{key}' uses an unsupported YAML value."));
         }
         let scalar = if (value.starts_with('"') && value.ends_with('"')) || (value.starts_with('\'') && value.ends_with('\'')) {
@@ -463,6 +467,12 @@ mod tests {
         assert!(parse_skill_markdown(invalid_name).is_err());
         let anchor = "---\nname: sample\ndescription: &shared desc\n---\nbody";
         assert!(parse_skill_markdown(anchor).is_err());
+        let alias = "---\nname: sample\ndescription: *shared\n---\nbody";
+        assert!(parse_skill_markdown(alias).is_err());
+        let tag = "---\nname: sample\ndescription: !custom desc\n---\nbody";
+        assert!(parse_skill_markdown(tag).is_err());
+        let embedded_anchor = "---\nname: sample\ndescription: desc &shared\n---\nbody";
+        assert!(parse_skill_markdown(embedded_anchor).is_err());
     }
 
     #[test]
