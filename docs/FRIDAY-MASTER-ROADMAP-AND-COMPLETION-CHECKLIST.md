@@ -2,7 +2,7 @@
 
 > **Purpose:** This is the durable, cross-conversation source of truth for what FRIDAY is intended to become, what has been verified as implemented, what remains, the order of work, and the relative effort/risk of each area. A new development conversation must read this file and the Coding Assistant completion checklist before making changes.
 >
-> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`; the latest verified CI is #1183–#1186, all passed on Linux and Windows. The FRIDAY Development Journey, first personality/milestone UI, and the first read-only Excel Intelligence workspace/backend are implemented; the Excel batch is awaiting CI verification. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The current product focus is the first read-only Excel Intelligence slice; the next stages are richer Excel Analyst workflows and the permissioned first-party skill/tool bridge. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
+> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`; the first read-only Excel Intelligence workspace/backend passed Linux and Windows CI in #1199 and #1200. The follow-on Excel Data Quality Intelligence batch is now implemented and awaiting its own CI verification. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The current product focus is richer read-only Excel Analyst workflows; the next stages are workbook summaries/charts/reports and the permissioned first-party skill/tool bridge. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
 >
 > **Do not confuse a plan with implementation.** A checkbox is complete only when code, tests, and (where required) real-device acceptance demonstrate it. Update this document after each meaningful batch with commit, CI run, and evidence.
 
@@ -409,19 +409,24 @@ When choosing between features or implementation approaches, prioritize: (1) saf
 
 ### 13.3 Excel Intelligence
 
-**Initial delivery slice (current batch, CI pending):** a read-only local XLSX/CSV analyzer with explicit file picking, workbook/sheet overview, bounded preview, missing-cell counts, numeric column statistics and formula counts. It does not modify workbooks, recalculate formulas, execute macros or follow external links. This is the first Excel Intelligence workspace—not yet the complete Excel Analyst skill or the full product scope.
+**Initial delivery slice (DONE — VERIFIED, CI #1199/#1200):** a read-only local XLSX/CSV analyzer with explicit file picking, workbook/sheet overview, bounded preview, missing-cell counts, numeric column statistics and formula counts. It does not modify workbooks, recalculate formulas, execute macros or follow external links. This is the first Excel Intelligence workspace—not yet the complete Excel Analyst skill or the full product scope.
 
-- [x] Safe bounded import for `.xlsx` and `.csv` files. XLSX input is ZIP-signature checked and package entries, expanded size, per-entry size, compression ratio, macro payloads, worksheet count and total analyzed cells are bounded. CSV parsing is bounded; legacy `.xls` is not supported in this first slice. [Current batch; CI pending.]
-- [ ] Enumerate sheets, tables, named ranges, formulas, dimensions and hidden content.
-- [ ] Preview selected sheets/ranges before analysis.
-- [ ] Explain formulas and detect common errors/inconsistencies.
-- [ ] Perform summaries, filtering, comparisons, trends and statistical analysis.
+**Data Quality Intelligence (implemented; CI pending):** bounded local checks for blank and duplicate headers, mixed data types, exact duplicate data rows, and potential numeric outliers using the 1.5× IQR rule. Findings are capped, include limited sample row/column references, and are explicitly presented as review hints—not confirmed errors. No data is changed or removed.
+
+- [x] Safe bounded import for `.xlsx` and `.csv` files. XLSX input is ZIP-signature checked and package entries, expanded size, per-entry size, compression ratio, macro payloads, worksheet count and total analyzed cells are bounded. CSV parsing is bounded; legacy `.xls` is not supported in this first slice. [CI #1199/#1200 passed Linux and Windows.]
+- [x] Show bounded sheet preview, missing-value counts, formula counts and numeric column summaries. [CI #1199/#1200 passed Linux and Windows.]
+- [x] Detect blank and duplicate headers, mixed data types, repeated non-empty rows and potential IQR numeric outliers. Findings and sample references are bounded; outliers are review suggestions, not errors. [Current Data Quality batch; CI pending.]
+- [ ] Enumerate tables, named ranges, dimensions and hidden content.
+- [ ] Preview selected ranges before analysis.
+- [ ] Explain formulas and detect common formula errors/inconsistencies.
+- [ ] Perform richer summaries, filtering, comparisons, trends and statistical analysis.
 - [ ] Generate charts and pivot-style summaries where supported.
+- [ ] Export useful analysis reports.
 - [ ] Preserve formulas, styles, merged cells, references and workbook integrity when editing.
 - [ ] Propose edits as a preview/diff and require approval before writing.
 - [ ] Keep original file backed up and provide verified undo/recovery.
-- [x] Never execute workbook macros or external links automatically. Macro-enabled workbooks are rejected; external links are not followed. [Current batch; CI pending.]
-- [x] Add initial XLSX package and worksheet resource bounds to reduce zip-bomb and oversized-workbook risk; formulas remain data and are never executed. [Current batch; CI pending.] Continue adversarial parser testing before expanding supported formats.
+- [x] Never execute workbook macros or external links automatically. Macro-enabled workbooks are rejected; external links are not followed. [CI #1199/#1200 passed Linux and Windows.]
+- [x] Add initial XLSX package and worksheet resource bounds to reduce zip-bomb and oversized-workbook risk; formulas remain data and are never executed. [CI #1199/#1200 passed Linux and Windows.] Continue adversarial parser testing before expanding supported formats.
 - [ ] Test with representative real workbooks and round-trip fidelity checks.
 
 ### 13.4 Web Research
