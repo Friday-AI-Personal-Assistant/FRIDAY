@@ -1029,16 +1029,23 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
     let journal_path = backup_dir.join(format!("{}.undo-txn.json", record.id));
     let journal_bytes = serde_json::to_vec(record)
         .map_err(|_| "FRIDAY could not prepare the undo recovery journal.".to_string())?;
-    let mut journal = OpenOptions::new().write(true).create_new(true).open(&journal_path)
-        .map_err(|e| format!("Could not create the undo recovery journal: {e}"))?;
+    let mut journal = crate::coding_sandbox_fs::create_destination_entry(
+        &backup_handle,
+        journal_path.file_name().ok_or("The Undo journal filename is invalid.")?,
+        false,
+    ).map_err(|e| format!("Could not create the handle-relative Undo recovery journal: {e}"))?;
     journal.write_all(&journal_bytes).and_then(|_| journal.sync_all())
         .map_err(|e| format!("Could not flush the undo recovery journal: {e}"))?;
     drop(journal);
 
     let parent = canonical_target.parent().ok_or("The edited file has no parent directory.")?;
+    let (parent_handle, _, _) = open_verified_code_parent(&canonical_root, &canonical_target)?;
     let temporary = parent.join(format!(".friday-code-undo-{}.tmp", record.id));
-    let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temporary)
-        .map_err(|e| format!("Could not prepare the original-file restoration: {e}"))?;
+    let mut temp_file = crate::coding_sandbox_fs::create_destination_entry(
+        &parent_handle,
+        temporary.file_name().ok_or("The Undo temporary filename is invalid.")?,
+        false,
+    ).map_err(|e| format!("Could not prepare the handle-relative original-file restoration: {e}"))?;
     if let Err(error) = temp_file.set_permissions(metadata.permissions())
         .and_then(|_| temp_file.write_all(&original))
         .and_then(|_| temp_file.sync_all()) {
@@ -1051,8 +1058,12 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
     // project directory's DACL. Restore the original file permissions before
     // ReplaceFileW installs it, just as crash-recovery copies do.
     apply_recovery_permissions(&temporary, record)?;
-    let prepared = fs::read(&temporary)
-        .map_err(|_| "Could not verify the prepared original-file restoration.".to_string())?;
+    let prepared = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+        &parent_handle,
+        temporary.file_name().ok_or("The Undo temporary filename is invalid.")?,
+        MAX_FILE_BYTES,
+        MAX_SCANNED_ENTRIES,
+    ).map_err(|_| "Could not verify the prepared original-file restoration through its verified parent directory.".to_string())?;
     if sha256_hex(&prepared) != record.original_sha256 {
         let _ = fs::remove_file(&temporary);
         return Err("The prepared original-file restoration failed SHA-256 verification.".into());
