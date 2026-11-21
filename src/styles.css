@@ -1615,3 +1615,25 @@ h1 em { color: #78AEEF; }
 .app-shell[data-theme="light"] .excel-quality-card p,.app-shell[data-theme="light"] .excel-quality-meta,.app-shell[data-theme="light"] .excel-quality-clear p { color:#536B88; }
 .app-shell[data-theme="light"] .excel-quality-clear { background:#F1F6FD; border-color:#D3DEEC; }
 @media(max-width:760px) { .excel-quality-list { grid-template-columns:minmax(0,1fr); } }
+
+
+.excel-question-form { display:flex; gap:9px; }
+.excel-question-form input { min-width:0; flex:1; padding:11px 12px; border:1px solid var(--az-border,#385273); border-radius:8px; background:var(--az-raised,#192840); color:var(--az-text,#E6EEF8); font:500 11px Manrope,sans-serif; outline:none; }
+.excel-question-form input:focus { border-color:var(--az-blue,#2874D8); box-shadow:0 0 0 2px rgba(40,116,216,.14); }
+.excel-question-form button { padding:0 15px; border:1px solid #2874D8; border-radius:8px; background:#2874D8; color:white; font:700 10px Manrope,sans-serif; cursor:pointer; white-space:nowrap; }
+.excel-question-form button:disabled { opacity:.55; cursor:not-allowed; }
+.excel-answer-card { margin-top:11px; padding:13px; border:1px solid var(--az-border,#385273); border-radius:9px; background:rgba(40,116,216,.07); }
+.excel-answer-card strong { color:var(--az-text,#E6EEF8); font:700 12px Manrope,sans-serif; line-height:1.6; }
+.excel-answer-card p { margin:6px 0; color:var(--az-muted,#A9BBD2); font-size:9px; line-height:1.55; }
+.excel-answer-card ul { margin:8px 0; padding-left:18px; color:var(--az-muted,#A9BBD2); font-size:9px; line-height:1.7; }
+.excel-answer-card>span { color:#8DBEF0; font-size:8px; }
+.excel-answer-card.clarification { border-left:3px solid #D99A58; }
+.excel-answer-card.unsupported { border-left:3px solid #8293A8; }
+.excel-top-values { margin-top:9px; padding-top:8px; border-top:1px solid var(--az-border,#385273); }
+.excel-top-values span { color:var(--az-muted,#A9BBD2); font-size:8px; font-weight:800; letter-spacing:.7px; }
+.excel-top-values p { margin:4px 0 0; color:var(--az-muted,#A9BBD2); font-size:9px; line-height:1.5; }
+.app-shell[data-theme="light"] .excel-question-form input { background:#FFFFFF; color:#172B45; border-color:#B9CBE1; }
+.app-shell[data-theme="light"] .excel-answer-card { background:#F1F6FD; border-color:#D3DEEC; }
+.app-shell[data-theme="light"] .excel-answer-card strong { color:#172B45; }
+.app-shell[data-theme="light"] .excel-answer-card p,.app-shell[data-theme="light"] .excel-answer-card ul,.app-shell[data-theme="light"] .excel-top-values p { color:#536B88; }
+@media(max-width:560px) { .excel-question-form { flex-direction:column; } .excel-question-form button { min-height:38px; } }
