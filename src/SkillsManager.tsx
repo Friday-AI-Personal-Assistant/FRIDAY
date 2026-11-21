@@ -694,7 +694,7 @@ ${file.content}`
           {item.detail && <small>{item.detail}</small>}
         </article>)}
       </div>}
-    </section>}
+    </section>
     {loading ? <div className="skills-empty">Loading skill catalogue…</div> : <div className="skills-grid">
       {skills.map(skill => <article className="skill-card" key={skill.id}>
         <div className="skill-card-top">
