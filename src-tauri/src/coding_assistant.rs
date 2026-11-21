@@ -831,6 +831,9 @@ fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoR
 
     match target_hash.as_deref() {
         Some(hash) if hash == record.original_sha256 => {
+            // Windows ReplaceFileW can retain the replaced file's DACL. Recovery
+            // must therefore reapply the recorded original permissions as well.
+            apply_recovery_permissions(&target, record)?;
             if let Some(hash) = displaced_hash.as_deref() { if hash != record.resulting_sha256 { return Err("An interrupted Undo left an unexpected displaced file. Nothing was deleted.".into()); } }
             if let Some(hash) = temporary_hash.as_deref() { if hash != record.original_sha256 { return Err("An interrupted Undo left an unexpected temporary file. Nothing was deleted.".into()); } }
             match inspect_recovery_undo_state(backup_dir, record)? {
@@ -1081,8 +1084,14 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
 
     let displaced = parent.join(format!(".friday-code-undone-{}.tmp", record.id));
     #[cfg(windows)]
-    if let Err(error) = replace_file_with_backup(&canonical_target, &temporary, &displaced) {
-        return Err(format!("{error}. FRIDAY retained the Undo journal and recovery files; it will reconcile the transaction before another edit."));
+    {
+        if let Err(error) = replace_file_with_backup(&canonical_target, &temporary, &displaced) {
+            return Err(format!("{error}. FRIDAY retained the Undo journal and recovery files; it will reconcile the transaction before another edit."));
+        }
+        // ReplaceFileW preserves the destination's security descriptor. Reapply
+        // the recorded original DACL to the installed file after replacement.
+        // If this fails, keep the journal and displaced copy for recovery.
+        apply_recovery_permissions(&canonical_target, record)?;
     }
     #[cfg(not(windows))]
     {
