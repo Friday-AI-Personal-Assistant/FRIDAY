@@ -733,9 +733,19 @@ fn original_unix_mode(_metadata: &fs::Metadata) -> Option<u32> {
     None
 }
 
-fn apply_recovery_permissions(parent: &File, name: &OsStr, record: &CodingUndoRecord) -> Result<(), String> {
+fn apply_recovery_permissions(
+    parent: &File,
+    name: &OsStr,
+    expected_identity: crate::coding_sandbox_fs::RuntimeTreeIdentity,
+    record: &CodingUndoRecord,
+) -> Result<(), String> {
     let file = crate::coding_sandbox_fs::open_file_nofollow_for_security(parent, name)
         .map_err(|_| "FRIDAY could not safely open the verified recovery file to restore its permissions.".to_string())?;
+    if !crate::coding_sandbox_fs::runtime_tree_handle_matches(expected_identity, &file)
+        .map_err(|_| "FRIDAY could not verify the recovery file identity before restoring permissions.".to_string())?
+    {
+        return Err("The recovery file changed identity before permission restoration. Recovery evidence was preserved.".into());
+    }
     #[cfg(unix)]
     if let Some(mode) = record.original_unix_mode {
         use std::os::unix::fs::PermissionsExt;
@@ -763,8 +773,10 @@ fn write_recovery_copy(parent: &File, name: &OsStr, bytes: &[u8], expected_hash:
         .map_err(|_| "FRIDAY could not write a recovery temporary file.".to_string())?;
     file.sync_all()
         .map_err(|_| "FRIDAY could not flush a recovery temporary file.".to_string())?;
+    let created_identity = crate::coding_sandbox_fs::runtime_tree_identity_for_handle(&file)
+        .map_err(|_| "FRIDAY could not capture the new recovery file identity.".to_string())?;
     drop(file);
-    apply_recovery_permissions(parent, name, record)?;
+    apply_recovery_permissions(parent, name, created_identity, record)?;
     let installed = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
         parent, name, MAX_FILE_BYTES, MAX_SCANNED_ENTRIES,
     ).map_err(|_| "FRIDAY could not verify the recovery temporary file through its verified directory.".to_string())?;
@@ -868,7 +880,8 @@ fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoR
         Some(hash) if hash == record.original_sha256 => {
             // Windows ReplaceFileW can retain the replaced file's DACL. Reapply
             // the recorded permissions only after verifying the target content.
-            apply_recovery_permissions(&project_handle, &target_name, record)?;
+            let target_identity = verified_code_child_identity(&project_handle, &target_name)?;
+            apply_recovery_permissions(&project_handle, &target_name, target_identity, record)?;
             if let Some(hash) = displaced_hash.as_deref() {
                 if hash != record.resulting_sha256 { return Err("An interrupted Undo left an unexpected displaced file. Nothing was removed.".into()); }
             }
@@ -1016,9 +1029,11 @@ fn recover_apply_transaction(root: &Path, backup_dir: &Path, record: &CodingUndo
                     restore.set_permissions(fs::Permissions::from_mode(mode & 0o777))
                         .map_err(|_| "FRIDAY could not restore the original file permissions.".to_string())?;
                 }
+                let restore_identity = crate::coding_sandbox_fs::runtime_tree_identity_for_handle(&restore)
+                    .map_err(|_| "FRIDAY could not capture the prepared restoration identity.".to_string())?;
                 drop(restore);
                 #[cfg(windows)]
-                apply_recovery_permissions(&project_handle, &restore_name, record)?;
+                apply_recovery_permissions(&project_handle, &restore_name, restore_identity, record)?;
                 let verified = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
                     &project_handle, &restore_name, MAX_FILE_BYTES, MAX_SCANNED_ENTRIES,
                 ).map_err(|_| "FRIDAY could not verify the prepared restoration through its verified parent directory.".to_string())?;
@@ -1173,18 +1188,23 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
         let _ = fs::remove_file(&temporary);
         return Err(format!("Could not prepare the original-file restoration: {error}"));
     }
+    let temporary_identity = crate::coding_sandbox_fs::runtime_tree_identity_for_handle(&temp_file)
+        .map_err(|_| "Could not capture the prepared Undo file identity.".to_string())?;
     drop(temp_file);
-    // Restore the original DACL/mode on the prepared object before it becomes
-    // the project entry. The subsequent rename does not inherit target ACLs.
+    // Restore the original DACL/mode on the exact prepared object before it
+    // becomes the project entry. The subsequent rename does not inherit target ACLs.
     let temporary_name = temporary.file_name().ok_or("The Undo temporary filename is invalid.")?;
-    apply_recovery_permissions(&parent_handle, temporary_name, record)?;
+    apply_recovery_permissions(&parent_handle, temporary_name, temporary_identity, record)?;
     let prepared = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
         &parent_handle, temporary_name, MAX_FILE_BYTES, MAX_SCANNED_ENTRIES,
     ).map_err(|_| "Could not verify the prepared original-file restoration through its verified parent directory.".to_string())?;
     if sha256_hex(&prepared) != record.original_sha256 {
         return Err("The prepared original-file restoration failed SHA-256 verification.".into());
     }
-    let temporary_identity = verified_code_child_identity(&parent_handle, temporary_name)?;
+    let verified_temporary_identity = verified_code_child_identity(&parent_handle, temporary_name)?;
+    if verified_temporary_identity != temporary_identity {
+        return Err("The prepared Undo file changed identity before installation.".into());
+    }
 
     let displaced = parent.join(format!(".friday-code-undone-{}.tmp", record.id));
     let displaced_name = displaced.file_name().ok_or("The displaced-file name is invalid.")?;
