@@ -29,6 +29,11 @@ const JOURNEY_MILESTONES: Array<{ id: string; title: string; status: JourneyStat
 
 const JOURNEY_SNAPSHOT_KEY = "friday.developmentJourney.verifiedMilestones.v1";
 
+function journeyStatusLabel(id: string) {
+  const status = JOURNEY_MILESTONES.find(item => item.id === id)?.status ?? "planned";
+  return status === "needs-verification" ? "NEEDS VERIFICATION" : status.replace("-", " ").toUpperCase();
+}
+
 const modules = [
   { name: "Email Assistant", detail: "Organise messages and prepare replies for your approval.", icon: "✉", status: "Planned" },
   { name: "Job Hunter", detail: "Find relevant opportunities and compare them with your experience.", icon: "⌕", status: "Planned" },
@@ -60,6 +65,10 @@ function App() {
         previous = JSON.parse(saved) as Record<string, JourneyStatus>;
       } catch {
         // An unreadable snapshot is a new baseline, never a reason to announce a milestone.
+        window.localStorage.setItem(JOURNEY_SNAPSHOT_KEY, JSON.stringify(current));
+        return;
+      }
+      if (!previous || typeof previous !== "object" || Array.isArray(previous)) {
         window.localStorage.setItem(JOURNEY_SNAPSHOT_KEY, JSON.stringify(current));
         return;
       }
@@ -178,32 +187,32 @@ function App() {
             </div>
             <div className="journey-grid">
               <article className="journey-card journey-available">
-                <div className="journey-card-top"><span className="journey-step">01</span><span className="journey-status">AVAILABLE</span></div>
+                <div className="journey-card-top"><span className="journey-step">01</span><span className="journey-status">{journeyStatusLabel("ai-chat")}</span></div>
                 <h3>AI Chat</h3><p>Chat with a local Ollama model when the model service is running on your device.</p>
                 <button type="button" onClick={() => setPage("AI Chat")}>Open AI Chat <span aria-hidden="true">↗</span></button>
               </article>
               <article className="journey-card journey-progress">
-                <div className="journey-card-top"><span className="journey-step">02</span><span className="journey-status">IN PROGRESS</span></div>
+                <div className="journey-card-top"><span className="journey-step">02</span><span className="journey-status">{journeyStatusLabel("coding-assistant")}</span></div>
                 <h3>Coding Assistant</h3><p>Project-aware coding help and guarded change proposals are being developed and refined.</p>
                 <button type="button" onClick={() => setPage("Coding Assistant")}>Explore workspace <span aria-hidden="true">↗</span></button>
               </article>
               <article className="journey-card journey-verify">
-                <div className="journey-card-top"><span className="journey-step">03</span><span className="journey-status">NEEDS VERIFICATION</span></div>
+                <div className="journey-card-top"><span className="journey-step">03</span><span className="journey-status">{journeyStatusLabel("skills-store")}</span></div>
                 <h3>Skills Store</h3><p>Imported community skills can be inspected in quarantine; they remain inert and cannot execute.</p>
                 <button type="button" onClick={() => setPage("Modules")}>Review skills <span aria-hidden="true">↗</span></button>
               </article>
               <article className="journey-card journey-verify">
-                <div className="journey-card-top"><span className="journey-step">04</span><span className="journey-status">NEEDS VERIFICATION</span></div>
+                <div className="journey-card-top"><span className="journey-step">04</span><span className="journey-status">{journeyStatusLabel("midnight-azure")}</span></div>
                 <h3>Midnight Azure</h3><p>The visual system is integrated. Installed-app and narrow-window visual acceptance still remain.</p>
                 <button type="button" onClick={() => setPage("Settings")}>View appearance <span aria-hidden="true">↗</span></button>
               </article>
               <article className="journey-card journey-planned">
-                <div className="journey-card-top"><span className="journey-step">05</span><span className="journey-status">PLANNED</span></div>
+                <div className="journey-card-top"><span className="journey-step">05</span><span className="journey-status">{journeyStatusLabel("excel-intelligence")}</span></div>
                 <h3>Excel Intelligence</h3><p>Our first practical skill: analyze spreadsheets, spot issues and prepare useful summaries with approval before edits.</p>
                 <span className="journey-no-action">NEXT PRODUCT CAPABILITY</span>
               </article>
               <article className="journey-card journey-planned">
-                <div className="journey-card-top"><span className="journey-step">06</span><span className="journey-status">PLANNED</span></div>
+                <div className="journey-card-top"><span className="journey-step">06</span><span className="journey-status">{journeyStatusLabel("recovery-storage-manager")}</span></div>
                 <h3>Recovery Storage Manager</h3><p>Understand FRIDAY-managed recovery storage and preserve user work through safe, verified controls.</p>
                 <span className="journey-no-action">SAFETY-FIRST FEATURE</span>
               </article>
