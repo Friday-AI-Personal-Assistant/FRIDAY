@@ -633,8 +633,18 @@ pub fn answer_excel_question(
     if sheet_name.chars().count() > 180 || row_count > MAX_ROWS || columns.len() > MAX_COLUMNS {
         return Err("The worksheet summary exceeds FRIDAY's safe question-answering limits.".into());
     }
-    if columns.iter().any(|column| column.name.chars().count() > 180 || column.top_values.len() > 5
-        || column.top_values.iter().any(|value| value.value.chars().count() > 100)) {
+    let data_rows = row_count.saturating_sub(1);
+    if columns.iter().any(|column| {
+        column.name.chars().count() > 180
+            || column.non_empty.saturating_add(column.missing) > data_rows
+            || column.numeric_count > column.non_empty
+            || column.top_values.len() > 5
+            || column.top_values.iter().any(|value| value.value.chars().count() > 100
+                || value.count == 0 || value.count > column.non_empty)
+            || (!column.frequency_complete && !column.top_values.is_empty())
+            || [column.sum, column.average, column.minimum, column.maximum].iter()
+                .flatten().any(|value| !value.is_finite())
+    }) {
         return Err("The supplied worksheet summary is invalid or exceeds its bounds.".into());
     }
     if question.chars().count() > 300 {
@@ -810,6 +820,18 @@ mod tests {
         assert!(common.answer.contains("Tea"));
         let missing = answer_question("how many missing values in Revenue", "Sales", sheet.row_count, &sheet.columns);
         assert!(missing.answer.contains("0 missing"));
+    }
+
+
+    #[test]
+    fn frequency_summary_stops_at_the_distinct_value_limit() {
+        let mut rows = vec![vec!["Category".into()]];
+        for index in 0..513 { rows.push(vec![format!("value-{index}")]); }
+        let sheet = analyze_matrix("high-cardinality".into(), rows, 0).unwrap();
+        assert!(!sheet.columns[0].frequency_complete);
+        assert!(sheet.columns[0].top_values.is_empty());
+        let answer = answer_question("most common category", "high-cardinality", sheet.row_count, &sheet.columns);
+        assert_eq!(answer.status, "unsupported");
     }
 
     #[test]
