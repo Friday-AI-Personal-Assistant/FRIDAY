@@ -952,7 +952,7 @@ mod tests {
         assert_eq!(mapping.field_id, "accounting.gross_sales");
         assert_eq!(mapping.header, "Gross Sales");
         assert_eq!(mapping.header_cell, "B1");
-        assert_eq!(mapping.data_range, "B2:B3");
+        assert_eq!(mapping.data_range, "B2:B2");
         assert_eq!(mapping.source_sha256, analysis.source_sha256);
     }
 
