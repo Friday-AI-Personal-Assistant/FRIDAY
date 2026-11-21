@@ -874,3 +874,12 @@ h1 em { color: #78AEEF; }
 .app-shell[data-theme="light"] .conversation-preview,
 .app-shell[data-theme="light"] .conversation-open small { color: #536B88; }
 .app-shell[data-theme="light"] .conversation-item.active { background: #E8EFF9; border-color: #9BB9DF; }
+
+
+/* Conversation portability — explicit, user-initiated local Markdown export. */
+.chat-export-button { border-color: var(--az-blue, #2874D8); color: var(--az-text, #E6EEF8); }
+.chat-export-button:hover:not(:disabled) { background: color-mix(in srgb, var(--az-blue, #2874D8) 16%, transparent); }
+.chat-export-button:disabled { opacity: .48; cursor: not-allowed; }
+@media(max-width:560px) {
+  .chat-top .chat-export-button { flex: 1 1 auto; }
+}

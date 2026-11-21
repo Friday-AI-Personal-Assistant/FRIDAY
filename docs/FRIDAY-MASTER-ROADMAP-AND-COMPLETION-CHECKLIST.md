@@ -951,3 +951,16 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Physically validate history readability, truncation and narrow-window layout in the Windows desktop app.
 
 **User impact:** users can recognise and find saved chats more easily without opening each one. Search intentionally covers the title and latest message preview, not every historical message. Full messages remain encrypted at rest and are fetched only when a conversation is opened. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
+
+
+### Conversation portability — #1093
+
+- [x] Add a clearly labelled Export chat action to the Chat toolbar.
+- [x] Export the currently open conversation as a readable Markdown file, preserving message order and distinguishing the user from FRIDAY.
+- [x] Generate a safe, bounded filename from the conversation title; export is explicit and initiated by the user.
+- [x] Keep export local to the device/browser session: no upload, external service, or automatic background export.
+- [x] Disable export when there are no messages or while a response/save operation is in progress.
+- [ ] Verify Linux and Windows CI.
+- [ ] Physically validate that the Windows desktop WebView presents the Markdown download/save flow clearly; test long conversations and Unicode content.
+
+**User impact:** users can keep a portable copy of their own conversations, read them in any Markdown editor, or move them to another system. Export includes only the currently open conversation and does not delete or modify FRIDAY's encrypted local history. Exported files are ordinary unencrypted files; users should store them somewhere appropriate. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.

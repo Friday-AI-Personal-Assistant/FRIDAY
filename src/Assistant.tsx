@@ -192,6 +192,29 @@ export default function Assistant() {
     finally { setHistoryLoading(false); }
   }
 
+  function exportConversation() {
+    if (!messages.length || pending || saving) return;
+    const title = (activeTitle || titleFor(messages)).trim() || "FRIDAY conversation";
+    const safeName = title.normalize("NFKD").replace(/[^a-zA-Z0-9-_ ]/g, "").trim().replace(/\\s+/g, "-").slice(0, 64) || "friday-conversation";
+    const markdown = [
+      "# " + title,
+      "",
+      "_Exported from FRIDAY on " + new Date().toLocaleString() + "_",
+      "",
+      ...messages.map(message => (message.role === "user" ? "## You" : "## FRIDAY") + "\\n\\n" + message.content.trim() + "\\n")
+    ].join("\\n");
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = safeName + ".md";
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   function newConversation() {
     if (pending) return;
     setActiveId(null);
@@ -438,7 +461,7 @@ export default function Assistant() {
         {historyError && <p className="history-error" role="alert">{historyError}</p>}
       </aside>
       <div className="chat-panel">
-        <div className="chat-top"><div className="chat-avatar">F</div><div><strong>FRIDAY AI</strong><small>{checking ? "◌ Checking Ollama…" : models.length ? "● Ollama connected" : "○ Ollama offline or no model installed"}</small></div><select aria-label="Ollama model" value={model} onChange={e => setModel(e.target.value)} disabled={!models.length}>{models.length ? models.map(m => <option key={m}>{m}</option>) : <option value={model}>{model}</option>}</select><button className="secondary-button" onClick={() => { setMemoryOpen(open => !open); if (!memoryOpen) void refreshMemories(); }} disabled={!desktop}>{memoryOpen ? "Close memory" : "Personal memory"}</button><button className="secondary-button" onClick={() => setManagerOpen(open => !open)} disabled={!desktop || pulling}>{managerOpen ? "Close manager" : "Manage models"}</button><button className="secondary-button" onClick={() => void refresh()} disabled={checking || pulling}>{checking ? "Checking…" : "Refresh"}</button></div>
+        <div className="chat-top"><div className="chat-avatar">F</div><div><strong>FRIDAY AI</strong><small>{checking ? "◌ Checking Ollama…" : models.length ? "● Ollama connected" : "○ Ollama offline or no model installed"}</small></div><select aria-label="Ollama model" value={model} onChange={e => setModel(e.target.value)} disabled={!models.length}>{models.length ? models.map(m => <option key={m}>{m}</option>) : <option value={model}>{model}</option>}</select><button className="secondary-button" onClick={() => { setMemoryOpen(open => !open); if (!memoryOpen) void refreshMemories(); }} disabled={!desktop}>{memoryOpen ? "Close memory" : "Personal memory"}</button><button className="secondary-button" onClick={() => setManagerOpen(open => !open)} disabled={!desktop || pulling}>{managerOpen ? "Close manager" : "Manage models"}</button><button className="secondary-button" onClick={() => void refresh()} disabled={checking || pulling}>{checking ? "Checking…" : "Refresh"}</button><button className="secondary-button chat-export-button" onClick={exportConversation} disabled={!messages.length || pending || saving} title="Export this conversation as a Markdown file">Export chat</button></div>
         {managerOpen && <section className="model-manager" aria-label="Ollama model manager">
           <div className="model-manager-heading"><div><strong>Local model manager</strong><p>Models are stored by Ollama on this computer. Downloads may be several gigabytes.</p></div></div>
           <div className="model-install-row"><input aria-label="Model name to install" value={modelToInstall} onChange={e => setModelToInstall(e.target.value)} placeholder="e.g. llama3.2:1b" disabled={pulling} /><button className="primary-button" onClick={() => void installModel()} disabled={pulling || !modelToInstall.trim()}>{pulling ? "Downloading…" : "Download model"}</button></div>
