@@ -99,6 +99,8 @@ const COMMAND_POLICIES: &[CommandPolicy] = &[
     CommandPolicy { command_id: "conversations.read", capability: "conversations.read" },
     CommandPolicy { command_id: "conversations.write", capability: "conversations.write" },
     CommandPolicy { command_id: "conversations.delete", capability: "conversations.delete" },
+    CommandPolicy { command_id: "conversations.pin", capability: "conversations.pin" },
+    CommandPolicy { command_id: "conversations.archive", capability: "conversations.archive" },
     CommandPolicy { command_id: "memory.list", capability: "memory.list" },
     CommandPolicy { command_id: "memory.add", capability: "memory.add" },
     CommandPolicy { command_id: "memory.update", capability: "memory.update" },
@@ -166,6 +168,8 @@ const REGISTERED_IPC_COMMANDS: &[IpcCommand] = &[
     IpcCommand { handler: "conversations::load_conversation", command_id: "conversations.read", capability: "conversations.read", module: "conversations" },
     IpcCommand { handler: "conversations::save_conversation", command_id: "conversations.write", capability: "conversations.write", module: "conversations" },
     IpcCommand { handler: "conversations::delete_conversation", command_id: "conversations.delete", capability: "conversations.delete", module: "conversations" },
+    IpcCommand { handler: "conversations::set_conversation_pinned", command_id: "conversations.pin", capability: "conversations.pin", module: "conversations" },
+    IpcCommand { handler: "conversations::set_conversation_archived", command_id: "conversations.archive", capability: "conversations.archive", module: "conversations" },
     IpcCommand { handler: "memory::list_memories", command_id: "memory.list", capability: "memory.list", module: "memory" },
     IpcCommand { handler: "memory::add_memory", command_id: "memory.add", capability: "memory.add", module: "memory" },
     IpcCommand { handler: "memory::update_memory", command_id: "memory.update", capability: "memory.update", module: "memory" },
@@ -339,6 +343,8 @@ mod tests {
             ("conversations.read", "conversations.read"),
             ("conversations.write", "conversations.write"),
             ("conversations.delete", "conversations.delete"),
+            ("conversations.pin", "conversations.pin"),
+            ("conversations.archive", "conversations.archive"),
             ("memory.list", "memory.list"),
             ("memory.add", "memory.add"),
             ("memory.update", "memory.update"),
@@ -359,6 +365,8 @@ mod tests {
         assert!(authorize_command("skills.install", "skills.enable").is_err());
         assert!(authorize_command("memory.delete", "memory.list").is_err());
         assert!(authorize_command("conversations.delete", "conversations.read").is_err());
+        assert!(authorize_command("conversations.pin", "conversations.archive").is_err());
+        assert!(authorize_command("conversations.archive", "conversations.pin").is_err());
     }
 
     #[test]

@@ -30,6 +30,8 @@ pub fn run() {
             conversations::load_conversation,
             conversations::save_conversation,
             conversations::delete_conversation,
+            conversations::set_conversation_pinned,
+            conversations::set_conversation_archived,
             memory::list_memories,
             memory::add_memory,
             memory::update_memory,

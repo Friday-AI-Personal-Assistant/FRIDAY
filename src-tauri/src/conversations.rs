@@ -23,6 +23,10 @@ pub struct Conversation {
     pub title: String,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub archived: bool,
     pub messages: Vec<ConversationMessage>,
 }
 
@@ -34,6 +38,8 @@ pub struct ConversationSummary {
     pub updated_at: u64,
     pub message_count: usize,
     pub preview: String,
+    pub pinned: bool,
+    pub archived: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -89,8 +95,10 @@ pub fn list_conversations(app: AppHandle) -> Result<Vec<ConversationSummary>, St
         id: c.id, title: c.title, created_at: c.created_at, updated_at: c.updated_at,
         message_count: c.messages.len(),
         preview: c.messages.last().map(|message| message.content.chars().take(180).collect()).unwrap_or_default(),
+        pinned: c.pinned,
+        archived: c.archived,
     }).collect();
-    items.sort_by(|a,b| b.updated_at.cmp(&a.updated_at));
+    items.sort_by(|a,b| b.pinned.cmp(&a.pinned).then_with(|| b.updated_at.cmp(&a.updated_at)));
     Ok(items)
 }
 
@@ -129,7 +137,7 @@ pub fn save_conversation(app: AppHandle, id: String, title: String, messages: Ve
         if store.conversations.len() >= MAX_CONVERSATIONS {
             return Err("FRIDAY has reached its 500-conversation limit. Delete an old conversation first.".into());
         }
-        store.conversations.push(Conversation { id, title: title.trim().to_string(), created_at: timestamp, updated_at: timestamp, messages });
+        store.conversations.push(Conversation { id, title: title.trim().to_string(), created_at: timestamp, updated_at: timestamp, pinned: false, archived: false, messages });
     }
     write_store(&app, &store)
 }
@@ -146,9 +154,41 @@ pub fn delete_conversation(app: AppHandle, id: String) -> Result<(), String> {
     write_store(&app, &store)
 }
 
+#[tauri::command]
+pub fn set_conversation_pinned(app: AppHandle, id: String, pinned: bool) -> Result<(), String> {
+    crate::permissions::authorize_command("conversations.pin", "conversations.pin")?;
+    if !valid_id(&id) { return Err("Invalid conversation ID.".into()); }
+    let _guard = STORE_LOCK.lock().map_err(|_| "Chat history is busy.".to_string())?;
+    let mut store = read_store(&app)?;
+    let conversation = store.conversations.iter_mut().find(|conversation| conversation.id == id)
+        .ok_or_else(|| "That conversation could not be found.".to_string())?;
+    conversation.pinned = pinned;
+    write_store(&app, &store)
+}
+
+#[tauri::command]
+pub fn set_conversation_archived(app: AppHandle, id: String, archived: bool) -> Result<(), String> {
+    crate::permissions::authorize_command("conversations.archive", "conversations.archive")?;
+    if !valid_id(&id) { return Err("Invalid conversation ID.".into()); }
+    let _guard = STORE_LOCK.lock().map_err(|_| "Chat history is busy.".to_string())?;
+    let mut store = read_store(&app)?;
+    let conversation = store.conversations.iter_mut().find(|conversation| conversation.id == id)
+        .ok_or_else(|| "That conversation could not be found.".to_string())?;
+    conversation.archived = archived;
+    write_store(&app, &store)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::valid_id;
+    use super::{valid_id, Conversation};
+
+    #[test]
+    fn legacy_conversations_default_to_unpinned_and_unarchived() {
+        let legacy = r#"{"id":"legacy-chat","title":"Old chat","created_at":1,"updated_at":2,"messages":[]}"#;
+        let conversation: Conversation = serde_json::from_str(legacy).expect("legacy history remains readable");
+        assert!(!conversation.pinned);
+        assert!(!conversation.archived);
+    }
 
     #[test]
     fn accepts_generated_style_ids() {

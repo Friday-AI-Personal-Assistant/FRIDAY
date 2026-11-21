@@ -883,3 +883,15 @@ h1 em { color: #78AEEF; }
 @media(max-width:560px) {
   .chat-top .chat-export-button { flex: 1 1 auto; }
 }
+
+
+/* Conversation organisation: pinning, reversible archive and clear history filters. */
+.history-tabs{display:flex;gap:6px;padding:8px 9px 4px}
+.history-tabs button{flex:1;border:1px solid var(--az-border,#385273);border-radius:7px;background:var(--az-raised,#192840);color:var(--az-muted,#A9BBD2);padding:7px 8px;font:600 10px 'DM Sans',sans-serif;cursor:pointer}
+.history-tabs button.active{background:rgba(40,116,216,.18);border-color:var(--az-blue,#2874D8);color:var(--az-text,#E6EEF8)}
+.conversation-group{display:grid;gap:5px;min-width:0}
+.conversation-group h3{margin:9px 7px 3px;color:var(--az-muted,#A9BBD2);font-size:9px;letter-spacing:1.1px;font-weight:700}
+.conversation-actions button{min-width:24px}
+.conversation-actions button:first-child{color:var(--az-blue,#2874D8)}
+.app-shell[data-theme="light"] .history-tabs button{background:#F2F6FC;color:#536B88;border-color:#CAD7E8}
+.app-shell[data-theme="light"] .history-tabs button.active{background:#E5EFFD;color:#173F75;border-color:#6D9BD8}

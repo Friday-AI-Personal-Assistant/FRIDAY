@@ -964,3 +964,17 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Physically validate that the Windows desktop WebView presents the Markdown download/save flow clearly; test long conversations and Unicode content.
 
 **User impact:** users can keep a portable copy of their own conversations, read them in any Markdown editor, or move them to another system. Export includes only the currently open conversation and does not delete or modify FRIDAY's encrypted local history. Exported files are ordinary unencrypted files; users should store them somewhere appropriate. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
+
+
+### Conversation organisation — pinning and reversible archive (#1096)
+
+- [x] Extend encrypted conversation records with pinned and archived metadata while defaulting missing fields to false so existing history remains readable.
+- [x] Add narrowly authorised backend commands for pin/unpin and archive/restore; preserve metadata when an existing conversation is renamed or saved again.
+- [x] Sort pinned conversations first, then by most recently updated; expose metadata in bounded history summaries.
+- [x] Add Active and Archived history views, pinned/recent grouping, and one-click pin/unpin and archive/restore controls.
+- [x] Keep archive reversible and separate from permanent deletion; retain the existing explicit confirmation for permanent deletion.
+- [x] Keep all metadata inside the existing encrypted local conversation store; no network access or new permissions are introduced.
+- [ ] Verify Linux and Windows CI.
+- [ ] Physically validate history layout, pin/archive actions, legacy-history loading and archive restoration in the Windows desktop app.
+
+**User impact:** important chats stay at the top, old chats can be moved out of the active list without being deleted, and archived conversations can be restored at any time. Existing encrypted chat files remain compatible. Permanent deletion remains a separate, explicitly confirmed action. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.

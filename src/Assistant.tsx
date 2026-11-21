@@ -6,7 +6,7 @@ type StreamEvent = { event: "token" | "done" | "stopped" | "tool_proposal"; cont
 type ToolProposal = { tool_id: string; arguments: Record<string, unknown> };
 type ModelInfo = { name: string; size: number; modified_at: string };
 type PullEvent = { status: string; completed: number | null; total: number | null; done: boolean };
-type ConversationSummary = { id: string; title: string; created_at: number; updated_at: number; message_count: number; preview: string };
+type ConversationSummary = { id: string; title: string; created_at: number; updated_at: number; message_count: number; preview: string; pinned: boolean; archived: boolean };
 type Conversation = { id: string; title: string; created_at: number; updated_at: number; messages: Message[] };
 type MemoryEntry = { id: string; category: string; content: string; enabled: boolean; created_at: number; updated_at: number };
 const ACTIONS = [
@@ -52,6 +52,7 @@ export default function Assistant() {
   const [activeTitle, setActiveTitle] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [includeSavedMemory, setIncludeSavedMemory] = useState(() => {
@@ -238,6 +239,21 @@ export default function Assistant() {
     } catch (e) { setHistoryError(String(e)); }
   }
 
+  async function setConversationPinned(item: ConversationSummary) {
+    try {
+      await invoke("set_conversation_pinned", { id: item.id, pinned: !item.pinned });
+      await refreshHistory();
+    } catch (e) { setHistoryError(String(e)); }
+  }
+
+  async function setConversationArchived(item: ConversationSummary) {
+    try {
+      await invoke("set_conversation_archived", { id: item.id, archived: !item.archived });
+      if (!item.archived && activeId === item.id) newConversation();
+      await refreshHistory();
+    } catch (e) { setHistoryError(String(e)); }
+  }
+
   async function removeConversation(item: ConversationSummary) {
     if (pending || !window.confirm("Delete this conversation permanently? This cannot be undone.")) return;
     try {
@@ -246,6 +262,26 @@ export default function Assistant() {
       await refreshHistory();
     } catch (e) { setHistoryError(String(e)); }
   }
+
+  function renderConversationItem(item: ConversationSummary) {
+    return <div className={activeId === item.id ? "conversation-item active" : "conversation-item"} key={item.id}>
+      <button className="conversation-open" onClick={() => void openConversation(item.id)} disabled={pending || saving}>
+        <strong>{item.pinned ? "★ " : ""}{item.title}</strong>
+        <span className="conversation-preview">{item.preview || "No messages yet"}</span>
+        <small>{item.message_count} messages · {formatHistoryDate(item.updated_at)}</small>
+      </button>
+      <div className="conversation-actions">
+        <button onClick={() => void setConversationPinned(item)} title={item.pinned ? "Unpin chat" : "Pin chat"} aria-label={item.pinned ? "Unpin " + item.title : "Pin " + item.title}>{item.pinned ? "★" : "☆"}</button>
+        <button onClick={() => void setConversationArchived(item)} title={item.archived ? "Restore to active history" : "Archive chat"} aria-label={item.archived ? "Restore " + item.title : "Archive " + item.title}>{item.archived ? "↩" : "↓"}</button>
+        <button onClick={() => void renameConversation(item)} title="Rename chat" aria-label={"Rename " + item.title}>✎</button>
+        <button onClick={() => void removeConversation(item)} title="Delete chat" aria-label={"Delete " + item.title}>×</button>
+      </div>
+    </div>;
+  }
+
+  const matchingConversations = conversations.filter(item => item.archived === showArchived && historyMatches(item, historySearch));
+  const pinnedConversations = matchingConversations.filter(item => item.pinned);
+  const otherConversations = matchingConversations.filter(item => !item.pinned);
 
   async function refresh() {
     if (!desktop || checking) return;
@@ -452,12 +488,16 @@ export default function Assistant() {
         <div className="conversation-sidebar-head"><strong>CHAT HISTORY</strong><button onClick={() => void refreshHistory()} disabled={historyLoading} aria-label="Refresh chat history">↻</button></div>
         <input className="conversation-search" aria-label="Search conversations" placeholder="Search titles and latest messages…" value={historySearch} onChange={e => setHistorySearch(e.target.value)} />
         {historyLoading && <small className="history-hint">Loading…</small>}
+        <div className="history-tabs" role="group" aria-label="Conversation history view">
+          <button className={!showArchived ? "active" : ""} onClick={() => setShowArchived(false)} aria-pressed={!showArchived}>Active ({conversations.filter(item => !item.archived).length})</button>
+          <button className={showArchived ? "active" : ""} onClick={() => setShowArchived(true)} aria-pressed={showArchived}>Archived ({conversations.filter(item => item.archived).length})</button>
+        </div>
         {!conversations.length && !historyLoading && <p className="history-hint">Your saved chats will appear here.</p>}
-        {conversations.length > 0 && !conversations.some(item => historyMatches(item, historySearch)) && historySearch.trim() && <p className="history-hint">No matching conversations.</p>}
-        <div className="conversation-list">{conversations.filter(item => historyMatches(item, historySearch)).map(item => <div className={activeId === item.id ? "conversation-item active" : "conversation-item"} key={item.id}>
-          <button className="conversation-open" onClick={() => void openConversation(item.id)} disabled={pending || saving}><strong>{item.title}</strong><span className="conversation-preview">{item.preview || "No messages yet"}</span><small>{item.message_count} messages · {formatHistoryDate(item.updated_at)}</small></button>
-          <div className="conversation-actions"><button onClick={() => void renameConversation(item)} title="Rename chat" aria-label={"Rename " + item.title}>✎</button><button onClick={() => void removeConversation(item)} title="Delete chat" aria-label={"Delete " + item.title}>×</button></div>
-        </div>)}</div>
+        {conversations.length > 0 && !matchingConversations.length && <p className="history-hint">{historySearch.trim() ? "No matching conversations." : showArchived ? "No archived conversations. Archive a chat to keep it out of your active history." : "No active conversations. Your archived chats are still safe."}</p>}
+        <div className="conversation-list">
+          {!!pinnedConversations.length && <section className="conversation-group"><h3>{showArchived ? "PINNED ARCHIVES" : "PINNED"}</h3>{pinnedConversations.map(renderConversationItem)}</section>}
+          {!!otherConversations.length && <section className="conversation-group"><h3>{showArchived ? "ARCHIVED" : "RECENT"}</h3>{otherConversations.map(renderConversationItem)}</section>}
+        </div>
         {historyError && <p className="history-error" role="alert">{historyError}</p>}
       </aside>
       <div className="chat-panel">
