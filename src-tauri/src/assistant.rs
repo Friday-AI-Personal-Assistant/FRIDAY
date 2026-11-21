@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, process::Command, sync::{Mutex, OnceLock}, time::Duration};
+use std::{collections::HashMap, sync::{Mutex, OnceLock}, time::Duration};
 use tokio::sync::watch;
 use tauri::ipc::Channel;
 
@@ -565,25 +565,7 @@ pub async fn ollama_chat(messages: Vec<Message>, model: String) -> Result<String
     Ok(body.message.content)
 }
 
-// Explicit allowlist: no shell commands, arbitrary programs, or arbitrary URLs.
-#[tauri::command]
-pub fn desktop_action(action: String) -> Result<String, String> {
-    let (program, args, success): (&str, Vec<&str>, &str) = match action.as_str() {
-        "notepad" => ("notepad.exe", vec![], "Opened Notepad."),
-        "downloads" => ("explorer.exe", vec!["shell:Downloads"], "Opened Downloads."),
-        "documents" => ("explorer.exe", vec!["shell:Personal"], "Opened Documents."),
-        "desktop" => ("explorer.exe", vec!["shell:Desktop"], "Opened Desktop."),
-        "browser" => ("explorer.exe", vec!["https://www.google.com"], "Opened your default browser."),
-        "youtube" => ("explorer.exe", vec!["https://www.youtube.com"], "Opened YouTube."),
-        "email" => ("explorer.exe", vec!["mailto:"], "Opened your default email composer. Review and send manually."),
-        _ => return Err("This desktop action is not permitted.".into()),
-    };
-    Command::new(program)
-        .args(args)
-        .spawn()
-        .map_err(|e| format!("Could not launch action: {e}"))?;
-    Ok(success.into())
-}
+// Desktop actions are exposed only through the centrally authorized tools::execute_tool route.
 
 #[cfg(test)]
 mod tests {

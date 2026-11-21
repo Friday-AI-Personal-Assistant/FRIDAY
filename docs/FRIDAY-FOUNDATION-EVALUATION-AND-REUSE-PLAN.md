@@ -372,3 +372,15 @@ The #1076 File/Coding Assistant capability increment is verified on both Windows
 - [ ] Verify Linux and Windows CI before closing this increment.
 
 **User impact:** FRIDAY's Stop action can now reach the backend cancellation handler instead of failing because the command was not registered. Cancellation remains limited to a matching active request ID; it does not cancel unrelated requests. This does not add persistent user grants or change provider/network behavior.
+
+
+### Registered Tauri IPC command audit and regression guard (#1084)
+
+- [x] Inventory all 72 commands currently exposed by `tauri::generate_handler!`.
+- [x] Map every registered command to its exact Rust-owned command ID and capability.
+- [x] Add a test comparing the inventory against the actual Tauri handler list, failing when commands are added, removed or duplicated without classification.
+- [x] Add a test that each registered handler contains its own exact `authorize_command` call and that the pair exists in the central policy.
+- [x] Remove the stale, unregistered legacy `desktop_action` command; desktop launch remains available only through the centrally authorized tool dispatcher.
+- [ ] Verify both Linux and Windows CI.
+
+**Scope:** this inventory verifies static command classification, not durable user consent. A capability policy recognizes a backend operation; it does not grant a skill, integration or provider access to a user resource. Existing scoped grants and one-use operation approvals remain separate. Next: persistent narrow user grants, explicit consent, expiry, revocation and audit history before broader integrations or executable skills.

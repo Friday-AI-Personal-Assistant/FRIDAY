@@ -868,3 +868,16 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 - [ ] Verify Linux and Windows CI.
 
 **User impact:** the existing Stop action can reach the Rust cancellation endpoint and target only its own active request.
+
+
+### Registered backend command coverage — #1084
+
+- [x] Inventory every currently registered Tauri IPC command (72 commands).
+- [x] Add a source-backed manifest that must exactly match `tauri::generate_handler!`.
+- [x] Test that every registered command enforces its own exact backend capability at the Rust handler boundary.
+- [x] Remove the stale, unregistered legacy desktop-action command; retain the centrally authorized tool-dispatch route.
+- [ ] Verify #1084 on both Linux and Windows CI.
+- [ ] Implement durable user grants separately: explicit consent, narrow resource/action scopes, expiry, revocation and audit history.
+- [ ] Do not treat static command capabilities, skill installation, enablement or loading as user permission grants.
+
+**Four guarantees remain mandatory:** Safety, User control, Cost transparency and Reliability. Command-coverage tests do not substitute for consent, OS isolation, cost disclosure or physical-device acceptance.
