@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read, path::{Path, PathBuf}, sync::Mutex};
+use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read, path::{Path, PathBuf}, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
@@ -311,6 +311,22 @@ pub struct CommunitySkillPreview {
     id: String, name: String, description: String, version: String,
     license: Option<String>, compatibility: Option<String>, content_sha256: String,
     status: String, permissions: Vec<String>, executable_content: bool,
+    #[serde(default)] imported_at_unix_secs: u64,
+    #[serde(default = "legacy_source_kind")] source_kind: String,
+    #[serde(default)] source_url: Option<String>,
+    #[serde(default)] publisher: Option<String>,
+    #[serde(default)] revision: Option<String>,
+    #[serde(default)] trust_findings: Vec<String>,
+}
+fn legacy_source_kind() -> String { "legacy-unknown".into() }
+fn community_skill_trust_findings() -> Vec<String> {
+    vec![
+        "Publisher identity has not been authenticated.".into(),
+        "No source URL or revision was supplied or independently verified.".into(),
+        "The licence is a self-declaration and has not been verified.".into(),
+        "Imported instructions are untrusted data, not authority or executable code.".into(),
+        "The content hash detects content changes; it does not prove authorship or safety.".into(),
+    ]
 }
 
 /// Read the selected manifest through a pinned directory handle and a no-follow
@@ -382,12 +398,21 @@ fn validate_quarantine_payload(
     let (name, description, license, compatibility, _) = parse_skill_markdown(content)?;
     let preview: CommunitySkillPreview = serde_json::from_slice(metadata_bytes)
         .map_err(|_| "Quarantine inspection metadata is invalid.".to_string())?;
+    let provenance_valid = if preview.source_kind == "local-folder" {
+        preview.imported_at_unix_secs > 0 && preview.source_url.is_none()
+            && preview.publisher.is_none() && preview.revision.is_none()
+            && preview.trust_findings == community_skill_trust_findings()
+    } else {
+        preview.source_kind == "legacy-unknown" && preview.imported_at_unix_secs == 0
+            && preview.source_url.is_none() && preview.publisher.is_none()
+            && preview.revision.is_none() && preview.trust_findings.is_empty()
+    };
     if preview.id != expected_id || preview.content_sha256 != actual_hash
         || preview.name != name || preview.description != description
         || preview.license != license || preview.compatibility != compatibility
         || preview.status != "QUARANTINED — NOT INSTALLED OR ENABLED"
-        || preview.executable_content || !preview.permissions.is_empty() {
-        return Err("Quarantine metadata does not match the stored skill or its disabled state.".into());
+        || preview.executable_content || !preview.permissions.is_empty() || !provenance_valid {
+        return Err("Quarantine metadata does not match the stored skill, provenance record or disabled state.".into());
     }
     Ok(preview)
 }
@@ -443,6 +468,7 @@ pub struct CommunitySkillInventoryItem {
     name: Option<String>,
     status: String,
     detail: Option<String>,
+    preview: Option<CommunitySkillPreview>,
 }
 
 /// Enumerate a bounded number of quarantine entries. Unreadable or tampered
@@ -471,24 +497,25 @@ pub fn list_community_skills_quarantine(app: AppHandle) -> Result<Vec<CommunityS
             inventory.push(CommunitySkillInventoryItem {
                 id: raw_name.to_string_lossy().into_owned(), name: None,
                 status: "INVALID ENTRY — BLOCKED".into(),
-                detail: Some("Directory name is not valid UTF-8.".into()),
+                detail: Some("Directory name is not valid UTF-8.".into()), preview: None,
             });
             continue;
         };
         if !valid_quarantine_id(&id) || !entry.is_directory || entry.is_reparse {
             inventory.push(CommunitySkillInventoryItem {
                 id, name: None, status: "INVALID ENTRY — BLOCKED".into(),
-                detail: Some("Entry name or filesystem type is not a valid quarantine directory.".into()),
+                detail: Some("Entry name or filesystem type is not a valid quarantine directory.".into()), preview: None,
             });
             continue;
         }
         match reinspect_quarantine_child(&root_handle, &id, Some(entry.identity)) {
             Ok(preview) => inventory.push(CommunitySkillInventoryItem {
-                id, name: Some(preview.name), status: preview.status, detail: None,
+                id, name: Some(preview.name.clone()), status: preview.status.clone(), detail: None,
+                preview: Some(preview),
             }),
             Err(error) => inventory.push(CommunitySkillInventoryItem {
                 id, name: None, status: "TAMPERED OR UNREADABLE — BLOCKED".into(),
-                detail: Some(error),
+                detail: Some(error), preview: None,
             }),
         }
     }
@@ -598,6 +625,10 @@ pub fn inspect_and_quarantine_skill(app: AppHandle) -> Result<CommunitySkillPrev
         id, name, description, version: "unverified".into(), license, compatibility,
         content_sha256, status: "QUARANTINED — NOT INSTALLED OR ENABLED".into(),
         permissions: Vec::new(), executable_content: false,
+        imported_at_unix_secs: SystemTime::now().duration_since(UNIX_EPOCH)
+            .map_err(|_| "System clock is before the Unix epoch; import time cannot be recorded.".to_string())?.as_secs(),
+        source_kind: "local-folder".into(), source_url: None, publisher: None, revision: None,
+        trust_findings: community_skill_trust_findings(),
     };
     let metadata = serde_json::to_vec_pretty(&preview).map_err(|e| format!("Could not encode quarantine metadata: {e}"))?;
     let metadata_path = quarantine_dir.join("inspection.json");
@@ -605,7 +636,9 @@ pub fn inspect_and_quarantine_skill(app: AppHandle) -> Result<CommunitySkillPrev
         Ok(mut file) => { use std::io::Write; file.write_all(&metadata).map_err(|e| format!("Could not save quarantine metadata: {e}"))?; file.sync_all().map_err(|e| format!("Could not flush quarantine metadata: {e}"))?; },
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             let existing = fs::read(&metadata_path).map_err(|_| "Existing quarantine metadata could not be verified.".to_string())?;
-            if existing != metadata { return Err("Existing quarantine metadata differs from this inspection.".into()); }
+            if existing != metadata {
+                return validate_quarantine_payload(&preview.id, content.as_bytes(), &existing);
+            }
         },
         Err(e) => return Err(format!("Could not save quarantine metadata: {e}")),
     }
@@ -625,6 +658,9 @@ mod tests {
             version: "unverified".into(), license: None, compatibility: None,
             content_sha256: id.clone(), status: "QUARANTINED — NOT INSTALLED OR ENABLED".into(),
             permissions: Vec::new(), executable_content: false,
+            imported_at_unix_secs: 1, source_kind: "local-folder".into(),
+            source_url: None, publisher: None, revision: None,
+            trust_findings: community_skill_trust_findings(),
         };
         let metadata = serde_json::to_vec(&preview).unwrap();
         assert!(validate_quarantine_payload(&id, content, &metadata).is_ok());
@@ -707,6 +743,9 @@ mod tests {
             version: "unverified".into(), license: None, compatibility: None,
             content_sha256: id.clone(), status: "QUARANTINED — NOT INSTALLED OR ENABLED".into(),
             permissions: Vec::new(), executable_content: false,
+            imported_at_unix_secs: 1, source_kind: "local-folder".into(),
+            source_url: None, publisher: None, revision: None,
+            trust_findings: community_skill_trust_findings(),
         };
         std::fs::write(item_path.join("SKILL.md"), content).unwrap();
         std::fs::write(item_path.join("inspection.json"), serde_json::to_vec(&preview).unwrap()).unwrap();
