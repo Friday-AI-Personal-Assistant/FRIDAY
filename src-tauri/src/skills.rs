@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::{BTreeMap, BTreeSet}, fs, path::PathBuf, sync::Mutex};
 use tauri::{AppHandle, Manager};
+use tauri_plugin_dialog::DialogExt;
 
 const SKILL_VERSION: &str = "1.0.0";
 const SKILLS: &[(&str, &str, &str, &[&str], &str)] = &[
