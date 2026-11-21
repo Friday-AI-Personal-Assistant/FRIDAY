@@ -950,3 +950,18 @@ h1 em { color: #78AEEF; }
 .history-header-actions{display:flex;align-items:center;gap:7px}
 .conversation-sidebar-head .history-export-all{font-size:9px;letter-spacing:0;border:1px solid var(--border-subtle,#31445f);border-radius:6px;padding:5px 8px;color:var(--text-secondary,#a9bbd2);background:var(--surface-raised,#192840)}
 .conversation-sidebar-head .history-export-all:disabled{opacity:.45;cursor:not-allowed}
+
+
+/* Community skill quarantine inspection */
+.skills-header-actions{display:flex;gap:9px;flex-wrap:wrap}
+.community-skill-preview{margin:16px 0;padding:16px 18px;border:1px solid #765c32;background:#292316;border-radius:12px;color:#f1e4c8}
+.community-preview-heading{display:flex;justify-content:space-between;gap:12px;align-items:center}
+.community-preview-heading strong{font-size:12px}
+.community-preview-heading span{font-size:8px;letter-spacing:1px;border:1px solid #9a7940;border-radius:20px;padding:5px 8px;color:#f3c879}
+.community-skill-preview p{font-size:11px;line-height:1.6;color:#d5c6a5;margin:9px 0}
+.community-skill-preview dl{display:grid;gap:7px;margin:12px 0}
+.community-skill-preview dl>div{display:grid;grid-template-columns:130px minmax(0,1fr);gap:12px}
+.community-skill-preview dt{font-size:9px;color:#c4ad80}
+.community-skill-preview dd{margin:0;font-size:9px;overflow-wrap:anywhere;color:#f0e2c4}
+.community-skill-preview>small{display:block;font-size:9px;line-height:1.65;color:#cbb88f}
+@media(max-width:600px){.skills-header-actions{flex-direction:column}.community-skill-preview dl>div{grid-template-columns:1fr;gap:3px}}
