@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::{BTreeMap, BTreeSet}, fs, path::PathBuf, sync::Mutex};
+use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read, path::{Path, PathBuf}, sync::Mutex};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
@@ -313,6 +313,35 @@ pub struct CommunitySkillPreview {
     status: String, permissions: Vec<String>, executable_content: bool,
 }
 
+/// Read the selected manifest through a pinned directory handle and a no-follow
+/// child-file open. Never use an ambient path read after validating metadata:
+/// the path could be replaced between the check and the read.
+fn read_skill_manifest_from_directory(source: &Path) -> Result<String, String> {
+    let directory = crate::coding_sandbox_fs::open_verified_root_directory(source)
+        .map_err(|_| "The selected skill folder changed or contains an unsafe path component.".to_string())?;
+    let mut file = crate::coding_sandbox_fs::open_file_nofollow(&directory, std::ffi::OsStr::new("SKILL.md"))
+        .map_err(|_| "SKILL.md must be a regular file, not a link or redirected entry.".to_string())?;
+    let before = file.metadata()
+        .map_err(|_| "FRIDAY could not inspect the opened SKILL.md file.".to_string())?;
+    if !before.is_file() || before.len() > 32_768 {
+        return Err("SKILL.md must be a regular file no larger than 32 KB.".into());
+    }
+
+    let mut bytes = Vec::with_capacity(before.len() as usize);
+    file.by_ref().take(32_769).read_to_end(&mut bytes)
+        .map_err(|_| "FRIDAY could not safely read SKILL.md.".to_string())?;
+    let after = file.metadata()
+        .map_err(|_| "FRIDAY could not recheck the opened SKILL.md file.".to_string())?;
+    if bytes.is_empty() || bytes.len() > 32_768
+        || bytes.len() as u64 != before.len()
+        || after.len() != before.len()
+        || !after.is_file()
+    {
+        return Err("SKILL.md changed or exceeded its size limit while being read.".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "SKILL.md must be valid UTF-8.".into())
+}
+
 fn parse_skill_markdown(content: &str) -> Result<(String, String, Option<String>, Option<String>, String), String> {
     const MAX_FRONTMATTER: usize = 4_096;
     const MAX_BODY: usize = 24_000;
@@ -377,22 +406,13 @@ pub fn inspect_and_quarantine_skill(app: AppHandle) -> Result<CommunitySkillPrev
     let selected = app.dialog().file().blocking_pick_folder();
     let Some(selected) = selected else { return Err("Community skill import was cancelled.".into()); };
     let source = selected.into_path().map_err(|_| "FRIDAY could not access the selected skill folder.".to_string())?;
-    let source_meta = fs::symlink_metadata(&source).map_err(|_| "FRIDAY could not inspect the selected skill folder.".to_string())?;
-    if !source_meta.is_dir() || source_meta.file_type().is_symlink() {
-        return Err("Select a normal folder containing one SKILL.md file; redirected folders are not accepted.".into());
-    }
-    let mut entries = fs::read_dir(&source).map_err(|e| format!("Could not inspect skill folder: {e}"))?;
+    let mut entries = fs::read_dir(&source).map_err(|_| "FRIDAY could not inspect the selected skill folder.".to_string())?;
     let first = entries.next().ok_or("The selected folder is empty; expected one SKILL.md file.")?
-        .map_err(|e| format!("Could not inspect skill folder entry: {e}"))?;
+        .map_err(|_| "FRIDAY could not inspect the selected folder entry.".to_string())?;
     if entries.next().is_some() || first.file_name() != "SKILL.md" {
         return Err("The initial importer accepts exactly one file named SKILL.md. Scripts, assets, nested folders and additional files are not accepted.".into());
     }
-    let file_meta = fs::symlink_metadata(first.path()).map_err(|_| "Could not inspect SKILL.md.".to_string())?;
-    if !file_meta.is_file() || file_meta.file_type().is_symlink() || file_meta.len() > 32_768 {
-        return Err("SKILL.md must be a regular, non-link file no larger than 32 KB.".into());
-    }
-    let bytes = fs::read(first.path()).map_err(|e| format!("Could not read SKILL.md: {e}"))?;
-    let content = String::from_utf8(bytes).map_err(|_| "SKILL.md must be valid UTF-8.".to_string())?;
+    let content = read_skill_manifest_from_directory(&source)?;
     let (name, description, license, compatibility, _body) = parse_skill_markdown(&content)?;
     let content_sha256 = format!("{:x}", Sha256::digest(content.as_bytes()));
     let id = content_sha256.clone();
