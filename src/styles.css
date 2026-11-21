@@ -1405,3 +1405,39 @@ h1 em { color: #78AEEF; }
   .app-shell .primary-button,.app-shell .secondary-button,.app-shell .settings-action,
   .app-shell .skill-card,.app-shell .installed-model { transition: none; }
 }
+
+/* FRIDAY Development Journey — visible, roadmap-backed product progress. */
+.development-journey { margin: 0 0 34px; }
+.journey-heading { display:flex; align-items:flex-end; justify-content:space-between; gap:18px; margin-bottom:15px; }
+.journey-heading h2 { margin:7px 0 5px; color:var(--az-text,#E6EEF8); font:600 clamp(19px,2.4vw,24px) Manrope,sans-serif; letter-spacing:-.55px; }
+.journey-heading p { margin:0; max-width:570px; color:var(--az-muted,#A9BBD2); font-size:11px; line-height:1.6; }
+.journey-roadmap-tag { flex:0 0 auto; border:1px solid var(--az-border,#385273); border-radius:20px; padding:6px 9px; color:var(--az-muted,#A9BBD2); font-size:8px; font-weight:700; letter-spacing:1px; }
+.journey-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:11px; }
+.journey-card { min-width:0; display:flex; flex-direction:column; align-items:flex-start; padding:15px; border:1px solid var(--az-border,#385273); border-radius:12px; background:var(--az-panel,#0E1A2D); }
+.journey-card-top { width:100%; display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:13px; }
+.journey-step { color:var(--az-muted,#A9BBD2); font:700 10px Manrope,sans-serif; letter-spacing:1px; }
+.journey-status { border:1px solid var(--az-border,#385273); border-radius:20px; padding:5px 7px; color:var(--az-muted,#A9BBD2); font-size:7px; font-weight:700; letter-spacing:.65px; white-space:nowrap; }
+.journey-available .journey-status { color:#9BC8F5; border-color:#477DBB; }
+.journey-progress .journey-status { color:#B9C9E6; border-color:#536B91; }
+.journey-verify .journey-status { color:#D5C49E; border-color:#776747; }
+.journey-planned .journey-status { color:var(--az-muted,#A9BBD2); }
+.journey-card h3 { margin:0 0 7px; color:var(--az-text,#E6EEF8); font:600 14px Manrope,sans-serif; }
+.journey-card p { flex:1; margin:0 0 13px; color:var(--az-muted,#A9BBD2); font-size:10px; line-height:1.65; }
+.journey-card button { border:1px solid var(--az-border,#385273); border-radius:7px; padding:7px 9px; background:var(--az-raised,#192840); color:var(--az-text,#E6EEF8); font-size:9px; font-weight:700; cursor:pointer; }
+.journey-card button:hover { border-color:var(--az-blue,#2874D8); color:var(--az-blue,#2874D8); }
+.journey-no-action { display:inline-block; margin-top:auto; color:var(--az-muted,#A9BBD2); font-size:8px; font-weight:700; letter-spacing:.8px; }
+.journey-footnote { margin:12px 0 0; color:var(--az-muted,#A9BBD2); font-size:9px; line-height:1.6; }
+.app-shell[data-theme="light"] .journey-card { background:#FFFFFF; border-color:#D3DEEC; }
+.app-shell[data-theme="light"] .journey-card h3 { color:#172B45; }
+.app-shell[data-theme="light"] .journey-card p,.app-shell[data-theme="light"] .journey-heading p,.app-shell[data-theme="light"] .journey-footnote { color:#536B88; }
+.app-shell[data-theme="light"] .journey-card button { background:#F2F6FC; border-color:#CAD7E8; color:#214C7D; }
+.app-shell[data-theme="light"] .journey-available .journey-status { color:#245C9F; border-color:#9BB9DF; }
+.app-shell[data-theme="light"] .journey-progress .journey-status { color:#405E87; border-color:#B6C6DB; }
+.app-shell[data-theme="light"] .journey-verify .journey-status { color:#725B32; border-color:#DCCBA9; }
+@media(max-width:900px) { .journey-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:560px) {
+  .journey-heading { align-items:flex-start; flex-direction:column; }
+  .journey-grid { grid-template-columns:minmax(0,1fr); }
+  .journey-card { padding:14px; }
+}
+@media(prefers-reduced-motion:reduce) { .journey-card button { transition:none; } }
