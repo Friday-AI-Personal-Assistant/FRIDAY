@@ -175,6 +175,13 @@ pub fn search_conversations(app: AppHandle, query: String, archived: bool) -> Re
 }
 
 #[tauri::command]
+pub fn export_all_conversations(app: AppHandle) -> Result<Vec<Conversation>, String> {
+    crate::permissions::authorize_command("conversations.export", "conversations.export")?;
+    let _guard = STORE_LOCK.lock().map_err(|_| "Chat history is busy.".to_string())?;
+    Ok(read_store(&app)?.conversations)
+}
+
+#[tauri::command]
 pub fn load_conversation(app: AppHandle, id: String) -> Result<Conversation, String> {
     crate::permissions::authorize_command("conversations.read", "conversations.read")?;
     if !valid_id(&id) { return Err("Invalid conversation ID.".into()); }

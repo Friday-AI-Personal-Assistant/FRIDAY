@@ -1042,3 +1042,16 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Physically validate search excerpts with long messages, Unicode and narrow history panels in the Windows desktop app.
 
 **User impact:** search results now reveal the part of a long message that actually contains the search phrase, making older conversations easier to identify. Search remains local to FRIDAY's encrypted history; no message content is uploaded and no new permission or paid service is introduced. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
+
+
+### Export all saved conversations — #1107
+
+- [x] Add a user-initiated export for every saved conversation, including active, archived and pinned history.
+- [x] Preserve conversation IDs, titles, timestamps, pin/archive state, message roles and full message content in a versioned JSON document.
+- [x] Add a dedicated backend IPC command with its own narrow `conversations.export` capability and inventory coverage.
+- [x] Ask for confirmation before export and clearly warn that the downloaded JSON is unencrypted and may contain private messages.
+- [x] Keep export local: no upload, cloud storage, automatic backup, history mutation or new external permission.
+- [ ] Verify Linux and Windows CI.
+- [ ] Physically validate the Windows save/download flow with empty history, large history and Unicode messages.
+
+**User impact:** users can take a portable copy of all their FRIDAY conversations rather than exporting chats one at a time. Active and archived chats are included, and the existing encrypted on-device history is not changed. The exported JSON is ordinary unencrypted data; FRIDAY must not describe it as an encrypted backup or automatic restore point. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.

@@ -52,6 +52,7 @@ export default function Assistant() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeTitle, setActiveTitle] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [exportingAll, setExportingAll] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [historySearchResults, setHistorySearchResults] = useState<ConversationSummary[] | null>(null);
   const [historySearchLoading, setHistorySearchLoading] = useState(false);
@@ -220,6 +221,40 @@ export default function Assistant() {
       setActionResult("");
     } catch (e) { setHistoryError(String(e)); }
     finally { setHistoryLoading(false); }
+  }
+
+  async function exportAllConversations() {
+    if (!desktop || exportingAll || !conversations.length) return;
+    if (!window.confirm("Export all saved conversations, including archived chats, as a readable JSON file? The exported file is not encrypted and may contain private messages. Store it securely.")) return;
+    setExportingAll(true);
+    setHistoryError("");
+    try {
+      const allChats = await invoke<Conversation[]>("export_all_conversations");
+      if (!allChats.length) {
+        setHistoryError("There are no saved conversations to export.");
+        return;
+      }
+      const backup = {
+        format: "friday-conversation-export",
+        version: 1,
+        exported_at: new Date().toISOString(),
+        conversations: allChats,
+      };
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "friday-conversations-" + new Date().toISOString().slice(0, 10) + ".json";
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      setHistoryError("Could not export conversation history: " + String(e));
+    } finally {
+      setExportingAll(false);
+    }
   }
 
   function exportConversation() {
@@ -551,7 +586,7 @@ export default function Assistant() {
     <div className="assistant-head"><div><div className="eyebrow">YOUR LOCAL AI ASSISTANT</div><h1>Talk to <em>FRIDAY.</em></h1><p className="intro">Your conversations are saved privately on this computer. Type <strong>calculate: 12 * (4 + 3)</strong> for safe local calculations.</p></div><button className="secondary-button" onClick={newConversation} disabled={pending || saving}>+ New chat</button></div>
     <div className="chat-layout">
       <aside className="conversation-sidebar" aria-label="Conversation history">
-        <div className="conversation-sidebar-head"><strong>CHAT HISTORY</strong><button onClick={() => void refreshHistory()} disabled={historyLoading} aria-label="Refresh chat history">↻</button></div>
+        <div className="conversation-sidebar-head"><strong>CHAT HISTORY</strong><div className="history-header-actions"><button className="history-export-all" onClick={() => void exportAllConversations()} disabled={!conversations.length || historyLoading || exportingAll} title="Export all active and archived conversations">{exportingAll ? "Exporting…" : "Export all"}</button><button onClick={() => void refreshHistory()} disabled={historyLoading} aria-label="Refresh chat history">↻</button></div></div>
         <input className="conversation-search" aria-label="Search all saved conversations" placeholder="Search all chats and messages…" value={historySearch} maxLength={200} onChange={e => setHistorySearch(e.target.value)} />
         {historyLoading && <small className="history-hint">Loading history…</small>}
         {historySearchLoading && <small className="history-hint">Searching saved messages…</small>}

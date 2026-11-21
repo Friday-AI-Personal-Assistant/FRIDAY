@@ -944,3 +944,9 @@ h1 em { color: #78AEEF; }
 @media(max-width:560px) {
   .chat-edit-notice { align-items: flex-start; flex-direction: column; }
 }
+
+
+/* Conversation history export controls */
+.history-header-actions{display:flex;align-items:center;gap:7px}
+.conversation-sidebar-head .history-export-all{font-size:9px;letter-spacing:0;border:1px solid var(--border-subtle,#31445f);border-radius:6px;padding:5px 8px;color:var(--text-secondary,#a9bbd2);background:var(--surface-raised,#192840)}
+.conversation-sidebar-head .history-export-all:disabled{opacity:.45;cursor:not-allowed}
