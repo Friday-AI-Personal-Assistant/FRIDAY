@@ -319,6 +319,17 @@ fn active_streams() -> &'static Mutex<HashMap<String, watch::Sender<bool>>> {
     ACTIVE_STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn validate_request_id(request_id: &str) -> Result<(), String> {
+    if request_id.is_empty()
+        || request_id.len() > 80
+        || !request_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("Invalid response request identifier.".into());
+    }
+    Ok(())
+}
+
+
 async fn run_ollama_stream(
     messages: Vec<Message>,
     model: String,
@@ -423,11 +434,7 @@ pub async fn ollama_chat_stream(
 ) -> Result<(), String> {
     crate::permissions::authorize_command("ollama_chat_stream", "ai.chat.stream")?;
     validate_chat_request(&messages, &model)?;
-    if request_id.is_empty() || request_id.len() > 80
-        || !request_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err("Invalid response request identifier.".into());
-    }
+    validate_request_id(&request_id)?;
 
     let (cancel_tx, mut cancel_rx) = watch::channel(false);
     {
@@ -448,6 +455,8 @@ pub async fn ollama_chat_stream(
 
 #[tauri::command]
 pub fn cancel_ollama_chat(request_id: String) -> Result<bool, String> {
+    crate::permissions::authorize_command("cancel_ollama_chat", "ai.chat.cancel")?;
+    validate_request_id(&request_id)?;
     let streams = active_streams().lock()
         .map_err(|_| "FRIDAY could not access its active response list.".to_string())?;
     match streams.get(&request_id) {
@@ -579,6 +588,16 @@ pub fn desktop_action(action: String) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_request_ids_are_bounded_and_unambiguous() {
+        assert!(validate_request_id("request-123").is_ok());
+        assert!(validate_request_id("A_b9").is_ok());
+        assert!(validate_request_id("").is_err());
+        assert!(validate_request_id("bad id").is_err());
+        assert!(validate_request_id("bad/slash").is_err());
+        assert!(validate_request_id(&"a".repeat(81)).is_err());
+    }
 
     #[test]
     fn accepts_a_normal_local_chat_request() {

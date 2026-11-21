@@ -41,6 +41,7 @@ pub fn run() {
             assistant::ollama_chat,
             assistant::ollama_coding_chat,
             assistant::ollama_chat_stream,
+            assistant::cancel_ollama_chat,
             tools::list_tools,
             tools::execute_tool,
             tools::issue_tool_approval,

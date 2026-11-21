@@ -857,3 +857,14 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 - [ ] Add durable user grants, explicit consent, expiry, revocation and audit before broader integrations or executable skills.
 
 **Important:** these are static Rust command gates, not persistent user permissions. Model downloads/removal, external web requests and other consequential operations still need clear user-facing disclosure and controls. No silent cloud fallback, shell execution or guest process execution is enabled.
+
+
+### Streaming response cancellation registration and authorization (#1083)
+
+- [x] Register `cancel_ollama_chat`, which the frontend already calls when the user presses Stop.
+- [x] Protect cancellation with a distinct `ai.chat.cancel` backend capability.
+- [x] Reuse strict bounded request-ID validation for both stream start and cancellation.
+- [x] Add regression tests for invalid IDs and capability substitution.
+- [ ] Verify Linux and Windows CI.
+
+**User impact:** the existing Stop action can reach the Rust cancellation endpoint and target only its own active request.

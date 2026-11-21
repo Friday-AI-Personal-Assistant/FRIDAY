@@ -361,3 +361,14 @@ The #1076 File/Coding Assistant capability increment is verified on both Windows
 - [ ] Complete a separate persistent user-grant design with explicit consent, narrow scopes, expiry, revocation and audit. These static command capabilities do not represent user consent or provider cost approval.
 
 **Scope and limitations:** model pull/removal can change the user's local Ollama installation and are now classified separately; this increment does not yet add a user-facing confirmation or resource/cost budget for those operations. Web Research explicitly contacts its configured search/source hosts; this gate is not an offline-mode guarantee. PDF extraction remains limited to a file explicitly selected through the native picker. Tool execution still relies on its own trusted tool policy and exact one-use approval for consequential actions. No shell, arbitrary plugin execution, guest process launch or cloud fallback is enabled.
+
+
+### Streaming response cancellation registration and authorization (#1083)
+
+- [x] Register the existing `cancel_ollama_chat` Rust command in Tauri's IPC handler. The frontend already invokes this endpoint, but it was missing from the registered command list.
+- [x] Give cancellation its own `ai.chat.cancel` backend capability rather than implicitly reusing chat-generation authority.
+- [x] Apply the same bounded request-ID validation to stream creation and cancellation.
+- [x] Add regression tests for accepted/rejected request IDs and cancellation capability substitution.
+- [ ] Verify Linux and Windows CI before closing this increment.
+
+**User impact:** FRIDAY's Stop action can now reach the backend cancellation handler instead of failing because the command was not registered. Cancellation remains limited to a matching active request ID; it does not cancel unrelated requests. This does not add persistent user grants or change provider/network behavior.

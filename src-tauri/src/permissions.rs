@@ -133,6 +133,7 @@ const COMMAND_POLICIES: &[CommandPolicy] = &[
     CommandPolicy { command_id: "clear_tool_history", capability: "tools.history.clear" },
     CommandPolicy { command_id: "issue_tool_approval", capability: "tools.approval.issue" },
     CommandPolicy { command_id: "execute_tool", capability: "tools.execute" },
+    CommandPolicy { command_id: "cancel_ollama_chat", capability: "ai.chat.cancel" },
 ];
 
 /// Authorize a specific IPC command against its trusted backend capability.
@@ -285,6 +286,14 @@ mod tests {
         assert!(authorize_command("web_read_pages", "web.search").is_err());
         assert!(authorize_command("clear_tool_history", "tools.history.read").is_err());
         assert!(authorize_command("execute_tool", "tools.approval.issue").is_err());
+    }
+
+    #[test]
+    fn chat_cancellation_has_its_own_backend_capability() {
+        assert!(authorize_command("cancel_ollama_chat", "ai.chat.cancel").is_ok());
+        assert!(authorize_command("cancel_ollama_chat", "ai.chat.stream").is_err());
+        assert!(authorize_command("cancel_ollama_chat", "ai.chat.complete").is_err());
+        assert!(authorize_command("cancel_ollama_chat", "unrelated.capability").is_err());
     }
 
     #[test]
