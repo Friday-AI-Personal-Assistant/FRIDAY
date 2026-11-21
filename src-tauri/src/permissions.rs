@@ -111,6 +111,7 @@ const COMMAND_POLICIES: &[CommandPolicy] = &[
     CommandPolicy { command_id: "memory.delete", capability: "memory.delete" },
     // Skill catalogue and local declarative-skill lifecycle. These do not grant tool permissions.
     CommandPolicy { command_id: "skills.catalog.read", capability: "skills.catalog.read" },
+    CommandPolicy { command_id: "skills.import.inspect", capability: "skills.import.inspect" },
     CommandPolicy { command_id: "skills.install", capability: "skills.install" },
     CommandPolicy { command_id: "skills.enable", capability: "skills.enable" },
     CommandPolicy { command_id: "skills.load", capability: "skills.load" },
@@ -195,6 +196,7 @@ const REGISTERED_IPC_COMMANDS: &[IpcCommand] = &[
     IpcCommand { handler: "tools::tool_history", command_id: "tool_history", capability: "tools.history.read", module: "tools" },
     IpcCommand { handler: "tools::clear_tool_history", command_id: "clear_tool_history", capability: "tools.history.clear", module: "tools" },
     IpcCommand { handler: "skills::skills_catalog", command_id: "skills.catalog.read", capability: "skills.catalog.read", module: "skills" },
+    IpcCommand { handler: "skills::inspect_and_quarantine_skill", command_id: "skills.import.inspect", capability: "skills.import.inspect", module: "skills" },
     IpcCommand { handler: "skills::install_skill", command_id: "skills.install", capability: "skills.install", module: "skills" },
     IpcCommand { handler: "skills::set_skill_enabled", command_id: "skills.enable", capability: "skills.enable", module: "skills" },
     IpcCommand { handler: "skills::load_skill", command_id: "skills.load", capability: "skills.load", module: "skills" },
@@ -366,6 +368,7 @@ mod tests {
             ("memory.toggle", "memory.toggle"),
             ("memory.delete", "memory.delete"),
             ("skills.catalog.read", "skills.catalog.read"),
+            ("skills.import.inspect", "skills.import.inspect"),
             ("skills.install", "skills.install"),
             ("skills.enable", "skills.enable"),
             ("skills.load", "skills.load"),
