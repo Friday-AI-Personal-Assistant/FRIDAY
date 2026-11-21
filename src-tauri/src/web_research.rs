@@ -1,8 +1,8 @@
 use regex::Regex;
 use scraper::{Html, Selector};
 use serde::Serialize;
-use std::{net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr}, sync::OnceLock, time::Duration};
-use tauri::AppHandle;
+use std::{net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr}, path::{Path, PathBuf}, sync::OnceLock, time::Duration};
+use tauri::{AppHandle, Manager};
 
 const SEARCH_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const MAX_QUERY_BYTES: usize = 500;
@@ -71,14 +71,32 @@ fn parse_results(html: &str) -> Vec<WebSearchResult> {
     results
 }
 
+fn permission_store_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let base = app.path().app_data_dir()
+        .map_err(|_| "FRIDAY could not locate its local permission store.".to_string())?;
+    Ok(base.join("permissions").join("grants.json"))
+}
+
+fn require_web_research_grant(store_path: &Path, resource: &str) -> Result<(), String> {
+    if crate::user_permissions::has_grant(store_path, "web.research", resource)? {
+        Ok(())
+    } else {
+        Err(format!(
+            "Web Research is not permitted to contact {resource}. Open Permissions & Transparency and grant access to this exact domain first."
+        ))
+    }
+}
+
 #[tauri::command]
-pub async fn web_search(_app: AppHandle, query: String) -> Result<Vec<WebSearchResult>, String> {
+pub async fn web_search(app: AppHandle, query: String) -> Result<Vec<WebSearchResult>, String> {
     crate::permissions::authorize_command("web_search", "web.search")?;
     let query = query.trim();
     if query.is_empty() || query.len() > MAX_QUERY_BYTES || query.chars().any(char::is_control) {
         return Err("Enter a search query between 1 and 500 characters.".into());
     }
 
+    let permission_path = permission_store_path(&app)?;
+    require_web_research_grant(&permission_path, "html.duckduckgo.com")?;
     // The destination is fixed; redirects are disabled and result links are never fetched here.
     let search_url = url::Url::parse(SEARCH_ENDPOINT).map_err(|_| "FRIDAY's search endpoint is invalid.".to_string())?;
     let pinned = pinned_public_address(&search_url).await?;
@@ -118,7 +136,7 @@ pub async fn web_search(_app: AppHandle, query: String) -> Result<Vec<WebSearchR
     if results.is_empty() {
         return Err("No readable search results were returned. Try a different query.".into());
     }
-    let _ = crate::tools::record(&_app, "web.search", &format!("Web search completed with {} results.", results.len()), true);
+    let _ = crate::tools::record(&app, "web.search", &format!("Web search completed with {} results.", results.len()), true);
     Ok(results)
 }
 
@@ -260,10 +278,11 @@ fn extract_page_text(html: &str) -> (String, String) {
     (title.chars().take(200).collect(), bounded_utf8(&text, MAX_PAGE_TEXT_BYTES))
 }
 
-async fn read_page_inner(url: String) -> Result<WebPage, String> {
+async fn read_page_inner(url: String, permission_path: &Path) -> Result<WebPage, String> {
     let mut current = validate_page_url(&url)?;
     for redirect_count in 0..=MAX_REDIRECTS {
         let host = current.host_str().ok_or("Source URL has no hostname.")?;
+        require_web_research_grant(permission_path, host)?;
         let pinned = pinned_public_address(&current).await?;
         let mut builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(8))
@@ -315,7 +334,8 @@ async fn read_page_inner(url: String) -> Result<WebPage, String> {
 #[tauri::command]
 pub async fn web_read_page(app: AppHandle, url: String) -> Result<WebPage, String> {
     crate::permissions::authorize_command("web_read_page", "web.read.page")?;
-    let page = read_page_inner(url).await?;
+    let permission_path = permission_store_path(&app)?;
+    let page = read_page_inner(url, &permission_path).await?;
     let _ = crate::tools::record(&app, "web.read_page", "Read one source webpage after explicit user selection.", true);
     Ok(page)
 }
@@ -326,12 +346,13 @@ pub async fn web_read_pages(app: AppHandle, urls: Vec<String>) -> Result<Vec<Web
     if urls.is_empty() || urls.len() > 4 {
         return Err("Select between 1 and 4 sources for a research session.".into());
     }
+    let permission_path = permission_store_path(&app)?;
     let mut seen = std::collections::HashSet::new();
     let mut pages = Vec::new();
     for raw_url in urls {
         let canonical = validate_page_url(&raw_url)?.to_string();
         if !seen.insert(canonical.clone()) { continue; }
-        let page = read_page_inner(canonical).await?;
+        let page = read_page_inner(canonical, &permission_path).await?;
         pages.push(page);
     }
     let _ = crate::tools::record(&app, "web.read_pages", &format!("Read {} source webpages after explicit user selection.", pages.len()), true);
