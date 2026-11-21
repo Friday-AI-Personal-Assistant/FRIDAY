@@ -595,6 +595,7 @@ fn analyze_csv(file_name: String, bytes: &[u8]) -> Result<WorkbookAnalysis, Stri
     let total_rows = sheet.row_count;
     let total_non_empty_cells = sheet.non_empty_cells;
     Ok(WorkbookAnalysis {
+        session_id: String::new(),
         file_name, format: "CSV".into(), source_sha256, source_byte_length, sheets: vec![sheet], total_rows,
         total_non_empty_cells,
         notes: vec![
@@ -637,6 +638,7 @@ fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, S
     let total_rows = sheets.iter().map(|sheet| sheet.row_count).sum();
     let total_non_empty_cells = sheets.iter().map(|sheet| sheet.non_empty_cells).sum();
     Ok(WorkbookAnalysis {
+        session_id: String::new(),
         file_name, format: "XLSX".into(), source_sha256, source_byte_length, sheets, total_rows, total_non_empty_cells,
         notes: vec![
             "Analysis runs locally on this device; the workbook is not uploaded.".into(),
@@ -850,7 +852,7 @@ mod tests {
     }
 
     fn session_test_analysis() -> WorkbookAnalysis {
-        analyze_csv("session.csv".into(), b"Product,Revenue\\nTea,10\\nCoffee,20\\n").unwrap()
+        analyze_csv("session.csv".into(), b"Product,Revenue\nTea,10\nCoffee,20\n").unwrap()
     }
 
     #[test]
