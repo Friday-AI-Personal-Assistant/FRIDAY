@@ -408,7 +408,7 @@ fn reinspect_quarantine_entry(root: &Path, skill_id: &str) -> Result<CommunitySk
 /// Re-inspect a quarantined item without loading or executing it.
 #[tauri::command]
 pub fn reinspect_community_skill(app: AppHandle, skill_id: String) -> Result<CommunitySkillPreview, String> {
-    crate::permissions::authorize_command("skills.import.inspect", "skills.import.inspect")?;
+    crate::permissions::authorize_command("skills.quarantine.reinspect", "skills.quarantine.reinspect")?;
     let root = app.path().app_data_dir()
         .map_err(|e| format!("Cannot locate FRIDAY's application data folder: {e}"))?
         .join("skills").join("quarantine");
@@ -428,7 +428,7 @@ pub struct CommunitySkillInventoryItem {
 /// entries are reported as blocked rather than silently omitted.
 #[tauri::command]
 pub fn list_community_skills_quarantine(app: AppHandle) -> Result<Vec<CommunitySkillInventoryItem>, String> {
-    crate::permissions::authorize_command("skills.import.inspect", "skills.import.inspect")?;
+    crate::permissions::authorize_command("skills.quarantine.inventory", "skills.quarantine.inventory")?;
     const MAX_ENTRIES: usize = 200;
     let root = app.path().app_data_dir()
         .map_err(|e| format!("Cannot locate FRIDAY's application data folder: {e}"))?
