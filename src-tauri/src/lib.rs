@@ -11,6 +11,7 @@ mod pdf_reader;
 mod web_research;
 mod file_assistant;
 mod excel_intelligence;
+mod domain_formula;
 mod coding_assistant;
 mod coding_intelligence;
 mod coding_sandbox;
