@@ -1494,3 +1494,103 @@ h1 em { color: #78AEEF; }
   .milestone-celebration { animation:none; }
   .milestone-celebration button { transition:none; }
 }
+
+
+/* Excel Intelligence — local-first, read-only workbook analysis. */
+.excel-page { max-width:1180px; }
+.excel-hero { display:flex; align-items:center; justify-content:space-between; gap:24px; }
+.excel-hero>div:first-child { min-width:0; }
+.excel-hero h1 { margin:10px 0 12px; color:var(--az-text,#E6EEF8); font:600 clamp(28px,4vw,42px) Manrope,sans-serif; letter-spacing:-1.2px; line-height:1.14; }
+.excel-hero h1 em { color:#78AEEB; font-style:normal; }
+.excel-hero .intro { max-width:700px; }
+.excel-mark { width:76px; height:76px; flex:0 0 76px; display:grid; place-items:center; border:1px solid var(--az-border,#385273); border-radius:20px; background:linear-gradient(145deg,rgba(40,116,216,.22),rgba(14,26,45,.9)); color:#8DBEF0; font-size:35px; }
+.excel-privacy-strip { display:flex; gap:12px; align-items:flex-start; margin:23px 0 15px; padding:13px 15px; border:1px solid #315B82; border-radius:10px; background:rgba(40,116,216,.09); }
+.excel-privacy-strip>span { color:#8DBEF0; font-size:18px; }
+.excel-privacy-strip strong { color:var(--az-text,#E6EEF8); font:600 11px Manrope,sans-serif; }
+.excel-privacy-strip p { margin:4px 0 0; color:var(--az-muted,#A9BBD2); font-size:10px; line-height:1.6; }
+.excel-import-panel { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:17px; border:1px solid var(--az-border,#385273); border-radius:12px; background:var(--az-panel,#0E1A2D); }
+.excel-import-copy { min-width:0; display:grid; gap:5px; }
+.excel-step { color:#83B5EA; font-size:8px; font-weight:800; letter-spacing:1.1px; }
+.excel-import-copy strong { overflow-wrap:anywhere; color:var(--az-text,#E6EEF8); font:600 14px Manrope,sans-serif; }
+.excel-import-copy p { margin:0; color:var(--az-muted,#A9BBD2); font-size:9px; line-height:1.55; }
+.excel-pick-button { display:flex; align-items:center; gap:10px; flex:0 0 auto; }
+.excel-pick-button:disabled { opacity:.65; cursor:wait; }
+.excel-empty-state { margin:18px 0; padding:35px 20px; border:1px dashed var(--az-border,#385273); border-radius:12px; text-align:center; background:rgba(14,26,45,.45); }
+.excel-empty-icon { width:45px; height:45px; display:grid; place-items:center; margin:0 auto 12px; border-radius:13px; background:rgba(40,116,216,.17); color:#8DBEF0; font-size:23px; }
+.excel-empty-state strong { color:var(--az-text,#E6EEF8); font:600 14px Manrope,sans-serif; }
+.excel-empty-state p { max-width:460px; margin:8px auto; color:var(--az-muted,#A9BBD2); font-size:10px; line-height:1.7; }
+.excel-empty-state>span { color:var(--az-muted,#A9BBD2); font-size:9px; }
+.excel-error { margin-top:13px; padding:11px 13px; border:1px solid #8C4A5B; border-radius:8px; background:rgba(120,40,60,.16); color:#F1B9C6; font-size:10px; line-height:1.6; overflow-wrap:anywhere; }
+.excel-results { display:grid; gap:16px; margin-top:24px; }
+.excel-results-heading,.excel-section-heading { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; }
+.excel-results-heading h2 { margin:5px 0 3px; color:var(--az-text,#E6EEF8); font:600 18px Manrope,sans-serif; overflow-wrap:anywhere; }
+.excel-results-heading p { margin:0; color:var(--az-muted,#A9BBD2); font-size:9px; }
+.excel-local-tag { border:1px solid #477DBB; border-radius:20px; padding:6px 8px; color:#9BC8F5; font-size:8px; font-weight:800; letter-spacing:.8px; white-space:nowrap; }
+.excel-metric-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+.excel-metric-grid article { display:grid; gap:7px; padding:13px; border:1px solid var(--az-border,#385273); border-radius:9px; background:var(--az-panel,#0E1A2D); }
+.excel-metric-grid span { color:var(--az-muted,#A9BBD2); font-size:8px; font-weight:700; letter-spacing:.7px; }
+.excel-metric-grid strong { color:var(--az-text,#E6EEF8); font:600 21px Manrope,sans-serif; font-variant-numeric:tabular-nums; }
+.excel-sheet-picker { display:grid; gap:6px; max-width:360px; color:var(--az-muted,#A9BBD2); font-size:9px; }
+.excel-sheet-picker select { width:100%; padding:9px 10px; border:1px solid var(--az-border,#385273); border-radius:7px; background:var(--az-panel,#0E1A2D); color:var(--az-text,#E6EEF8); font:10px 'DM Sans',sans-serif; }
+.excel-section { min-width:0; padding:16px; border:1px solid var(--az-border,#385273); border-radius:11px; background:var(--az-panel,#0E1A2D); }
+.excel-section-heading { margin-bottom:12px; }
+.excel-section-heading h3 { margin:5px 0 0; color:var(--az-text,#E6EEF8); font:600 13px Manrope,sans-serif; }
+.excel-section-heading>span { color:var(--az-muted,#A9BBD2); font-size:9px; white-space:nowrap; }
+.excel-table-wrap { max-width:100%; overflow:auto; border:1px solid var(--az-border,#385273); border-radius:8px; }
+.excel-preview-table { width:100%; border-collapse:collapse; min-width:560px; font-size:9px; }
+.excel-preview-table th,.excel-preview-table td { max-width:240px; padding:9px 10px; border-bottom:1px solid rgba(88,116,150,.22); text-align:left; overflow-wrap:anywhere; white-space:pre-wrap; }
+.excel-preview-table th { position:sticky; top:0; background:#162943; color:#C8DDF4; font-weight:700; }
+.excel-preview-table td { color:var(--az-text,#E6EEF8); }
+.excel-preview-table tbody tr:nth-child(even) { background:rgba(25,40,64,.5); }
+.excel-table-caption,.excel-muted { color:var(--az-muted,#A9BBD2); font-size:9px; line-height:1.6; }
+.excel-table-caption { margin:9px 0 0; }
+.excel-column-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+.excel-column-card { min-width:0; padding:12px; border:1px solid var(--az-border,#385273); border-radius:8px; background:rgba(25,40,64,.45); }
+.excel-column-card>strong { display:block; margin-bottom:9px; color:var(--az-text,#E6EEF8); font:600 11px Manrope,sans-serif; overflow-wrap:anywhere; }
+.excel-column-stats { display:flex; flex-wrap:wrap; gap:10px; color:var(--az-muted,#A9BBD2); font-size:9px; }
+.excel-column-stats b { color:var(--az-text,#E6EEF8); font-variant-numeric:tabular-nums; }
+.excel-column-card dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px 12px; margin:11px 0 0; }
+.excel-column-card dl>div { display:flex; justify-content:space-between; gap:8px; border-top:1px solid rgba(88,116,150,.22); padding-top:6px; }
+.excel-column-card dt { color:var(--az-muted,#A9BBD2); font-size:8px; }
+.excel-column-card dd { margin:0; color:#A9D0F7; font-size:9px; font-weight:700; font-variant-numeric:tabular-nums; }
+.excel-notes { padding:14px 16px; border:1px solid var(--az-border,#385273); border-radius:9px; background:rgba(14,26,45,.45); }
+.excel-notes>strong { color:var(--az-text,#E6EEF8); font:600 11px Manrope,sans-serif; }
+.excel-notes p { display:flex; gap:8px; margin:7px 0 0; color:var(--az-muted,#A9BBD2); font-size:9px; line-height:1.55; }
+.excel-notes p span { color:#8DBEF0; }
+.excel-readonly-footer { display:flex; align-items:center; gap:12px; padding:11px 13px; border-left:3px solid #477DBB; background:rgba(40,116,216,.08); }
+.excel-readonly-footer>span { color:#9BC8F5; font-size:8px; font-weight:800; letter-spacing:.8px; white-space:nowrap; }
+.excel-readonly-footer p { margin:0; color:var(--az-muted,#A9BBD2); font-size:9px; line-height:1.5; }
+.overview-milestone-action { margin-top:9px; padding:7px 9px; border:1px solid var(--az-border,#385273); border-radius:7px; background:var(--az-raised,#192840); color:var(--az-text,#E6EEF8); font-size:9px; font-weight:700; cursor:pointer; }
+.overview-milestone-action:hover { border-color:var(--az-blue,#2874D8); color:#8DBEF0; }
+.app-shell[data-theme="light"] .excel-hero h1,.app-shell[data-theme="light"] .excel-results-heading h2,.app-shell[data-theme="light"] .excel-section-heading h3,.app-shell[data-theme="light"] .excel-import-copy strong,.app-shell[data-theme="light"] .excel-empty-state strong,.app-shell[data-theme="light"] .excel-metric-grid strong,.app-shell[data-theme="light"] .excel-column-card>strong,.app-shell[data-theme="light"] .excel-notes>strong { color:#172B45; }
+.app-shell[data-theme="light"] .excel-hero h1 em { color:#245F9F; }
+.app-shell[data-theme="light"] .excel-privacy-strip,.app-shell[data-theme="light"] .excel-empty-state,.app-shell[data-theme="light"] .excel-notes { background:#F4F8FE; }
+.app-shell[data-theme="light"] .excel-privacy-strip strong { color:#172B45; }
+.app-shell[data-theme="light"] .excel-privacy-strip p,.app-shell[data-theme="light"] .excel-import-copy p,.app-shell[data-theme="light"] .excel-empty-state p,.app-shell[data-theme="light"] .excel-empty-state>span,.app-shell[data-theme="light"] .excel-results-heading p,.app-shell[data-theme="light"] .excel-section-heading>span,.app-shell[data-theme="light"] .excel-table-caption,.app-shell[data-theme="light"] .excel-muted,.app-shell[data-theme="light"] .excel-column-stats,.app-shell[data-theme="light"] .excel-column-card dt,.app-shell[data-theme="light"] .excel-notes p,.app-shell[data-theme="light"] .excel-readonly-footer p { color:#536B88; }
+.app-shell[data-theme="light"] .excel-import-panel,.app-shell[data-theme="light"] .excel-section,.app-shell[data-theme="light"] .excel-metric-grid article { background:#FFFFFF; border-color:#D3DEEC; }
+.app-shell[data-theme="light"] .excel-preview-table th { background:#E8EFF9; color:#214C7D; }
+.app-shell[data-theme="light"] .excel-preview-table td { color:#172B45; }
+.app-shell[data-theme="light"] .excel-preview-table tbody tr:nth-child(even),.app-shell[data-theme="light"] .excel-column-card { background:#F4F7FC; }
+.app-shell[data-theme="light"] .excel-column-card { border-color:#D3DEEC; }
+.app-shell[data-theme="light"] .excel-column-stats b { color:#172B45; }
+.app-shell[data-theme="light"] .excel-column-card dd { color:#245C9F; }
+.app-shell[data-theme="light"] .excel-sheet-picker { color:#536B88; }
+.app-shell[data-theme="light"] .excel-sheet-picker select { background:#FFFFFF; color:#172B45; border-color:#B9CBE1; }
+.app-shell[data-theme="light"] .excel-local-tag { color:#245C9F; border-color:#9BB9DF; }
+.app-shell[data-theme="light"] .excel-readonly-footer { background:#EAF2FD; }
+.app-shell[data-theme="light"] .overview-milestone-action { background:#F2F6FC; border-color:#CAD7E8; color:#214C7D; }
+@media(max-width:760px) {
+  .excel-metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .excel-hero { align-items:flex-start; }
+}
+@media(max-width:560px) {
+  .excel-hero { gap:10px; }
+  .excel-mark { width:48px; height:48px; flex-basis:48px; border-radius:13px; font-size:24px; }
+  .excel-import-panel { align-items:stretch; flex-direction:column; }
+  .excel-pick-button { justify-content:center; width:100%; box-sizing:border-box; }
+  .excel-results-heading,.excel-section-heading { align-items:flex-start; flex-direction:column; }
+  .excel-column-grid { grid-template-columns:minmax(0,1fr); }
+  .excel-section { padding:12px; }
+  .excel-readonly-footer { align-items:flex-start; flex-direction:column; gap:5px; }
+}
+@media(prefers-reduced-motion:reduce) { .excel-page * { scroll-behavior:auto; } }
