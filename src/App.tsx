@@ -104,10 +104,20 @@ function App() {
         {page === "AI Chat" && <Assistant />}
         {page === "Coding Assistant" && <CodingAssistant />}
 
-        {page === "Overview" && <section className="page">
-          <div className="eyebrow"><span className="pulse" /> YOUR PERSONAL ASSISTANT</div>
-          <h1>Good to see you.<br /><em>Let's get things done.</em></h1>
-          <p className="intro">A private space for your work, ideas and everyday tasks. FRIDAY is being built to put you in control.</p>
+        {page === "Overview" && <section className="page overview-page">
+          <div className="overview-hero">
+            <div className="eyebrow"><span className="pulse" /> YOUR PERSONAL ASSISTANT</div>
+            <h1>Good to see you.<br /><em>Let's make progress.</em></h1>
+            <p className="intro">A private space for your work, ideas and everyday tasks. FRIDAY is being built to put you in control.</p>
+            <div className="overview-hero-footer">
+              <span className="overview-local-status"><span className="pulse" /> LOCAL-FIRST WORKSPACE</span>
+              <span className="overview-roadmap-label">ON THE ROADMAP</span>
+            </div>
+            <div className="overview-next-milestone">
+              <div><span className="overview-milestone-kicker">NEXT PRODUCT MILESTONE</span><strong>Excel Intelligence</strong><p>Our first practical skill: understand spreadsheets, uncover useful insights and help create reports.</p></div>
+              <span className="overview-planned-tag">PLANNED</span>
+            </div>
+          </div>
 
           <div className="notice">
             <div className="notice-icon">i</div>
