@@ -1,7 +1,7 @@
 # OpenJarvis Skill-System Reuse Audit & FRIDAY Adoption Decision
 
 > **Status:** Source-level comparison complete; no upstream runtime code copied in this batch.
-> **FRIDAY branch / base:** `foundation/evaluation` at `da6a9aa88047ed1ef0c5d132f63c3c5130814041` (2026-11-21).
+> **FRIDAY branch / verified implementation:** `foundation/evaluation` at `aae786f06c9da31d51d58c711db33d899c91d8f7` (2026-11-21); Linux and Windows CI passed in [#1154](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44911626218).
 > **OpenJarvis source pin:** `5a9b5268f2432f7ea4fe402e384ecb6b64a649bb` (main, 2026-11-21).
 > **Repository:** https://github.com/open-jarvis/OpenJarvis
 > **Purpose:** Extract the useful skill, tool and workflow ideas from OpenJarvis, then implement only the FRIDAY-specific gaps.
@@ -142,7 +142,7 @@ A package format or independently implemented idea does not by itself require co
 - [Apache License 2.0](https://github.com/open-jarvis/OpenJarvis/blob/5a9b5268f2432f7ea4fe402e384ecb6b64a649bb/LICENSE)
 
 
-## 9. First importer implementation — committed, CI pending
+## 9. First importer implementation — committed; CI #1154 passed
 
 The first implementation increment is now present in FRIDAY:
 - `src-tauri/src/skills.rs`: strict bounded frontmatter parser and `inspect_and_quarantine_skill` command.
@@ -161,4 +161,4 @@ The importer stores the original content and inspection metadata under FRIDAY's 
 - Physical Windows reparse-point behavior has not been accepted on a real Windows device.
 - Licence text is self-declared and not independently verified; publisher, source repository, pinned commit and signatures are not yet collected.
 - Quarantined content has no install/approve path and cannot be run. The next batch should harden source reads, add quarantine inventory/reinspection/tamper detection and build the user trust review before any installation transition.
-- Linux/Windows CI for commits `ea60ec5` through `84886de` is pending at the time this note was written. Do not mark the importer complete until the latest coherent batch passes.
+- Linux Rust unit tests and the Windows frontend build, Rust tests and installer build passed in CI #1154 for commit `aae786f06c9da31d51d58c711db33d899c91d8f7`. This validates the tested CI paths only; it does not close the filesystem race, provenance or physical Windows acceptance gaps.
