@@ -2,6 +2,7 @@ use calamine::{open_workbook_from_rs, Data, Reader, Xlsx};
 use csv::ReaderBuilder;
 use serde::Serialize;
 use std::{
+    collections::{HashMap, HashSet},
     fs,
     fs::{File, OpenOptions},
     io::{Cursor, Read},
@@ -24,6 +25,8 @@ const MAX_TOTAL_CELLS: usize = 200_000;
 const PREVIEW_ROWS: usize = 12;
 const PREVIEW_COLUMNS: usize = 12;
 const MAX_PREVIEW_CELL_CHARS: usize = 180;
+const MAX_QUALITY_FINDINGS: usize = 40;
+const MAX_FINDING_SAMPLE_ROWS: usize = 5;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +41,17 @@ pub struct WorkbookAnalysis {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DataQualityFinding {
+    pub severity: String,
+    pub category: String,
+    pub title: String,
+    pub description: String,
+    pub occurrences: usize,
+    pub sample_rows: Vec<usize>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SheetAnalysis {
     pub name: String,
     pub row_count: usize,
@@ -47,6 +61,7 @@ pub struct SheetAnalysis {
     pub formula_cells: usize,
     pub preview: Vec<Vec<String>>,
     pub columns: Vec<ColumnAnalysis>,
+    pub quality_findings: Vec<DataQualityFinding>,
 }
 
 #[derive(Serialize)]
@@ -176,6 +191,55 @@ fn cell_text(value: &str) -> String {
     value.chars().take(MAX_PREVIEW_CELL_CHARS).collect()
 }
 
+
+fn push_finding(
+    findings: &mut Vec<DataQualityFinding>,
+    severity: &str,
+    category: &str,
+    title: &str,
+    description: &str,
+    occurrences: usize,
+    sample_rows: Vec<usize>,
+) {
+    if findings.len() >= MAX_QUALITY_FINDINGS { return; }
+    findings.push(DataQualityFinding {
+        severity: severity.into(),
+        category: category.into(),
+        title: title.into(),
+        description: description.into(),
+        occurrences,
+        sample_rows,
+    });
+}
+
+fn infer_cell_type(value: &str) -> &'static str {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized == "true" || normalized == "false" || normalized == "yes" || normalized == "no" {
+        return "boolean";
+    }
+    if value.replace(',', "").parse::<f64>().map(|number| number.is_finite()).unwrap_or(false) {
+        return "number";
+    }
+    let parts = value.split(|character: char| character == '-' || character == '/' || character == '.')
+        .collect::<Vec<_>>();
+    if parts.len() == 3 && parts.iter().all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())) {
+        let year_first = parts[0].len() == 4 && parts[1].len() <= 2 && parts[2].len() <= 2;
+        let year_last = parts[2].len() == 4 && parts[0].len() <= 2 && parts[1].len() <= 2;
+        if year_first || year_last { return "date-like"; }
+    }
+    "text"
+}
+
+fn percentile(sorted: &[f64], fraction: f64) -> f64 {
+    if sorted.is_empty() { return 0.0; }
+    let position = (sorted.len() - 1) as f64 * fraction.clamp(0.0, 1.0);
+    let lower = position.floor() as usize;
+    let upper = position.ceil() as usize;
+    if lower == upper { sorted[lower] } else {
+        sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower as f64)
+    }
+}
+
 fn analyze_matrix(
     name: String,
     rows: Vec<Vec<String>>,
@@ -184,7 +248,7 @@ fn analyze_matrix(
     if rows.is_empty() {
         return Ok(SheetAnalysis {
             name, row_count: 0, column_count: 0, non_empty_cells: 0,
-            blank_cells: 0, formula_cells, preview: Vec::new(), columns: Vec::new(),
+            blank_cells: 0, formula_cells, preview: Vec::new(), columns: Vec::new(), quality_findings: Vec::new(),
         });
     }
     if rows.len() > MAX_ROWS {
@@ -201,6 +265,31 @@ fn analyze_matrix(
     let non_empty_cells = rows.iter().flatten().filter(|cell| !cell.trim().is_empty()).count();
     let blank_cells = total_cells.saturating_sub(non_empty_cells);
     let header = rows.first().cloned().unwrap_or_default();
+    let mut quality_findings = Vec::new();
+
+    let mut blank_headers = Vec::new();
+    let mut header_groups: HashMap<String, Vec<usize>> = HashMap::new();
+    for column in 0..column_count {
+        let raw = header.get(column).map(String::as_str).unwrap_or("").trim();
+        if raw.is_empty() {
+            blank_headers.push(column + 1);
+        } else {
+            header_groups.entry(raw.to_lowercase()).or_default().push(column + 1);
+        }
+    }
+    if !blank_headers.is_empty() {
+        push_finding(&mut quality_findings, "warning", "blank_header",
+            "Blank column headers",
+            &format!("{} column(s) have no header. FRIDAY labels them by position in the preview.", blank_headers.len()),
+            blank_headers.len(), blank_headers.iter().take(MAX_FINDING_SAMPLE_ROWS).copied().collect());
+    }
+    for (name, positions) in header_groups.iter().filter(|(_, positions)| positions.len() > 1) {
+        push_finding(&mut quality_findings, "warning", "duplicate_header",
+            "Duplicate column headers",
+            &format!("The header '{}' appears in columns {}. This can make later references ambiguous.", name, positions.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")),
+            positions.len() - 1, positions.iter().take(MAX_FINDING_SAMPLE_ROWS).copied().collect());
+    }
+
     let mut columns = Vec::with_capacity(column_count);
     for column in 0..column_count {
         let header_name = header.get(column).map(|v| v.trim()).filter(|v| !v.is_empty())
@@ -210,20 +299,48 @@ fn analyze_matrix(
         let mut sum = 0.0_f64;
         let mut minimum: Option<f64> = None;
         let mut maximum: Option<f64> = None;
-        for row in rows.iter().skip(1) {
+        let mut observed_types: HashSet<&'static str> = HashSet::new();
+        let mut numeric_values: Vec<(usize, f64)> = Vec::new();
+        for (row_index, row) in rows.iter().enumerate().skip(1) {
             let value = row.get(column).map(String::as_str).unwrap_or("").trim();
             if value.is_empty() { continue; }
             non_empty += 1;
+            observed_types.insert(infer_cell_type(value));
             if let Ok(number) = value.replace(',', "").parse::<f64>() {
                 if number.is_finite() {
                     numeric_count += 1;
                     sum += number;
                     minimum = Some(minimum.map_or(number, |current| current.min(number)));
                     maximum = Some(maximum.map_or(number, |current| current.max(number)));
+                    numeric_values.push((row_index + 1, number));
                 }
             }
         }
         let missing = rows.len().saturating_sub(1).saturating_sub(non_empty);
+        if observed_types.len() > 1 {
+            push_finding(&mut quality_findings, "warning", "mixed_types",
+                "Mixed data types",
+                &format!("Column '{}' contains more than one data type. Check whether values are consistently formatted.", header_name),
+                observed_types.len(), Vec::new());
+        }
+        if numeric_values.len() >= 4 {
+            let mut sorted = numeric_values.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+            sorted.sort_by(f64::total_cmp);
+            let q1 = percentile(&sorted, 0.25);
+            let q3 = percentile(&sorted, 0.75);
+            let iqr = q3 - q1;
+            if iqr.is_finite() && iqr > 0.0 {
+                let lower = q1 - 1.5 * iqr;
+                let upper = q3 + 1.5 * iqr;
+                let outliers = numeric_values.iter().filter(|(_, value)| *value < lower || *value > upper).collect::<Vec<_>>();
+                if !outliers.is_empty() {
+                    push_finding(&mut quality_findings, "info", "numeric_outlier",
+                        "Potential numeric outliers",
+                        &format!("{} value(s) in '{}' fall outside the 1.5× IQR range. These are review suggestions, not confirmed errors.", outliers.len(), header_name),
+                        outliers.len(), outliers.iter().take(MAX_FINDING_SAMPLE_ROWS).map(|(row, _)| *row + 1).collect());
+                }
+            }
+        }
         columns.push(ColumnAnalysis {
             name: header_name, non_empty, missing, numeric_count,
             sum: (numeric_count > 0 && sum.is_finite()).then_some(sum),
@@ -231,12 +348,39 @@ fn analyze_matrix(
             minimum, maximum,
         });
     }
+
+    let mut row_occurrences: HashMap<String, (usize, Vec<usize>)> = HashMap::new();
+    for (row_index, row) in rows.iter().enumerate().skip(1) {
+        if row.iter().all(|value| value.trim().is_empty()) { continue; }
+        let key = row.iter().map(|value| {
+            let value = value.trim();
+            format!("{}:{}", value.len(), value)
+        }).collect::<String>();
+        let entry = row_occurrences.entry(key).or_insert((0, Vec::new()));
+        entry.0 += 1;
+        if entry.1.len() < MAX_FINDING_SAMPLE_ROWS {
+            entry.1.push(row_index + 1);
+        }
+    }
+    let duplicate_rows = row_occurrences.values().map(|(count, _)| count.saturating_sub(1)).sum::<usize>();
+    if duplicate_rows > 0 {
+        let sample_rows = row_occurrences.values()
+            .filter(|(count, _)| *count > 1)
+            .flat_map(|(_, rows)| rows.iter().skip(1).copied())
+            .take(MAX_FINDING_SAMPLE_ROWS)
+            .collect::<Vec<_>>();
+        push_finding(&mut quality_findings, "info", "duplicate_rows",
+            "Duplicate rows",
+            "Some non-empty data rows repeat exactly after trimming surrounding whitespace. Review them before removing anything.",
+            duplicate_rows, sample_rows);
+    }
+
     let preview = rows.iter().take(PREVIEW_ROWS).map(|row| {
         row.iter().take(PREVIEW_COLUMNS).map(|value| cell_text(value)).collect()
     }).collect();
     Ok(SheetAnalysis {
         name, row_count: rows.len(), column_count, non_empty_cells, blank_cells,
-        formula_cells, preview, columns,
+        formula_cells, preview, columns, quality_findings,
     })
 }
 
@@ -417,6 +561,48 @@ mod tests {
         assert_eq!(analysis.sheets[0].formula_cells, 1);
         assert_eq!(analysis.sheets[0].columns[1].sum, Some(3.0));
         assert!(analysis.notes.iter().any(|note| note.contains("does not execute")));
+    }
+
+    #[test]
+    fn quality_checks_find_blank_duplicate_headers_mixed_types_and_duplicate_rows() {
+        let rows = vec![
+            vec!["Name".into(), "Name".into(), "".into(), "Amount".into()],
+            vec!["A".into(), "A".into(), "x".into(), "10".into()],
+            vec!["B".into(), "B".into(), "y".into(), "text".into()],
+            vec!["A".into(), "A".into(), "x".into(), "10".into()],
+        ];
+        let result = analyze_matrix("quality".into(), rows, 0).unwrap();
+        let categories = result.quality_findings.iter().map(|finding| finding.category.as_str()).collect::<HashSet<_>>();
+        assert!(categories.contains("blank_header"));
+        assert!(categories.contains("duplicate_header"));
+        assert!(categories.contains("mixed_types"));
+        assert!(categories.contains("duplicate_rows"));
+        assert_eq!(result.quality_findings.iter().find(|finding| finding.category == "duplicate_rows").unwrap().occurrences, 1);
+    }
+
+    #[test]
+    fn outlier_detection_is_suggestive_and_reports_bounded_row_samples() {
+        let rows = vec![
+            vec!["Amount".into()],
+            vec!["10".into()], vec!["11".into()], vec!["10".into()],
+            vec!["12".into()], vec!["11".into()], vec!["1000".into()],
+        ];
+        let result = analyze_matrix("outliers".into(), rows, 0).unwrap();
+        let finding = result.quality_findings.iter().find(|finding| finding.category == "numeric_outlier").unwrap();
+        assert_eq!(finding.occurrences, 1);
+        assert_eq!(finding.sample_rows, vec![7]);
+        assert!(finding.description.contains("not confirmed errors"));
+    }
+
+    #[test]
+    fn quality_finding_output_is_bounded() {
+        let rows = (0..=MAX_COLUMNS).take(MAX_COLUMNS).map(|index| vec![format!("H{index}"), "same".into()]).collect::<Vec<_>>();
+        let mut expanded = rows;
+        for index in 0..MAX_ROWS.min(100) {
+            expanded.push(vec![format!("row{index}"), "mixed".into()]);
+        }
+        let result = analyze_matrix("bounded".into(), expanded, 0).unwrap();
+        assert!(result.quality_findings.len() <= MAX_QUALITY_FINDINGS);
     }
 
     #[test]
