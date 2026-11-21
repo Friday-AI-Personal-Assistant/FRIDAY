@@ -90,6 +90,7 @@ pub fn run() {
             file_assistant::pick_and_read_text_files,
             excel_intelligence::pick_and_analyze_workbook,
             excel_intelligence::answer_excel_question,
+            excel_intelligence::confirm_excel_accounting_mapping,
             file_assistant::pick_folder_and_list_text_files,
             file_assistant::read_granted_text_files,
             file_assistant::prepare_file_edit,
