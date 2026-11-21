@@ -1759,7 +1759,7 @@ fn execute_verified_guest_runtime_staging_cleanup(
         ).map_err(|_| "A runtime payload parent could not be safely opened.".to_string())?;
         check_identities()?;
         crate::coding_sandbox_fs::remove_verified_runtime_file(
-            &file_parent, OsStr::new(&file_name), bytes.len() as u64, &file.sha256,
+            &file_parent, OsStr::new(&file_name), bytes.len() as u64, &file.sha256, None,
         ).map_err(|_| "A runtime payload failed same-handle verification or safe deletion.".to_string())?;
     }
 
@@ -1928,7 +1928,7 @@ fn execute_verified_guest_runtime_staging_cleanup_progress(
         ).map_err(|_| "A remaining runtime payload parent could not be safely opened.".to_string())?;
         check_identities()?;
         crate::coding_sandbox_fs::remove_verified_runtime_file(
-            &file_parent, OsStr::new(&file_name), bytes.len() as u64, &file.sha256,
+            &file_parent, OsStr::new(&file_name), bytes.len() as u64, &file.sha256, None,
         ).map_err(|_| "A remaining runtime payload failed same-handle verification or safe deletion.".to_string())?;
     }
 
