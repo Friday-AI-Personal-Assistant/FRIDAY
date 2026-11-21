@@ -853,7 +853,7 @@ Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160
 - [x] Protect PDF selection/extraction and web search/source-reading entry points.
 - [x] Protect tool catalogue/history, history clearing, approval issuance and execution entry points.
 - [x] Preserve exact-action one-use approvals for consequential built-in tools; command classification does not replace user approval.
-- [ ] Verify Linux and Windows CI for this increment.
+- [x] Verify Linux and Windows CI: #1080 exposed a return-type mismatch in `list_tools`; #1081 corrected it, and both Linux and Windows CI passed.
 - [ ] Add durable user grants, explicit consent, expiry, revocation and audit before broader integrations or executable skills.
 
 **Important:** these are static Rust command gates, not persistent user permissions. Model downloads/removal, external web requests and other consequential operations still need clear user-facing disclosure and controls. No silent cloud fallback, shell execution or guest process execution is enabled.

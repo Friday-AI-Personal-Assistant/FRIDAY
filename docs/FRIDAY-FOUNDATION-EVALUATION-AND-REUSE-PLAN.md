@@ -357,7 +357,7 @@ The #1076 File/Coding Assistant capability increment is verified on both Windows
 - [x] Gate PDF selection/extraction and web search/source-reading commands at their Rust handler entry points.
 - [x] Gate tool catalogue/history access, history clearing, approval issuance and tool execution; preserve the separate exact-action one-use approval policy for consequential tools.
 - [x] Add regression coverage for every new command mapping and cross-capability substitution.
-- [ ] Verify Linux and Windows CI before closing this increment.
+- [x] Verify Linux and Windows CI: initial #1080 exposed a return-type mismatch in `list_tools`; #1081 corrected it, and both Linux and Windows CI passed.
 - [ ] Complete a separate persistent user-grant design with explicit consent, narrow scopes, expiry, revocation and audit. These static command capabilities do not represent user consent or provider cost approval.
 
 **Scope and limitations:** model pull/removal can change the user's local Ollama installation and are now classified separately; this increment does not yet add a user-facing confirmation or resource/cost budget for those operations. Web Research explicitly contacts its configured search/source hosts; this gate is not an offline-mode guarantee. PDF extraction remains limited to a file explicitly selected through the native picker. Tool execution still relies on its own trusted tool policy and exact one-use approval for consequential actions. No shell, arbitrary plugin execution, guest process launch or cloud fallback is enabled.
