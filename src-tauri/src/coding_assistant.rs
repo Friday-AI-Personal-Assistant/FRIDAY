@@ -186,7 +186,7 @@ fn original_windows_dacl(path: &Path) -> Result<Option<String>, String> {
     Ok(Some(encoded))
 }
 
-#[cfg(not(windows))]
+#[cfg(any(unix, windows))]
 fn original_windows_dacl(_path: &Path) -> Result<Option<String>, String> { Ok(None) }
 
 #[cfg(windows)]
@@ -293,7 +293,7 @@ fn check_code_backup_capacity(dir: &Path, additional_bytes: u64) -> Result<(), S
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(any(unix, windows))]
 fn open_verified_code_parent(
     root: &Path,
     current: &Path,
@@ -317,7 +317,7 @@ fn open_verified_code_parent(
     Ok((parent, file_name.to_os_string(), parent_identity))
 }
 
-#[cfg(not(windows))]
+#[cfg(any(unix, windows))]
 fn verified_code_child_identity(parent: &File, name: &OsStr) -> Result<crate::coding_sandbox_fs::RuntimeTreeIdentity, String> {
     let entries = crate::coding_sandbox_fs::enumerate_runtime_tree_entries(parent, MAX_SCANNED_ENTRIES)
         .map_err(|_| "Could not safely inspect the selected project file's parent folder.".to_string())?;
@@ -337,7 +337,7 @@ fn verified_code_child_identity(parent: &File, name: &OsStr) -> Result<crate::co
 }
 
 
-#[cfg(not(windows))]
+#[cfg(any(unix, windows))]
 fn verify_installed_code_file(
     parent: &File,
     name: &OsStr,
@@ -474,7 +474,7 @@ fn apply_code_preview_to_disk_bound(
     drop(journal);
 
     let parent = current.parent().ok_or("The selected project file has no parent folder.")?;
-    #[cfg(not(windows))]
+    #[cfg(any(unix, windows))]
     let (parent_handle, current_name, parent_identity) = open_verified_code_parent(root, current)?;
     let temporary = parent.join(format!(".friday-code-edit-{token}.tmp"));
     #[cfg(unix)]
@@ -509,7 +509,7 @@ fn apply_code_preview_to_disk_bound(
     }
 
     // Re-check the scanned identity after preparing recovery data and immediately
-    // before the existing path-based replacement operation.
+    // before handle-relative, no-replace installation on both supported platforms.
     if let Some((expected_root_identity, expected_file_identity)) = expected_identity {
         let root_handle = crate::coding_sandbox_fs::open_verified_root_directory(root)
             .map_err(|_| "The approved project folder changed before installation.".to_string())?;
@@ -529,19 +529,15 @@ fn apply_code_preview_to_disk_bound(
     }
 
     let displaced = parent.join(format!(".friday-code-original-{token}.tmp"));
-    #[cfg(not(windows))]
+    #[cfg(any(unix, windows))]
     let original_identity = verified_code_child_identity(&parent_handle, &current_name)?;
-    #[cfg(not(windows))]
+    #[cfg(any(unix, windows))]
     let temporary_identity = verified_code_child_identity(
         &parent_handle, temporary.file_name().ok_or("The replacement filename is invalid.")?,
     )?;
-    #[cfg(not(windows))]
+    #[cfg(any(unix, windows))]
     let displaced_name = displaced.file_name().ok_or("The displaced-file name is invalid.")?;
-    #[cfg(windows)]
-    if let Err(error) = replace_file_with_backup(current, &temporary, &displaced) {
-        return Err(format!("{error}. FRIDAY retained the transaction journal and recovery files; it will reconcile the transaction before another edit."));
-    }
-    #[cfg(not(windows))]
+    #[cfg(any(unix, windows))]
     {
         let temporary_name = temporary.file_name()
             .ok_or("The replacement-file name is invalid.")?;
@@ -580,20 +576,12 @@ fn apply_code_preview_to_disk_bound(
             });
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(any(unix, windows))]
     let installed_verification = verify_installed_code_file(
         &parent_handle, &current_name, temporary_identity, &resulting_hash,
     );
-    #[cfg(windows)]
-    let installed_verification = fs::read(current)
-        .map_err(|_| "The replacement was installed but could not be verified.".to_string())
-        .and_then(|bytes| if sha256_hex(&bytes) == resulting_hash {
-            Ok(())
-        } else {
-            Err("The installed file failed content verification.".into())
-        });
     if let Err(error) = installed_verification {
-        #[cfg(not(windows))]
+        #[cfg(any(unix, windows))]
         {
             let failed_name = format!(".friday-code-failed-{token}.tmp");
             let failed_move = verified_code_child_identity(&parent_handle, &current_name)
@@ -610,18 +598,6 @@ fn apply_code_preview_to_disk_bound(
                 format!("The installed file failed verification ({error}); FRIDAY restored the original using verified handle-relative operations.")
             } else {
                 format!("The installed file failed verification ({error}) and automatic restore could not be proven safe. The original remains at {}. The failed replacement was preserved: {}.", displaced.display(), if failed_move { failed_name } else { "current project entry left untouched".into() })
-            });
-        }
-        #[cfg(windows)]
-        {
-            let failed = parent.join(format!(".friday-code-failed-{token}.tmp"));
-            let _ = fs::rename(current, &failed);
-            let restored = fs::rename(&displaced, current).is_ok();
-            let _ = fs::remove_file(&failed);
-            return Err(if restored {
-                "The installed file failed verification; FRIDAY restored the original.".into()
-            } else {
-                format!("The installed file failed verification and automatic restore failed. The original backup remains at {}.", backup.display())
             });
         }
     }
@@ -2925,12 +2901,10 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn installed_code_verification_binds_content_to_the_expected_file_identity() {
-        use std::os::unix::fs::symlink;
         let root = std::env::temp_dir().join(format!("friday-installed-identity-{}", make_token()));
-        let outside = std::env::temp_dir().join(format!("friday-installed-outside-{}", make_token()));
         fs::create_dir_all(&root).unwrap();
         let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
         let installed = root.join("installed.tmp");
@@ -2938,6 +2912,20 @@ mod tests {
         let identity = verified_code_child_identity(&parent, OsStr::new("installed.tmp")).unwrap();
         assert!(verify_installed_code_file(&parent, OsStr::new("installed.tmp"), identity, &sha256_hex(b"verified replacement")).is_ok());
         assert!(verify_installed_code_file(&parent, OsStr::new("installed.tmp"), identity, &sha256_hex(b"other")).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_code_verification_rejects_symlink_substitution_without_reading_target() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("friday-installed-link-{}", make_token()));
+        let outside = std::env::temp_dir().join(format!("friday-installed-outside-{}", make_token()));
+        fs::create_dir_all(&root).unwrap();
+        let parent = crate::coding_sandbox_fs::open_verified_root_directory(&root).unwrap();
+        let installed = root.join("installed.tmp");
+        fs::write(&installed, b"verified replacement").unwrap();
+        let identity = verified_code_child_identity(&parent, OsStr::new("installed.tmp")).unwrap();
         fs::write(&outside, b"outside private data").unwrap();
         fs::remove_file(&installed).unwrap();
         symlink(&outside, &installed).unwrap();

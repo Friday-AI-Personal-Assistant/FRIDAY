@@ -1073,16 +1073,29 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Document that the JSON export itself is unencrypted and users should protect it.
 
 
-## 25. Coding Assistant approved-edit verification — batch #1109
+## 25. Coding Assistant approved-edit verification — batches #1109–#1111
 
-**Status:** IN PROGRESS — Linux/Windows CI pending; physical Windows acceptance not performed.
+**Status:** COMPLETE IN CI — Linux tests and Windows build/tests passed in #1111. Physical Windows desktop acceptance remains outstanding.
 
 - [x] Verify the installed Unix replacement by reopening it relative to the held parent directory handle.
 - [x] Bind post-install verification to the exact temporary-file identity captured before the no-replace rename.
-- [x] Read and hash the installed content through the verified handle; reject type, identity, size, read and content mismatches.
+- [x] Read and hash installed content through the verified handle; reject type, identity, size, read and content mismatches.
 - [x] On verification failure, move only the exact installed replacement to a unique failed name and restore the displaced original using handle-relative no-replace renames.
 - [x] Preserve substituted entries and displaced originals when safe automatic restoration cannot be proven.
-- [x] Add regression tests for content mismatch and symlink substitution without reading outside target contents.
+- [x] Add regression tests for content mismatch and Unix symlink substitution without reading outside target contents.
+- [x] Fix the missing `std::io::Read` import in #1111; Linux tests and Windows build/tests passed.
+- [x] Keep guest execution disabled; CI does not imply physical Sandbox acceptance.
+
+## 26. Windows installed-file verification and rollback — batch #1112
+
+**Status:** IMPLEMENTED — Linux/Windows CI pending; physical Windows acceptance not performed.
+
+- [x] Reuse verified parent handles and exact file identities on Windows as well as Unix for installed-file verification.
+- [x] Use handle-relative no-replace rename operations for Windows installation, displaced-original staging, failed-replacement preservation and rollback.
+- [x] Verify installed bytes through the reopened no-follow file handle and compare both file identity and SHA-256.
+- [x] Run the identity-bound verification regression on both Windows and Unix; retain a Unix-only symlink-substitution regression.
 - [ ] Verify Linux tests and Windows build/tests.
-- [ ] Continue the remaining transaction review: Windows handle-relative equivalent, displaced-file cleanup, Undo/recovery paths, and the documented Unix same-user name-substitution limitation.
+- [ ] Continue Windows handle-relative backup/temp/journal/Undo creation, Undo, crash recovery and cleanup.
+- [ ] Continue Unix displaced-file cleanup, Undo/recovery hardening and the documented same-user rename/unlink limitation.
+- [ ] Complete physical Windows desktop acceptance; CI does not prove native desktop behavior.
 - [ ] Guest execution remains disabled; no physical Sandbox acceptance is implied.
