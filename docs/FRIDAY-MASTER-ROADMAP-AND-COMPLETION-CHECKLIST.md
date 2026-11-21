@@ -1103,7 +1103,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ## 27. Coding Assistant transaction and Undo recovery hardening — batches #1116–#1124
 
-**Status:** IN PROGRESS — #1116–#1122 passed Linux/Windows CI; #1123 and #1124 failed Linux/Windows Rust unit tests and must be corrected before this work is considered complete.
+**Status:** IN PROGRESS — #1116–#1122 and #1125, #1127 passed Linux/Windows CI. #1123–#1124 and #1126 required follow-up corrections; the corrected recovery-state expectations passed in #1127. Deeper path/handle hardening remains open.
 
 - [x] #1116: Restore original Windows DACL metadata after successful Undo replacement and when recovery finds the original content already installed.
 - [x] #1117–#1118: Add bounded, identity-checked reads relative to verified directory handles; route recovery-file reads through the verified parent-directory capability.
@@ -1118,6 +1118,19 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Perform physical Windows desktop acceptance separately; CI is not physical-device validation.
 
 **Known limitations:** some recovery copies are intentionally retained because the current cross-platform cleanup primitive cannot yet prove safe deletion under replacement races. Retention has no automatic expiry today. Do not describe these artifacts as automatically temporary or promise a cleanup interval.
+
+### Handle-bound Undo state inspection — #1128
+
+**Status:** IMPLEMENTED — Linux/Windows CI pending.
+
+- [x] Inspect active and consumed Undo records through the already-open verified recovery-directory handle, using bounded no-follow reads instead of path-based `symlink_metadata` followed by a separate read.
+- [x] Treat missing, unsafe, malformed, duplicate active/consumed, and mismatched records as distinct fail-closed outcomes; preserve recovery evidence on uncertainty.
+- [x] Compare both Unix mode and Windows DACL metadata as part of the journal/state-record match.
+- [x] Route every interrupted-Undo recovery state decision through the handle-bound inspection.
+- [ ] Verify Linux tests and Windows build/tests; add adversarial state-record replacement coverage.
+- [ ] Continue converting permission restoration, remaining path-based recovery helpers and transaction cleanup to verified-handle operations.
+
+**User impact:** interrupted Undo recovery no longer decides whether an operation is active or consumed by checking a pathname and then reopening that pathname separately. Both state records are read from the same verified recovery folder, reducing the chance that a swapped file changes the recovery decision. No recovery evidence is deleted.
 
 ## 28. Recovery Storage Manager — accepted product requirement
 

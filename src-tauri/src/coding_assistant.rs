@@ -758,25 +758,32 @@ fn write_recovery_copy(path: &Path, bytes: &[u8], expected_hash: &str, record: &
     Ok(())
 }
 
-fn inspect_recovery_undo_state(backup_dir: &Path, expected: &CodingUndoRecord) -> Result<Option<bool>, String> {
-    let active = backup_dir.join(format!("{}.undo.json", expected.id));
-    let consumed = backup_dir.join(format!("{}.undone.json", expected.id));
-    let active_exists = match fs::symlink_metadata(&active) {
-        Ok(_) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(_) => return Err("FRIDAY could not inspect the active Undo record. Recovery evidence was preserved.".into()),
+fn inspect_recovery_undo_state(backup_handle: &File, expected: &CodingUndoRecord) -> Result<Option<bool>, String> {
+    // Inspect both state records through the already-verified recovery-directory
+    // capability. A path-based existence check followed by a separate read could
+    // observe a different entry after replacement.
+    let active_name = OsString::from(format!("{}.undo.json", expected.id));
+    let consumed_name = OsString::from(format!("{}.undone.json", expected.id));
+    let read_state = |name: &OsStr| -> Result<Option<Vec<u8>>, String> {
+        match crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+            backup_handle, name, 16 * 1024, MAX_SCANNED_ENTRIES,
+        ) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err("FRIDAY could not safely inspect an Undo state record. Recovery evidence was preserved.".into()),
+        }
     };
-    let consumed_exists = match fs::symlink_metadata(&consumed) {
-        Ok(_) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(_) => return Err("FRIDAY could not inspect the consumed Undo record. Recovery evidence was preserved.".into()),
-    };
-    if active_exists && consumed_exists {
+    let active = read_state(&active_name)?;
+    let consumed = read_state(&consumed_name)?;
+    if active.is_some() && consumed.is_some() {
         return Err("Both active and consumed Undo records exist. Manual review is required.".into());
     }
-    let selected = if active_exists { &active } else if consumed_exists { &consumed } else { return Ok(None); };
-    let bytes = read_recovery_file(selected, 16 * 1024)?
-        .ok_or("An Undo state record disappeared during recovery.")?;
+    let (bytes, is_active) = match (active, consumed) {
+        (Some(bytes), None) => (bytes, true),
+        (None, Some(bytes)) => (bytes, false),
+        (None, None) => return Ok(None),
+        (Some(_), Some(_)) => unreachable!(),
+    };
     let saved: CodingUndoRecord = serde_json::from_slice(&bytes)
         .map_err(|_| "An Undo state record is malformed. Recovery evidence was preserved.".to_string())?;
     validate_undo_record(&saved)?;
@@ -786,10 +793,11 @@ fn inspect_recovery_undo_state(backup_dir: &Path, expected: &CodingUndoRecord) -
         || saved.original_sha256 != expected.original_sha256
         || saved.resulting_sha256 != expected.resulting_sha256
         || saved.created_at != expected.created_at
+        || saved.original_unix_mode != expected.original_unix_mode
         || saved.original_windows_dacl != expected.original_windows_dacl {
         return Err("An Undo state record does not match its transaction journal. Recovery evidence was preserved.".into());
     }
-    Ok(Some(active_exists))
+    Ok(Some(is_active))
 }
 
 fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoRecord) -> Result<(), String> {
@@ -851,14 +859,14 @@ fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoR
             if let Some(hash) = temporary_hash.as_deref() {
                 if hash != record.original_sha256 { return Err("An interrupted Undo left an unexpected temporary file. Nothing was removed.".into()); }
             }
-            match inspect_recovery_undo_state(backup_dir, record)? {
+            match inspect_recovery_undo_state(&backup_handle, record)? {
                 Some(true) => consume_active_record()?,
                 Some(false) => {},
                 None => return Err("The interrupted Undo has no valid active or consumed Undo record. Recovery evidence was preserved.".into()),
             }
         }
         Some(hash) if hash == record.resulting_sha256 => {
-            if inspect_recovery_undo_state(backup_dir, record)? != Some(true) {
+            if inspect_recovery_undo_state(&backup_handle, record)? != Some(true) {
                 return Err("The edited target does not have one valid active Undo record. Recovery evidence was preserved.".into());
             }
             if displaced_hash.is_some() {
@@ -870,7 +878,7 @@ fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoR
         }
         None => {
             if let Some(hash) = displaced_hash.as_deref() {
-                if inspect_recovery_undo_state(backup_dir, record)? != Some(true) {
+                if inspect_recovery_undo_state(&backup_handle, record)? != Some(true) {
                     return Err("The displaced edited file does not have one valid active Undo record. Recovery evidence was preserved.".into());
                 }
                 if hash != record.resulting_sha256 { return Err("The displaced file from an interrupted Undo failed verification.".into()); }
@@ -879,7 +887,7 @@ fn recover_undo_transaction(root: &Path, backup_dir: &Path, record: &CodingUndoR
                     &project_handle, &displaced_name, &target_name, project_identity, identity,
                 ).map_err(|_| "FRIDAY could not restore the edited file without replacing an unexpected target. Recovery copies were preserved.".to_string())?;
             } else if temporary_hash.as_deref() == Some(record.original_sha256.as_str()) {
-                let undo_state = inspect_recovery_undo_state(backup_dir, record)?
+                let undo_state = inspect_recovery_undo_state(&backup_handle, record)?
                     .ok_or("The interrupted Undo has no valid Undo state record. Recovery evidence was preserved.")?;
                 let identity = verified_code_child_identity(&project_handle, &temporary_name)?;
                 crate::coding_sandbox_fs::rename_file_noreplace(
@@ -950,7 +958,7 @@ fn recover_apply_transaction(root: &Path, backup_dir: &Path, record: &CodingUndo
     match target_hash.as_deref() {
         Some(hash) if hash == record.resulting_sha256 => {
             let undo_name = OsString::from(format!("{}.undo.json", record.id));
-            match inspect_recovery_undo_state(backup_dir, record)? {
+            match inspect_recovery_undo_state(&backup_handle, record)? {
                 Some(true) => {},
                 Some(false) => return Err("A completed Apply has already-consumed Undo state. Recovery evidence was preserved.".into()),
                 None => {
