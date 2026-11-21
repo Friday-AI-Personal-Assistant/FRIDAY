@@ -751,22 +751,23 @@ fn apply_recovery_permissions(parent: &File, name: &OsStr, record: &CodingUndoRe
     Ok(())
 }
 
-fn write_recovery_copy(path: &Path, bytes: &[u8], expected_hash: &str, record: &CodingUndoRecord) -> Result<(), String> {
+fn write_recovery_copy(parent: &File, name: &OsStr, bytes: &[u8], expected_hash: &str, record: &CodingUndoRecord) -> Result<(), String> {
     if bytes.is_empty() || bytes.len() as u64 > MAX_FILE_BYTES || sha256_hex(bytes) != expected_hash {
         return Err("The verified recovery source failed its integrity check.".into());
     }
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)
-        .map_err(|_| "FRIDAY could not create a new recovery temporary file.".to_string())?;
+    // Create, write, flush, permission-restore and verify relative to the same
+    // already-verified directory handle. Never reopen a recovery temp by path.
+    let mut file = crate::coding_sandbox_fs::create_destination_entry(parent, name, false)
+        .map_err(|_| "FRIDAY could not create a new recovery temporary file through its verified directory.".to_string())?;
     file.write_all(bytes)
         .map_err(|_| "FRIDAY could not write a recovery temporary file.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "FRIDAY could not flush a recovery temporary file.".to_string())?;
     drop(file);
-    apply_recovery_permissions(path, record)?;
-    let file = OpenOptions::new().write(true).open(path)
-        .map_err(|_| "FRIDAY could not reopen a recovery temporary file for flushing.".to_string())?;
-    file.sync_all().map_err(|_| "FRIDAY could not flush a recovery temporary file.".to_string())?;
-    drop(file);
-    let installed = read_recovery_file(path, MAX_FILE_BYTES)?
-        .ok_or("The recovery temporary file disappeared.")?;
+    apply_recovery_permissions(parent, name, record)?;
+    let installed = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+        parent, name, MAX_FILE_BYTES, MAX_SCANNED_ENTRIES,
+    ).map_err(|_| "FRIDAY could not verify the recovery temporary file through its verified directory.".to_string())?;
     if sha256_hex(&installed) != expected_hash {
         return Err("The recovery temporary file failed SHA-256 verification.".into());
     }
