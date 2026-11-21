@@ -2,7 +2,7 @@
 
 > **Purpose:** This is the durable, cross-conversation source of truth for what FRIDAY is intended to become, what has been verified as implemented, what remains, the order of work, and the relative effort/risk of each area. A new development conversation must read this file and the Coding Assistant completion checklist before making changes.
 >
-> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`; the latest confirmed CI from the user is #1180–#1182, all passed on Linux and Windows. The FRIDAY Development Journey and first personality/verified-milestone UI batch are now implemented; the latest personality batch is awaiting its own CI verification. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The next product-focused sequence is visual refinement, FRIDAY's visible development personality/journey, then Excel Intelligence and its first usable skill. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
+> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`; the latest verified CI is #1183–#1186, all passed on Linux and Windows. The FRIDAY Development Journey, first personality/milestone UI, and the first read-only Excel Intelligence workspace/backend are implemented; the Excel batch is awaiting CI verification. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The current product focus is the first read-only Excel Intelligence slice; the next stages are richer Excel Analyst workflows and the permissioned first-party skill/tool bridge. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
 >
 > **Do not confuse a plan with implementation.** A checkbox is complete only when code, tests, and (where required) real-device acceptance demonstrate it. Update this document after each meaningful batch with commit, CI run, and evidence.
 
@@ -409,7 +409,9 @@ When choosing between features or implementation approaches, prioritize: (1) saf
 
 ### 13.3 Excel Intelligence
 
-- [ ] Safe workbook import for supported formats (initially define XLSX/CSV; assess XLS separately).
+**Initial delivery slice (current batch, CI pending):** a read-only local XLSX/CSV analyzer with explicit file picking, workbook/sheet overview, bounded preview, missing-cell counts, numeric column statistics and formula counts. It does not modify workbooks, recalculate formulas, execute macros or follow external links. This is the first Excel Intelligence workspace—not yet the complete Excel Analyst skill or the full product scope.
+
+- [x] Safe bounded import for `.xlsx` and `.csv` files. XLSX input is ZIP-signature checked and package entries, expanded size, per-entry size, compression ratio, macro payloads, worksheet count and total analyzed cells are bounded. CSV parsing is bounded; legacy `.xls` is not supported in this first slice. [Current batch; CI pending.]
 - [ ] Enumerate sheets, tables, named ranges, formulas, dimensions and hidden content.
 - [ ] Preview selected sheets/ranges before analysis.
 - [ ] Explain formulas and detect common errors/inconsistencies.
@@ -418,8 +420,8 @@ When choosing between features or implementation approaches, prioritize: (1) saf
 - [ ] Preserve formulas, styles, merged cells, references and workbook integrity when editing.
 - [ ] Propose edits as a preview/diff and require approval before writing.
 - [ ] Keep original file backed up and provide verified undo/recovery.
-- [ ] Never execute workbook macros or external links automatically.
-- [ ] Defend against zip bombs, huge worksheets, malicious formulas, malformed XML and resource exhaustion.
+- [x] Never execute workbook macros or external links automatically. Macro-enabled workbooks are rejected; external links are not followed. [Current batch; CI pending.]
+- [x] Add initial XLSX package and worksheet resource bounds to reduce zip-bomb and oversized-workbook risk; formulas remain data and are never executed. [Current batch; CI pending.] Continue adversarial parser testing before expanding supported formats.
 - [ ] Test with representative real workbooks and round-trip fidelity checks.
 
 ### 13.4 Web Research
@@ -1264,7 +1266,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ## 30. FRIDAY development personality and visible growth journey — accepted product requirement
 
-**Status:** INITIAL OVERVIEW JOURNEY AND FIRST PERSONALITY/MILESTONE UI IMPLEMENTED; the initial journey passed #1180–#1182 on Linux and Windows (user-confirmed). The personality/celebration implementation in the current batch is awaiting CI. The first Midnight Azure workspace integration batch passed #1179 (run `44924968988`); installed-app visual acceptance remains outstanding. This is a user-facing product experience, not a claim that FRIDAY is conscious or independently self-aware.
+**Status:** INITIAL OVERVIEW JOURNEY AND FIRST PERSONALITY/MILESTONE UI IMPLEMENTED; #1180–#1182 and personality/milestone batch #1183–#1186 passed Linux and Windows. The first Excel Intelligence read-only workspace is now implemented and awaiting its own CI. The first Midnight Azure workspace integration batch passed #1179 (run `44924968988`); installed-app visual acceptance remains outstanding. This is a user-facing product experience, not a claim that FRIDAY is conscious or independently self-aware.
 
 **Purpose:** Make FRIDAY's development feel visible, understandable and motivating. The user should be able to open the application and see what FRIDAY can genuinely do today, what is being built next, and which milestones have actually been completed. Development should feel like watching a useful assistant grow rather than watching invisible engineering activity.
 
@@ -1282,16 +1284,16 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Personality and milestone celebration must never override permissions, safety checks, cost disclosure, user consent or the FRIDAY Four Guarantees.
 - [ ] Keep the experience lightweight, accessible, responsive and consistent with the official Midnight Azure design system and companion light theme.
 
-- [x] Add the initial roadmap-backed Development Journey to Overview: AI Chat (Available), Coding Assistant (In progress), Skills Store and Midnight Azure (Needs verification), Excel Intelligence and Recovery Storage Manager (Planned). Keep the journey explicit that CI success is not equivalent to full user-facing acceptance; #1180–#1182 passed Linux/Windows (user-confirmed).
+- [x] Add the initial roadmap-backed Development Journey to Overview: AI Chat (Available), Coding Assistant (In progress), Skills Store and Midnight Azure (Needs verification), Excel Intelligence (In progress) and Recovery Storage Manager (Planned). Keep the journey explicit that CI success is not equivalent to full user-facing acceptance; #1180–#1182 passed Linux/Windows (user-confirmed).
 
 ### Initial delivery sequence
 
 1. [x] Complete the first Midnight Azure visual-refinement and integration pass across existing workspaces; #1179 passed Linux and Windows. Installed-app and narrow-window visual acceptance remains open.
 2. [x] Add the initial FRIDAY Development Journey to Overview with explicit, truthful milestone statuses and navigation to available workspaces. #1180–#1182 passed Linux/Windows (user-confirmed).
 3. [x] Add FRIDAY's concise welcome/assistant personality treatment and small verified milestone celebrations. Celebration is gated on a persisted status transition to Available, shown once per transition, dismissible, and motion-aware. Verify this implementation in CI before marking this step accepted.
-4. Make Excel Intelligence the first prominent capability milestone and connect its first usable Excel Analyst skill to the same journey.
+4. [In progress] Make Excel Intelligence the first prominent capability milestone. The first local read-only XLSX/CSV analysis workspace is now implemented; continue with workbook-quality insights, report/chart output, and connect the first usable Excel Analyst skill through the permissioned skill/tool bridge.
 5. Validate the experience in the installed Windows application at normal and narrow window sizes; record screenshots/acceptance evidence before marking visual acceptance complete.
 
 **Product principle:** The user should regularly have something visible, testable or enjoyable to interact with. Avoid long stretches of invisible foundation-only work unless a concrete safety or reliability blocker requires it.
 
-**Milestone celebration boundary:** the UI only observes the app's versioned local roadmap-status snapshot. It does not inspect GitHub, run CI, perform background development, or independently verify feature quality. The developer must update a milestone to `Available` only after its implementation and applicable acceptance checks are complete. A clean first-run baseline is intentionally silent; no historical milestone is celebrated as if it had just shipped.
+**Excel first-slice boundary:** current support is `.xlsx` and `.csv` read-only analysis under strict input, ZIP package, worksheet, row, column and cell bounds. The preview treats row one as headers and summarizes numeric values from cached cells. It does not write files, preserve or edit workbook formatting, generate charts, interpret named ranges/tables, or provide a full natural-language analyst skill. Legacy `.xls` remains unsupported.\n\n**Milestone celebration boundary:** the UI only observes the app's versioned local roadmap-status snapshot. It does not inspect GitHub, run CI, perform background development, or independently verify feature quality. The developer must update a milestone to `Available` only after its implementation and applicable acceptance checks are complete. A clean first-run baseline is intentionally silent; no historical milestone is celebrated as if it had just shipped.
