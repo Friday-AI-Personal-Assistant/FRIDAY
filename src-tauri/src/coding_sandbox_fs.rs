@@ -2099,6 +2099,7 @@ pub(crate) fn remove_verified_runtime_file(
     _name: &OsStr,
     _expected_size: u64,
     _expected_sha256: &str,
+    _expected_identity: Option<RuntimeTreeIdentity>,
 ) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -2113,6 +2114,7 @@ pub(crate) fn remove_verified_runtime_file(
     name: &OsStr,
     expected_size: u64,
     expected_sha256: &str,
+    expected_identity: Option<RuntimeTreeIdentity>,
 ) -> io::Result<()> {
     use std::{
         mem,
@@ -2252,6 +2254,11 @@ pub(crate) fn remove_verified_runtime_file(
     }
 
     let file = unsafe { File::from_raw_handle(raw_handle) };
+    if let Some(expected) = expected_identity {
+        if windows_identity::handle_file_id(&file)? != expected {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "recovery cleanup handle does not match the originally captured file identity"));
+        }
+    }
     let metadata = file.metadata()?;
     use std::os::windows::fs::MetadataExt;
     if !metadata.is_file()
@@ -2260,6 +2267,15 @@ pub(crate) fn remove_verified_runtime_file(
         || metadata.len() != expected_size
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "runtime file does not match its expected type or size"));
+    }
+    if expected_identity.is_some() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::{Foundation::HANDLE, Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION}};
+        let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        let queried = unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut information) };
+        if queried == 0 || information.nNumberOfLinks != 1 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "recovery cleanup requires a single-link file verified from its open handle"));
+        }
     }
 
     // The handle denies concurrent write/delete sharing. Hash the exact bytes
@@ -2309,6 +2325,26 @@ pub(crate) fn remove_verified_runtime_file(
 }
 
 
+
+/// Delete a recovery artifact only when the opened object is the exact file
+/// identity captured when FRIDAY created or inventoried it. Unix remains
+/// fail-closed until a race-safe handle-bound unlink primitive is available.
+#[cfg(unix)]
+pub(crate) fn remove_verified_recovery_file(
+    parent: &File, name: &OsStr, _expected_identity: RuntimeTreeIdentity,
+    expected_size: u64, expected_sha256: &str,
+) -> io::Result<()> {
+    remove_verified_runtime_file(parent, name, expected_size, expected_sha256, Some(_expected_identity))
+}
+
+#[cfg(windows)]
+pub(crate) fn remove_verified_recovery_file(
+    parent: &File, name: &OsStr, expected_identity: RuntimeTreeIdentity,
+    expected_size: u64, expected_sha256: &str,
+) -> io::Result<()> {
+    remove_verified_runtime_file(parent, name, expected_size, expected_sha256, Some(expected_identity))
+}
+
 /// Remove only FRIDAY's authenticated runtime ownership marker. The caller
 /// supplies the expected size and SHA-256 from the freshly verified manifest;
 /// this wrapper fixes the filename and delegates same-handle content
@@ -2332,7 +2368,7 @@ pub(crate) fn remove_verified_runtime_owner_marker(
             "runtime owner-marker cleanup requires its exact reserved name and authenticated bounded digest",
         ));
     }
-    remove_verified_runtime_file(parent, name, expected_size, expected_sha256)
+    remove_verified_runtime_file(parent, name, expected_size, expected_sha256, None)
 }
 
 /// Remove one verified empty directory relative to a held parent directory handle.
@@ -5896,6 +5932,7 @@ mod tests {
         let error = remove_verified_runtime_file(
             &parent, OsStr::new("payload.bin"), 21,
             "d2f75693596e4fea04f110826bed8e76b2514463ca783f9a5150f7901c2bf92a",
+            None,
         ).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert_eq!(fs::read(workspace_path.join("payload.bin")).unwrap(), b"authenticated payload");
@@ -5911,10 +5948,10 @@ mod tests {
         fs::write(workspace_path.join("payload.bin"), b"authenticated payload").unwrap();
         let parent = open_test_root(&workspace_path);
         let digest = "d2f75693596e4fea04f110826bed8e76b2514463ca783f9a5150f7901c2bf92a";
-        assert!(remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 1, digest).is_err());
-        assert!(remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 21, "0".repeat(64).as_str()).is_err());
+        assert!(remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 1, digest, None).is_err());
+        assert!(remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 21, "0".repeat(64).as_str(), None).is_err());
         assert_eq!(fs::read(workspace_path.join("payload.bin")).unwrap(), b"authenticated payload");
-        remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 21, digest).unwrap();
+        remove_verified_runtime_file(&parent, OsStr::new("payload.bin"), 21, digest, None).unwrap();
         assert!(!workspace_path.join("payload.bin").exists());
         drop(parent);
         fs::remove_dir_all(workspace_path).unwrap();
