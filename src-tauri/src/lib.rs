@@ -54,6 +54,7 @@ pub fn run() {
             tools::tool_history,
             tools::clear_tool_history,
             skills::skills_catalog,
+            skills::inspect_and_quarantine_skill,
             skills::install_skill,
             skills::set_skill_enabled,
             skills::load_skill,
