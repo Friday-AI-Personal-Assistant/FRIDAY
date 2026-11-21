@@ -675,19 +675,22 @@ fn validate_undo_record(record: &CodingUndoRecord) -> Result<(), String> {
 }
 
 fn read_recovery_file(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err("FRIDAY could not inspect a recovery file.".into()),
-    };
-    if is_redirected(&meta) || !meta.is_file() || meta.len() == 0 || meta.len() > limit {
-        return Err("A recovery item is not a safe bounded regular file. No automatic cleanup was attempted.".into());
+    let parent = path.parent()
+        .ok_or("A recovery file has no containing directory.")?;
+    let name = path.file_name()
+        .ok_or("A recovery file has no valid filename.")?;
+    // Resolve the containing directory once, then perform the entire child
+    // lookup/read through that verified directory capability. This central
+    // wrapper covers journals, temporary copies, displaced files and backups.
+    let directory = crate::coding_sandbox_fs::open_verified_root_directory(parent)
+        .map_err(|_| "FRIDAY could not safely open a recovery folder.".to_string())?;
+    match crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
+        &directory, name, limit, MAX_SCANNED_ENTRIES,
+    ) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("A recovery item changed, was redirected, or exceeded its safety limits. Recovery evidence was preserved.".into()),
     }
-    let bytes = fs::read(path).map_err(|_| "FRIDAY could not read a recovery file.".to_string())?;
-    if bytes.len() as u64 != meta.len() {
-        return Err("A recovery file changed while FRIDAY was reading it.".into());
-    }
-    Ok(Some(bytes))
 }
 
 fn safe_recovery_target(root: &Path, record: &CodingUndoRecord) -> Result<PathBuf, String> {
