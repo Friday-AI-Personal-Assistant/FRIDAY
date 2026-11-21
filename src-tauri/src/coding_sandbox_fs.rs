@@ -5959,6 +5959,47 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn recovery_artifact_cleanup_fails_closed_and_preserves_file() {
+        use std::ffi::OsStr;
+        let workspace_path = make_test_directory("recovery-cleanup-unix-fail-closed");
+        fs::write(workspace_path.join("recovery.bak"), b"recovery evidence").unwrap();
+        let parent = open_test_root(&workspace_path);
+        let error = remove_verified_recovery_file(
+            &parent, OsStr::new("recovery.bak"), (1, 2), 17,
+            "d18c8a1c5b2d8b7a5d6a9d3a7b8e8c1d8f5a4c2e7b9d0f1a3c5e7b9d1f3a5c7e",
+        ).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(fs::read(workspace_path.join("recovery.bak")).unwrap(), b"recovery evidence");
+        drop(parent);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_recovery_cleanup_requires_original_handle_identity() {
+        use std::ffi::OsStr;
+        use sha2::{Digest, Sha256};
+        let workspace_path = make_test_directory("windows-recovery-cleanup-identity");
+        let payload = b"recovery evidence";
+        fs::write(workspace_path.join("recovery.bak"), payload).unwrap();
+        let parent = open_test_root(&workspace_path);
+        let name = OsStr::new("recovery.bak");
+        let original = open_file_nofollow(&parent, name).unwrap();
+        let identity = runtime_tree_identity_for_handle(&original).unwrap();
+        drop(original);
+        let digest = format!("{:x}", Sha256::digest(payload));
+        let mut wrong = identity;
+        wrong.0 = wrong.0.wrapping_add(1);
+        assert!(remove_verified_recovery_file(&parent, name, wrong, payload.len() as u64, &digest).is_err());
+        assert_eq!(fs::read(workspace_path.join("recovery.bak")).unwrap(), payload);
+        remove_verified_recovery_file(&parent, name, identity, payload.len() as u64, &digest).unwrap();
+        assert!(!workspace_path.join("recovery.bak").exists());
+        drop(parent);
+        fs::remove_dir_all(workspace_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn runtime_owner_marker_cleanup_rejects_substitution_and_fails_closed() {
         use std::ffi::OsStr;
         let workspace_path = make_test_directory("runtime-owner-marker-unix");
