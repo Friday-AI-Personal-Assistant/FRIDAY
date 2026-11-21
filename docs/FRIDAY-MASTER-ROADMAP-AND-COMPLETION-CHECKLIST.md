@@ -2,7 +2,7 @@
 
 > **Purpose:** This is the durable, cross-conversation source of truth for what FRIDAY is intended to become, what has been verified as implemented, what remains, the order of work, and the relative effort/risk of each area. A new development conversation must read this file and the Coding Assistant completion checklist before making changes.
 >
-> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`, HEAD `82cef5bae69a70a9c02dcd4d9361b1371ca0d53c`; latest verified Linux/Windows CI is #1175 ([run 44922923873](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44922923873)). Linux tests and Windows build/tests passed. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The next product-focused sequence is visual refinement, FRIDAY's visible development personality/journey, then Excel Intelligence and its first usable skill. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
+> **Status baseline (2026-11-21):** Current development branch is `foundation/evaluation`; the latest confirmed CI from the user is #1180–#1182, all passed on Linux and Windows. The FRIDAY Development Journey and first personality/verified-milestone UI batch are now implemented; the latest personality batch is awaiting its own CI verification. Coding Assistant remains in progress; guest execution remains disabled. Recovery cleanup is not authorized for production deletion. Community skills remain quarantined and inert; provenance/trust metadata and the Skills Store review UI are now CI-covered, but no skill execution bridge is enabled. Midnight Azure tokens and initial application-wide styling exist; integrated physical-device visual acceptance remains open. The next product-focused sequence is visual refinement, FRIDAY's visible development personality/journey, then Excel Intelligence and its first usable skill. Other product areas remain planned/partial unless repository evidence explicitly says otherwise.
 >
 > **Do not confuse a plan with implementation.** A checkbox is complete only when code, tests, and (where required) real-device acceptance demonstrate it. Update this document after each meaningful batch with commit, CI run, and evidence.
 
@@ -1264,16 +1264,16 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ## 30. FRIDAY development personality and visible growth journey — accepted product requirement
 
-**Status:** INITIAL OVERVIEW JOURNEY IMPLEMENTED; Linux/Windows CI pending. The first Midnight Azure workspace integration batch passed #1179 (run `44924968988`); installed-app visual acceptance remains outstanding. This is a user-facing product experience, not a claim that FRIDAY is conscious or independently self-aware.
+**Status:** INITIAL OVERVIEW JOURNEY AND FIRST PERSONALITY/MILESTONE UI IMPLEMENTED; the initial journey passed #1180–#1182 on Linux and Windows (user-confirmed). The personality/celebration implementation in the current batch is awaiting CI. The first Midnight Azure workspace integration batch passed #1179 (run `44924968988`); installed-app visual acceptance remains outstanding. This is a user-facing product experience, not a claim that FRIDAY is conscious or independently self-aware.
 
 **Purpose:** Make FRIDAY's development feel visible, understandable and motivating. The user should be able to open the application and see what FRIDAY can genuinely do today, what is being built next, and which milestones have actually been completed. Development should feel like watching a useful assistant grow rather than watching invisible engineering activity.
 
 ### Personality and experience requirements
 
-- [ ] Give FRIDAY a consistent, warm, capable, respectful assistant voice in its own UI; keep the tone natural and avoid forced jokes, excessive flattery or manipulative emotional language.
+- [x] Add a concise FRIDAY voice treatment to Overview: useful, honest, careful, and clear about what is ready versus still being built. Keep the tone natural and avoid forced jokes, excessive flattery or manipulative emotional language. [Current UI batch; verify CI.]
 - [ ] Create a clear "FRIDAY Development Journey" or equivalent home/dashboard experience showing current focus, completed milestones and the next planned capability.
 - [ ] Show visible milestone unlocks only when the corresponding feature is implemented and verified; distinguish **Available**, **In progress**, **Planned** and **Needs verification**.
-- [ ] Celebrate meaningful, verified milestones with tasteful UI moments (subtle animation, completion note or feature reveal); respect reduced-motion preferences and allow the user to dismiss celebrations.
+- [x] Add a dismissible milestone celebration when a roadmap milestone transitions from a previously recorded non-available status to `Available`. Persist the local status snapshot before displaying the message so a reload does not replay it; establish a silent baseline on first launch or when stored state is unreadable. If local persistence fails, suppress the celebration rather than repeat or invent one. Add subtle motion only when reduced motion is not requested. [Current UI batch; verify CI.]
 - [ ] Explain technical progress in plain language and show what the user can now try, rather than exposing commit/test jargon as the primary experience.
 - [ ] Keep the journey tied to the Master Roadmap so status survives conversation loss and does not depend on an assistant's memory or an unverified estimate.
 - [ ] Let the user explore completed capabilities and launch the relevant feature directly from the journey.
@@ -1282,14 +1282,16 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Personality and milestone celebration must never override permissions, safety checks, cost disclosure, user consent or the FRIDAY Four Guarantees.
 - [ ] Keep the experience lightweight, accessible, responsive and consistent with the official Midnight Azure design system and companion light theme.
 
-- [x] Add the initial roadmap-backed Development Journey to Overview: AI Chat (Available), Coding Assistant (In progress), Skills Store and Midnight Azure (Needs verification), Excel Intelligence and Recovery Storage Manager (Planned). Keep the journey explicit that CI success is not equivalent to full user-facing acceptance.
+- [x] Add the initial roadmap-backed Development Journey to Overview: AI Chat (Available), Coding Assistant (In progress), Skills Store and Midnight Azure (Needs verification), Excel Intelligence and Recovery Storage Manager (Planned). Keep the journey explicit that CI success is not equivalent to full user-facing acceptance; #1180–#1182 passed Linux/Windows (user-confirmed).
 
 ### Initial delivery sequence
 
 1. [x] Complete the first Midnight Azure visual-refinement and integration pass across existing workspaces; #1179 passed Linux and Windows. Installed-app and narrow-window visual acceptance remains open.
-2. [x] Add the initial FRIDAY Development Journey to Overview with explicit, truthful milestone statuses and navigation to available workspaces. CI verification is pending.
-3. Add FRIDAY's concise welcome/assistant personality treatment and small verified milestone celebrations. Only celebrate milestones after applicable implementation and acceptance checks.
+2. [x] Add the initial FRIDAY Development Journey to Overview with explicit, truthful milestone statuses and navigation to available workspaces. #1180–#1182 passed Linux/Windows (user-confirmed).
+3. [x] Add FRIDAY's concise welcome/assistant personality treatment and small verified milestone celebrations. Celebration is gated on a persisted status transition to Available, shown once per transition, dismissible, and motion-aware. Verify this implementation in CI before marking this step accepted.
 4. Make Excel Intelligence the first prominent capability milestone and connect its first usable Excel Analyst skill to the same journey.
 5. Validate the experience in the installed Windows application at normal and narrow window sizes; record screenshots/acceptance evidence before marking visual acceptance complete.
 
 **Product principle:** The user should regularly have something visible, testable or enjoyable to interact with. Avoid long stretches of invisible foundation-only work unless a concrete safety or reliability blocker requires it.
+
+**Milestone celebration boundary:** the UI only observes the app's versioned local roadmap-status snapshot. It does not inspect GitHub, run CI, perform background development, or independently verify feature quality. The developer must update a milestone to `Available` only after its implementation and applicable acceptance checks are complete. A clean first-run baseline is intentionally silent; no historical milestone is celebrated as if it had just shipped.
