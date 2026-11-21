@@ -12,6 +12,15 @@ type ColumnAnalysis = {
   maximum: number | null;
 };
 
+type DataQualityFinding = {
+  severity: "warning" | "info" | string;
+  category: string;
+  title: string;
+  description: string;
+  occurrences: number;
+  sampleRows: number[];
+};
+
 type SheetAnalysis = {
   name: string;
   rowCount: number;
@@ -21,6 +30,7 @@ type SheetAnalysis = {
   formulaCells: number;
   preview: string[][];
   columns: ColumnAnalysis[];
+  qualityFindings: DataQualityFinding[];
 };
 
 type WorkbookAnalysis = {
@@ -134,8 +144,35 @@ export default function ExcelIntelligence() {
             <p className="excel-table-caption">Showing up to 11 data rows and 12 columns. The first row is treated as column headers.</p>
           </section>
 
+          <section className="excel-section excel-quality-section">
+            <div className="excel-section-heading">
+              <div><span className="excel-step">04 / DATA QUALITY REVIEW</span><h3>Findings worth a closer look</h3></div>
+              <span>{sheet.qualityFindings.length} finding{sheet.qualityFindings.length === 1 ? "" : "s"}</span>
+            </div>
+            {sheet.qualityFindings.length > 0 ? (
+              <div className="excel-quality-list">
+                {sheet.qualityFindings.map((finding, index) => (
+                  <article className={`excel-quality-card ${finding.severity === "warning" ? "is-warning" : "is-info"}`} key={`${finding.category}-${index}`}>
+                    <div className="excel-quality-card-top">
+                      <strong>{finding.title}</strong>
+                      <span>{finding.severity === "warning" ? "REVIEW" : "NOTE"}</span>
+                    </div>
+                    <p>{finding.description}</p>
+                    <div className="excel-quality-meta">
+                      <span>{finding.occurrences} occurrence{finding.occurrences === 1 ? "" : "s"}</span>
+                      {finding.sampleRows.length > 0 && <span>Rows / columns: {finding.sampleRows.join(", ")}</span>}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="excel-quality-clear"><span aria-hidden="true">✓</span><div><strong>No obvious quality issues detected</strong><p>FRIDAY did not find blank or duplicate headers, mixed data types, repeated rows or clear IQR-based numeric outliers in this sheet.</p></div></div>
+            )}
+            <p className="excel-table-caption">Automated checks are review hints, not proof of errors. Outliers can be valid; FRIDAY never changes or removes data.</p>
+          </section>
+
           <section className="excel-section">
-            <div className="excel-section-heading"><div><span className="excel-step">04 / COLUMN INSIGHTS</span><h3>Data quality and numeric summaries</h3></div><span>{sheet.columns.length} columns</span></div>
+            <div className="excel-section-heading"><div><span className="excel-step">05 / COLUMN INSIGHTS</span><h3>Numeric summaries</h3></div><span>{sheet.columns.length} columns</span></div>
             <div className="excel-column-grid">
               {sheet.columns.map((column, index) => (
                 <article className="excel-column-card" key={index}>
