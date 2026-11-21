@@ -234,6 +234,7 @@ const REGISTERED_IPC_COMMANDS: &[IpcCommand] = &[
     IpcCommand { handler: "file_assistant::pick_and_read_text_files", command_id: "file.pick_and_read_text_files", capability: "files.read.picker", module: "file_assistant" },
     IpcCommand { handler: "excel_intelligence::pick_and_analyze_workbook", command_id: "excel.pick_and_analyze_workbook", capability: "excel.workbook.read", module: "excel_intelligence" },
     IpcCommand { handler: "excel_intelligence::answer_excel_question", command_id: "excel.answer_question", capability: "excel.analysis.local", module: "excel_intelligence" },
+    IpcCommand { handler: "excel_intelligence::confirm_excel_accounting_mapping", command_id: "excel.confirm_accounting_mapping", capability: "excel.mapping.confirm", module: "excel_intelligence" },
     IpcCommand { handler: "file_assistant::pick_folder_and_list_text_files", command_id: "file.pick_folder_and_list_text_files", capability: "files.folder.select", module: "file_assistant" },
     IpcCommand { handler: "file_assistant::read_granted_text_files", command_id: "file.read_granted_text_files", capability: "files.read.granted", module: "file_assistant" },
     IpcCommand { handler: "file_assistant::prepare_file_edit", command_id: "file.prepare_file_edit", capability: "files.edit.preview", module: "file_assistant" },
