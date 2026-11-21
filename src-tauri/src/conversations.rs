@@ -109,26 +109,26 @@ fn message_preview(content: &str) -> String {
     content.chars().take(180).collect()
 }
 
-fn matches_query(conversation: &Conversation, query: &str) -> bool {
-    let needle = query.to_lowercase();
-    conversation.title.to_lowercase().contains(&needle)
-        || conversation.messages.iter().any(|message| message.content.to_lowercase().contains(&needle))
+fn matches_query(conversation: &Conversation, needle: &str) -> bool {
+    conversation.title.to_lowercase().contains(needle)
+        || conversation.messages.iter().any(|message| message.content.to_lowercase().contains(needle))
 }
 
 #[tauri::command]
 pub fn search_conversations(app: AppHandle, query: String, archived: bool) -> Result<Vec<ConversationSummary>, String> {
     crate::permissions::authorize_command("conversations.search", "conversations.search")?;
     let query = query.trim();
-    if query.is_empty() || query.len() > 200 || query.chars().any(char::is_control) {
+    if query.is_empty() || query.chars().count() > 200 || query.chars().any(char::is_control) {
         return Err("Enter a search phrase of 1–200 characters.".into());
     }
+    let needle = query.to_lowercase();
     let _guard = STORE_LOCK.lock().map_err(|_| "Chat history is busy.".to_string())?;
     let store = read_store(&app)?;
     let mut items: Vec<_> = store.conversations.iter()
-        .filter(|conversation| conversation.archived == archived && matches_query(conversation, query))
+        .filter(|conversation| conversation.archived == archived && matches_query(conversation, &needle))
         .map(|conversation| {
             let matching_message = conversation.messages.iter().rev()
-                .find(|message| message.content.to_lowercase().contains(&query.to_lowercase()));
+                .find(|message| message.content.to_lowercase().contains(&needle));
             let preview = matching_message.map(|message| message_preview(&message.content))
                 .or_else(|| conversation.messages.last().map(|message| message_preview(&message.content)))
                 .unwrap_or_default();

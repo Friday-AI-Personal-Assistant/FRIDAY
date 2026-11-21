@@ -20,11 +20,6 @@ const ACTIONS = [
 ];
 const SYSTEM = "You are FRIDAY, a friendly, helpful and slightly humorous local Windows desktop assistant. Be concise, honest and privacy-conscious. Do not claim you performed computer actions unless the app confirms success. You cannot send emails automatically. You can help draft email text for the user to review.";
 
-function historyMatches(item: ConversationSummary, query: string) {
-  const needle = query.trim().toLocaleLowerCase();
-  return !needle || item.title.toLocaleLowerCase().includes(needle) || item.preview.toLocaleLowerCase().includes(needle);
-}
-
 function formatHistoryDate(timestamp: number) {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return "Date unavailable";
   return new Date(timestamp * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
@@ -103,6 +98,7 @@ export default function Assistant() {
     }
     let cancelled = false;
     setHistorySearchLoading(true);
+    setHistorySearchResults([]);
     const timer = window.setTimeout(() => {
       void invoke<ConversationSummary[]>("search_conversations", { query, archived: showArchived })
         .then(results => { if (!cancelled) { setHistorySearchResults(results); setHistoryError(""); } })
@@ -507,7 +503,7 @@ export default function Assistant() {
     <div className="chat-layout">
       <aside className="conversation-sidebar" aria-label="Conversation history">
         <div className="conversation-sidebar-head"><strong>CHAT HISTORY</strong><button onClick={() => void refreshHistory()} disabled={historyLoading} aria-label="Refresh chat history">↻</button></div>
-        <input className="conversation-search" aria-label="Search all saved conversations" placeholder="Search all chats and messages…" value={historySearch} onChange={e => setHistorySearch(e.target.value)} />
+        <input className="conversation-search" aria-label="Search all saved conversations" placeholder="Search all chats and messages…" value={historySearch} maxLength={200} onChange={e => setHistorySearch(e.target.value)} />
         {historyLoading && <small className="history-hint">Loading history…</small>}
         {historySearchLoading && <small className="history-hint">Searching saved messages…</small>}
         <div className="history-tabs" role="group" aria-label="Conversation history view">
