@@ -1003,13 +1003,30 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
     if canonical_target != target || !canonical_target.starts_with(&canonical_root) {
         return Err("The edited project file moved or was redirected. Undo was refused.".into());
     }
-    let current = fs::read(&canonical_target)
-        .map_err(|_| "FRIDAY could not verify the current edited file.".to_string())?;
-    if current.len() as u64 != metadata.len() || current.len() as u64 > MAX_FILE_BYTES
-        || current.contains(&0) || std::str::from_utf8(&current).is_err() {
-        return Err("The current edited file is no longer bounded UTF-8 text. Undo was refused.".into());
+
+    // Pin the target's containing directory before reading or changing any child.
+    // All installation and rollback renames below are relative to this handle.
+    let parent = canonical_target.parent().ok_or("The edited file has no parent directory.")?;
+    let (parent_handle, current_name, parent_identity) =
+        open_verified_code_parent(&canonical_root, &canonical_target)?;
+    let original_identity = verified_code_child_identity(&parent_handle, &current_name)?;
+    let mut current_file = crate::coding_sandbox_fs::open_file_nofollow(&parent_handle, &current_name)
+        .map_err(|_| "FRIDAY could not safely open the current edited file.".to_string())?;
+    if !crate::coding_sandbox_fs::runtime_tree_handle_matches(original_identity, &current_file)
+        .map_err(|_| "Could not verify the current edited file identity.".to_string())? {
+        return Err("The edited project file changed identity. Undo was refused.".into());
     }
-    if sha256_hex(&current) != record.resulting_sha256 {
+    let current_meta = current_file.metadata()
+        .map_err(|_| "Could not inspect the current edited file.".to_string())?;
+    if !current_meta.is_file() || current_meta.len() != metadata.len()
+        || current_meta.len() == 0 || current_meta.len() > MAX_FILE_BYTES {
+        return Err("The current edited file is no longer a bounded regular file. Undo was refused.".into());
+    }
+    let mut current = Vec::new();
+    current_file.take(MAX_FILE_BYTES + 1).read_to_end(&mut current)
+        .map_err(|_| "FRIDAY could not read the current edited file through its verified handle.".to_string())?;
+    if current.len() as u64 != current_meta.len() || current.contains(&0)
+        || std::str::from_utf8(&current).is_err() || sha256_hex(&current) != record.resulting_sha256 {
         return Err("This file has changed since FRIDAY edited it. Undo will not overwrite your newer changes.".into());
     }
 
@@ -1038,8 +1055,6 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
         .map_err(|e| format!("Could not flush the undo recovery journal: {e}"))?;
     drop(journal);
 
-    let parent = canonical_target.parent().ok_or("The edited file has no parent directory.")?;
-    let (parent_handle, _, _) = open_verified_code_parent(&canonical_root, &canonical_target)?;
     let temporary = parent.join(format!(".friday-code-undo-{}.tmp", record.id));
     let mut temp_file = crate::coding_sandbox_fs::create_destination_entry(
         &parent_handle,
@@ -1054,67 +1069,75 @@ fn undo_code_change_on_disk(root: &Path, record: &CodingUndoRecord) -> Result<(P
         return Err(format!("Could not prepare the original-file restoration: {error}"));
     }
     drop(temp_file);
-    // The Undo temporary file is newly created and would otherwise inherit the
-    // project directory's DACL. Restore the original file permissions before
-    // ReplaceFileW installs it, just as crash-recovery copies do.
+    // Restore the original DACL/mode on the prepared object before it becomes
+    // the project entry. The subsequent rename does not inherit target ACLs.
     apply_recovery_permissions(&temporary, record)?;
+    let temporary_name = temporary.file_name().ok_or("The Undo temporary filename is invalid.")?;
     let prepared = crate::coding_sandbox_fs::read_bounded_file_from_directory_handle(
-        &parent_handle,
-        temporary.file_name().ok_or("The Undo temporary filename is invalid.")?,
-        MAX_FILE_BYTES,
-        MAX_SCANNED_ENTRIES,
+        &parent_handle, temporary_name, MAX_FILE_BYTES, MAX_SCANNED_ENTRIES,
     ).map_err(|_| "Could not verify the prepared original-file restoration through its verified parent directory.".to_string())?;
     if sha256_hex(&prepared) != record.original_sha256 {
-        let _ = fs::remove_file(&temporary);
         return Err("The prepared original-file restoration failed SHA-256 verification.".into());
     }
+    let temporary_identity = verified_code_child_identity(&parent_handle, temporary_name)?;
 
     let displaced = parent.join(format!(".friday-code-undone-{}.tmp", record.id));
-    #[cfg(windows)]
-    {
-        if let Err(error) = replace_file_with_backup(&canonical_target, &temporary, &displaced) {
-            return Err(format!("{error}. FRIDAY retained the Undo journal and recovery files; it will reconcile the transaction before another edit."));
-        }
-        // ReplaceFileW preserves the destination's security descriptor. Reapply
-        // the recorded original DACL to the installed file after replacement.
-        // If this fails, keep the journal and displaced copy for recovery.
-        apply_recovery_permissions(&canonical_target, record)?;
-    }
-    #[cfg(not(windows))]
-    {
-        fs::rename(&canonical_target, &displaced)
-            .map_err(|e| format!("Could not safely stage the current edited file: {e}"))?;
-        if let Err(error) = fs::rename(&temporary, &canonical_target) {
-            let restored = fs::rename(&displaced, &canonical_target).is_ok();
-            let _ = fs::remove_file(&temporary);
-            return Err(if restored {
-                format!("Could not restore the original file; the edited file was put back: {error}")
-            } else {
-                format!("Undo installation and automatic rollback both failed. The edited file remains at {} and the original backup remains at {}.",
-                    displaced.display(), backup.display())
-            });
-        }
-    }
-    let restored_bytes = fs::read(&canonical_target)
-        .map_err(|_| format!("The original was installed but could not be verified. The backup remains at {}.", backup.display()))?;
-    if sha256_hex(&restored_bytes) != record.original_sha256 {
-        let failed = parent.join(format!(".friday-code-undo-failed-{}.tmp", record.id));
-        let _ = fs::rename(&canonical_target, &failed);
-        let rolled_back = fs::rename(&displaced, &canonical_target).is_ok();
-        let _ = fs::remove_file(&failed);
-        return Err(if rolled_back {
-            "The restored file failed verification; FRIDAY put the edited version back.".into()
+    let displaced_name = displaced.file_name().ok_or("The displaced-file name is invalid.")?;
+
+    // Use the same no-replace, identity-checked rename protocol on Windows and
+    // Unix. Never let an unexpected destination be overwritten during Undo.
+    crate::coding_sandbox_fs::rename_file_noreplace(
+        &parent_handle, &current_name, displaced_name, parent_identity, original_identity,
+    ).map_err(|error| format!(
+        "Could not stage the verified edited file without replacing another entry: {error}. The Undo journal and backup were retained."
+    ))?;
+
+    if let Err(error) = crate::coding_sandbox_fs::rename_file_noreplace(
+        &parent_handle, temporary_name, current_name.as_os_str(), parent_identity, temporary_identity,
+    ) {
+        let restored = crate::coding_sandbox_fs::rename_file_noreplace(
+            &parent_handle, displaced_name, &current_name, parent_identity, original_identity,
+        ).is_ok();
+        return Err(if restored {
+            format!("Could not install the original file; the edited file was restored: {error}. Recovery files were retained.")
         } else {
-            format!("The restored file failed verification and rollback failed. Recovery copies remain in {}.", backup.display())
+            format!("Undo installation and automatic rollback both failed. The edited file remains at {} and the original backup remains at {}: {error}",
+                displaced.display(), backup.display())
         });
     }
 
-    let undo_path = backup_dir.join(format!("{}.undo.json", record.id));
-    let consumed_path = backup_dir.join(format!("{}.undone.json", record.id));
-    fs::rename(&undo_path, &consumed_path)
-        .map_err(|e| format!("The original was restored and verified, but FRIDAY could not mark this undo as consumed: {e}. A repeat undo will still be blocked by the file hash check."))?;
-    fs::remove_file(&displaced)
-        .map_err(|e| format!("The original was restored and verified, but FRIDAY could not clean up its staged copy: {e}"))?;
+    if let Err(error) = verify_installed_code_file(
+        &parent_handle, &current_name, temporary_identity, &record.original_sha256,
+    ) {
+        let failed_name = format!(".friday-code-undo-failed-{}.tmp", record.id);
+        let failed_preserved = crate::coding_sandbox_fs::rename_file_noreplace(
+            &parent_handle, &current_name, OsStr::new(&failed_name), parent_identity, temporary_identity,
+        ).is_ok();
+        let rolled_back = crate::coding_sandbox_fs::rename_file_noreplace(
+            &parent_handle, displaced_name, &current_name, parent_identity, original_identity,
+        ).is_ok();
+        return Err(if rolled_back {
+            format!("The restored file failed identity/content verification ({error}); FRIDAY put the edited file back.")
+        } else {
+            format!("The restored file failed verification and rollback could not be proven safe. The edited file remains at {} and the failed restoration was {}. The original backup remains at {}.",
+                displaced.display(), if failed_preserved { failed_name } else { "the project entry".into() }, backup.display())
+        });
+    }
+
+    // Mark the Undo as consumed with a no-replace rename below the pinned
+    // backup-directory handle, so a competing record cannot be overwritten.
+    let backup_identity = crate::coding_sandbox_fs::verified_directory_handle_identity(&backup_handle)
+        .map_err(|_| "Could not verify the code backup folder before recording Undo completion.".to_string())?;
+    let undo_name = OsStr::new(&format!("{}.undo.json", record.id)).to_os_string();
+    let consumed_name = OsStr::new(&format!("{}.undone.json", record.id)).to_os_string();
+    let undo_identity = verified_code_child_identity(&backup_handle, &undo_name)?;
+    crate::coding_sandbox_fs::rename_file_noreplace(
+        &backup_handle, &undo_name, &consumed_name, backup_identity, undo_identity,
+    ).map_err(|e| format!("The original was restored and verified, but FRIDAY could not safely mark Undo as consumed: {e}. The recovery journal and copies were retained."))?;
+
+    // Cleanup remains deliberately conservative in this stage: retain the
+    // displaced edited copy as recovery evidence rather than unlinking a name
+    // after its identity check. A later cleanup primitive will own safe removal.
     fs::remove_file(&journal_path)
         .map_err(|e| format!("The original was restored and Undo was consumed, but FRIDAY could not clean up the resolved transaction journal: {e}. Recovery will reconcile it before the next edit."))?;
     Ok((canonical_target, backup))
