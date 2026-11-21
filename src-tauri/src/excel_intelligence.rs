@@ -211,7 +211,7 @@ impl WorkbookSessionStore {
         field_id: &str,
     ) -> Result<ConfirmedAccountingMapping, String> {
         const ALLOWED_FIELDS: &[&str] = &[
-            "gross_sales", "discounts", "sales_returns", "cost_of_goods_sold", "net_sales",
+            "accounting.gross_sales", "accounting.discounts", "accounting.sales_returns", "accounting.cost_of_goods_sold", "accounting.net_sales",
         ];
         if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("This workbook analysis session is invalid. Import the workbook again.".into());
@@ -948,7 +948,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv("mapping.csv".into(), b"Product,Gross Sales\nTea,10\n").unwrap();
         let id = store.create(&analysis).unwrap();
-        let mapping = store.confirm_accounting_mapping(&id, "CSV data", 1, "gross_sales").unwrap();
+        let mapping = store.confirm_accounting_mapping(&id, "CSV data", 1, "accounting.gross_sales").unwrap();
         assert_eq!(mapping.field_id, "gross_sales");
         assert_eq!(mapping.header, "Gross Sales");
         assert_eq!(mapping.header_cell, "B1");
@@ -961,12 +961,12 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv("mapping.csv".into(), b"Product,Revenue,Gross Sales\nTea,10,12\n").unwrap();
         let id = store.create(&analysis).unwrap();
-        assert!(store.confirm_accounting_mapping(&id, "CSV data", 1, "gross_sales").is_err());
-        assert!(store.confirm_accounting_mapping(&id, "CSV data", 2, "net_sales").is_err());
-        store.confirm_accounting_mapping(&id, "CSV data", 2, "gross_sales").unwrap();
+        assert!(store.confirm_accounting_mapping(&id, "CSV data", 1, "accounting.gross_sales").is_err());
+        assert!(store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.net_sales").is_err());
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
         assert!(store.confirm_accounting_mapping(&id, "CSV data", 2, "gross_sales").is_err());
-        assert!(store.confirm_accounting_mapping(&id, "Other sheet", 2, "gross_sales").is_err());
-        assert!(store.confirm_accounting_mapping("00000000000000000000000000000000", "CSV data", 2, "gross_sales").is_err());
+        assert!(store.confirm_accounting_mapping(&id, "Other sheet", 2, "accounting.gross_sales").is_err());
+        assert!(store.confirm_accounting_mapping("00000000000000000000000000000000", "CSV data", 2, "accounting.gross_sales").is_err());
     }
 
     #[test]
