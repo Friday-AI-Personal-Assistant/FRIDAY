@@ -436,6 +436,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn community_skill_parser_accepts_bounded_supported_frontmatter() {
+        let input = "---\nname: sample-skill\ndescription: A sample skill for FRIDAY\nlicense: Apache-2.0\ncompatibility: Windows and Linux\n---\n\nUntrusted instructions stay inert.\n";
+        let (name, description, license, compatibility, body) = parse_skill_markdown(input).unwrap();
+        assert_eq!(name, "sample-skill");
+        assert_eq!(description, "A sample skill for FRIDAY");
+        assert_eq!(license.as_deref(), Some("Apache-2.0"));
+        assert_eq!(compatibility.as_deref(), Some("Windows and Linux"));
+        assert!(body.contains("Untrusted instructions"));
+    }
+
+    #[test]
+    fn community_skill_parser_rejects_duplicate_or_unknown_fields() {
+        let duplicate = "---\nname: first\nname: second\ndescription: desc\n---\nbody";
+        assert!(parse_skill_markdown(duplicate).unwrap_err().contains("Duplicate"));
+        let unknown = "---\nname: sample\ndescription: desc\nscripts: run.sh\n---\nbody";
+        assert!(parse_skill_markdown(unknown).unwrap_err().contains("Unsupported"));
+    }
+
+    #[test]
+    fn community_skill_parser_rejects_yaml_features_and_invalid_names() {
+        let nested = "---\nname: sample\ndescription: desc\nmetadata:\n  author: someone\n---\nbody";
+        assert!(parse_skill_markdown(nested).is_err());
+        let invalid_name = "---\nname: ../escape\ndescription: desc\n---\nbody";
+        assert!(parse_skill_markdown(invalid_name).is_err());
+        let anchor = "---\nname: sample\ndescription: &shared desc\n---\nbody";
+        assert!(parse_skill_markdown(anchor).is_err());
+    }
+
+    #[test]
+    fn community_skill_parser_rejects_missing_delimiters_and_empty_body() {
+        assert!(parse_skill_markdown("name: sample\ndescription: desc\nbody").is_err());
+        assert!(parse_skill_markdown("---\nname: sample\ndescription: desc\n---\n").is_err());
+    }
+
+    #[test]
+    fn community_skill_parser_rejects_oversized_content() {
+        let input = format!("---\nname: sample\ndescription: desc\n---\n{}", "x".repeat(32_769));
+        assert!(parse_skill_markdown(&input).is_err());
+    }
+
+    #[test]
     fn catalogue_has_unique_ids_and_declared_permissions() {
         let mut ids = BTreeSet::new();
         for (id, _, _, permissions, instructions) in SKILLS {
