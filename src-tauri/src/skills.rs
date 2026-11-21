@@ -302,6 +302,135 @@ pub fn uninstall_skill(app: AppHandle, skill_id: String) -> Result<String, Strin
     Ok("Skill package and its local files were removed.".into())
 }
 
+
+/// Metadata extracted from a quarantined, instructions-only community skill.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunitySkillPreview {
+    id: String, name: String, description: String, version: String,
+    license: Option<String>, compatibility: Option<String>, content_sha256: String,
+    status: String, permissions: Vec<String>, executable_content: bool,
+}
+
+fn parse_skill_markdown(content: &str) -> Result<(String, String, Option<String>, Option<String>, String), String> {
+    const MAX_FRONTMATTER: usize = 4_096;
+    const MAX_BODY: usize = 24_000;
+    if content.len() > 32_768 || content.contains('\0') || content.starts_with('\u{feff}') {
+        return Err("SKILL.md is oversized or contains unsupported encoding markers.".into());
+    }
+    let normalized = content.replace("\r\n", "\n");
+    let rest = normalized.strip_prefix("---\n").ok_or("SKILL.md must begin with a YAML frontmatter block.")?;
+    let end = rest.find("\n---\n").ok_or("SKILL.md frontmatter is missing its closing delimiter.")?;
+    let frontmatter = &rest[..end];
+    let body = &rest[end + 5..];
+    if frontmatter.len() > MAX_FRONTMATTER || body.trim().is_empty() || body.len() > MAX_BODY {
+        return Err("SKILL.md frontmatter or instruction body is empty or exceeds its size limit.".into());
+    }
+    let mut fields = BTreeMap::<String, String>::new();
+    for line in frontmatter.lines() {
+        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.starts_with(' ') || line.starts_with('\t') || line.contains('\t') {
+            return Err("Nested YAML, indentation and tab characters are not supported in this safe import format.".into());
+        }
+        let (key, raw) = line.split_once(':').ok_or("Every frontmatter field must be a simple key: value pair.")?;
+        if !matches!(key, "name" | "description" | "license" | "compatibility") {
+            return Err(format!("Unsupported frontmatter field '{key}'. This importer accepts only name, description, license and compatibility."));
+        }
+        if fields.contains_key(key) { return Err(format!("Duplicate frontmatter field '{key}'.")); }
+        let value = raw.trim();
+        if value.is_empty() || value.chars().any(|c| c.is_control())
+            || value.contains("& ") || value.contains("* ") || value.starts_with('!')
+            || value.starts_with('{') || value.starts_with('[') || value.starts_with('|') || value.starts_with('>') {
+            return Err(format!("Frontmatter field '{key}' uses an unsupported YAML value."));
+        }
+        let scalar = if (value.starts_with('"') && value.ends_with('"')) || (value.starts_with('\'') && value.ends_with('\'')) {
+            if value.len() < 2 { return Err(format!("Frontmatter field '{key}' is invalid.")); }
+            value[1..value.len()-1].to_string()
+        } else {
+            if value.contains('"') || value.contains('\'') { return Err(format!("Frontmatter field '{key}' has unmatched quotes.")); }
+            value.to_string()
+        };
+        fields.insert(key.to_string(), scalar);
+    }
+    let name = fields.remove("name").ok_or("SKILL.md must declare a name.")?;
+    if name.is_empty() || name.len() > 64 || !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        || name.starts_with('-') || name.ends_with('-') || name.contains("--") {
+        return Err("Skill name must be 1–64 lowercase letters, digits or single hyphens, without leading/trailing hyphens.".into());
+    }
+    let description = fields.remove("description").ok_or("SKILL.md must declare a description.")?;
+    if description.trim().is_empty() || description.len() > 1_024 { return Err("Skill description must contain 1–1,024 characters.".into()); }
+    let license = fields.remove("license");
+    if license.as_ref().is_some_and(|v| v.len() > 128 || v.trim().is_empty()) { return Err("Skill licence identifier is empty or too long.".into()); }
+    let compatibility = fields.remove("compatibility");
+    if compatibility.as_ref().is_some_and(|v| v.len() > 500 || v.trim().is_empty()) { return Err("Skill compatibility declaration is empty or too long.".into()); }
+    Ok((name, description, license, compatibility, body.to_string()))
+}
+
+#[tauri::command]
+pub fn inspect_and_quarantine_skill(app: AppHandle) -> Result<CommunitySkillPreview, String> {
+    crate::permissions::authorize_command("skills.import.inspect", "skills.import.inspect")?;
+    let selected = app.dialog().file().blocking_pick_folder();
+    let Some(selected) = selected else { return Err("Community skill import was cancelled.".into()); };
+    let source = selected.into_path().map_err(|_| "FRIDAY could not access the selected skill folder.".to_string())?;
+    let source_meta = fs::symlink_metadata(&source).map_err(|_| "FRIDAY could not inspect the selected skill folder.".to_string())?;
+    if !source_meta.is_dir() || source_meta.file_type().is_symlink() {
+        return Err("Select a normal folder containing one SKILL.md file; redirected folders are not accepted.".into());
+    }
+    let mut entries = fs::read_dir(&source).map_err(|e| format!("Could not inspect skill folder: {e}"))?;
+    let first = entries.next().ok_or("The selected folder is empty; expected one SKILL.md file.")?
+        .map_err(|e| format!("Could not inspect skill folder entry: {e}"))?;
+    if entries.next().is_some() || first.file_name() != "SKILL.md" {
+        return Err("The initial importer accepts exactly one file named SKILL.md. Scripts, assets, nested folders and additional files are not accepted.".into());
+    }
+    let file_meta = fs::symlink_metadata(first.path()).map_err(|_| "Could not inspect SKILL.md.".to_string())?;
+    if !file_meta.is_file() || file_meta.file_type().is_symlink() || file_meta.len() > 32_768 {
+        return Err("SKILL.md must be a regular, non-link file no larger than 32 KB.".into());
+    }
+    let bytes = fs::read(first.path()).map_err(|e| format!("Could not read SKILL.md: {e}"))?;
+    let content = String::from_utf8(bytes).map_err(|_| "SKILL.md must be valid UTF-8.".to_string())?;
+    let (name, description, license, compatibility, _body) = parse_skill_markdown(&content)?;
+    let content_sha256 = format!("{:x}", Sha256::digest(content.as_bytes()));
+    let id = content_sha256.clone();
+    let quarantine_root = app.path().app_data_dir()
+        .map_err(|e| format!("Cannot locate FRIDAY's application data folder: {e}"))?
+        .join("skills").join("quarantine");
+    fs::create_dir_all(&quarantine_root).map_err(|e| format!("Could not create skill quarantine: {e}"))?;
+    let quarantine_dir = quarantine_root.join(&id);
+    match fs::create_dir(&quarantine_dir) {
+        Ok(()) => {},
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let meta = fs::symlink_metadata(&quarantine_dir).map_err(|_| "Could not verify existing quarantine entry.".to_string())?;
+            if !meta.is_dir() || meta.file_type().is_symlink() { return Err("Existing quarantine entry is not a safe directory.".into()); }
+        },
+        Err(e) => return Err(format!("Could not create quarantine entry: {e}")),
+    }
+    let stored_skill = quarantine_dir.join("SKILL.md");
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&stored_skill) {
+        Ok(mut file) => { use std::io::Write; file.write_all(content.as_bytes()).map_err(|e| format!("Could not preserve quarantined skill: {e}"))?; file.sync_all().map_err(|e| format!("Could not flush quarantined skill: {e}"))?; },
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = fs::read(&stored_skill).map_err(|_| "Existing quarantined content could not be verified.".to_string())?;
+            if existing != content.as_bytes() { return Err("Quarantine hash collision or content substitution detected.".into()); }
+        },
+        Err(e) => return Err(format!("Could not store quarantined skill: {e}")),
+    }
+    let preview = CommunitySkillPreview {
+        id, name, description, version: "unverified".into(), license, compatibility,
+        content_sha256, status: "QUARANTINED — NOT INSTALLED OR ENABLED".into(),
+        permissions: Vec::new(), executable_content: false,
+    };
+    let metadata = serde_json::to_vec_pretty(&preview).map_err(|e| format!("Could not encode quarantine metadata: {e}"))?;
+    let metadata_path = quarantine_dir.join("inspection.json");
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&metadata_path) {
+        Ok(mut file) => { use std::io::Write; file.write_all(&metadata).map_err(|e| format!("Could not save quarantine metadata: {e}"))?; file.sync_all().map_err(|e| format!("Could not flush quarantine metadata: {e}"))?; },
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = fs::read(&metadata_path).map_err(|_| "Existing quarantine metadata could not be verified.".to_string())?;
+            if existing != metadata { return Err("Existing quarantine metadata differs from this inspection.".into()); }
+        },
+        Err(e) => return Err(format!("Could not save quarantine metadata: {e}")),
+    }
+    Ok(preview)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
