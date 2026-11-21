@@ -1594,3 +1594,24 @@ h1 em { color: #78AEEF; }
   .excel-readonly-footer { align-items:flex-start; flex-direction:column; gap:5px; }
 }
 @media(prefers-reduced-motion:reduce) { .excel-page * { scroll-behavior:auto; } }
+
+
+.excel-quality-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.excel-quality-card { min-width:0; padding:12px; border:1px solid var(--az-border,#385273); border-radius:9px; background:rgba(25,40,64,.42); }
+.excel-quality-card.is-warning { border-left:3px solid #D99A58; }
+.excel-quality-card.is-info { border-left:3px solid #6C9FD8; }
+.excel-quality-card-top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.excel-quality-card-top strong { color:var(--az-text,#E6EEF8); font:600 11px Manrope,sans-serif; }
+.excel-quality-card-top span { flex:0 0 auto; color:#D9AE7B; font-size:8px; font-weight:800; letter-spacing:.7px; }
+.excel-quality-card.is-info .excel-quality-card-top span { color:#8DBEF0; }
+.excel-quality-card p { margin:8px 0; color:var(--az-muted,#A9BBD2); font-size:9px; line-height:1.6; }
+.excel-quality-meta { display:flex; flex-wrap:wrap; gap:7px 12px; color:var(--az-muted,#A9BBD2); font-size:8px; }
+.excel-quality-clear { display:flex; align-items:flex-start; gap:11px; padding:14px; border:1px solid var(--az-border,#385273); border-radius:9px; background:rgba(40,116,216,.07); }
+.excel-quality-clear>span { display:grid; place-items:center; width:25px; height:25px; flex:0 0 25px; border-radius:50%; background:rgba(40,116,216,.18); color:#8DBEF0; font-weight:800; }
+.excel-quality-clear strong { color:var(--az-text,#E6EEF8); font:600 11px Manrope,sans-serif; }
+.excel-quality-clear p { margin:5px 0 0; color:var(--az-muted,#A9BBD2); font-size:9px; line-height:1.6; }
+.app-shell[data-theme="light"] .excel-quality-card { background:#F7F9FD; border-color:#D3DEEC; }
+.app-shell[data-theme="light"] .excel-quality-card-top strong,.app-shell[data-theme="light"] .excel-quality-clear strong { color:#172B45; }
+.app-shell[data-theme="light"] .excel-quality-card p,.app-shell[data-theme="light"] .excel-quality-meta,.app-shell[data-theme="light"] .excel-quality-clear p { color:#536B88; }
+.app-shell[data-theme="light"] .excel-quality-clear { background:#F1F6FD; border-color:#D3DEEC; }
+@media(max-width:760px) { .excel-quality-list { grid-template-columns:minmax(0,1fr); } }
