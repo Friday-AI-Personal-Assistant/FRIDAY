@@ -1112,7 +1112,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] #1122: Rework normal on-disk Undo around verified directory handles, bounded reads, identity-bound no-replace renames and post-install verification.
 - [ ] #1123–#1124: Repair interrupted Undo recovery and its crash/ReplaceFileW failure-state tests. Preserve the active Undo record when recovery has not completed; archive the transaction journal without overwriting; retain only artifacts that actually exist and are needed as evidence.
 - [ ] Remove remaining unsafe path-based cleanup from the Apply/Undo recovery paths. Do not replace it with a filename-only deletion fallback.
-- [x] Move permission restoration to verified-handle operations; #1133 additionally binds metadata mutation to the identity captured from the original open handle. CI verification pending.
+- [x] Move permission restoration to verified-handle operations; #1133 additionally binds metadata mutation to the identity captured from the original open handle. #1132–#1134 passed Linux/Windows CI.
 - [ ] Define and test the recovery artifact state machine for every transaction boundary and documented Windows replacement outcome.
 - [ ] Verify Linux and Windows CI and record the exact run IDs.
 - [ ] Perform physical Windows desktop acceptance separately; CI is not physical-device validation.
@@ -1133,16 +1133,16 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 **User impact:** FRIDAY applies saved file permissions to the file it actually opened inside the approved directory, rather than reopening a pathname that could have been swapped to point at another file. Windows DACL restoration uses the verified file handle and fails closed if required access cannot be obtained. No broader project access is granted and no recovery evidence is deleted.
 
-### Identity-bound permission restoration — #1133
+### Identity-bound permission restoration — #1133–#1134
 
-**Status:** IMPLEMENTED — Linux/Windows CI pending.
+**Status:** COMPLETE IN CI — #1133–#1134 passed Linux/Windows CI.
 
 - [x] Capture stable file identity from the original open handle before closing newly created recovery/Undo temporary files.
 - [x] Require the expected identity when reopening a child for permission restoration; compare the opened handle before changing Unix mode bits or Windows DACLs.
 - [x] Bind interrupted-Undo target permission restoration to a verified identity and fail closed if the opened object differs.
 - [x] Add cross-platform regression coverage for identity captured from an open handle and same-name replacement detection.
-- [ ] Verify Linux tests and Windows build/tests; inspect platform-specific failures before proceeding.
-- [ ] Continue auditing path-based transaction cleanup and recovery-target validation; this batch does not authorize deletion or enable Recovery Storage Manager cleanup.
+- [x] Verify Linux tests and Windows build/tests in #1133–#1134.
+- [x] Continue auditing path-based transaction cleanup and recovery-target validation; this audit is recorded in the next section. This batch does not authorize deletion or enable Recovery Storage Manager cleanup.
 
 **User impact:** FRIDAY carries the original file identity across the close/reopen boundary and refuses to change permissions if the named file was replaced. Recovery evidence remains preserved.
 
@@ -1158,6 +1158,32 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [ ] Continue converting permission restoration, remaining path-based recovery helpers and transaction cleanup to verified-handle operations.
 
 **User impact:** interrupted Undo recovery no longer decides whether an operation is active or consumed by checking a pathname and then reopening that pathname separately. Both state records are read from the same verified recovery folder, reducing the chance that a swapped file changes the recovery decision. No recovery evidence is deleted.
+
+
+
+### Recovery cleanup and target-validation audit — #1136
+
+**Status:** AUDIT COMPLETE — unsafe cleanup call sites identified; safe deletion implementation remains blocked pending platform-specific guarantees and adversarial tests.
+
+**Confirmed findings in `src-tauri/src/coding_assistant.rs`:**
+
+- [ ] Apply still uses pathname-based `fs::remove_file` for the displaced original copy and resolved transaction journal after successful installation. The displaced copy is valuable recovery evidence and should not be deleted merely because the Undo record was written.
+- [ ] Normal Undo still removes its resolved journal by pathname after marking Undo consumed; the displaced edited copy is intentionally retained.
+- [ ] Apply/Undo error paths attempt pathname-based removal of newly-created temporary files. These paths must either preserve the artifact or use a deletion operation bound to the exact identity captured from the original open handle.
+- [ ] `remove_recovery_copy` performs a separate path-based hash/read and then pathname deletion. It currently has no production call sites, but must not become a cleanup fallback.
+- [x] `safe_recovery_target` validates the record, granted root, allowlisted file type and parent path; recovery flows additionally open verified parent handles and use no-follow, identity-checked child operations. Continue auditing the boundary between path validation and the later handle-bound operation.
+- [x] Confirmed `coding_sandbox_fs::remove_verified_runtime_file` is intentionally unsupported on Unix because unlink-by-name retains a same-user replacement race. Windows has a handle-bound delete-disposition implementation, but it must be extended/reviewed for recovery-specific expected identity, ownership and transaction-state checks before reuse.
+
+**Engineering decision:**
+
+- Do not wire the snapshot prototype's Unix `unlinkat` helper into recovery cleanup; its own documentation explicitly says the final name-based unlink race remains.
+- Do not use a path-based delete after a successful hash check, a filename-only check, or a fresh identity lookup that is not bound to the deletion handle.
+- Preserve resolved journals and displaced copies until the platform can prove safe cleanup. Prefer a verified no-replace archive/retention state over deletion when that is possible.
+- Implement and test the Windows identity-bound delete path independently. Keep Unix cleanup fail-closed unless a reviewed primitive and threat model can close the same-user race; preserving storage is preferable to unsafe reclamation.
+- The Recovery Storage Manager remains read-only/informational until cleanup eligibility, exact artifact identity, transaction ownership and state-machine gates are enforced by the backend.
+
+**User impact:** FRIDAY will not reclaim disk space by risking a user's project file or the only copy needed to recover an edit. Some artifacts may remain on disk until a platform-safe cleanup implementation is available; this is an intentional reliability trade-off, not an automatic retention policy.
+
 
 ## 28. Recovery Storage Manager — accepted product requirement
 
