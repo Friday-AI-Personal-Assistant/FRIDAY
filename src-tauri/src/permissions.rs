@@ -77,6 +77,7 @@ const COMMAND_POLICIES: &[CommandPolicy] = &[
     CommandPolicy { command_id: "file.pick_and_read_text_files", capability: "files.read.picker" },
     CommandPolicy { command_id: "excel.pick_and_analyze_workbook", capability: "excel.workbook.read" },
     CommandPolicy { command_id: "excel.answer_question", capability: "excel.analysis.local" },
+    CommandPolicy { command_id: "excel.confirm_accounting_mapping", capability: "excel.mapping.confirm" },
     CommandPolicy { command_id: "coding.pick_project_folder_and_list_files", capability: "coding.project.select" },
     CommandPolicy { command_id: "coding.list_code_change_history", capability: "coding.history.read" },
     CommandPolicy { command_id: "coding.preview_code_change", capability: "coding.change.preview" },
