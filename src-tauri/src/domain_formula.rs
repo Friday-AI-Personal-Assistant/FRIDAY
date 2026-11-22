@@ -221,7 +221,7 @@ pub(crate) struct FormulaSummary {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct CalculationResult {
+pub struct CalculationResult {
     pub formula_id: String,
     pub formula_version: u16,
     pub status: String,
