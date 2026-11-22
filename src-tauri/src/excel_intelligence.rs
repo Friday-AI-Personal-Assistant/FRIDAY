@@ -1225,7 +1225,10 @@ mod tests {
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
-        let error = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4).unwrap_err();
+        let error = match store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4) {
+            Ok(_) => panic!("a range containing a possible total row must be rejected"),
+            Err(error) => error,
+        };
         assert!(error.contains("possible subtotal or total row"));
         assert!(error.contains("row 4"));
         let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 3).unwrap();
