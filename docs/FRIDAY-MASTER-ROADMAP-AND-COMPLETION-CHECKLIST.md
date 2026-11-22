@@ -1432,7 +1432,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] Preserve absolute worksheet coordinates for non-A1 used ranges and cap returned source-cell evidence at 20,000 references.
 - [x] Add a read-only UI for formula selection, explicit currency entry, confirmed-mapping prerequisites, results, warnings and source evidence.
 - [x] Add explicit user-selected inclusive worksheet row-range controls; the backend validates bounds against retained source coordinates and returns the selected range in the calculation result.
-- [x] Add conservative subtotal/grand-total label detection across the first four cells of each selected row. If a likely total row is present, fail closed with its worksheet row number; FRIDAY never silently includes, excludes or double-counts it.
+- [x] Add conservative subtotal/grand-total label detection across every cell in each selected row. If a likely total row is present, fail closed with its worksheet row number; FRIDAY never silently includes, excludes or double-counts it. Detection uses reviewed English label patterns and is not a guarantee that every possible subtotal format will be recognized.
 - [x] Add regression tests for inclusive range selection, invalid/reversed/out-of-bounds ranges, total-row rejection and successful calculation after the user narrows the range to exclude the total row.
 - [ ] Add a dedicated selected-range source preview and explicit review workflow for ambiguous total-row candidates. Current behavior rejects likely total rows and asks the user to narrow the range; it does not offer an override.
 - [ ] Add adversarial coverage for source mismatch, oversized source evidence, unusual numeric formats and workbook formula cached-value caveats.
