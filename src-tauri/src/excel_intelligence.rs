@@ -239,7 +239,24 @@ impl Default for WorkbookSessionStore {
 fn normalize_accounting_total_label(value: &str) -> String {
     value.to_lowercase()
         .chars()
-        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
+        .filter_map(|ch| {
+            // Arabic-script spreadsheets commonly mix optional vowel marks,
+            // tatweel and regional forms of alef/yeh/kaf. Ignore presentation
+            // marks and normalize only well-established letter variants;
+            // matching remains against the explicit phrase allowlist below.
+            if matches!(ch, '\u{0640}' | '\u{0670}' | '\u{06D6}'..='\u{06ED}')
+                || matches!(ch, '\u{064B}'..='\u{065F}')
+            {
+                return None;
+            }
+            let ch = match ch {
+                'أ' | 'إ' | 'آ' | 'ٱ' => 'ا',
+                'ى' | 'ی' => 'ي',
+                'ک' => 'ك',
+                other => other,
+            };
+            Some(if ch.is_alphanumeric() { ch } else { ' ' })
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -330,6 +347,29 @@ fn is_accounting_total_label(value: &str) -> bool {
         "کل آمدنی",
         "جمع کل",
         "جمع فرعی",
+        // Dutch
+        "eindtotaal",
+        "subtotaal",
+        "algemeen totaal",
+        // Turkish
+        "genel toplam",
+        "ara toplam",
+        "toplam",
+        // Persian (normalized Arabic-script letter variants)
+        "مجموع کل",
+        "مبلغ کل",
+        "کل فروش",
+        "کل درآمد",
+        "جمع جزء",
+        // Hindi
+        "कुल",
+        "कुल योग",
+        "उप योग",
+        "उपयोग",
+        // Bengali
+        "মোট",
+        "সর্বমোট",
+        "উপমোট",
     ];
 
     fn is_period_qualifier(token: &str) -> bool {
@@ -341,6 +381,7 @@ fn is_accounting_total_label(value: &str) -> bool {
         matches!(
             token,
             "pkr" | "usd" | "eur" | "gbp" | "inr" | "aed" | "sar" | "cad" | "aud" | "jpy"
+                | "try" | "chf" | "cny" | "brl" | "mxn" | "nzd" | "bdt"
         )
     }
 
@@ -1891,6 +1932,75 @@ mod tests {
         ];
         for label in positive {
             assert!(is_accounting_total_label(label), "expected total label: {label}");
+        }
+    }
+
+    #[test]
+    fn accounting_total_label_normalization_handles_arabic_script_diacritics_and_variants() {
+        let positive = [
+            "إِجْمَالِيّ الْمَبِيعَات",
+            "اﻹجمالي العام",
+            "مجموعی فروخت",
+            "مُجْمُوعِي فَرُوخْت",
+            "جمعِ کُل",
+            "مبلغِ کُل",
+        ];
+        for label in positive {
+            assert!(is_accounting_total_label(label), "expected normalized total label: {label}");
+        }
+    }
+
+    #[test]
+    fn accounting_total_label_detection_covers_additional_locales_without_broad_matching() {
+        let positive = [
+            "Eindtotaal",
+            "Subtotaal",
+            "Algemeen totaal",
+            "Genel Toplam",
+            "Ara Toplam",
+            "Toplam",
+            "कुल",
+            "कुल योग",
+            "उप-योग",
+            "মোট",
+            "সর্বমোট",
+            "উপমোট",
+            "مجموع کل",
+            "مبلغ کل",
+            "کل فروش",
+            "کل درآمد",
+            "Genel Toplam TRY",
+            "FY 2026 Eindtotaal",
+        ];
+        for label in positive {
+            assert!(is_accounting_total_label(label), "expected localized total label: {label}");
+        }
+
+        let negative = [
+            "Totaal klanten",
+            "Algemeen totaal klanten",
+            "Genel Toplam tahmin",
+            "Ara Toplam ürünler",
+            "कुल ग्राहक",
+            "सर्वमोटर",
+            "মোট কর্মচারী",
+            "সর্বমোট পণ্য",
+            "جمع کل مشتریان",
+            "کل فروشندگان",
+            "Genel Toplam Q1",
+        ];
+        for label in negative {
+            assert!(!is_accounting_total_label(label), "unexpected localized total label: {label}");
+        }
+    }
+
+    #[test]
+    fn accounting_total_label_currency_qualifiers_remain_explicit_and_bounded() {
+        for label in ["Grand Total TRY", "Eindtotaal CHF", "Genel Toplam CNY", "سود کل BDT"] {
+            assert!(is_accounting_total_label(label), "expected currency-qualified total: {label}");
+        }
+        for label in ["Grand Total Customers", "Eindtotaal EUR Customers", "Genel Toplam Q1"] {
+            assert!(!is_accounting_total_label(label), "unexpected qualified total: {label}");
         }
     }
 
