@@ -2154,14 +2154,14 @@ mod tests {
 
     #[test]
     fn accounting_preview_tracks_multiple_total_candidates_at_exact_worksheet_rows() {
-        let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns,Note 1,Note 2\\n");
-        csv.push_str("Tea,100,5,2,,\\n");
-        csv.push_str("Grand Total (PKR),100,5,2,,\\n");
-        csv.push_str("Coffee,50,3,1,,\\n");
-        csv.push_str("إجمالي الإيرادات,150,8,3,,\\n");
-        csv.push_str("Total Customers,10,1,1,,\\n");
-        csv.push_str("مجموعی فروخت,150,8,3,,\\n");
-        csv.push_str("Biscuits,25,2,1,,\\n");
+        let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns,Note 1,Note 2\n");
+        csv.push_str("Tea,100,5,2,,\n");
+        csv.push_str("Grand Total (PKR),100,5,2,,\n");
+        csv.push_str("Coffee,50,3,1,,\n");
+        csv.push_str("إجمالي الإيرادات,150,8,3,,\n");
+        csv.push_str("Total Customers,10,1,1,,\n");
+        csv.push_str("مجموعی فروخت,150,8,3,,\n");
+        csv.push_str("Biscuits,25,2,1,,\n");
 
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv("multiple-total-candidates.csv".into(), csv.as_bytes()).unwrap();
