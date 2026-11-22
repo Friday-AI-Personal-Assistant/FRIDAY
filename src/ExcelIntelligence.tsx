@@ -188,7 +188,7 @@ export default function ExcelIntelligence() {
   const mappingRanges = confirmedMappings.filter(mapping => mapping.sheetName === sheet?.name).map(mapping => mapping.dataRange.split(":").map(cell => Number(cell.match(/[0-9]+$/)?.[0] ?? 0)));
   const accountingMinRow = mappingRanges.length ? Math.max(...mappingRanges.map(range => range[0])) : 2;
   const accountingMaxRow = mappingRanges.length ? Math.min(...mappingRanges.map(range => range[1])) : (sheet?.rowCount ?? 2);
-  const validAccountingRows = /^\\d+$/.test(accountingStartRow) && /^\\d+$/.test(accountingEndRow)
+  const validAccountingRows = /^\d+$/.test(accountingStartRow) && /^\d+$/.test(accountingEndRow)
     && Number(accountingStartRow) >= accountingMinRow && Number(accountingEndRow) >= Number(accountingStartRow)
     && Number(accountingEndRow) <= accountingMaxRow;
 
