@@ -1299,7 +1299,7 @@ mod tests {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
-        let cached_value = if include_cached_formula_value { "<v>3</v>" } else { "" };
+        let cached_value = if include_cached_formula_value { "<v>3</v>" } else { "<v></v>" };
         let worksheet = format!(
             r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Product</t></is></c><c r="B1" t="inlineStr"><is><t>Gross Sales</t></is></c><c r="C1" t="inlineStr"><is><t>Discounts</t></is></c><c r="D1" t="inlineStr"><is><t>Sales Returns</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>Book</t></is></c><c r="B2"><f>1+2</f>{cached_value}</c><c r="C2"><v>1</v></c><c r="D2"><v>0</v></c></row></sheetData></worksheet>"#
         );
