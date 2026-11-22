@@ -2762,6 +2762,145 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_accounting_mappings_expire_with_their_workbook_session() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "mapped-expiry.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        assert_eq!(store.sessions.lock().unwrap().get(&id).unwrap().confirmed_mappings.len(), 1);
+
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            sessions.get_mut(&id).unwrap().created_at =
+                Instant::now() - WORKBOOK_SESSION_TTL - Duration::from_secs(1);
+        }
+
+        assert!(store.preview_accounting_range(
+            &id, "CSV data", "accounting.net_sales", 2, 2
+        ).is_err());
+        assert_eq!(store.session_count(), 0);
+    }
+
+    #[test]
+    fn confirmed_accounting_mappings_are_evicted_with_their_workbook_session() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "mapped-eviction.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+        ).unwrap();
+        let first_id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(
+            &first_id, "CSV data", 2, "accounting.gross_sales"
+        ).unwrap();
+
+        let mut latest_id = String::new();
+        for _ in 0..MAX_WORKBOOK_SESSIONS {
+            latest_id = store.create(&analysis).unwrap();
+        }
+
+        assert_eq!(store.session_count(), MAX_WORKBOOK_SESSIONS);
+        assert!(store.preview_accounting_range(
+            &first_id, "CSV data", "accounting.net_sales", 2, 2
+        ).is_err());
+        assert!(store.confirm_accounting_mapping(
+            &latest_id, "CSV data", 2, "accounting.gross_sales"
+        ).is_ok());
+    }
+
+    #[test]
+    fn session_integrity_rejects_forged_mapping_keys_and_duplicate_assignments() {
+        let analysis = analyze_csv(
+            "mapping-invariants.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+        ).unwrap();
+
+        let key_store = WorkbookSessionStore::default();
+        let key_id = key_store.create(&analysis).unwrap();
+        key_store.confirm_accounting_mapping(
+            &key_id, "CSV data", 2, "accounting.gross_sales"
+        ).unwrap();
+        {
+            let mut sessions = key_store.sessions.lock().unwrap();
+            let session = sessions.get_mut(&key_id).unwrap();
+            let mapping = session.confirmed_mappings.values().next().unwrap().clone();
+            session.confirmed_mappings.clear();
+            session.confirmed_mappings.insert(
+                "forged:mapping:key".into(), mapping
+            );
+        }
+        assert!(key_store.answer(&key_id, "CSV data", "total gross sales").is_err());
+
+        let field_store = WorkbookSessionStore::default();
+        let field_id = field_store.create(&analysis).unwrap();
+        field_store.confirm_accounting_mapping(
+            &field_id, "CSV data", 2, "accounting.gross_sales"
+        ).unwrap();
+        {
+            let mut sessions = field_store.sessions.lock().unwrap();
+            let session = sessions.get_mut(&field_id).unwrap();
+            let mut duplicate = session.confirmed_mappings.values().next().unwrap().clone();
+            duplicate.source_column_index = 3;
+            duplicate.header = "Discounts".into();
+            duplicate.header_cell = "C1".into();
+            duplicate.data_range = "C2:C2".into();
+            let key = format!(
+                "{}:{}:{}",
+                duplicate.sheet_name, duplicate.source_column_index, duplicate.field_id
+            );
+            session.confirmed_mappings.insert(key, duplicate);
+        }
+        assert!(field_store.answer(&field_id, "CSV data", "total gross sales").is_err());
+
+        let column_store = WorkbookSessionStore::default();
+        let column_id = column_store.create(&analysis).unwrap();
+        column_store.confirm_accounting_mapping(
+            &column_id, "CSV data", 2, "accounting.gross_sales"
+        ).unwrap();
+        {
+            let mut sessions = column_store.sessions.lock().unwrap();
+            let session = sessions.get_mut(&column_id).unwrap();
+            let mut duplicate = session.confirmed_mappings.values().next().unwrap().clone();
+            duplicate.field_id = "accounting.discounts".into();
+            let key = format!(
+                "{}:{}:{}",
+                duplicate.sheet_name, duplicate.source_column_index, duplicate.field_id
+            );
+            session.confirmed_mappings.insert(key, duplicate);
+        }
+        assert!(column_store.answer(&column_id, "CSV data", "total gross sales").is_err());
+    }
+
+    #[test]
+    fn failed_mapping_confirmation_preserves_existing_confirmed_state() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "mapping-atomicity.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(
+            &id, "CSV data", 2, "accounting.gross_sales"
+        ).unwrap();
+
+        assert!(store.confirm_accounting_mapping(
+            &id, "CSV data", 3, "accounting.gross_sales"
+        ).is_err());
+
+        let sessions = store.sessions.lock().unwrap();
+        let mappings = &sessions.get(&id).unwrap().confirmed_mappings;
+        assert_eq!(mappings.len(), 1);
+        assert!(mappings.values().any(|mapping|
+            mapping.field_id == "accounting.gross_sales"
+                && mapping.source_column_index == 2
+                && mapping.header == "Gross Sales"
+        ));
+        validate_session_integrity(sessions.get(&id).unwrap()).unwrap();
+    }
+
+    #[test]
     fn concurrent_workbook_imports_preserve_session_count_and_unique_ids() {
         let store = std::sync::Arc::new(WorkbookSessionStore::default());
         let analysis = std::sync::Arc::new(session_test_analysis());
