@@ -198,7 +198,6 @@ pub struct WorkbookAccountingRangePreview {
     pub total_candidates_truncated: bool,
     pub confirmed_mappings: Vec<ConfirmedAccountingMapping>,
 }
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbookAccountingCalculation {
@@ -397,8 +396,7 @@ fn validate_session_integrity(session: &WorkbookSession) -> Result<(), String> {
         return Err("The retained worksheet summaries do not match the source session. Import the workbook again.".into());
     }
     let mut names = HashSet::new();
-    for (summary, source) in session.sheets.iter().zip(session.source_sheets.iter()) {
-        if summary.name != source.name
+    for (summary, source) in session.sheets.iter().zip(session.source_sheets.iter()) {        if summary.name != source.name
             || !names.insert(summary.name.as_str())
             || summary.row_count != source.rows.len()
             || summary.column_count != source.rows.iter().map(Vec::len).max().unwrap_or(0)
@@ -597,8 +595,7 @@ impl WorkbookSessionStore {
             .ok_or_else(|| "This workbook analysis session has expired or was replaced. Import the workbook again.".to_string())?;
         validate_session_integrity(session)?;
         let sheet = session.sheets.iter().find(|sheet| sheet.name == sheet_name)
-            .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;
-        let source = session.source_sheets.iter().find(|source| source.name == sheet_name)
+            .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;        let source = session.source_sheets.iter().find(|source| source.name == sheet_name)
             .ok_or_else(|| "The original source cells are unavailable in this workbook session. Import the workbook again.".to_string())?;
         let first_data_row = source.start_row.saturating_add(2);
         let last_data_row = source.start_row.saturating_add(source.rows.len());
@@ -797,8 +794,7 @@ fn read_selected_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
     }
 
     let mut file = open_selected_file_nofollow(&canonical)?;
-    let before = file.metadata()
-        .map_err(|_| "FRIDAY could not verify the selected workbook.".to_string())?;
+    let before = file.metadata()        .map_err(|_| "FRIDAY could not verify the selected workbook.".to_string())?;
     if is_redirected(&before) || !before.is_file() || before.len() != canonical_meta.len() || before.len() > max_bytes {
         return Err("The selected workbook changed before FRIDAY could read it.".into());
     }
@@ -997,7 +993,6 @@ fn analyze_matrix_with_origin(
     let blank_cells = total_cells.saturating_sub(non_empty_cells);
     let header = rows.first().cloned().unwrap_or_default();
     let mut quality_findings = Vec::new();
-
     let mut blank_headers = Vec::new();
     let mut header_groups: HashMap<String, Vec<usize>> = HashMap::new();
     for column in 0..column_count {
@@ -1197,8 +1192,7 @@ fn xlsx_part_path(base: &str, target: &str) -> Result<String, String> {
     Ok(parts.join("/"))
 }
 
-fn excel_cell_reference(reference: &str) -> Option<(usize, usize)> {
-    let mut column = 0usize;
+fn excel_cell_reference(reference: &str) -> Option<(usize, usize)> {    let mut column = 0usize;
     let mut letters = 0usize;
     let mut row_start = 0usize;
     for (index, byte) in reference.bytes().enumerate() {
@@ -1397,8 +1391,7 @@ fn answer_question(
     }
     let missing = has(&["missing", "blank", "empty", "null"]);
     let sum = has(&["sum", "total", "combined"]);
-    let average = has(&["average", "avg", "mean"]);
-    let maximum = has(&["highest", "maximum", "max", "largest", "biggest"]);
+    let average = has(&["average", "avg", "mean"]);    let maximum = has(&["highest", "maximum", "max", "largest", "biggest"]);
     let minimum = has(&["lowest", "minimum", "min", "smallest"]);
     let frequent = q.contains("most common") || q.contains("most frequent") || q.contains("mode") || q.contains("appears most");
     let count = !missing && has(&["count", "many", "number"]);
@@ -1597,8 +1590,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let id = store.create(&session_test_analysis()).unwrap();
         let answer = store.answer(&id, "CSV data", "total revenue").unwrap();
-        assert_eq!(answer.status, "answered");
-        assert!(answer.answer.contains("30.00"));
+        assert_eq!(answer.status, "answered");        assert!(answer.answer.contains("30.00"));
     }
 
     #[test]
@@ -1797,8 +1789,7 @@ mod tests {
             "Total",
             "Subtotal:",
             "Sub Total",
-            "Grand Total (PKR)",
-            "Overall Total",
+            "Grand Total (PKR)",            "Overall Total",
             "Net Total",
             "Total Sales",
             "Total Revenue",
@@ -1997,8 +1988,7 @@ mod tests {
         assert!(error.contains("row 122"));
     }
 
-    #[test]
-    fn accounting_preview_bounds_candidate_list_but_counts_every_candidate() {
+    #[test]    fn accounting_preview_bounds_candidate_list_but_counts_every_candidate() {
         let store = WorkbookSessionStore::default();
         let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns\n");
         for index in 0..(MAX_ACCOUNTING_TOTAL_CANDIDATES + 5) {
@@ -2197,8 +2187,7 @@ mod tests {
 
     #[test]
     fn accounting_source_references_preserve_non_a1_worksheet_coordinates() {
-        let rows = vec![
-            vec!["Product".to_string(), "Gross Sales".to_string()],
+        let rows = vec![            vec!["Product".to_string(), "Gross Sales".to_string()],
             vec!["Tea".to_string(), "10".to_string()],
         ];
         let sheet = analyze_matrix_with_origin("Offset".into(), rows, 0, 4, 2).unwrap();
@@ -2300,7 +2289,15 @@ mod tests {
         assert_eq!(ids.len(), MAX_WORKBOOK_SESSIONS * 4);
         assert_eq!(unique_ids.len(), ids.len());
         assert_eq!(store.session_count(), MAX_WORKBOOK_SESSIONS);
-        assert!(store.answer(ids.last().unwrap(), "CSV data", "total revenue").is_ok());
+
+        // Worker join order is not creation order: a thread that finishes last
+        // is not necessarily the session most recently inserted into the store.
+        // Verify that exactly the bounded number of sessions remain usable,
+        // without assuming which worker wins the final insertion race.
+        let retained_count = ids.iter()
+            .filter(|id| store.answer(id, "CSV data", "total revenue").is_ok())
+            .count();
+        assert_eq!(retained_count, MAX_WORKBOOK_SESSIONS);
     }
 
     #[test]
@@ -2397,8 +2394,7 @@ mod tests {
     }
 
     #[test]
-    fn quality_checks_find_blank_duplicate_headers_mixed_types_and_duplicate_rows() {
-        let rows = vec![
+    fn quality_checks_find_blank_duplicate_headers_mixed_types_and_duplicate_rows() {        let rows = vec![
             vec!["Name".into(), "Name".into(), "".into(), "Amount".into()],
             vec!["A".into(), "A".into(), "x".into(), "10".into()],
             vec!["B".into(), "B".into(), "y".into(), "text".into()],
