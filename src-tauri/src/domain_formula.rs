@@ -284,6 +284,32 @@ fn result_incomplete(definition: &FormulaDefinition, missing: Vec<String>, trace
     }
 }
 
+pub(crate) fn sum_currency_values(values: &[String]) -> Result<String, String> {
+    if values.is_empty() {
+        return Err("No numeric source values were available for this accounting input.".into());
+    }
+    let mut total = Decimal { micros: 0 };
+    for value in values {
+        total = total.checked_add(Decimal::parse(value)?)?;
+    }
+    Ok(total.format())
+}
+
+pub(crate) fn calculate_from_workbook(
+    formula_id: &str,
+    currency: &str,
+    values: Vec<(String, String)>,
+) -> Result<CalculationResult, String> {
+    let inputs = values.into_iter().map(|(name, value)| CalculationInput {
+        name,
+        state: ValueState::Provided,
+        value: Some(value),
+        unit: Unit::Currency,
+        currency: Some(currency.to_string()),
+    }).collect();
+    calculate(formula_id, inputs)
+}
+
 pub(crate) fn formula_registry() -> Vec<FormulaSummary> {
     FORMULAS.iter().map(|definition| FormulaSummary {
         id: definition.id, version: definition.version, domain: definition.domain,
