@@ -404,8 +404,8 @@ fn validate_session_integrity(session: &WorkbookSession) -> Result<(), String> {
             || summary.column_count != source.rows.iter().map(Vec::len).max().unwrap_or(0)
             || source.rows.is_empty()
             || source.rows.len() > MAX_ROWS
-            || source.start_row.saturating_add(source.rows.len()) > MAX_ROWS.saturating_add(1)
-            || source.start_column.saturating_add(summary.column_count) > MAX_COLUMNS
+            || source.start_row.checked_add(source.rows.len()).map_or(true, |end| end > 1_048_576)
+            || source.start_column.checked_add(summary.column_count).map_or(true, |end| end > 16_384)
             || source.formula_cell_positions.iter().any(|(row, column)|
                 *row >= source.rows.len() || *column >= summary.column_count
             )
@@ -2098,6 +2098,52 @@ mod tests {
         }
         assert!(store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 2).is_err());
         assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 2).is_err());
+    }
+
+
+    #[test]
+    fn workbook_operations_reject_inconsistent_retained_session_dimensions_and_coordinates() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "integrity.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            sessions.get_mut(&id).unwrap().sheets[0].row_count += 1;
+        }
+        assert!(store.answer(&id, "CSV data", "total gross sales").is_err());
+        assert!(store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 2).is_err());
+        assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 2).is_err());
+
+        let second = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "coordinates.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+        ).unwrap();
+        let id = second.create(&analysis).unwrap();
+        {
+            let mut sessions = second.sessions.lock().unwrap();
+            sessions.get_mut(&id).unwrap().source_sheets[0].formula_cell_positions.push((99, 99));
+        }
+        assert!(second.answer(&id, "CSV data", "total gross sales").is_err());
+    }
+
+    #[test]
+    fn workbook_session_rejects_duplicate_or_mismatched_worksheet_identity() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "identity.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            sessions.get_mut(&id).unwrap().source_sheets[0].name = "Renamed source".into();
+        }
+        assert!(store.answer(&id, "CSV data", "total gross sales").is_err());
+        assert!(store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 2).is_err());
     }
 
     #[test]
