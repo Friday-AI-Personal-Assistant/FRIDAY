@@ -457,7 +457,7 @@ export default function ExcelIntelligence() {
               <div className="excel-answer-card" aria-live="polite">
                 <strong>Source-range review</strong>
                 <p>{rangePreview.fileName} · {rangePreview.sheetName} · rows {rangePreview.selectedStartRow}–{rangePreview.selectedEndRow} · {rangePreview.selectedRowCount} selected row(s)</p>
-                <p>Preview shows {rangePreview.previewRows.length} row(s){rangePreview.previewTruncated ? "; the selection is larger than the preview window." : "."} Values are read from the retained source session.</p>
+                <p>Preview returns {rangePreview.previewRows.length} row(s){rangePreview.previewTruncated ? "; the selected range is larger than the 100-row preview window." : "."} FRIDAY still scans the full selected range for possible total rows and missing formula caches, including rows outside the visible preview. Values are read from the retained source session.</p>
                 {rangePreview.missingCachedFormulaCount > 0 && (
                   <div className="excel-error" role="alert">
                     <strong>Calculation blocked: {rangePreview.missingCachedFormulaCount} formula cell(s) have no cached result.</strong>
@@ -469,7 +469,7 @@ export default function ExcelIntelligence() {
                     <strong>Review required: {rangePreview.possibleTotalRowCount} possible subtotal/total row(s) detected.</strong>
                     <p>FRIDAY will not calculate this range while these rows are included. Narrow the range to exclude candidate rows, preview again, and inspect the source workbook yourself.</p>
                     <ul>{rangePreview.possibleTotalRows.map(candidate => <li key={candidate.worksheetRow}>Worksheet row {candidate.worksheetRow}: {candidate.labels.join(" · ") || "label unavailable"}</li>)}</ul>
-                    {rangePreview.totalCandidatesTruncated && <p>Additional candidate rows were detected but are not all listed here.</p>}
+                    {rangePreview.totalCandidatesTruncated && <p>Only the first 100 candidate rows are listed here; all {rangePreview.possibleTotalRowCount} detected candidate rows block calculation until the selected range is reviewed and narrowed.</p>}
                   </div>
                 ) : <p>No known total-row label pattern was detected in the selected range. This is not a guarantee that all subtotal or total formats have been recognized.</p>}
                 <div className="excel-table-wrap">
