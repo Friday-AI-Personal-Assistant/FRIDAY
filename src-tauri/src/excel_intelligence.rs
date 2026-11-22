@@ -244,7 +244,7 @@ fn normalize_accounting_total_label(value: &str) -> String {
             // tatweel and regional forms of alef/yeh/kaf. Ignore presentation
             // marks and normalize only well-established letter variants;
             // matching remains against the explicit phrase allowlist below.
-            if matches!(ch, '\u{0640}' | '\u{0670}' | '\u{06D6}'..='\u{06ED}')
+            if matches!(ch, '\u{0640}' | '\u{0670}' | '\u{06D6}'..='\u{06DC}' | '\u{06DF}'..='\u{06E4}' | '\u{06E7}'..='\u{06ED}')
                 || matches!(ch, '\u{064B}'..='\u{065F}')
             {
                 return None;
@@ -365,7 +365,6 @@ fn is_accounting_total_label(value: &str) -> bool {
         "कुल",
         "कुल योग",
         "उप योग",
-        "उपयोग",
         // Bengali
         "মোট",
         "সর্বমোট",
@@ -1982,6 +1981,7 @@ mod tests {
             "Ara Toplam ürünler",
             "कुल ग्राहक",
             "सर्वमोटर",
+            "उपयोग",
             "মোট কর্মচারী",
             "সর্বমোট পণ্য",
             "جمع کل مشتریان",
