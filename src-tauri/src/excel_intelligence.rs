@@ -196,7 +196,7 @@ fn is_accounting_total_candidate(row: &[String]) -> bool {
         let label = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
         label == "total" || label == "subtotal" || label == "grand total"
             || label == "net total" || label == "total sales" || label == "total revenue"
-            || label.starts_with("subtotal ") || label.starts_with("grand total ")
+            || label.starts_with("subtotal ") || label.starts_with("grand total ") || label.starts_with("total ")
             || label.ends_with(" subtotal") || label.ends_with(" grand total")
     })
 }
