@@ -272,7 +272,7 @@ impl WorkbookSessionStore {
         let mut values = Vec::with_capacity(definition.required_inputs.len());
         let mut mappings = Vec::with_capacity(definition.required_inputs.len());
         let mut source_cells = Vec::new();
-        let mut source_rows_included = 0usize;
+        let mut contributing_rows = HashSet::new();
         let mut blank_cells_skipped = 0usize;
         for input_name in &definition.required_inputs {
             let field_id = format!("accounting.{input_name}");
@@ -300,6 +300,7 @@ impl WorkbookSessionStore {
                     return Err("This calculation exceeds FRIDAY's 20,000-cell evidence limit. Narrow the source data before calculating.".into());
                 }
                 numeric_values.push(raw.to_string());
+                contributing_rows.insert(row_index);
                 source_cells.push(AccountingSourceCell {
                     field_id: field_id.clone(),
                     cell: format!("{column_label}{}", source.start_row + row_index + 1),
@@ -311,10 +312,10 @@ impl WorkbookSessionStore {
             }
             let total = crate::domain_formula::sum_currency_values(&numeric_values)
                 .map_err(|_| format!("The confirmed '{}' column contains a non-numeric or unsupported value. No calculation was performed.", input_name))?;
-            source_rows_included = source_rows_included.max(numeric_values.len());
             values.push((input_name.to_string(), total));
             mappings.push(mapping.clone());
         }
+        let source_rows_included = contributing_rows.len();
         let mut formula = crate::domain_formula::calculate_from_workbook(formula_id, currency, values)?;
         for mapping in &mappings {
             formula.trace.push(format!(
