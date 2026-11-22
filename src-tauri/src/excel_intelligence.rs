@@ -14,6 +14,7 @@ use std::{
 };
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
+use scraper::{Html, Selector};
 use zip::ZipArchive;
 
 const MAX_XLSX_BYTES: u64 = 20 * 1024 * 1024;
@@ -1017,6 +1018,107 @@ fn analyze_csv(file_name: String, bytes: &[u8]) -> Result<WorkbookAnalysis, Stri
     })
 }
 
+
+// Read formula metadata directly from OOXML. Calamine's cached-value-oriented
+// formula range can omit formula cells whose cached result is absent.
+fn xlsx_part_path(base: &str, target: &str) -> Result<String, String> {
+    if target.is_empty() || target.contains('\\\\') || target.contains('?') || target.contains('#') || target.contains(':') {
+        return Err("The workbook contains an unsupported worksheet relationship target.".into());
+    }
+    let mut parts: Vec<&str> = if target.starts_with('/') { Vec::new() } else { base.split('/').filter(|part| !part.is_empty()).collect() };
+    for part in target.trim_start_matches('/').split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    return Err("The workbook contains a worksheet relationship outside its package.".into());
+                }
+            }
+            value => parts.push(value),
+        }
+    }
+    if parts.is_empty() {
+        return Err("The workbook contains an invalid worksheet relationship.".into());
+    }
+    Ok(parts.join("/"))
+}
+
+fn excel_cell_reference(reference: &str) -> Option<(usize, usize)> {
+    let mut column = 0usize;
+    let mut letters = 0usize;
+    let mut row_start = 0usize;
+    for (index, byte) in reference.bytes().enumerate() {
+        if byte.is_ascii_alphabetic() {
+            column = column.checked_mul(26)?.checked_add((byte.to_ascii_uppercase() - b'A' + 1) as usize)?;
+            letters += 1;
+            row_start = index + 1;
+        } else {
+            break;
+        }
+    }
+    if letters == 0 || row_start >= reference.len() { return None; }
+    let row = reference.get(row_start..)?.parse::<usize>().ok()?;
+    if row == 0 { return None; }
+    Some((row - 1, column - 1))
+}
+
+fn xlsx_formula_cells_by_sheet(bytes: &[u8]) -> Result<HashMap<String, Vec<(usize, usize)>>, String> {
+    let mut archive = ZipArchive::new(Cursor::new(bytes))
+        .map_err(|_| "The XLSX package is damaged while reading formula metadata.".to_string())?;
+    let mut workbook_xml = String::new();
+    archive.by_name("xl/workbook.xml")
+        .map_err(|_| "The XLSX workbook metadata is missing.".to_string())?
+        .read_to_string(&mut workbook_xml)
+        .map_err(|_| "The XLSX workbook metadata could not be read.".to_string())?;
+    let mut relationships_xml = String::new();
+    archive.by_name("xl/_rels/workbook.xml.rels")
+        .map_err(|_| "The XLSX worksheet relationships are missing.".to_string())?
+        .read_to_string(&mut relationships_xml)
+        .map_err(|_| "The XLSX worksheet relationships could not be read.".to_string())?;
+
+    let workbook_document = Html::parse_document(&workbook_xml);
+    let relationships_document = Html::parse_document(&relationships_xml);
+    let sheet_selector = Selector::parse("sheet").map_err(|_| "FRIDAY could not inspect workbook sheet metadata.".to_string())?;
+    let relationship_selector = Selector::parse("relationship").map_err(|_| "FRIDAY could not inspect workbook relationships.".to_string())?;
+    let mut targets = HashMap::new();
+    for relationship in relationships_document.select(&relationship_selector) {
+        if let (Some(id), Some(target)) = (relationship.value().attr("id"), relationship.value().attr("target")) {
+            targets.insert(id.to_string(), target.to_string());
+        }
+    }
+
+    let cell_selector = Selector::parse("c").map_err(|_| "FRIDAY could not inspect worksheet cells.".to_string())?;
+    let formula_selector = Selector::parse("f").map_err(|_| "FRIDAY could not inspect worksheet formulas.".to_string())?;
+    let mut result = HashMap::new();
+    for sheet in workbook_document.select(&sheet_selector) {
+        let name = sheet.value().attr("name")
+            .ok_or_else(|| "The XLSX workbook contains a worksheet without a name.".to_string())?;
+        let relationship_id = sheet.value().attr("r:id").or_else(|| sheet.value().attr("id"))
+            .ok_or_else(|| "The XLSX workbook contains a worksheet without a relationship.".to_string())?;
+        let target = targets.get(relationship_id)
+            .ok_or_else(|| "The XLSX workbook references a missing worksheet relationship.".to_string())?;
+        let part_path = xlsx_part_path("xl", target)?;
+        let mut worksheet_xml = String::new();
+        archive.by_name(&part_path)
+            .map_err(|_| "The XLSX workbook references a missing worksheet file.".to_string())?
+            .read_to_string(&mut worksheet_xml)
+            .map_err(|_| "An XLSX worksheet could not be read for formula metadata.".to_string())?;
+        let worksheet_document = Html::parse_document(&worksheet_xml);
+        let mut positions = Vec::new();
+        for cell in worksheet_document.select(&cell_selector) {
+            if cell.select(&formula_selector).next().is_some() {
+                if let Some(reference) = cell.value().attr("r") {
+                    if let Some(position) = excel_cell_reference(reference) {
+                        positions.push(position);
+                    }
+                }
+            }
+        }
+        result.insert(name.to_string(), positions);
+    }
+    Ok(result)
+}
+
 fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, String> {
     let source_sha256 = format!("{:x}", Sha256::digest(&bytes));
     let source_byte_length = bytes.len() as u64;
@@ -1029,6 +1131,7 @@ fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, S
     }
     let mut sheets = Vec::with_capacity(sheet_names.len());
     let mut source_sheets = Vec::with_capacity(sheet_names.len());
+    let formula_cells_by_sheet = xlsx_formula_cells_by_sheet(&bytes)?;
     let mut total_cells = 0usize;
     for name in sheet_names {
         let range = workbook.worksheet_range(&name)
@@ -1045,14 +1148,11 @@ fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, S
         let rows = range.rows().map(|row| row.iter().map(|cell| {
             if *cell == Data::Empty { String::new() } else { cell.to_string() }
         }).collect::<Vec<_>>()).collect::<Vec<_>>();
-        let formula_cell_positions = workbook.worksheet_formula(&name).ok()
-            .map(|formulas| formulas.rows().enumerate().flat_map(|(row_index, row)| {
-                row.iter().enumerate().filter_map(move |(column_index, formula)| {
-                    (!formula.trim().is_empty()).then_some((row_index, column_index))
-                })
-            }).collect::<Vec<_>>())
-            .unwrap_or_default();
-        let formula_cells = formula_cell_positions.len();
+        let formula_positions_absolute = formula_cells_by_sheet.get(&name).cloned().unwrap_or_default();
+        let formula_cells = formula_positions_absolute.len();
+        let formula_cell_positions = formula_positions_absolute.into_iter().filter_map(|(row, column)| {
+            Some((row.checked_sub(start_row)?, column.checked_sub(start_column)?))
+        }).filter(|(row, column)| *row < height && *column < width).collect::<Vec<_>>();
         source_sheets.push(WorkbookSourceSheet { name: name.clone(), rows: rows.clone(), start_row, start_column, formula_cell_positions });
         sheets.push(analyze_matrix_with_origin(name, rows, formula_cells, start_row, start_column)?);
     }
