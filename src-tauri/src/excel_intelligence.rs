@@ -2077,6 +2077,41 @@ mod tests {
     }
 
     #[test]
+    fn accounting_preview_and_calculation_ignore_descriptive_labels_across_sparse_columns() {
+        let cases = [
+            (0usize, "Total Expenses"),
+            (4usize, "Gesamtbetrag Customers"),
+            (7usize, "Montant total clients"),
+        ];
+        for (label_column, label) in cases {
+            let headers = ["Product", "Gross Sales", "Discounts", "Sales Returns", "Note 1", "Note 2", "Note 3", "Note 4"];
+            let mut descriptive = vec![String::new(); headers.len()];
+            descriptive[0] = if label_column == 0 { label.to_string() } else { "Products".to_string() };
+            descriptive[1] = "10".to_string();
+            descriptive[2] = "1".to_string();
+            descriptive[3] = "1".to_string();
+            descriptive[label_column] = label.to_string();
+            let mut csv = format!("{}\\n", headers.join(","));
+            csv.push_str("Tea,100,5,2,,,,\\n");
+            csv.push_str("Coffee,50,3,1,,,,\\n");
+            csv.push_str(&format!("{}\\n", descriptive.join(",")));
+
+            let store = WorkbookSessionStore::default();
+            let analysis = analyze_csv("sparse-descriptive-layout.csv".into(), csv.as_bytes()).unwrap();
+            let id = store.create(&analysis).unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+            let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 4).unwrap();
+            assert_eq!(preview.possible_total_row_count, 0, "descriptive label in column {label_column} must not be flagged: {label}");
+            let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4)
+                .unwrap_or_else(|error| panic!("descriptive label in column {label_column} must not block calculation ({label}): {error}"));
+            assert_eq!(result.formula.output_value.as_deref(), Some("147"), "unexpected result for label: {label}");
+        }
+    }
+
+    #[test]
     fn accounting_preview_scans_past_visible_rows_and_calculation_still_rejects_late_total() {
         let store = WorkbookSessionStore::default();
         let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns,Note\n");
