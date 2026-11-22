@@ -957,6 +957,20 @@ mod tests {
     }
 
     #[test]
+    fn workbook_sessions_retain_exact_source_cells_only_in_backend_state() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv("source.csv".into(), b"Product,Gross Sales\\nTea,10\\nCoffee,20\\n").unwrap();
+        let id = store.create(&analysis).unwrap();
+        assert!(serde_json::to_string(&analysis).unwrap().find("Coffee").is_none());
+        let sessions = store.sessions.lock().unwrap();
+        let source = sessions.get(&id).unwrap().source_sheets.iter()
+            .find(|sheet| sheet.name == "CSV data").unwrap();
+        assert_eq!(source.rows[0], vec!["Product", "Gross Sales"]);
+        assert_eq!(source.rows[1], vec!["Tea", "10"]);
+        assert_eq!(source.rows[2], vec!["Coffee", "20"]);
+    }
+
+    #[test]
     fn workbook_sessions_answer_from_backend_held_analysis() {
         let store = WorkbookSessionStore::default();
         let id = store.create(&session_test_analysis()).unwrap();
