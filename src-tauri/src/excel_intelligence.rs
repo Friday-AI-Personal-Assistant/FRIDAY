@@ -3177,6 +3177,134 @@ mod tests {
     }
 
     #[test]
+    fn gross_profit_calculation_retains_exact_formula_and_source_evidence() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "gross-profit-evidence.csv".into(),
+            b"Product,Net Sales,COGS\nTea,1000,650\nCoffee,500,325\nCake,200,125\n",
+        ).unwrap();
+        let expected_fingerprint = analysis.source_sha256.clone();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.net_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.cost_of_goods_sold").unwrap();
+
+        let preview = store.preview_accounting_range(
+            &id, "CSV data", "accounting.gross_profit", 3, 3,
+        ).unwrap();
+        assert_eq!(preview.source_sha256, expected_fingerprint);
+        assert_eq!(preview.formula_id, "accounting.gross_profit");
+        assert_eq!(preview.selected_start_row, 3);
+        assert_eq!(preview.selected_end_row, 3);
+        assert_eq!(preview.selected_row_count, 1);
+        assert_eq!(preview.confirmed_mappings.len(), 2);
+        assert!(preview.preview_rows.iter().any(|row|
+            row.worksheet_row == 3
+                && row.cells.iter().any(|cell| cell.cell == "B3" && cell.value == "500")
+                && row.cells.iter().any(|cell| cell.cell == "C3" && cell.value == "325")
+        ));
+
+        let result = store.calculate_accounting_formula(
+            &id, "CSV data", "accounting.gross_profit", "PKR", 3, 3,
+        ).unwrap();
+        assert_eq!(result.source_sha256, expected_fingerprint);
+        assert_eq!(result.file_name, "gross-profit-evidence.csv");
+        assert_eq!(result.sheet_name, "CSV data");
+        assert_eq!(result.formula.formula_id, "accounting.gross_profit");
+        assert_eq!(result.formula.formula_version, 1);
+        assert_eq!(result.formula.status, "calculated");
+        assert_eq!(result.formula.output_value.as_deref(), Some("175"));
+        assert_eq!(result.formula.output_unit, "currency");
+        assert_eq!(result.formula.currency.as_deref(), Some("PKR"));
+        assert_eq!(result.selected_start_row, 3);
+        assert_eq!(result.selected_end_row, 3);
+        assert_eq!(result.source_rows_included, 1);
+        assert_eq!(result.confirmed_mappings.len(), 2);
+        assert!(result.confirmed_mappings.iter().all(|mapping|
+            mapping.source_sha256 == result.source_sha256
+                && mapping.sheet_name == result.sheet_name
+        ));
+
+        let mut evidence = result.source_cells.iter()
+            .map(|cell| (cell.field_id.as_str(), cell.cell.as_str(), cell.value.as_str()))
+            .collect::<Vec<_>>();
+        evidence.sort_unstable();
+        assert_eq!(evidence, vec![
+            ("accounting.cost_of_goods_sold", "C3", "325"),
+            ("accounting.net_sales", "B3", "500"),
+        ]);
+        assert!(result.formula.trace.iter().any(|line|
+            line.contains("Formula: accounting.gross_profit v1")
+        ));
+        assert!(result.formula.trace.iter().any(|line|
+            line.contains("Source mapping: accounting.net_sales")
+        ));
+        assert!(result.formula.trace.iter().any(|line|
+            line.contains("Source mapping: accounting.cost_of_goods_sold")
+        ));
+        assert!(result.formula.trace.iter().any(|line|
+            line.contains("Source cells retained in evidence: 2")
+        ));
+    }
+
+    #[test]
+    fn gross_margin_calculation_retains_source_evidence_and_percentage_semantics() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "gross-margin-evidence.csv".into(),
+            b"Product,Net Sales,Cost of Goods Sold\nTea,100,60\nCoffee,200,150\nCake,300,225\n",
+        ).unwrap();
+        let expected_fingerprint = analysis.source_sha256.clone();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.net_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.cost_of_goods_sold").unwrap();
+
+        let preview = store.preview_accounting_range(
+            &id, "CSV data", "accounting.gross_margin", 4, 4,
+        ).unwrap();
+        assert_eq!(preview.source_sha256, expected_fingerprint);
+        assert_eq!(preview.formula_id, "accounting.gross_margin");
+        assert_eq!(preview.selected_row_count, 1);
+        assert_eq!(preview.confirmed_mappings.len(), 2);
+        assert!(preview.preview_rows.iter().any(|row|
+            row.worksheet_row == 4
+                && row.cells.iter().any(|cell| cell.cell == "B4" && cell.value == "300")
+                && row.cells.iter().any(|cell| cell.cell == "C4" && cell.value == "225")
+        ));
+
+        let result = store.calculate_accounting_formula(
+            &id, "CSV data", "accounting.gross_margin", "PKR", 4, 4,
+        ).unwrap();
+        assert_eq!(result.source_sha256, expected_fingerprint);
+        assert_eq!(result.formula.formula_id, "accounting.gross_margin");
+        assert_eq!(result.formula.formula_version, 1);
+        assert_eq!(result.formula.status, "calculated");
+        assert_eq!(result.formula.output_value.as_deref(), Some("25"));
+        assert_eq!(result.formula.output_unit, "percent");
+        assert!(result.formula.currency.is_none());
+        assert_eq!(result.selected_start_row, 4);
+        assert_eq!(result.selected_end_row, 4);
+        assert_eq!(result.source_rows_included, 1);
+        assert_eq!(result.confirmed_mappings.len(), 2);
+        let mut evidence = result.source_cells.iter()
+            .map(|cell| (cell.field_id.as_str(), cell.cell.as_str(), cell.value.as_str()))
+            .collect::<Vec<_>>();
+        evidence.sort_unstable();
+        assert_eq!(evidence, vec![
+            ("accounting.cost_of_goods_sold", "C4", "225"),
+            ("accounting.net_sales", "B4", "300"),
+        ]);
+        assert!(result.formula.trace.iter().any(|line|
+            line.contains("Formula: accounting.gross_margin v1")
+        ));
+        assert!(result.formula.trace.iter().any(|line|
+            line.contains("Calculation: ((net_sales - cost_of_goods_sold) / net_sales) * 100")
+        ));
+        assert!(result.formula.trace.iter().any(|line|
+            line.contains("Source cells retained in evidence: 2")
+        ));
+    }
+
+    #[test]
     fn concurrent_workbook_imports_preserve_session_count_and_unique_ids() {
         let store = std::sync::Arc::new(WorkbookSessionStore::default());
         let analysis = std::sync::Arc::new(session_test_analysis());
