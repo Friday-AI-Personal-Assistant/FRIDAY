@@ -2526,6 +2526,12 @@ mod tests {
             let mut sessions = store.sessions.lock().unwrap();
             sessions.get_mut(&id).unwrap().source_sha256 = "0".repeat(64);
         }
+        // Every operation that consumes this session must reject the same
+        // stale source identity, not only the calculation endpoints.
+        assert!(store.answer(&id, "CSV data", "total gross sales").is_err());
+        assert!(store.confirm_accounting_mapping(
+            &id, "CSV data", 2, "accounting.gross_sales"
+        ).is_err());
         assert!(store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 2).is_err());
         assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 2).is_err());
     }
