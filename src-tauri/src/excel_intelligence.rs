@@ -2639,6 +2639,28 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_accounting_headers_are_ambiguous_and_cannot_be_confirmed() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "duplicate-headers.csv".into(),
+            b"Product,Gross Sales,Gross Sales\\nTea,10,12\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        let sheet = &analysis.sheets[0];
+        for source_column_index in [2, 3] {
+            let suggestion = sheet.accounting_field_suggestions.iter()
+                .find(|item| item.source_column_index == source_column_index).unwrap();
+            assert_eq!(suggestion.status, "ambiguous");
+            assert_eq!(suggestion.field_id, None);
+            assert_eq!(suggestion.possible_fields, vec!["accounting.gross_sales"]);
+            assert!(store.confirm_accounting_mapping(
+                &id, "CSV data", source_column_index, "accounting.gross_sales"
+            ).is_err());
+        }
+        assert!(store.sessions.lock().unwrap().get(&id).unwrap().confirmed_mappings.is_empty());
+    }
+
+    #[test]
     fn accounting_mapping_rejects_ambiguous_unknown_and_duplicate_mappings() {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv("mapping.csv".into(), b"Product,Revenue,Gross Sales\nTea,10,12\n").unwrap();
@@ -3641,6 +3663,24 @@ mod tests {
         assert_eq!(ids.len(), MAX_WORKBOOK_SESSIONS * 4);
         assert_eq!(unique_ids.len(), ids.len());
         assert_eq!(store.session_count(), MAX_WORKBOOK_SESSIONS);
+
+        // The mutex-protected insertion/eviction path must preserve both
+        // session-count and aggregate serialized-memory limits under import
+        // contention, not merely when sessions are created sequentially.
+        {
+            let sessions = store.sessions.lock().unwrap();
+            let aggregate_source_bytes = sessions.values()
+                .map(|session| session.source_bytes)
+                .fold(0usize, usize::saturating_add);
+            let aggregate_summary_bytes = sessions.values()
+                .map(|session| session.summary_bytes)
+                .fold(0usize, usize::saturating_add);
+            assert!(aggregate_source_bytes <= MAX_SESSION_SOURCE_BYTES);
+            assert!(aggregate_summary_bytes <= MAX_SESSION_SUMMARY_BYTES);
+            for session in sessions.values() {
+                validate_session_integrity(session).unwrap();
+            }
+        }
 
         // Worker join order is not creation order: a thread that finishes last
         // is not necessarily the session most recently inserted into the store.
