@@ -64,6 +64,27 @@ type ExcelQuestionAnswer = {
   method: string;
 };
 
+type WorkbookAccountingCalculation = {
+  sourceSha256: string;
+  fileName: string;
+  sheetName: string;
+  formula: {
+    formulaId: string;
+    formulaVersion: number;
+    status: string;
+    outputValue: string | null;
+    outputUnit: string;
+    currency: string | null;
+    missingInputs: string[];
+    trace: string[];
+    warnings: string[];
+  };
+  confirmedMappings: ConfirmedAccountingMapping[];
+  sourceCells: { fieldId: string; cell: string; value: string }[];
+  sourceRowsIncluded: number;
+  blankCellsSkipped: number;
+};
+
 type WorkbookAnalysis = {
   sessionId: string;
   fileName: string;
@@ -90,6 +111,11 @@ export default function ExcelIntelligence() {
   const [confirmedMappings, setConfirmedMappings] = useState<ConfirmedAccountingMapping[]>([]);
   const [mappingBusy, setMappingBusy] = useState<number | null>(null);
   const [mappingMessage, setMappingMessage] = useState("");
+  const [formulaId, setFormulaId] = useState("accounting.net_sales");
+  const [currency, setCurrency] = useState("");
+  const [calculationBusy, setCalculationBusy] = useState(false);
+  const [calculationError, setCalculationError] = useState("");
+  const [calculationResult, setCalculationResult] = useState<WorkbookAccountingCalculation | null>(null);
 
   async function chooseWorkbook() {
     setBusy(true);
@@ -102,6 +128,8 @@ export default function ExcelIntelligence() {
       setQuestionAnswer(null);
       setConfirmedMappings([]);
       setMappingMessage("");
+      setCalculationResult(null);
+      setCalculationError("");
     } catch (reason) {
       const message = String(reason);
       if (!message.toLowerCase().includes("cancel")) setError(message);
@@ -131,6 +159,35 @@ export default function ExcelIntelligence() {
       setMappingMessage(String(reason));
     } finally {
       setMappingBusy(null);
+    }
+  }
+
+  const formulaInputs: Record<string, string[]> = {
+    "accounting.net_sales": ["accounting.gross_sales", "accounting.discounts", "accounting.sales_returns"],
+    "accounting.gross_profit": ["accounting.net_sales", "accounting.cost_of_goods_sold"],
+    "accounting.gross_margin": ["accounting.net_sales", "accounting.cost_of_goods_sold"],
+  };
+  const requiredFormulaFields = formulaInputs[formulaId] ?? [];
+  const confirmedFieldIds = confirmedMappings.filter(mapping => mapping.sheetName === sheet?.name).map(mapping => mapping.fieldId);
+  const canCalculate = requiredFormulaFields.length > 0 && requiredFormulaFields.every(field => confirmedFieldIds.includes(field));
+
+  async function calculateAccounting() {
+    if (!analysis || !sheet || !currency.trim() || !canCalculate || calculationBusy) return;
+    setCalculationBusy(true);
+    setCalculationError("");
+    setCalculationResult(null);
+    try {
+      const result = await invoke<WorkbookAccountingCalculation>("calculate_excel_accounting_formula", {
+        sessionId: analysis.sessionId,
+        sheetName: sheet.name,
+        formulaId,
+        currency: currency.trim().toUpperCase(),
+      });
+      setCalculationResult(result);
+    } catch (reason) {
+      setCalculationError(String(reason));
+    } finally {
+      setCalculationBusy(false);
     }
   }
 
@@ -214,7 +271,7 @@ export default function ExcelIntelligence() {
 
           {analysis.sheets.length > 1 && (
             <label className="excel-sheet-picker">Worksheet
-              <select value={selectedSheet} onChange={event => { setSelectedSheet(Number(event.target.value)); setQuestionAnswer(null); }}>
+              <select value={selectedSheet} onChange={event => { setSelectedSheet(Number(event.target.value)); setQuestionAnswer(null); setCalculationResult(null); setCalculationError(""); }}>
                 {analysis.sheets.map((item, index) => <option key={item.name} value={index}>{item.name}</option>)}
               </select>
             </label>
@@ -288,6 +345,40 @@ export default function ExcelIntelligence() {
             {mappingMessage && <p className="excel-table-caption" role="status">{mappingMessage}</p>}
             {sheet.accountingFieldSuggestions.every(item => item.status === "unmapped") && (
               <p className="excel-muted">No known accounting headers were recognized. FRIDAY will not guess from generic column names.</p>
+            )}
+          </section>
+
+          <section className="excel-section">
+            <div className="excel-section-heading">
+              <div><span className="excel-step">06 / SOURCE-BOUND ACCOUNTING</span><h3>Calculate from confirmed source data</h3></div>
+              <span>READ-ONLY · LOCAL</span>
+            </div>
+            <p className="excel-table-caption">FRIDAY reads the confirmed columns from this workbook session, sums their nonblank numeric cells using exact-decimal arithmetic, and keeps the source-cell references with the result. No workbook cells are changed.</p>
+            <div className="excel-question-form">
+              <select aria-label="Accounting formula" value={formulaId} onChange={event => { setFormulaId(event.target.value); setCalculationResult(null); setCalculationError(""); }}>
+                <option value="accounting.net_sales">Net sales</option>
+                <option value="accounting.gross_profit">Gross profit</option>
+                <option value="accounting.gross_margin">Gross margin</option>
+              </select>
+              <input aria-label="Source currency code" value={currency} onChange={event => { setCurrency(event.target.value.toUpperCase().slice(0, 3)); setCalculationResult(null); }} placeholder="Currency (e.g. PKR)" maxLength={3} />
+              <button type="button" onClick={() => void calculateAccounting()} disabled={!canCalculate || !/^[A-Z]{3}$/.test(currency.trim()) || calculationBusy}>
+                {calculationBusy ? "Calculating…" : "Calculate from source"}
+              </button>
+            </div>
+            {!canCalculate && <p className="excel-table-caption">Confirm each required accounting field above before calculating: {requiredFormulaFields.map(field => field.replace("accounting.", "")).join(", ") || "select a supported formula"}.</p>}
+            <p className="excel-table-caption">The calculation includes every nonblank numeric cell in each confirmed column. Review the selected data range for subtotal or grand-total rows before relying on the result. FRIDAY will reject non-numeric values rather than guess how to interpret them. Currency is supplied explicitly; no conversion occurs.</p>
+            {calculationError && <div className="excel-error" role="alert">{calculationError}</div>}
+            {calculationResult && (
+              <div className="excel-answer-card answered" aria-live="polite">
+                <strong>{calculationResult.formula.outputValue ?? "Calculation incomplete"} {calculationResult.formula.currency ?? calculationResult.formula.outputUnit}</strong>
+                <p>{calculationResult.formula.formulaId} v{calculationResult.formula.formulaVersion} · {calculationResult.sheetName} · Source SHA-256 {calculationResult.sourceSha256.slice(0, 12)}…</p>
+                <p>{calculationResult.sourceCells.length} source-cell reference(s) retained across {calculationResult.sourceRowsIncluded} contributing row(s); {calculationResult.blankCellsSkipped} blank cell(s) skipped.</p>
+                <ul>{calculationResult.confirmedMappings.map(mapping => <li key={mapping.fieldId}>{mapping.fieldId}: {mapping.sheetName}!{mapping.headerCell} ({mapping.header}) · {mapping.dataRange}</li>)}</ul>
+                <strong>Calculation trace</strong>
+                <ul>{calculationResult.formula.trace.map((line, index) => <li key={index}>{line}</li>)}</ul>
+                {calculationResult.sourceCells.length > 0 && <p>Source evidence sample: {calculationResult.sourceCells.slice(0, 20).map(cell => cell.cell + "=" + cell.value).join(" · ")}{calculationResult.sourceCells.length > 20 ? " · …" : ""}</p>}
+                {calculationResult.formula.warnings.map((warning, index) => <p key={index}>{warning}</p>)}
+              </div>
             )}
           </section>
 
