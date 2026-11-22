@@ -339,8 +339,15 @@ fn is_accounting_total_label(value: &str) -> bool {
     })
 }
 
+fn accounting_total_labels(row: &[String]) -> Vec<String> {
+    row.iter()
+        .filter(|value| is_accounting_total_label(value))
+        .map(|value| value.trim().to_string())
+        .collect()
+}
+
 fn is_accounting_total_candidate(row: &[String]) -> bool {
-    row.iter().any(|value| is_accounting_total_label(value))
+    !accounting_total_labels(row).is_empty()
 }
 
 impl WorkbookSessionStore {
@@ -467,7 +474,8 @@ impl WorkbookSessionStore {
             if possible_total {
                 possible_total_row_count = possible_total_row_count.saturating_add(1);
                 if possible_total_rows.len() < MAX_ACCOUNTING_TOTAL_CANDIDATES {
-                    let labels = row.iter().filter(|value| !value.trim().is_empty()).take(3)
+                    // Surface the actual matched label cells, not arbitrary leading row values.
+                    let labels = accounting_total_labels(row).into_iter().take(3)
                         .map(|value| value.chars().take(100).collect::<String>()).collect::<Vec<_>>();
                     possible_total_rows.push(AccountingTotalRowCandidate { worksheet_row: absolute_row, labels });
                 }
@@ -1636,7 +1644,6 @@ mod tests {
             "Invoice Total",
             "Q1 Subtotal",
             "FY 2026 Grand Total",
-            "Q1 Subtotal",
             "Grand Total PKR",
             "Total general",
             "Total de ventas",
@@ -1699,6 +1706,40 @@ mod tests {
     }
 
     #[test]
+    fn accounting_total_detection_handles_label_positions_sparse_rows_and_punctuation() {
+        let cases = [
+            vec!["Grand Total".to_string(), "".to_string(), "".to_string()],
+            vec!["".to_string(), "Subtotal:".to_string(), "".to_string()],
+            vec!["".to_string(), "".to_string(), "Grand Total (PKR)".to_string()],
+            vec!["Tea".to_string(), "".to_string(), "  Grand   Total — PKR  ".to_string()],
+            vec!["Tea".to_string(), "\tGesamtsumme\t".to_string(), "".to_string()],
+        ];
+        for row in cases {
+            assert!(is_accounting_total_candidate(&row), "expected candidate row: {row:?}");
+        }
+        assert!(!is_accounting_total_candidate(&[
+            "Tea".to_string(),
+            "".to_string(),
+            "Retail".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn accounting_total_detection_reports_only_the_cells_that_matched() {
+        let row = vec![
+            "Tea".to_string(),
+            "150".to_string(),
+            "Grand Total (PKR)".to_string(),
+            "8".to_string(),
+            "Subtotal".to_string(),
+        ];
+        assert_eq!(
+            accounting_total_labels(&row),
+            vec!["Grand Total (PKR)".to_string(), "Subtotal".to_string()]
+        );
+    }
+
+    #[test]
     fn accounting_calculation_rejects_ranges_containing_possible_total_rows() {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
@@ -1741,6 +1782,28 @@ mod tests {
             };
             assert!(error.contains("possible subtotal or total row"), "unexpected error for {label}: {error}");
         }
+    }
+
+    #[test]
+    fn accounting_preview_and_calculation_agree_when_total_label_is_in_last_column() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "last-column-total.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns,Note\\nTea,100,5,2,\\nCoffee,50,3,1,\\n150,8,3,Grand Total (PKR)\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 4).unwrap();
+        assert_eq!(preview.possible_total_row_count, 1);
+        assert_eq!(preview.possible_total_rows[0].worksheet_row, 4);
+        assert_eq!(preview.possible_total_rows[0].labels, vec!["Grand Total (PKR)".to_string()]);
+
+        let error = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4)
+            .expect_err("calculation must reject the same row preview flagged");
+        assert!(error.contains("row 4"));
     }
 
     #[test]
