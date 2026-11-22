@@ -2112,6 +2112,47 @@ mod tests {
     }
 
     #[test]
+    fn accounting_preview_preserves_only_genuine_total_labels_when_row_has_mixed_evidence() {
+        let headers = ["Product", "Gross Sales", "Discounts", "Sales Returns", "Note 1", "Note 2", "Note 3", "Note 4"];
+        let mut candidate = vec![String::new(); headers.len()];
+        candidate[0] = "Total Expenses".to_string();
+        candidate[1] = "150".to_string();
+        candidate[2] = "8".to_string();
+        candidate[3] = "3".to_string();
+        candidate[4] = "Grand Total (PKR)".to_string();
+        candidate[6] = "Montant total".to_string();
+        candidate[7] = "Total Customers".to_string();
+
+        let csv = format!(
+            "{}\\nTea,100,5,2,,,,\\nCoffee,50,3,1,,,,\\n{}\\n",
+            headers.join(","),
+            candidate.join(",")
+        );
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv("mixed-total-evidence.csv".into(), csv.as_bytes()).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 4).unwrap();
+        assert_eq!(preview.possible_total_row_count, 1);
+        assert_eq!(preview.possible_total_rows.len(), 1);
+        assert_eq!(preview.possible_total_rows[0].worksheet_row, 4);
+        assert_eq!(
+            preview.possible_total_rows[0].labels,
+            vec!["Grand Total (PKR)".to_string(), "Montant total".to_string()],
+            "preview must preserve every genuine matched label and exclude descriptive lookalikes"
+        );
+
+        let error = match store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4) {
+            Err(error) => error,
+            Ok(_) => panic!("a row containing genuine total labels must block aggregation even alongside descriptive labels"),
+        };
+        assert!(error.contains("row 4"), "unexpected error: {error}");
+    }
+
+    #[test]
     fn accounting_preview_scans_past_visible_rows_and_calculation_still_rejects_late_total() {
         let store = WorkbookSessionStore::default();
         let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns,Note\n");
