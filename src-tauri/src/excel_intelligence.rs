@@ -34,6 +34,7 @@ const MAX_FINDING_SAMPLE_ROWS: usize = 5;
 const MAX_WORKBOOK_SESSIONS: usize = 8;
 const WORKBOOK_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 const MAX_SESSION_SUMMARY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_SESSION_SOURCE_BYTES: usize = 40 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +48,14 @@ pub struct WorkbookAnalysis {
     pub total_rows: usize,
     pub total_non_empty_cells: usize,
     pub notes: Vec<String>,
+    #[serde(skip)]
+    source_sheets: Vec<WorkbookSourceSheet>,
+}
+
+#[derive(Clone)]
+struct WorkbookSourceSheet {
+    name: String,
+    rows: Vec<Vec<String>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -139,7 +148,9 @@ struct WorkbookSession {
     file_name: String,
     sheets: Vec<SheetAnalysis>,
     confirmed_mappings: HashMap<String, ConfirmedAccountingMapping>,
+    source_sheets: Vec<WorkbookSourceSheet>,
     summary_bytes: usize,
+    source_bytes: usize,
 }
 
 pub struct WorkbookSessionStore {
@@ -154,15 +165,19 @@ impl WorkbookSessionStore {
     fn create(&self, analysis: &WorkbookAnalysis) -> Result<String, String> {
         let summary_bytes = serde_json::to_vec(&analysis.sheets)
             .map_err(|_| "FRIDAY could not prepare the private workbook session.".to_string())?.len();
-        if summary_bytes > MAX_SESSION_SUMMARY_BYTES {
-            return Err("The workbook summary is too large for a safe analysis session.".into());
+        let source_bytes = serde_json::to_vec(&analysis.source_sheets)
+            .map_err(|_| "FRIDAY could not prepare the private workbook source session.".to_string())?.len();
+        if summary_bytes > MAX_SESSION_SUMMARY_BYTES || source_bytes > MAX_SESSION_SOURCE_BYTES {
+            return Err("The workbook analysis or retained source data exceeds FRIDAY's safe session memory limit.".into());
         }
         let mut sessions = self.sessions.lock()
             .map_err(|_| "The workbook session store is unavailable. Import the workbook again.".to_string())?;
         sessions.retain(|_, item| item.created_at.elapsed() < WORKBOOK_SESSION_TTL);
         while sessions.len() >= MAX_WORKBOOK_SESSIONS
             || sessions.values().map(|item| item.summary_bytes).sum::<usize>()
-                .saturating_add(summary_bytes) > MAX_SESSION_SUMMARY_BYTES {
+                .saturating_add(summary_bytes) > MAX_SESSION_SUMMARY_BYTES
+            || sessions.values().map(|item| item.source_bytes).sum::<usize>()
+                .saturating_add(source_bytes) > MAX_SESSION_SOURCE_BYTES {
             let oldest = sessions.iter().min_by_key(|(_, item)| item.created_at).map(|(id, _)| id.clone());
             if let Some(id) = oldest { sessions.remove(&id); } else { break; }
         }
@@ -177,7 +192,9 @@ impl WorkbookSessionStore {
             file_name: analysis.file_name.clone(),
             sheets: analysis.sheets.clone(),
             confirmed_mappings: HashMap::new(),
+            source_sheets: analysis.source_sheets.clone(),
             summary_bytes,
+            source_bytes,
         });
         Ok(id)
     }
@@ -658,6 +675,7 @@ fn analyze_csv(file_name: String, bytes: &[u8]) -> Result<WorkbookAnalysis, Stri
     if rows.is_empty() {
         return Err("The selected CSV has no rows to analyze.".into());
     }
+    let source_sheets = vec![WorkbookSourceSheet { name: "CSV data".into(), rows: rows.clone() }];
     let sheet = analyze_matrix("CSV data".into(), rows, 0)?;
     let total_rows = sheet.row_count;
     let total_non_empty_cells = sheet.non_empty_cells;
@@ -665,6 +683,7 @@ fn analyze_csv(file_name: String, bytes: &[u8]) -> Result<WorkbookAnalysis, Stri
         session_id: String::new(),
         file_name, format: "CSV".into(), source_sha256, source_byte_length, sheets: vec![sheet], total_rows,
         total_non_empty_cells,
+        source_sheets,
         notes: vec![
             "The first row is treated as column headers.".into(),
             "CSV files do not contain workbook formulas or formatting.".into(),
@@ -684,6 +703,7 @@ fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, S
         return Err("A workbook must contain between 1 and 12 worksheets for this preview.".into());
     }
     let mut sheets = Vec::with_capacity(sheet_names.len());
+    let mut source_sheets = Vec::with_capacity(sheet_names.len());
     let mut total_cells = 0usize;
     for name in sheet_names {
         let range = workbook.worksheet_range(&name)
@@ -697,6 +717,7 @@ fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, S
         let rows = range.rows().map(|row| row.iter().map(|cell| {
             if *cell == Data::Empty { String::new() } else { cell.to_string() }
         }).collect::<Vec<_>>()).collect::<Vec<_>>();
+        source_sheets.push(WorkbookSourceSheet { name: name.clone(), rows: rows.clone() });
         let formula_cells = workbook.worksheet_formula(&name).ok()
             .map(|formulas| formulas.rows().flat_map(|row| row.iter()).filter(|formula| !formula.trim().is_empty()).count())
             .unwrap_or(0);
@@ -707,6 +728,7 @@ fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, S
     Ok(WorkbookAnalysis {
         session_id: String::new(),
         file_name, format: "XLSX".into(), source_sha256, source_byte_length, sheets, total_rows, total_non_empty_cells,
+        source_sheets,
         notes: vec![
             "Analysis runs locally on this device; the workbook is not uploaded.".into(),
             "Formulas are counted and displayed as metadata; FRIDAY does not execute or recalculate formulas.".into(),
