@@ -2905,7 +2905,7 @@ mod tests {
         let store = std::sync::Arc::new(WorkbookSessionStore::default());
         let analysis = analyze_csv(
             "concurrent-duplicate.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
@@ -2940,7 +2940,7 @@ mod tests {
         let store = std::sync::Arc::new(WorkbookSessionStore::default());
         let analysis = analyze_csv(
             "concurrent-mappings.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
