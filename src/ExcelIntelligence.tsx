@@ -157,9 +157,21 @@ export default function ExcelIntelligence() {
         sourceColumnIndex: item.sourceColumnIndex,
         fieldId: item.fieldId,
       });
-      setConfirmedMappings(current => [...current.filter(existing =>
-        !(existing.sheetName === mapping.sheetName && existing.sourceColumnIndex === mapping.sourceColumnIndex)
-      ), mapping]);
+      setConfirmedMappings(current => {
+        const existingSheetMappings = current.filter(existing => existing.sheetName === mapping.sheetName);
+        if (existingSheetMappings.length === 0) {
+          const bounds = mapping.dataRange.split(":");
+          const first = Number(bounds[0]?.match(/[0-9]+$/)?.[0] ?? 0);
+          const last = Number(bounds[1]?.match(/[0-9]+$/)?.[0] ?? 0);
+          if (first > 0 && last >= first) {
+            setAccountingStartRow(String(first));
+            setAccountingEndRow(String(last));
+          }
+        }
+        return [...current.filter(existing =>
+          !(existing.sheetName === mapping.sheetName && existing.sourceColumnIndex === mapping.sourceColumnIndex)
+        ), mapping];
+      });
       setMappingMessage("Confirmed " + mapping.header + " as " + mapping.fieldId + ". Source: " + mapping.sheetName + "!" + mapping.headerCell + " and " + mapping.dataRange + ".");
     } catch (reason) {
       setMappingMessage(String(reason));
