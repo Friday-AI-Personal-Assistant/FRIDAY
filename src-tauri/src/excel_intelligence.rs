@@ -1708,7 +1708,7 @@ mod tests {
         let result = store.calculate_accounting_formula(
             &id, "CSV data", "accounting.gross_margin", "PKR", 2, 3,
         ).unwrap();
-        assert_eq!(result.formula.output_value.as_deref(), Some("0.083333"));
+        assert_eq!(result.formula.output_value.as_deref(), Some("8.333333"));
         assert_eq!(result.formula.currency.as_deref(), Some("PKR"));
         assert_eq!(result.source_rows_included, 2);
         assert_eq!(result.source_cells.len(), 4);
@@ -1726,7 +1726,7 @@ mod tests {
         let negative = store.calculate_accounting_formula(
             &negative_id, "CSV data", "accounting.gross_margin", "PKR", 2, 2,
         ).unwrap();
-        assert_eq!(negative.formula.output_value.as_deref(), Some("-0.25"));
+        assert_eq!(negative.formula.output_value.as_deref(), Some("-25"));
     }
 
     #[test]
