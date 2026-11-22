@@ -2901,6 +2901,85 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_duplicate_mapping_confirmations_accept_exactly_one_assignment() {
+        let store = std::sync::Arc::new(WorkbookSessionStore::default());
+        let analysis = analyze_csv(
+            "concurrent-duplicate.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut workers = Vec::new();
+
+        for _ in 0..8 {
+            let store = std::sync::Arc::clone(&store);
+            let barrier = std::sync::Arc::clone(&barrier);
+            let id = id.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                store.confirm_accounting_mapping(
+                    &id, "CSV data", 2, "accounting.gross_sales"
+                ).is_ok()
+            }));
+        }
+
+        let successes = workers.into_iter()
+            .map(|worker| worker.join().expect("mapping confirmation worker should not panic"))
+            .filter(|success| *success)
+            .count();
+        assert_eq!(successes, 1);
+
+        let sessions = store.sessions.lock().unwrap();
+        let session = sessions.get(&id).unwrap();
+        assert_eq!(session.confirmed_mappings.len(), 1);
+        validate_session_integrity(session).unwrap();
+    }
+
+    #[test]
+    fn concurrent_distinct_mapping_confirmations_produce_one_consistent_calculation() {
+        let store = std::sync::Arc::new(WorkbookSessionStore::default());
+        let analysis = analyze_csv(
+            "concurrent-mappings.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let assignments = [
+            (2usize, "accounting.gross_sales"),
+            (3usize, "accounting.discounts"),
+            (4usize, "accounting.sales_returns"),
+        ];
+        let mut workers = Vec::new();
+
+        for (column, field) in assignments {
+            let store = std::sync::Arc::clone(&store);
+            let barrier = std::sync::Arc::clone(&barrier);
+            let id = id.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                store.confirm_accounting_mapping(&id, "CSV data", column, field)
+            }));
+        }
+
+        for worker in workers {
+            worker.join()
+                .expect("mapping confirmation worker should not panic")
+                .expect("distinct valid mapping confirmations should all succeed");
+        }
+
+        let result = store.calculate_accounting_formula(
+            &id, "CSV data", "accounting.net_sales", "PKR", 2, 3
+        ).unwrap();
+        assert_eq!(result.formula.status, "calculated");
+        assert_eq!(result.formula.output_value.as_deref(), Some("139"));
+        assert_eq!(result.confirmed_mappings.len(), 3);
+        assert_eq!(result.source_cells.len(), 6);
+
+        let sessions = store.sessions.lock().unwrap();
+        validate_session_integrity(sessions.get(&id).unwrap()).unwrap();
+    }
+
+    #[test]
     fn concurrent_workbook_imports_preserve_session_count_and_unique_ids() {
         let store = std::sync::Arc::new(WorkbookSessionStore::default());
         let analysis = std::sync::Arc::new(session_test_analysis());
