@@ -1405,7 +1405,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ### 33.5 Workbook Source Provenance & Verified Sessions
 
-**Status:** IN PROGRESS — backend-held source sessions, confirmed accounting mappings, source-bound formula execution and a read-only calculation UI are implemented on `foundation/evaluation`; final Windows installer CI and remaining adversarial hardening are still open.
+**Status:** IN PROGRESS — backend-held source sessions, confirmed accounting mappings, source-bound formula execution and a read-only calculation UI are implemented on `foundation/evaluation`; runs #1265–#1267 are verified successful on Linux/Windows, while the new row-range hardening batch is undergoing CI and remaining adversarial hardening is still open.
 
 - [x] Compute a SHA-256 fingerprint and exact byte length from the bytes FRIDAY actually reads for each accepted XLSX/CSV import, and return them as workbook source metadata.
 - [x] Add regression assertions that CSV and XLSX analysis metadata matches the exact imported bytes.
@@ -1416,13 +1416,13 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] Preserve absolute source cell/range coordinates through confirmed accounting mappings and calculation traces, including worksheets whose used range does not begin at A1.
 - [x] Keep retained source cells process-local and memory-bounded; do not persist workbook contents or reopen/modify the source file from the analysis session.
 - [ ] Add the remaining adversarial tests for source mismatch, stale frontend summaries, duplicate headers, and bounded concurrent source-session memory. Forged IDs, unknown worksheets, expiry/eviction, mapping ambiguity and duplicate confirmation already have regression coverage.
-- [ ] Verify the complete Linux and Windows CI workflows before treating this integration as CI-complete. Latest code run #1266 has passed Linux tests and Windows Rust tests; Windows installer build/artifact steps are still running.
+- [x] Verify the complete Linux and Windows CI workflows for the initial source-provenance and accounting integration; runs #1265, #1266 and #1267 completed successfully. Continue requiring full Linux/Windows CI for every subsequent batch.
 
 **Provenance boundary:** A SHA-256 fingerprint establishes byte-level identity for the imported content. It is not a digital signature, source-authenticity guarantee, accounting validation, or audit opinion. FRIDAY must not describe fingerprinted data as verified or authoritative. Session eviction drops in-memory source objects; secure memory zeroization is not currently claimed.
 
 ### 33.5.1 Source-bound Accounting Calculation (Initial Read-only Integration)
 
-**Status:** IMPLEMENTED — CI VERIFICATION IN PROGRESS.
+**Status:** IMPLEMENTED — initial integration CI passed in #1265–#1267; row-range hardening implementation committed and its Linux/Windows CI verification is in progress.
 
 - [x] Retain parsed CSV/XLSX source cells privately inside the backend workbook session; the private source-cell structure is skipped from the serialized workbook-analysis response.
 - [x] Expose a permission-gated calculation command that accepts only session ID, worksheet, registered formula ID and explicit three-letter currency code. It does not accept frontend-provided values, summaries or cell contents.
@@ -1431,7 +1431,10 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] Reject non-numeric source values; skip blank cells only with an explicit warning. Retain contributing source-cell coordinates and values, mapping provenance, source fingerprint, formula ID/version and calculation trace.
 - [x] Preserve absolute worksheet coordinates for non-A1 used ranges and cap returned source-cell evidence at 20,000 references.
 - [x] Add a read-only UI for formula selection, explicit currency entry, confirmed-mapping prerequisites, results, warnings and source evidence.
-- [ ] Add explicit user-selected row-range controls and stronger subtotal/grand-total detection. Current initial integration aggregates every nonblank numeric cell in each confirmed column; the UI warns users to inspect ranges for subtotal or grand-total rows before relying on a result.
+- [x] Add explicit user-selected inclusive worksheet row-range controls; the backend validates bounds against retained source coordinates and returns the selected range in the calculation result.
+- [x] Add conservative subtotal/grand-total label detection across the first four cells of each selected row. If a likely total row is present, fail closed with its worksheet row number; FRIDAY never silently includes, excludes or double-counts it.
+- [x] Add regression tests for inclusive range selection, invalid/reversed/out-of-bounds ranges, total-row rejection and successful calculation after the user narrows the range to exclude the total row.
+- [ ] Add a dedicated selected-range source preview and explicit review workflow for ambiguous total-row candidates. Current behavior rejects likely total rows and asks the user to narrow the range; it does not offer an override.
 - [ ] Add adversarial coverage for source mismatch, oversized source evidence, unusual numeric formats and workbook formula cached-value caveats.
 - [ ] Complete Linux and Windows CI, including Windows installer build and artifact upload.
 
