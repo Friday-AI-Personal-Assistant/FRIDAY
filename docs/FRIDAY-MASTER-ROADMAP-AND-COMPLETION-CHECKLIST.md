@@ -197,8 +197,7 @@ When choosing between features or implementation approaches, prioritize: (1) saf
 
 - [ ] Build a catalogue with search, categories, descriptions, screenshots where useful, version, publisher and licence.
 - [ ] Show whether each skill is installed, enabled, currently loaded, trusted, and what permissions it requests.
-- [ ] Show estimated disk use, dependencies, memory/runtime behavior and network requirements.
-- [ ] Show free/paid status and any recurring or usage-based cost before activation.
+- [ ] Show estimated disk use, dependencies, memory/runtime behavior and network requirements.- [ ] Show free/paid status and any recurring or usage-based cost before activation.
 - [ ] Let users install, enable, disable, update, rollback and uninstall independently.
 - [ ] Include an explicit permission review before first use.
 - [ ] Provide a local/manual installation path with integrity verification.
@@ -397,8 +396,7 @@ When choosing between features or implementation approaches, prioritize: (1) saf
 
 ### 13.2 PDF Reader
 
-- [ ] Safe PDF open/import with bounded file size, page count and parsing resources.
-- [ ] Extract text with page numbers and preserve document order.
+- [ ] Safe PDF open/import with bounded file size, page count and parsing resources.- [ ] Extract text with page numbers and preserve document order.
 - [ ] Detect scanned/image-only pages and offer optional local OCR.
 - [ ] Summarize whole document and selected pages.
 - [ ] Answer questions with page-specific references to extracted content.
@@ -597,8 +595,7 @@ The best way to save time is to build shared foundations once and then deliver n
 
 FRIDAY is not ready for broad release until all applicable gates pass:
 
-- [ ] Core app installs, launches, upgrades, uninstalls and recovers cleanly on supported Windows systems.
-- [ ] Local AI works with no cloud account and no silent external fallback.
+- [ ] Core app installs, launches, upgrades, uninstalls and recovers cleanly on supported Windows systems.- [ ] Local AI works with no cloud account and no silent external fallback.
 - [ ] Privacy modes accurately reflect and enforce actual network behavior.
 - [ ] Personal files remain inaccessible until explicitly granted.
 - [ ] Revocation takes effect for active and future operations.
@@ -797,7 +794,6 @@ The audit is complete, but production component reuse has **not** started. FRIDA
 - [ ] Ensure entry-budget exhaustion marks the collection incomplete and blocks snapshot publication.
 - [ ] Preserve exact-boundary behavior and add fanout regression tests on Linux and Windows CI.
 - [ ] Continue the source traversal, parent identity, reparse-point and cleanup-boundary review; guest execution remains disabled.
-
 Latest verified checkpoint: #1008 passed Linux and Windows CI (commit `e49eb5160d5ddc713f31ca14844db55a6e421184`, run [44557584318](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44557584318)).
 
 ### Native capability policy — first increment (foundation/evaluation)
@@ -999,7 +995,6 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 **User impact:** people can find older discussions and answers without opening conversations individually. Search reads the existing encrypted local history and never uploads message content. Search remains limited to the 500-conversation local history store and returns at most 100 matching conversations per query. The four guarantees remain mandatory: Safety, User control, Cost transparency and Reliability.
 
-
 ### Chat message control and correction workflow — #1100
 
 - [x] Add an explicit Copy action to each populated user and FRIDAY message; report clipboard failures without claiming success.
@@ -1197,7 +1192,6 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] Confirmed `coding_sandbox_fs::remove_verified_runtime_file` is intentionally unsupported on Unix because unlink-by-name retains a same-user replacement race. Windows has a handle-bound delete-disposition implementation, but it must be extended/reviewed for recovery-specific expected identity, ownership and transaction-state checks before reuse.
 
 **Engineering decision:**
-
 - Do not wire the snapshot prototype's Unix `unlinkat` helper into recovery cleanup; its own documentation explicitly says the final name-based unlink race remains.
 - Do not use a path-based delete after a successful hash check, a filename-only check, or a fresh identity lookup that is not bound to the deletion handle.
 - Preserve resolved journals and displaced copies until the platform can prove safe cleanup. Prefer a verified no-replace archive/retention state over deletion when that is possible.
@@ -1398,7 +1392,6 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 6. [ ] Add adversarial tests for missing/duplicate fields, wrong units, mixed currencies, negative values, rounding, date-period mismatch, huge inputs and misleading natural-language prompts.
 7. [ ] Verify Linux and Windows CI and update this checklist with commit/run evidence. Complete physical-device review where UI acceptance is involved.
 8. [ ] Keep journal posting, ledger edits, financial transactions, tax filing, payroll submission and automatic workbook modification out of scope until separate permission, approval, audit and recovery designs pass review.
-
 **Explicit non-goals:** no autonomous accounting advice, no invented accounting policy, no silent correction of source records, no automatic tax/legal conclusions, no money movement, no posting entries, no external accounting-platform connection and no cloud transmission of financial data in this milestone.
 
 **Dependency note:** The existing Excel question-answering implementation calculates only from bounded worksheet summaries supplied by the frontend. Before any accounting result is represented as authoritative, the integration must establish stronger backend-verifiable source provenance and an explicit mapping from source cells/columns to accounting concepts. The current summary-only Q&A path is not sufficient evidence for ledger-grade accounting.
@@ -1554,3 +1547,154 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 **Design principle:** One trusted calculation engine and one immutable result; three purpose-built experiences. Professional presentation should be clean, Working Papers should explain the numbers, and the Audit Trail should preserve the evidence. Presentation must never overstate accounting correctness or assurance.
 
 
+
+## 35. FRIDAY Modular Skills Marketplace & On-Demand Capability Architecture
+
+**Status:** PLANNED — accepted product architecture direction (2026-11-22). This is a durable product requirement and future architecture decision, not an implementation claim. The goal is to let FRIDAY grow through independently developed, installable skill packages while keeping the core desktop application lean, secure, local-first and usable with only the capabilities each user chooses. This section must be read alongside Sections 4, 22.4 and the four non-negotiable product guarantees in Section 1.1.
+
+### 35.1 Product vision and user experience
+
+FRIDAY should have an official **FRIDAY Skills Marketplace** website where users can discover, inspect, compare, download and update optional capabilities. A skill may be developed independently from the FRIDAY core application and released as its own versioned package. A user who needs a capability — for example, **WhatsApp Assistance for Businesses** — can install that package into their FRIDAY desktop installation without installing every other available skill.
+
+- [ ] Keep FRIDAY Core as the permanent desktop foundation: application shell, identity and settings, permission/approval services, skill discovery and lifecycle manager, capability gateway, diagnostics, update coordination and shared APIs.
+- [ ] Provide an official FRIDAY Skills Marketplace website for browsing, searching, documentation, publisher information, compatibility, version history, release notes and downloads.
+- [ ] Let first-party FRIDAY teams, approved community developers and verified third-party publishers develop and publish skills independently, subject to package review and marketplace policy.
+- [ ] Provide an in-app Skills Manager that can discover installed skills and manage install, inspect, enable, disable, update, rollback and uninstall operations.
+- [ ] Offer a simple one-click **Install in FRIDAY** path from the official marketplace. Also support a documented manual installation path for advanced users who download a package and place/extract it into the designated FRIDAY skills directory.
+- [ ] After installation, validate the package and show its identity, publisher, version, compatibility, dependencies, disk footprint, resource behavior, network needs, costs and requested permissions before the user enables it.
+- [ ] Keep installation, enabling and permission granting as three separate decisions. A downloaded or installed skill must not automatically activate, execute, access data or receive permissions.
+- [ ] Make the installed skill discoverable in FRIDAY after validation and an explicit refresh/restart if required; clearly explain when a restart is necessary.
+- [ ] Allow users to install only the skills they need. Do not bundle every optional skill, connector, model or runtime into the base installer.
+
+### 35.2 Package structure, manifest and compatibility contract
+
+A skill is a versioned package with a stable identity and an explicit contract. The initial package format should build on FRIDAY's existing declarative skill conventions and safe-import work rather than introducing an unrestricted executable-plugin model.
+
+Illustrative on-disk layout (the exact platform-specific application-data location must be finalized during implementation):
+
+```text
+FRIDAY/
+├── FRIDAY.exe
+├── core/
+├── skills/
+│   ├── installed/
+│   │   ├── whatsapp-business/
+│   │   │   ├── SKILL.md
+│   │   │   ├── manifest.json
+│   │   │   └── resources/
+│   │   └── accounting-assistant/
+│   │       ├── SKILL.md
+│   │       └── manifest.json
+│   └── quarantine/
+└── config/
+```
+
+- [ ] Define a versioned manifest contract with a stable skill ID, display name, summary, package version, publisher identity, licence, FRIDAY API/manifest compatibility range, supported operating systems, entry points, dependencies, declared capabilities, network destinations/categories, estimated disk/RAM/CPU needs and update channel.
+- [ ] Define package contents, canonical file ordering, size/count limits, path rules, encoding, metadata validation and a deterministic package hash so the same package has a stable integrity identity.
+- [ ] Require every package to declare whether it is instruction-only, resource-bearing, connector-backed or an integrated capability using approved FRIDAY APIs. Do not let a manifest self-declare itself trusted.
+- [ ] Keep stable skill IDs separate from display names and publisher labels; prevent ID collisions, publisher impersonation and downgrade/replacement by a different publisher.
+- [ ] Define semantic versioning and explicit compatibility rules for FRIDAY Core APIs, operating systems and dependencies. Reject incompatible packages before activation.
+- [ ] Define dependency resolution, version pinning, conflict detection, dependency provenance, installation order and rollback behavior. Do not silently fetch or install transitive dependencies.
+- [ ] Keep user data, credentials, permission grants, settings and runtime state outside the replaceable package directory so updates or uninstall do not erase user-owned data.
+
+### 35.3 Two skill classes and capability execution model
+
+The marketplace should support two broad classes without treating every skill as an independent executable:
+
+1. **Instructional skills (lightweight):** declarative instructions, domain knowledge, templates, examples and bounded workflows, such as accounting guidance or a business WhatsApp support playbook. These should use FRIDAY's existing trusted skill loader and shared built-in capabilities.
+2. **Integrated skills (connected capabilities):** skills that call approved FRIDAY APIs, connectors or managed services — for example, WhatsApp Business integration. They must use narrow, typed capability interfaces and the same central permission, approval, audit and revocation services as first-party features.
+
+- [ ] Prefer declarative instructions and approved FRIDAY APIs over shipping a separate executable for every skill.
+- [ ] Do not provide arbitrary shell, unrestricted Python/JavaScript, dynamic native libraries or unrestricted child-process execution as a general skill capability.
+- [ ] Where an independently running component is genuinely necessary, require a separately reviewed runtime/adapter architecture with OS-appropriate isolation, resource limits, authenticated IPC, lifecycle supervision and explicit permissions. It must not inherit FRIDAY's full user authority.
+- [ ] Route all file, application, account, browser, network, messaging and external-service actions through FRIDAY's backend capability gateway; a skill's prompt or manifest is never authorization.
+- [ ] Keep provider-specific logic behind replaceable connector interfaces so a skill cannot bypass provider disclosure, cost controls, scoped credentials or revocation.
+
+### 35.4 On-demand loading and resource efficiency
+
+The key user benefit is optional capability without a permanently bloated application. Installing a package consumes storage, but an inactive skill should not keep unnecessary instructions, large resources, models, runtimes or processes resident.
+
+- [ ] Discover installed package metadata without fully loading every skill's instructions, dependencies or runtime at application startup.
+- [ ] Load a skill's instructions and lightweight resources only when selected or needed for an authorized task; unload them when inactive where safe.
+- [ ] Start connector processes, browser sessions, local models or other heavy resources only on demand and only after the required user permission and provider setup.
+- [ ] Release memory, handles, network sessions and child processes after use; define bounded idle timeouts and safe cancellation/shutdown behavior.
+- [ ] Show users the distinction between **downloaded storage footprint**, **installed dependency footprint**, **idle memory use** and **active resource use**. Do not promise zero RAM use for all installed skills.
+- [ ] Explain that a skill which launches a browser, connects to a messaging provider or loads a local model may use substantial RAM/CPU while active even though it is not resident while idle.
+- [ ] Add resource budgets and tests for package size, decompression, instruction length, dependency count, active memory, process count, CPU, network and concurrent skill operations.
+- [ ] Avoid downloading optional runtimes/models until the user explicitly chooses a skill that requires them and reviews the disk, hardware, licence and cost implications.
+
+### 35.5 Trust, security, permissions and marketplace review
+
+A skill package is untrusted input until FRIDAY verifies and evaluates it. A `SKILL.md` file is not inherently safe, and marketplace listing or a publisher badge must never substitute for runtime authorization.
+
+- [ ] Verify package integrity using a signed package or a trusted publisher signature plus a cryptographic hash; define signing-key rotation, revocation, transparency and compromised-publisher response.
+- [ ] Display publisher identity, provenance, package version, licence, review status, last update and known limitations. Clearly distinguish official FRIDAY, verified third-party and community/unreviewed packages.
+- [ ] Validate archive paths and extracted file identities; reject traversal, symlinks/reparse points, hardlink tricks, duplicate paths, oversized archives, decompression bombs, unexpected files and race-based substitution.
+- [ ] Install new or untrusted packages into quarantine first. Inspect and validate before promoting them into the installed/available state; never execute or activate merely because a download completed.
+- [ ] Apply least privilege and deny-by-default. Request only specific capabilities actually needed by the skill, with understandable purpose, resource scope, duration, data categories and network destinations.
+- [ ] Keep permission grants bound to the skill ID, publisher/package identity, version or approved update lineage, exact capability and resource scope. A new publisher or materially changed capability set requires fresh review/consent.
+- [ ] Enforce every grant in trusted Rust/backend code at the point of use. Frontend state, manifest declarations, marketplace metadata and model instructions cannot grant authority.
+- [ ] Provide inspectable, revocable grants and a privacy-safe audit trail showing which skill used which capability and the outcome without unnecessarily storing sensitive content.
+- [ ] Require explicit approval for consequential actions such as sending messages, publishing content, modifying files, purchases, account changes or external submissions; a skill cannot approve its own action.
+- [ ] Keep credentials in secure storage and expose only narrowly scoped, short-lived access through approved connector interfaces. Never place tokens or passwords in `SKILL.md`, manifests, package files or logs.
+- [ ] Review package source, dependencies, licences, network behavior, update process and abuse cases before assigning any verified/official status. State what was reviewed and what was not.
+- [ ] On disable, uninstall, publisher revocation or security incident, block new calls, revoke associated grants/tokens, stop owned sessions/processes safely and preserve user-owned data unless the user explicitly chooses otherwise.
+- [ ] Maintain a quarantine, report, takedown and emergency revocation process for malicious, compromised or abandoned marketplace packages.
+
+### 35.6 Installation, updates, rollback and removal
+
+- [ ] Make installation atomic where possible: download to a temporary/quarantine location, verify identity/hash/signature and compatibility, validate contents/dependencies, then promote into the installed directory.
+- [ ] Prevent partial installs from appearing available. Recover cleanly from cancellation, disk-full, interrupted download, crash, permission loss and concurrent installation/update attempts.
+- [ ] Before updates, show version changes, publisher continuity, new permissions, dependency/resource changes and relevant release notes. Do not silently expand permissions.
+- [ ] Preserve the last known-good package and support rollback to a verified compatible version. Define how data/schema migrations are backed up and reversed before permitting them.
+- [ ] Ensure rollback cannot reintroduce a known-revoked or vulnerable package without a clear security warning and an explicit, policy-compliant decision.
+- [ ] On uninstall, remove only files and processes owned by that skill; preserve user-created configuration, business data, credentials and documents unless the user separately confirms their deletion.
+- [ ] Make disable distinct from uninstall: disabling stops activation and future capability calls but keeps the package available for later re-enable after permission review.
+- [ ] Make package lifecycle operations idempotent, auditable, cancellable where safe and recoverable after restart.
+
+### 35.7 Marketplace governance, publisher ecosystem and sustainability
+
+- [ ] Define publisher onboarding, identity verification levels, developer terms, package submission requirements, review criteria, vulnerability reporting and dispute/takedown procedures.
+- [ ] Clearly label official FRIDAY skills, community contributions and independently published third-party skills. Do not imply that every listed skill is built, maintained or security-reviewed by FRIDAY.
+- [ ] Provide developer documentation, a local test harness, manifest/schema validation, compatibility checks, permission simulation, package signing guidance and CI validation tools.
+- [ ] Publish skill version history, changelogs, supported FRIDAY versions, known issues, required external accounts/services, data handling, licence and maintenance status.
+- [ ] Define a sustainable marketplace model without compromising the product guarantee that the core FRIDAY application and first-party FRIDAY skills should not require an additional FRIDAY feature subscription or per-skill fee. Any third-party charges or paid external services must be explicit.
+- [ ] Do not let marketplace ranking, sponsorship or commercial incentives override security review, user choice, truthful disclosures or package compatibility.
+
+### 35.8 Delivery phases and acceptance gates
+
+**Phase A — package contract and safe local installation**
+- [ ] Audit and reuse the existing skill package/importer foundations and OpenJarvis reuse findings; document what is reused, adapted or newly built.
+- [ ] Finalize manifest schema, package format, compatibility rules, safe extraction and quarantine promotion.
+- [ ] Support a bounded declarative `SKILL.md` package with metadata/resources only; no executable payload.
+- [ ] Add Skills Manager support for inspect, install, enable, disable, update, rollback and uninstall with tests.
+
+**Phase B — on-demand capability loading**
+- [ ] Implement lazy discovery/loading/unloading and resource accounting for instructions and approved resources.
+- [ ] Prove inactive skills do not keep unnecessary heavy runtimes, models or child processes resident.
+- [ ] Add resource exhaustion, cancellation, concurrent lifecycle and restart-recovery tests.
+
+**Phase C — trusted integrated skills**
+- [ ] Define the stable FRIDAY skill API and capability gateway for approved connectors and shared services.
+- [ ] Add per-skill scoped permissions, user approval, revocation, audit and Transparency Centre visibility.
+- [ ] Integrate one low-risk first-party connector end-to-end, then add external-service skills only after provider terms, costs, scopes and real-account acceptance are reviewed.
+- [ ] Treat WhatsApp Assistance for Businesses as a candidate example, not a promise of provider/API availability. Verify official WhatsApp Business API requirements, account eligibility, pricing, messaging rules and regional availability before implementation.
+
+**Phase D — official marketplace website and community publishing**
+- [ ] Build the official website catalogue, package hosting/download integrity, documentation, publisher profiles, release history and reporting/takedown workflow.
+- [ ] Add developer publishing, signed releases, automated validation and human review appropriate to trust tier.
+- [ ] Add in-app discovery/deep links and one-click install with explicit review and consent.
+- [ ] Define update notifications, staged rollout, rollback and vulnerability response.
+
+**Release acceptance gates**
+- [ ] A downloaded package cannot execute, access data or activate itself without explicit user action and backend authorization.
+- [ ] Package identity, publisher, version, compatibility, integrity, dependencies and permissions are verified before activation.
+- [ ] A skill cannot exceed its approved capability set, access another skill's data or retain permissions after revocation/uninstall.
+- [ ] Inactive skills do not keep unnecessary heavy resources resident; active resource use is bounded and visible.
+- [ ] Updates and rollback are integrity-checked and recoverable; uninstall does not delete unrelated user data.
+- [ ] Marketplace claims, publisher status, pricing, provider terms and security-review scope are accurate and transparent.
+- [ ] Linux and Windows CI, adversarial package tests and supported-platform physical acceptance pass before general availability.
+
+**Non-negotiable architecture rule:** Downloading is not trust. Installing is not enabling. Enabling is not permission. A skill may act only through FRIDAY-approved capabilities and explicit, backend-enforced grants. Inactive optional skills should not burden the core runtime, and no marketplace or third-party incentive may weaken FRIDAY's Safety, User Control, Cost Transparency or Reliability guarantees.
+
+**Scope boundary:** This section records the accepted future architecture only. No marketplace website, package signing system, third-party executable runtime, WhatsApp integration or new skill execution bridge is claimed implemented by adding this roadmap entry.
