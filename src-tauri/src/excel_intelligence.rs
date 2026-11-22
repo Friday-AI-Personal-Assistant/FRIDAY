@@ -1100,7 +1100,7 @@ mod tests {
     #[test]
     fn workbook_sessions_retain_exact_source_cells_only_in_backend_state() {
         let store = WorkbookSessionStore::default();
-        let analysis = analyze_csv("source.csv".into(), b"Product,Gross Sales\\nTea,10\\nCoffee,20\\n").unwrap();
+        let analysis = analyze_csv("source.csv".into(), b"Product,Gross Sales\nTea,10\nCoffee,20\n").unwrap();
         let id = store.create(&analysis).unwrap();
         assert!(!serde_json::to_string(&analysis).unwrap().contains("sourceSheets"));
         let sessions = store.sessions.lock().unwrap();
@@ -1138,7 +1138,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "sales.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
@@ -1161,7 +1161,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "sales.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,not-a-number,3,1\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,not-a-number,3,1\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR").is_err());
@@ -1180,7 +1180,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "sales.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,,3,1\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,,3,1\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
