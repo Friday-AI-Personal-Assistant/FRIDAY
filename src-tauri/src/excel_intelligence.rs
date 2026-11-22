@@ -2038,6 +2038,43 @@ mod tests {
     }
 
     #[test]
+    fn accounting_preview_and_calculation_reject_total_labels_across_sparse_column_positions() {
+        let cases = [
+            (0usize, "Gesamtsumme"),
+            (4usize, "إجمالي المبيعات"),
+            (7usize, "مجموعی فروخت"),
+        ];
+        for (label_column, label) in cases {
+            let headers = ["Product", "Gross Sales", "Discounts", "Sales Returns", "Note 1", "Note 2", "Note 3", "Note 4"];
+            let mut total = vec![String::new(); headers.len()];
+            total[0] = "Grand Total".to_string();
+            total[1] = "150".to_string();
+            total[2] = "8".to_string();
+            total[3] = "3".to_string();
+            total[label_column] = label.to_string();
+            let mut csv = format!("{}\\n", headers.join(","));
+            csv.push_str("Tea,100,5,2,,,,\\n");
+            csv.push_str("Coffee,50,3,1,,,,\\n");
+            csv.push_str(&format!("{}\\n", total.join(",")));
+
+            let store = WorkbookSessionStore::default();
+            let analysis = analyze_csv("sparse-total-layout.csv".into(), csv.as_bytes()).unwrap();
+            let id = store.create(&analysis).unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+            let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 4).unwrap();
+            assert_eq!(preview.possible_total_row_count, 1, "label column {label_column} must be detected");
+            assert_eq!(preview.possible_total_rows[0].worksheet_row, 4);
+            assert_eq!(preview.possible_total_rows[0].labels, vec![label.to_string()]);
+            let error = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4)
+                .expect_err("every candidate column position must block aggregation");
+            assert!(error.contains("row 4"), "unexpected error for {label}: {error}");
+        }
+    }
+
+    #[test]
     fn accounting_preview_scans_past_visible_rows_and_calculation_still_rejects_late_total() {
         let store = WorkbookSessionStore::default();
         let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns,Note\n");
