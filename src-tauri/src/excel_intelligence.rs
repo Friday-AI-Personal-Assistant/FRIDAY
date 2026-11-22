@@ -1664,7 +1664,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "gross-profit.csv".into(),
-            b"Net Sales,COGS\\n1000,650\\n500,325\\n",
+            b"Net Sales,COGS\n1000,650\n500,325\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 1, "accounting.net_sales").unwrap();
@@ -1699,7 +1699,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "gross-margin.csv".into(),
-            b"Net Sales,Cost of Goods Sold\\n100,125\\n200,150\\n",
+            b"Net Sales,Cost of Goods Sold\n100,125\n200,150\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 1, "accounting.net_sales").unwrap();
@@ -1718,7 +1718,7 @@ mod tests {
 
         let negative_analysis = analyze_csv(
             "negative-margin.csv".into(),
-            b"Net Sales,COGS\\n100,125\\n",
+            b"Net Sales,COGS\n100,125\n",
         ).unwrap();
         let negative_id = store.create(&negative_analysis).unwrap();
         store.confirm_accounting_mapping(&negative_id, "CSV data", 1, "accounting.net_sales").unwrap();
