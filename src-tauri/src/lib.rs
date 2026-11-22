@@ -92,6 +92,7 @@ pub fn run() {
             excel_intelligence::answer_excel_question,
             excel_intelligence::confirm_excel_accounting_mapping,
             excel_intelligence::calculate_excel_accounting_formula,
+            excel_intelligence::preview_excel_accounting_range,
             file_assistant::pick_folder_and_list_text_files,
             file_assistant::read_granted_text_files,
             file_assistant::prepare_file_edit,
