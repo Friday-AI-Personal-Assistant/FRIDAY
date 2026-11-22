@@ -237,17 +237,79 @@ impl Default for WorkbookSessionStore {
 }
 
 
-fn is_accounting_total_candidate(row: &[String]) -> bool {
-    row.iter().filter(|value| !value.trim().is_empty()).any(|value| {
-        let normalized = value.trim().to_ascii_lowercase()
-            .chars().map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
-            .collect::<String>();
-        let label = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
-        label == "total" || label == "subtotal" || label == "grand total"
-            || label == "net total" || label == "total sales" || label == "total revenue"
-            || label.starts_with("subtotal ") || label.starts_with("grand total ") || label.starts_with("total ")
-            || label.ends_with(" subtotal") || label.ends_with(" grand total")
+fn normalize_accounting_total_label(value: &str) -> String {
+    value.to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_accounting_total_label(value: &str) -> bool {
+    let label = normalize_accounting_total_label(value);
+    if label.is_empty() {
+        return false;
+    }
+
+    // Keep this list explicit: broad "starts with total" matching produces
+    // false positives such as "Total Customers" or "Total Salesperson".
+    // Prefix/suffix matching permits common qualifiers like currency or period.
+    const TOTAL_LABELS: &[&str] = &[
+        "total",
+        "subtotal",
+        "sub total",
+        "grand total",
+        "overall total",
+        "net total",
+        "total sales",
+        "total revenue",
+        "total amount",
+        "total due",
+        "total payable",
+        "total receivable",
+        "invoice total",
+        "closing balance",
+        "ending balance",
+        "balance brought forward",
+        "balance carried forward",
+        "total general",
+        "total de ventas",
+        "total ingresos",
+        "sous total",
+        "total des ventes",
+        "total des revenus",
+        "gesamtsumme",
+        "zwischensumme",
+        "summe gesamt",
+        "totale generale",
+        "totale vendite",
+        "total geral",
+        "total de vendas",
+        "total de receitas",
+        "الإجمالي",
+        "الإجمالي العام",
+        "المجموع",
+        "المجموع الكلي",
+        "المجموع الفرعي",
+        "مجموعی کل",
+        "ذیلی کل",
+        "کل فروخت",
+        "کل آمدنی",
+        "جمع کل",
+        "جمع فرعی",
+    ];
+
+    TOTAL_LABELS.iter().any(|phrase| {
+        label == *phrase
+            || label.starts_with(&format!("{phrase} "))
+            || label.ends_with(&format!(" {phrase}"))
     })
+}
+
+fn is_accounting_total_candidate(row: &[String]) -> bool {
+    row.iter().any(|value| is_accounting_total_label(value))
 }
 
 impl WorkbookSessionStore {
@@ -1526,6 +1588,76 @@ mod tests {
         assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 1, 2).is_err());
         assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 3, 2).is_err());
         assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4).is_err());
+    }
+
+    #[test]
+    fn accounting_total_label_detection_covers_common_layouts_and_localized_labels() {
+        let positive = [
+            "Total",
+            "Subtotal:",
+            "Sub Total",
+            "Grand Total (PKR)",
+            "Overall Total",
+            "Net Total",
+            "Total Sales",
+            "Total Revenue",
+            "Total Amount",
+            "Invoice Total",
+            "Q1 Subtotal",
+            "FY 2026 Grand Total",
+            "Total general",
+            "Total de ventas",
+            "Total ingresos",
+            "Sous-total",
+            "Total des ventes",
+            "Gesamtsumme",
+            "Zwischensumme",
+            "Totale generale",
+            "Total geral",
+            "الإجمالي العام",
+            "المجموع الكلي",
+            "المجموع الفرعي",
+            "مجموعی کل",
+            "ذیلی کل",
+            "کل فروخت",
+            "جمع کل",
+        ];
+        for label in positive {
+            assert!(is_accounting_total_label(label), "expected total label: {label}");
+        }
+    }
+
+    #[test]
+    fn accounting_total_label_detection_avoids_broad_total_word_false_positives() {
+        let negative = [
+            "",
+            "Total Customers",
+            "Total Salesperson",
+            "Total Products",
+            "Total Forecast",
+            "Sales Totality",
+            "Grand Totalist",
+            "Customer Subtotalization",
+        ];
+        for label in negative {
+            assert!(!is_accounting_total_label(label), "unexpected total label: {label}");
+        }
+    }
+
+    #[test]
+    fn accounting_total_detection_checks_every_cell_without_requiring_first_column() {
+        let row = vec![
+            "Tea".to_string(),
+            "100".to_string(),
+            "Grand Total (PKR)".to_string(),
+            "100".to_string(),
+        ];
+        assert!(is_accounting_total_candidate(&row));
+        assert!(!is_accounting_total_candidate(&[
+            "Tea".to_string(),
+            "100".to_string(),
+            "Retail".to_string(),
+        ]));
     }
 
     #[test]
