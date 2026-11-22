@@ -1190,6 +1190,20 @@ mod tests {
     }
 
     #[test]
+    fn accounting_source_references_preserve_non_a1_worksheet_coordinates() {
+        let rows = vec![
+            vec!["Product".to_string(), "Gross Sales".to_string()],
+            vec!["Tea".to_string(), "10".to_string()],
+        ];
+        let sheet = analyze_matrix_with_origin("Offset".into(), rows, 0, 4, 2).unwrap();
+        let suggestion = sheet.accounting_field_suggestions.iter()
+            .find(|item| item.field_id.as_deref() == Some("accounting.gross_sales")).unwrap();
+        assert_eq!(suggestion.source_column_index, 4);
+        assert_eq!(suggestion.header_cell, "D5");
+        assert_eq!(suggestion.data_range, "D6:D6");
+    }
+
+    #[test]
     fn accounting_mapping_rejects_ambiguous_unknown_and_duplicate_mappings() {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv("mapping.csv".into(), b"Product,Revenue,Gross Sales\nTea,10,12\n").unwrap();
