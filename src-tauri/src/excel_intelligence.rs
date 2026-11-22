@@ -189,6 +189,7 @@ pub struct WorkbookAccountingRangePreview {
     pub selected_start_row: usize,
     pub selected_end_row: usize,
     pub selected_row_count: usize,
+    pub missing_cached_formula_count: usize,
     pub preview_rows: Vec<AccountingRangePreviewRow>,
     pub preview_truncated: bool,
     pub possible_total_row_count: usize,
@@ -364,6 +365,7 @@ impl WorkbookSessionStore {
         let mut preview_rows = Vec::with_capacity(selected_row_count.min(MAX_ACCOUNTING_PREVIEW_ROWS));
         let mut possible_total_rows = Vec::new();
         let mut possible_total_row_count = 0usize;
+        let mut missing_cached_formula_count = 0usize;
         for (row_index, row) in source.rows.iter().enumerate().skip(1) {
             let absolute_row = source.start_row.saturating_add(row_index).saturating_add(1);
             if absolute_row < start_row || absolute_row > end_row { continue; }
@@ -374,6 +376,13 @@ impl WorkbookSessionStore {
                     let labels = row.iter().filter(|value| !value.trim().is_empty()).take(3)
                         .map(|value| value.chars().take(100).collect::<String>()).collect::<Vec<_>>();
                     possible_total_rows.push(AccountingTotalRowCandidate { worksheet_row: absolute_row, labels });
+                }
+            }
+            for (_, _, column_index) in &columns {
+                let is_formula_cell = source.formula_cell_positions.contains(&(row_index, *column_index));
+                let has_cached_value = row.get(*column_index).map(|value| !value.trim().is_empty()).unwrap_or(false);
+                if is_formula_cell && !has_cached_value {
+                    missing_cached_formula_count = missing_cached_formula_count.saturating_add(1);
                 }
             }
             if preview_rows.len() < MAX_ACCOUNTING_PREVIEW_ROWS {
@@ -394,6 +403,7 @@ impl WorkbookSessionStore {
             selected_start_row: start_row,
             selected_end_row: end_row,
             selected_row_count,
+            missing_cached_formula_count,
             preview_truncated: selected_row_count > preview_rows.len(),
             possible_total_row_count,
             total_candidates_truncated: possible_total_row_count > possible_total_rows.len(),
