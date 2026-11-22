@@ -3080,6 +3080,106 @@ mod tests {
     }
 
     #[test]
+    fn expired_session_cannot_be_revived_by_reimporting_identical_source() {
+        let store = WorkbookSessionStore::default();
+        let source = b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n";
+        let original_analysis = analyze_csv("reimported-sales.csv".into(), source).unwrap();
+        let fingerprint = original_analysis.source_sha256.clone();
+        let original_id = store.create(&original_analysis).unwrap();
+        store.confirm_accounting_mapping(
+            &original_id, "CSV data", 2, "accounting.gross_sales"
+        ).unwrap();
+        store.confirm_accounting_mapping(
+            &original_id, "CSV data", 3, "accounting.discounts"
+        ).unwrap();
+        store.confirm_accounting_mapping(
+            &original_id, "CSV data", 4, "accounting.sales_returns"
+        ).unwrap();
+
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            sessions.get_mut(&original_id).unwrap().created_at =
+                Instant::now() - WORKBOOK_SESSION_TTL - Duration::from_secs(1);
+        }
+
+        let reimported_analysis = analyze_csv("reimported-sales.csv".into(), source).unwrap();
+        assert_eq!(reimported_analysis.source_sha256, fingerprint);
+        let replacement_id = store.create(&reimported_analysis).unwrap();
+        assert_ne!(replacement_id, original_id);
+
+        // Matching filename and content hash do not revive the expired session
+        // or transfer its previously confirmed user mappings.
+        assert!(store.preview_accounting_range(
+            &original_id, "CSV data", "accounting.net_sales", 2, 2
+        ).is_err());
+        assert!(store.calculate_accounting_formula(
+            &original_id, "CSV data", "accounting.net_sales", "PKR", 2, 2
+        ).is_err());
+        assert!(store.preview_accounting_range(
+            &replacement_id, "CSV data", "accounting.net_sales", 2, 2
+        ).is_err());
+        assert!(store.calculate_accounting_formula(
+            &replacement_id, "CSV data", "accounting.net_sales", "PKR", 2, 2
+        ).is_err());
+        assert!(store.sessions.lock().unwrap()
+            .get(&replacement_id).unwrap().confirmed_mappings.is_empty());
+
+        store.confirm_accounting_mapping(
+            &replacement_id, "CSV data", 2, "accounting.gross_sales"
+        ).unwrap();
+        store.confirm_accounting_mapping(
+            &replacement_id, "CSV data", 3, "accounting.discounts"
+        ).unwrap();
+        store.confirm_accounting_mapping(
+            &replacement_id, "CSV data", 4, "accounting.sales_returns"
+        ).unwrap();
+        let result = store.calculate_accounting_formula(
+            &replacement_id, "CSV data", "accounting.net_sales", "PKR", 2, 2
+        ).unwrap();
+        assert_eq!(result.source_sha256, fingerprint);
+        assert_eq!(result.formula.output_value.as_deref(), Some("93"));
+        assert_eq!(result.source_cells.len(), 3);
+    }
+
+    #[test]
+    fn evicted_session_cannot_be_rebound_to_a_new_session_with_same_source() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "evicted-reimport.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
+        ).unwrap();
+        let fingerprint = analysis.source_sha256.clone();
+        let original_id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(
+            &original_id, "CSV data", 2, "accounting.gross_sales"
+        ).unwrap();
+
+        for _ in 0..MAX_WORKBOOK_SESSIONS {
+            store.create(&analysis).unwrap();
+        }
+        assert_eq!(store.session_count(), MAX_WORKBOOK_SESSIONS);
+        assert!(store.preview_accounting_range(
+            &original_id, "CSV data", "accounting.net_sales", 2, 2
+        ).is_err());
+
+        let replacement_id = store.create(&analysis).unwrap();
+        assert_ne!(replacement_id, original_id);
+        assert_eq!(
+            store.sessions.lock().unwrap()
+                .get(&replacement_id).unwrap().source_sha256,
+            fingerprint
+        );
+        assert!(store.sessions.lock().unwrap()
+            .get(&replacement_id).unwrap().confirmed_mappings.is_empty());
+        assert!(store.preview_accounting_range(
+            &replacement_id, "CSV data", "accounting.net_sales", 2, 2
+        ).is_err());
+        assert!(store.calculate_accounting_formula(
+            &replacement_id, "CSV data", "accounting.net_sales", "PKR", 2, 2
+        ).is_err());
+    }
+
+    #[test]
     fn concurrent_accounting_formulas_keep_their_own_inputs_and_source_evidence() {
         let store = std::sync::Arc::new(WorkbookSessionStore::default());
         let analysis = analyze_csv(
