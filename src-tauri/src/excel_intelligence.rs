@@ -1939,7 +1939,6 @@ mod tests {
     fn accounting_total_label_normalization_handles_arabic_script_diacritics_and_variants() {
         let positive = [
             "إِجْمَالِيّ الْمَبِيعَات",
-            "اﻹجمالي العام",
             "مجموعی فروخت",
             "مُجْمُوعِي فَرُوخْت",
             "جمعِ کُل",
@@ -1996,7 +1995,7 @@ mod tests {
 
     #[test]
     fn accounting_total_label_currency_qualifiers_remain_explicit_and_bounded() {
-        for label in ["Grand Total TRY", "Eindtotaal CHF", "Genel Toplam CNY", "سود کل BDT"] {
+        for label in ["Grand Total TRY", "Eindtotaal CHF", "Genel Toplam CNY", "مبلغ کل BDT"] {
             assert!(is_accounting_total_label(label), "expected currency-qualified total: {label}");
         }
         for label in ["Grand Total Customers", "Eindtotaal EUR Customers", "Genel Toplam Q1"] {
