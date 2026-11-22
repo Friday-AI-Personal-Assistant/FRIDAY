@@ -2124,7 +2124,7 @@ mod tests {
         candidate[7] = "Total Customers".to_string();
 
         let csv = format!(
-            "{}\\nTea,100,5,2,,,,\\nCoffee,50,3,1,,,,\\n{}\\n",
+            "{}\nTea,100,5,2,,,,\nCoffee,50,3,1,,,,\n{}\n",
             headers.join(","),
             candidate.join(",")
         );
