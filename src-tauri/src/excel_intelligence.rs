@@ -1022,7 +1022,7 @@ fn analyze_csv(file_name: String, bytes: &[u8]) -> Result<WorkbookAnalysis, Stri
 // Read formula metadata directly from OOXML. Calamine's cached-value-oriented
 // formula range can omit formula cells whose cached result is absent.
 fn xlsx_part_path(base: &str, target: &str) -> Result<String, String> {
-    if target.is_empty() || target.contains('\\\\') || target.contains('?') || target.contains('#') || target.contains(':') {
+    if target.is_empty() || target.contains('\\') || target.contains('?') || target.contains('#') || target.contains(':') {
         return Err("The workbook contains an unsupported worksheet relationship target.".into());
     }
     let mut parts: Vec<&str> = if target.starts_with('/') { Vec::new() } else { base.split('/').filter(|part| !part.is_empty()).collect() };
@@ -1740,7 +1740,7 @@ mod tests {
         assert_eq!(xlsx_part_path("xl", "worksheets/sheet2.xml").unwrap(), "xl/worksheets/sheet2.xml");
         assert_eq!(xlsx_part_path("xl", "/xl/worksheets/sheet2.xml").unwrap(), "xl/worksheets/sheet2.xml");
         assert!(xlsx_part_path("xl", "../../../outside.xml").is_err());
-        assert!(xlsx_part_path("xl", "worksheets\\\\sheet2.xml").is_err());
+        assert!(xlsx_part_path("xl", "worksheets\\sheet2.xml").is_err());
     }
 
     #[test]
