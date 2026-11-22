@@ -2091,10 +2091,10 @@ mod tests {
             descriptive[2] = "1".to_string();
             descriptive[3] = "1".to_string();
             descriptive[label_column] = label.to_string();
-            let mut csv = format!("{}\\n", headers.join(","));
-            csv.push_str("Tea,100,5,2,,,,\\n");
-            csv.push_str("Coffee,50,3,1,,,,\\n");
-            csv.push_str(&format!("{}\\n", descriptive.join(",")));
+            let mut csv = format!("{}\n", headers.join(","));
+            csv.push_str("Tea,100,5,2,,,,\n");
+            csv.push_str("Coffee,50,3,1,,,,\n");
+            csv.push_str(&format!("{}\n", descriptive.join(",")));
 
             let store = WorkbookSessionStore::default();
             let analysis = analyze_csv("sparse-descriptive-layout.csv".into(), csv.as_bytes()).unwrap();
