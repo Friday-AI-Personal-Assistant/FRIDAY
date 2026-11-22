@@ -1687,6 +1687,46 @@ mod tests {
     }
 
     #[test]
+    fn accounting_calculation_rejects_localized_total_rows_end_to_end() {
+        let labels = ["Subtotal", "Grand Total (PKR)", "Invoice Total", "Gesamtsumme", "Zwischensumme", "Total de ventas", "Total geral", "الإجمالي العام", "جمع کل"];
+        for label in labels {
+            let csv = format!(
+                "Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n{label},150,8,3\\n"
+            );
+            let store = WorkbookSessionStore::default();
+            let analysis = analyze_csv("localized-sales.csv".into(), csv.as_bytes()).unwrap();
+            let id = store.create(&analysis).unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+            let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 4).unwrap();
+            assert_eq!(preview.possible_total_row_count, 1, "label should be surfaced in preview: {label}");
+            let error = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4)
+                .expect_err("a localized total row must block aggregation");
+            assert!(error.contains("possible subtotal or total row"), "unexpected error for {label}: {error}");
+        }
+    }
+
+    #[test]
+    fn accounting_calculation_does_not_reject_ordinary_labels_containing_total() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "customers.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\nTotal Customers,10,1,1\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 4).unwrap();
+        assert_eq!(preview.possible_total_row_count, 0);
+        let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4).unwrap();
+        assert_eq!(result.formula.output_value.as_deref(), Some("147"));
+    }
+
+    #[test]
     fn accounting_calculation_requires_confirmed_mappings_and_rejects_non_numeric_source_cells() {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
