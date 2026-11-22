@@ -1405,20 +1405,37 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ### 33.5 Workbook Source Provenance & Verified Sessions
 
-**Status:** IN PROGRESS — source fingerprint foundation implemented; backend-held source sessions and verified calculation reads remain pending.
+**Status:** IN PROGRESS — backend-held source sessions, confirmed accounting mappings, source-bound formula execution and a read-only calculation UI are implemented on `foundation/evaluation`; final Windows installer CI and remaining adversarial hardening are still open.
 
 - [x] Compute a SHA-256 fingerprint and exact byte length from the bytes FRIDAY actually reads for each accepted XLSX/CSV import, and return them as workbook source metadata.
 - [x] Add regression assertions that CSV and XLSX analysis metadata matches the exact imported bytes.
-- [ ] Treat the fingerprint only as a content identifier: it does not prove who authored the file, that the source data is truthful, or that the file has not changed outside FRIDAY.
-- [ ] Introduce bounded, process-local backend workbook sessions with opaque session identifiers, explicit expiry/eviction, and source metadata bound to the exact parsed workbook instance.
-- [ ] Keep authoritative worksheet summaries and cell/source references in the backend session; change question and accounting operations to accept a session identifier and bounded selectors rather than trusting frontend-supplied summaries.
-- [ ] Revalidate session existence, expiry, worksheet identity, dimensions and source fingerprint for every operation; fail closed after session eviction, application restart or source mismatch.
-- [ ] Preserve source cell/range coordinates through confirmed accounting mappings and calculation traces; do not promote header suggestions to confirmed mappings.
-- [ ] Ensure session storage is memory-bounded, avoids persisting workbook contents, clears sensitive data on eviction, and cannot be used as a path to reopen or modify source files.
-- [ ] Add adversarial tests for forged/unknown session IDs, expired/evicted sessions, worksheet substitution, stale frontend summaries, source mismatch, duplicate headers, and bounded concurrent sessions.
-- [ ] Verify Linux and Windows CI before enabling accounting calculations against workbook sessions.
+- [x] Treat the fingerprint only as a content identifier: it does not prove who authored the file, that the source data is truthful, or that the file has not changed outside FRIDAY.
+- [x] Introduce bounded, process-local backend workbook sessions with opaque session identifiers, explicit expiry/eviction, and source metadata bound to the exact parsed workbook instance (maximum 8 sessions, 30-minute TTL, bounded serialized source/summary budgets).
+- [x] Keep authoritative worksheet summaries and retained source cells in the backend session; question and accounting operations accept a session identifier and bounded selectors rather than trusting frontend-supplied summaries.
+- [ ] Revalidate session existence, expiry, worksheet identity, dimensions and source fingerprint for every operation; current operations validate session and worksheet identity, while calculation additionally validates the mapping fingerprint and retained header. Add the remaining source/session mismatch adversarial coverage before closing this item.
+- [x] Preserve absolute source cell/range coordinates through confirmed accounting mappings and calculation traces, including worksheets whose used range does not begin at A1.
+- [x] Keep retained source cells process-local and memory-bounded; do not persist workbook contents or reopen/modify the source file from the analysis session.
+- [ ] Add the remaining adversarial tests for source mismatch, stale frontend summaries, duplicate headers, and bounded concurrent source-session memory. Forged IDs, unknown worksheets, expiry/eviction, mapping ambiguity and duplicate confirmation already have regression coverage.
+- [ ] Verify the complete Linux and Windows CI workflows before treating this integration as CI-complete. Latest code run #1266 has passed Linux tests and Windows Rust tests; Windows installer build/artifact steps are still running.
 
-**Provenance boundary:** A SHA-256 fingerprint establishes byte-level identity for the imported content. It is not a digital signature, source-authenticity guarantee, accounting validation, or audit opinion. FRIDAY must not describe fingerprinted data as verified or authoritative until backend-held sessions, confirmed mappings, and source-bound calculation execution are implemented and tested.
+**Provenance boundary:** A SHA-256 fingerprint establishes byte-level identity for the imported content. It is not a digital signature, source-authenticity guarantee, accounting validation, or audit opinion. FRIDAY must not describe fingerprinted data as verified or authoritative. Session eviction drops in-memory source objects; secure memory zeroization is not currently claimed.
+
+### 33.5.1 Source-bound Accounting Calculation (Initial Read-only Integration)
+
+**Status:** IMPLEMENTED — CI VERIFICATION IN PROGRESS.
+
+- [x] Retain parsed CSV/XLSX source cells privately inside the backend workbook session; the private source-cell structure is skipped from the serialized workbook-analysis response.
+- [x] Expose a permission-gated calculation command that accepts only session ID, worksheet, registered formula ID and explicit three-letter currency code. It does not accept frontend-provided values, summaries or cell contents.
+- [x] Require every formula input to have an explicitly confirmed accounting mapping in the same workbook session and worksheet; re-check source fingerprint and source header before reading.
+- [x] Aggregate confirmed source-column values with FRIDAY's fixed-point decimal engine and registered formulas: net sales, gross profit and gross margin. No floating-point formula arithmetic or implicit currency conversion.
+- [x] Reject non-numeric source values; skip blank cells only with an explicit warning. Retain contributing source-cell coordinates and values, mapping provenance, source fingerprint, formula ID/version and calculation trace.
+- [x] Preserve absolute worksheet coordinates for non-A1 used ranges and cap returned source-cell evidence at 20,000 references.
+- [x] Add a read-only UI for formula selection, explicit currency entry, confirmed-mapping prerequisites, results, warnings and source evidence.
+- [ ] Add explicit user-selected row-range controls and stronger subtotal/grand-total detection. Current initial integration aggregates every nonblank numeric cell in each confirmed column; the UI warns users to inspect ranges for subtotal or grand-total rows before relying on a result.
+- [ ] Add adversarial coverage for source mismatch, oversized source evidence, unusual numeric formats and workbook formula cached-value caveats.
+- [ ] Complete Linux and Windows CI, including Windows installer build and artifact upload.
+
+**Safety boundary:** This integration is read-only. It does not modify workbook cells, save a workbook, execute workbook formulas, recalculate cached formulas, or create a backup. It is not an audit opinion or a guarantee that source data is correct. CSV/XLSX source values are interpreted as provided; formula cells in XLSX use cached values and may differ from a workbook recalculated by Excel. Currency is explicitly supplied by the user and is never inferred or converted.
 
 
 ### 33.6 Permissioned Excel Editing, Verified Backups & Recovery
