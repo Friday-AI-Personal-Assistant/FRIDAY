@@ -2227,8 +2227,8 @@ mod tests {
             vec!["Biscuits".to_string(), "25".to_string(), "2".to_string(), "1".to_string()],
         ];
         let sheet = analyze_matrix_with_origin("Offset".into(), rows.clone(), 0, 4, 3).unwrap();
-        assert_eq!(sheet.accounting_field_suggestions[0].header_cell, "E5");
-        assert_eq!(sheet.accounting_field_suggestions[0].data_range, "E6:E10");
+        assert_eq!(sheet.accounting_field_suggestions[0].header_cell, "D5");
+        assert_eq!(sheet.accounting_field_suggestions[0].data_range, "D6:D10");
         let source_sha256 = format!("{:x}", Sha256::digest(b"non-a1-source"));
         let analysis = WorkbookAnalysis {
             session_id: String::new(),
@@ -2278,8 +2278,8 @@ mod tests {
         assert_eq!(calculation.formula.output_value.as_deref(), Some("139"));
         assert_eq!(calculation.source_rows_included, 2);
         assert_eq!(calculation.blank_cells_skipped, 3);
-        assert!(calculation.source_cells.iter().any(|cell| cell.cell == "E6"));
-        assert!(calculation.source_cells.iter().any(|cell| cell.cell == "E8"));
+        assert!(calculation.source_cells.iter().any(|cell| cell.cell == "D6"));
+        assert!(calculation.source_cells.iter().any(|cell| cell.cell == "D8"));
         assert!(calculation.source_cells.iter().all(|cell| !cell.cell.ends_with('7')));
     }
 
