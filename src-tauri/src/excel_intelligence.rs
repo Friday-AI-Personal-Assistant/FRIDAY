@@ -742,6 +742,7 @@ impl WorkbookSessionStore {
         sessions.retain(|_, item| item.created_at.elapsed() < WORKBOOK_SESSION_TTL);
         let session = sessions.get_mut(id)
             .ok_or_else(|| "This workbook analysis session has expired or was replaced. Import the workbook again.".to_string())?;
+        validate_session_integrity(session)?;
         let sheet = session.sheets.iter().find(|sheet| sheet.name == sheet_name)
             .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;
         let suggestion = sheet.accounting_field_suggestions.iter()
@@ -2422,6 +2423,37 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.contains("non-numeric"));
+    }
+
+    #[test]
+    fn accounting_mapping_confirmation_rejects_inconsistent_session_state() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "integrity.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            sessions.get_mut(&id).unwrap().sheets[0].row_count += 1;
+        }
+        assert!(store.confirm_accounting_mapping(
+            &id, "CSV data", 2, "accounting.gross_sales"
+        ).is_err());
+
+        let second_store = WorkbookSessionStore::default();
+        let second_analysis = analyze_csv(
+            "identity.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
+        ).unwrap();
+        let second_id = second_store.create(&second_analysis).unwrap();
+        {
+            let mut sessions = second_store.sessions.lock().unwrap();
+            sessions.get_mut(&second_id).unwrap().source_sheets[0].name = "Renamed source".into();
+        }
+        assert!(second_store.confirm_accounting_mapping(
+            &second_id, "CSV data", 2, "accounting.gross_sales"
+        ).is_err());
     }
 
     #[test]
