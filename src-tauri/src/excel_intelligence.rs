@@ -1123,7 +1123,7 @@ fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, S
     let source_sha256 = format!("{:x}", Sha256::digest(&bytes));
     let source_byte_length = bytes.len() as u64;
     validate_xlsx_package(&bytes)?;
-    let mut workbook: Xlsx<_> = open_workbook_from_rs(Cursor::new(bytes))
+    let mut workbook: Xlsx<_> = open_workbook_from_rs(Cursor::new(bytes.as_slice()))
         .map_err(|_| "FRIDAY could not read this XLSX workbook. It may be damaged or use unsupported workbook features.".to_string())?;
     let sheet_names = workbook.sheet_names();
     if sheet_names.is_empty() || sheet_names.len() > MAX_SHEETS {
@@ -1729,6 +1729,18 @@ mod tests {
         assert!(analyze_csv("wide.csv".into(), too_many_columns.as_bytes()).is_err());
         let too_many_rows = format!("h\n{}", "x\n".repeat(MAX_ROWS));
         assert!(analyze_csv("tall.csv".into(), too_many_rows.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn xlsx_formula_metadata_helpers_parse_coordinates_and_safe_relationship_paths() {
+        assert_eq!(excel_cell_reference("B2"), Some((1, 1)));
+        assert_eq!(excel_cell_reference("AA10"), Some((9, 26)));
+        assert_eq!(excel_cell_reference("A0"), None);
+        assert_eq!(excel_cell_reference("2B"), None);
+        assert_eq!(xlsx_part_path("xl", "worksheets/sheet2.xml").unwrap(), "xl/worksheets/sheet2.xml");
+        assert_eq!(xlsx_part_path("xl", "/xl/worksheets/sheet2.xml").unwrap(), "xl/worksheets/sheet2.xml");
+        assert!(xlsx_part_path("xl", "../../../outside.xml").is_err());
+        assert!(xlsx_part_path("xl", "worksheets\\\\sheet2.xml").is_err());
     }
 
     #[test]
