@@ -161,6 +161,8 @@ pub struct WorkbookAccountingCalculation {
     pub confirmed_mappings: Vec<ConfirmedAccountingMapping>,
     pub source_cells: Vec<AccountingSourceCell>,
     pub source_rows_included: usize,
+    pub selected_start_row: usize,
+    pub selected_end_row: usize,
     pub blank_cells_skipped: usize,
 }
 
@@ -183,6 +185,20 @@ pub struct WorkbookSessionStore {
 
 impl Default for WorkbookSessionStore {
     fn default() -> Self { Self { sessions: Mutex::new(HashMap::new()) } }
+}
+
+
+fn is_accounting_total_candidate(row: &[String]) -> bool {
+    row.iter().take(4).filter(|value| !value.trim().is_empty()).any(|value| {
+        let normalized = value.trim().to_ascii_lowercase()
+            .chars().map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
+            .collect::<String>();
+        let label = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+        label == "total" || label == "subtotal" || label == "grand total"
+            || label == "net total" || label == "total sales" || label == "total revenue"
+            || label.starts_with("subtotal ") || label.starts_with("grand total ")
+            || label.ends_with(" subtotal") || label.ends_with(" grand total")
+    })
 }
 
 impl WorkbookSessionStore {
@@ -250,6 +266,8 @@ impl WorkbookSessionStore {
         sheet_name: &str,
         formula_id: &str,
         currency: &str,
+        start_row: usize,
+        end_row: usize,
     ) -> Result<WorkbookAccountingCalculation, String> {
         if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("This workbook analysis session is invalid. Import the workbook again.".into());
@@ -266,6 +284,14 @@ impl WorkbookSessionStore {
             .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;
         let source = session.source_sheets.iter().find(|source| source.name == sheet_name)
             .ok_or_else(|| "The original source cells are unavailable in this workbook session. Import the workbook again.".to_string())?;
+        let first_data_row = source.start_row.saturating_add(2);
+        let last_data_row = source.start_row.saturating_add(source.rows.len());
+        if start_row < first_data_row || end_row < start_row || end_row > last_data_row {
+            return Err(format!("Choose a valid inclusive source row range from {first_data_row} to {last_data_row}."));
+        }
+        if end_row.saturating_sub(start_row).saturating_add(1) > MAX_ROWS {
+            return Err("The selected accounting row range exceeds FRIDAY's safe row limit.".into());
+        }
         let definition = crate::domain_formula::formula_registry().into_iter()
             .find(|item| item.id == formula_id)
             .ok_or_else(|| "This formula is not in FRIDAY's reviewed formula registry.".to_string())?;
@@ -291,6 +317,11 @@ impl WorkbookSessionStore {
             let column_label = excel_column_label(column_index + source.start_column);
             let mut numeric_values = Vec::new();
             for (row_index, row) in source.rows.iter().enumerate().skip(1) {
+                let absolute_row = source.start_row.saturating_add(row_index).saturating_add(1);
+                if absolute_row < start_row || absolute_row > end_row { continue; }
+                if is_accounting_total_candidate(row) {
+                    return Err(format!("The selected range includes a possible subtotal or total row at worksheet row {absolute_row}. Narrow the range to exclude it, then review the source before recalculating."));
+                }
                 let raw = row.get(column_index).map(|value| value.trim()).unwrap_or("");
                 if raw.is_empty() {
                     blank_cells_skipped = blank_cells_skipped.saturating_add(1);
@@ -335,6 +366,8 @@ impl WorkbookSessionStore {
             confirmed_mappings: mappings,
             source_cells,
             source_rows_included,
+            selected_start_row: start_row,
+            selected_end_row: end_row,
             blank_cells_skipped,
         })
     }
@@ -1025,10 +1058,12 @@ pub fn calculate_excel_accounting_formula(
     sheet_name: String,
     formula_id: String,
     currency: String,
+    start_row: usize,
+    end_row: usize,
     sessions: State<'_, WorkbookSessionStore>,
 ) -> Result<WorkbookAccountingCalculation, String> {
     crate::permissions::authorize_command("excel.calculate_accounting_formula", "excel.accounting.calculate")?;
-    sessions.calculate_accounting_formula(&session_id, &sheet_name, &formula_id, &currency)
+    sessions.calculate_accounting_formula(&session_id, &sheet_name, &formula_id, &currency, start_row, end_row)
 }
 
 #[tauri::command]
@@ -1145,7 +1180,7 @@ mod tests {
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
-        let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR").unwrap();
+        let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 3).unwrap();
         assert_eq!(result.formula.status, "calculated");
         assert_eq!(result.formula.output_value.as_deref(), Some("139"));
         assert_eq!(result.formula.currency.as_deref(), Some("PKR"));
@@ -1165,11 +1200,11 @@ mod tests {
             b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,not-a-number,3,1\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
-        assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR").is_err());
+        assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 3).is_err());
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
-        let error = match store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR") {
+        let error = match store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 3) {
             Ok(_) => panic!("non-numeric source data must not calculate"),
             Err(error) => error,
         };
@@ -1187,7 +1222,7 @@ mod tests {
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
-        let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR").unwrap();
+        let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 3).unwrap();
         assert_eq!(result.formula.output_value.as_deref(), Some("89"));
         assert_eq!(result.blank_cells_skipped, 1);
         assert!(result.formula.warnings.iter().any(|warning| warning.contains("blank source cell")));
