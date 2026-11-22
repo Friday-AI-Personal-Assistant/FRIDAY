@@ -220,6 +220,7 @@ export default function ExcelIntelligence() {
     && rangePreview.sheetName === sheet.name && rangePreview.formulaId === formulaId
     && rangePreview.selectedStartRow === Number(accountingStartRow)
     && rangePreview.selectedEndRow === Number(accountingEndRow);
+  const previewHasNoTotalRows = previewMatchesCurrent && rangePreview?.possibleTotalRowCount === 0;
 
   async function previewAccountingRange() {
     if (!analysis || !sheet || !canCalculate || !validAccountingRows || rangePreviewBusy) return;
@@ -245,7 +246,7 @@ export default function ExcelIntelligence() {
   }
 
   async function calculateAccounting() {
-    if (!analysis || !sheet || !currency.trim() || !canCalculate || calculationBusy || !previewMatchesCurrent) return;
+    if (!analysis || !sheet || !currency.trim() || !canCalculate || calculationBusy || !previewHasNoTotalRows) return;
     setCalculationBusy(true);
     setCalculationError("");
     setCalculationResult(null);
@@ -441,7 +442,7 @@ export default function ExcelIntelligence() {
               <button type="button" className="secondary-button" onClick={() => void previewAccountingRange()} disabled={!canCalculate || !validAccountingRows || rangePreviewBusy}>
                 {rangePreviewBusy ? "Preparing preview…" : "Preview selected rows"}
               </button>
-              <button type="button" onClick={() => void calculateAccounting()} disabled={!canCalculate || !validAccountingRows || !previewMatchesCurrent || !/^[A-Z]{3}$/.test(currency.trim()) || calculationBusy}>
+              <button type="button" onClick={() => void calculateAccounting()} disabled={!canCalculate || !validAccountingRows || !previewHasNoTotalRows || !/^[A-Z]{3}$/.test(currency.trim()) || calculationBusy}>
                 {calculationBusy ? "Calculating…" : "Calculate from source"}
               </button>
             </div>
