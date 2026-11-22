@@ -107,6 +107,7 @@ type WorkbookAnalysis = {
   sessionId: string;
   fileName: string;
   format: string;
+  sourceSha256: string;
   sheets: SheetAnalysis[];
   totalRows: number;
   totalNonEmptyCells: number;
@@ -347,7 +348,7 @@ export default function ExcelIntelligence() {
 
           {analysis.sheets.length > 1 && (
             <label className="excel-sheet-picker">Worksheet
-              <select value={selectedSheet} onChange={event => { setSelectedSheet(Number(event.target.value)); setQuestionAnswer(null); setCalculationResult(null); setCalculationError(""); }}>
+              <select value={selectedSheet} onChange={event => { setSelectedSheet(Number(event.target.value)); setQuestionAnswer(null); setCalculationResult(null); setCalculationError(""); setRangePreview(null); setRangePreviewError(""); }}>
                 {analysis.sheets.map((item, index) => <option key={item.name} value={index}>{item.name}</option>)}
               </select>
             </label>
