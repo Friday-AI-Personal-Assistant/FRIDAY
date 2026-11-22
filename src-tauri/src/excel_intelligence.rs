@@ -1660,6 +1660,76 @@ mod tests {
     }
 
     #[test]
+    fn accounting_gross_profit_uses_confirmed_net_sales_and_cogs_source_columns() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "gross-profit.csv".into(),
+            b"Net Sales,COGS\\n1000,650\\n500,325\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 1, "accounting.net_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.cost_of_goods_sold").unwrap();
+
+        let preview = store.preview_accounting_range(
+            &id, "CSV data", "accounting.gross_profit", 2, 3,
+        ).unwrap();
+        assert_eq!(preview.selected_row_count, 2);
+        assert_eq!(preview.confirmed_mappings.len(), 2);
+        assert!(preview.preview_rows.iter().any(|row|
+            row.cells.iter().any(|cell| cell.cell == "A2" && cell.value == "1000")
+        ));
+
+        let result = store.calculate_accounting_formula(
+            &id, "CSV data", "accounting.gross_profit", "PKR", 2, 3,
+        ).unwrap();
+        assert_eq!(result.formula.output_value.as_deref(), Some("525"));
+        assert_eq!(result.formula.currency.as_deref(), Some("PKR"));
+        assert_eq!(result.source_rows_included, 2);
+        assert_eq!(result.source_cells.len(), 4);
+        assert!(result.source_cells.iter().any(|cell|
+            cell.field_id == "accounting.net_sales" && cell.cell == "A2" && cell.value == "1000"
+        ));
+        assert!(result.source_cells.iter().any(|cell|
+            cell.field_id == "accounting.cost_of_goods_sold" && cell.cell == "B3" && cell.value == "325"
+        ));
+    }
+
+    #[test]
+    fn accounting_gross_margin_is_source_bound_and_preserves_negative_results() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "gross-margin.csv".into(),
+            b"Net Sales,Cost of Goods Sold\\n100,125\\n200,150\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 1, "accounting.net_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.cost_of_goods_sold").unwrap();
+
+        let result = store.calculate_accounting_formula(
+            &id, "CSV data", "accounting.gross_margin", "PKR", 2, 3,
+        ).unwrap();
+        assert_eq!(result.formula.output_value.as_deref(), Some("0.083333"));
+        assert_eq!(result.formula.currency.as_deref(), Some("PKR"));
+        assert_eq!(result.source_rows_included, 2);
+        assert_eq!(result.source_cells.len(), 4);
+        assert!(result.formula.trace.iter().any(|line|
+            line.contains("Source mapping: accounting.cost_of_goods_sold")
+        ));
+
+        let negative_analysis = analyze_csv(
+            "negative-margin.csv".into(),
+            b"Net Sales,COGS\\n100,125\\n",
+        ).unwrap();
+        let negative_id = store.create(&negative_analysis).unwrap();
+        store.confirm_accounting_mapping(&negative_id, "CSV data", 1, "accounting.net_sales").unwrap();
+        store.confirm_accounting_mapping(&negative_id, "CSV data", 2, "accounting.cost_of_goods_sold").unwrap();
+        let negative = store.calculate_accounting_formula(
+            &negative_id, "CSV data", "accounting.gross_margin", "PKR", 2, 2,
+        ).unwrap();
+        assert_eq!(negative.formula.output_value.as_deref(), Some("-0.25"));
+    }
+
+    #[test]
     fn accounting_calculation_honors_an_explicit_inclusive_row_range() {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
