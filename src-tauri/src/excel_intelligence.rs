@@ -2052,10 +2052,10 @@ mod tests {
             total[2] = "8".to_string();
             total[3] = "3".to_string();
             total[label_column] = label.to_string();
-            let mut csv = format!("{}\\n", headers.join(","));
-            csv.push_str("Tea,100,5,2,,,,\\n");
-            csv.push_str("Coffee,50,3,1,,,,\\n");
-            csv.push_str(&format!("{}\\n", total.join(",")));
+            let mut csv = format!("{}\n", headers.join(","));
+            csv.push_str("Tea,100,5,2,,,,\n");
+            csv.push_str("Coffee,50,3,1,,,,\n");
+            csv.push_str(&format!("{}\n", total.join(",")));
 
             let store = WorkbookSessionStore::default();
             let analysis = analyze_csv("sparse-total-layout.csv".into(), csv.as_bytes()).unwrap();
