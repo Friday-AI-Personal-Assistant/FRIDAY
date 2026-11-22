@@ -2980,6 +2980,123 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_accounting_formulas_keep_their_own_inputs_and_source_evidence() {
+        let store = std::sync::Arc::new(WorkbookSessionStore::default());
+        let analysis = analyze_csv(
+            "concurrent-formula-evidence.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns,Net Sales,Cost of Goods Sold\nTea,100,5,2,93,60\nCoffee,50,3,1,46,30\n",
+        ).unwrap();
+        let expected_fingerprint = analysis.source_sha256.clone();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 5, "accounting.net_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 6, "accounting.cost_of_goods_sold").unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let requests = [
+            ("accounting.net_sales", "PKR"),
+            ("accounting.gross_profit", "PKR"),
+            ("accounting.gross_margin", "PKR"),
+        ];
+        let workers = requests.into_iter().map(|(formula_id, currency)| {
+            let store = std::sync::Arc::clone(&store);
+            let barrier = std::sync::Arc::clone(&barrier);
+            let id = id.clone();
+            let formula_id = formula_id.to_string();
+            let currency = currency.to_string();
+            std::thread::spawn(move || {
+                barrier.wait();
+                let preview = store.preview_accounting_range(
+                    &id, "CSV data", &formula_id, 2, 2,
+                ).unwrap();
+                let result = store.calculate_accounting_formula(
+                    &id, "CSV data", &formula_id, &currency, 2, 2,
+                ).unwrap();
+                (preview, result)
+            })
+        }).collect::<Vec<_>>();
+
+        let results = workers.into_iter()
+            .map(|worker| worker.join().expect("formula worker should not panic"))
+            .map(|(preview, result)| (preview, result))
+            .collect::<Vec<_>>();
+        assert_eq!(results.len(), 3);
+
+        for (preview, result) in &results {
+            assert_eq!(preview.source_sha256, expected_fingerprint);
+            assert_eq!(preview.selected_start_row, 2);
+            assert_eq!(preview.selected_end_row, 2);
+            assert_eq!(preview.selected_row_count, 1);
+            assert_eq!(result.source_sha256, expected_fingerprint);
+            assert_eq!(result.sheet_name, "CSV data");
+            assert_eq!(result.selected_start_row, 2);
+            assert_eq!(result.selected_end_row, 2);
+            assert_eq!(result.source_rows_included, 1);
+            assert!(result.confirmed_mappings.iter().all(|mapping|
+                mapping.source_sha256 == expected_fingerprint
+                    && mapping.sheet_name == "CSV data"
+            ));
+        }
+
+        let net_sales = results.iter().find(|(_, result)|
+            result.formula.formula_id == "accounting.net_sales"
+        ).unwrap();
+        assert_eq!(net_sales.1.formula.formula_version, 1);
+        assert_eq!(net_sales.1.formula.output_value.as_deref(), Some("93"));
+        assert_eq!(net_sales.1.formula.output_unit, "currency");
+        assert_eq!(net_sales.1.formula.currency.as_deref(), Some("PKR"));
+        assert_eq!(net_sales.1.confirmed_mappings.len(), 3);
+        assert_eq!(net_sales.1.source_cells.len(), 3);
+        assert!(net_sales.1.source_cells.iter().all(|cell|
+            ["accounting.gross_sales", "accounting.discounts", "accounting.sales_returns"]
+                .contains(&cell.field_id.as_str())
+                && cell.cell.ends_with('2')
+        ));
+        assert!(net_sales.1.source_cells.iter().any(|cell|
+            cell.field_id == "accounting.gross_sales" && cell.cell == "B2" && cell.value == "100"
+        ));
+
+        let gross_profit = results.iter().find(|(_, result)|
+            result.formula.formula_id == "accounting.gross_profit"
+        ).unwrap();
+        assert_eq!(gross_profit.1.formula.formula_version, 1);
+        assert_eq!(gross_profit.1.formula.output_value.as_deref(), Some("33"));
+        assert_eq!(gross_profit.1.formula.output_unit, "currency");
+        assert_eq!(gross_profit.1.formula.currency.as_deref(), Some("PKR"));
+        assert_eq!(gross_profit.1.confirmed_mappings.len(), 2);
+        assert_eq!(gross_profit.1.source_cells.len(), 2);
+        assert!(gross_profit.1.source_cells.iter().all(|cell|
+            ["accounting.net_sales", "accounting.cost_of_goods_sold"]
+                .contains(&cell.field_id.as_str())
+        ));
+        assert!(gross_profit.1.source_cells.iter().any(|cell|
+            cell.field_id == "accounting.net_sales" && cell.cell == "E2" && cell.value == "93"
+        ));
+
+        let gross_margin = results.iter().find(|(_, result)|
+            result.formula.formula_id == "accounting.gross_margin"
+        ).unwrap();
+        assert_eq!(gross_margin.1.formula.formula_version, 1);
+        assert_eq!(gross_margin.1.formula.output_value.as_deref(), Some("35.483871"));
+        assert_eq!(gross_margin.1.formula.output_unit, "percent");
+        assert!(gross_margin.1.formula.currency.is_none());
+        assert_eq!(gross_margin.1.confirmed_mappings.len(), 2);
+        assert_eq!(gross_margin.1.source_cells.len(), 2);
+        assert!(gross_margin.1.source_cells.iter().all(|cell|
+            ["accounting.net_sales", "accounting.cost_of_goods_sold"]
+                .contains(&cell.field_id.as_str())
+        ));
+        assert!(gross_margin.1.source_cells.iter().any(|cell|
+            cell.field_id == "accounting.cost_of_goods_sold" && cell.cell == "F2" && cell.value == "60"
+        ));
+
+        let sessions = store.sessions.lock().unwrap();
+        validate_session_integrity(sessions.get(&id).unwrap()).unwrap();
+    }
+
+    #[test]
     fn concurrent_accounting_calculations_return_consistent_complete_evidence() {
         let store = std::sync::Arc::new(WorkbookSessionStore::default());
         let analysis = analyze_csv(
