@@ -85,6 +85,7 @@ type WorkbookAccountingCalculation = {
   selectedStartRow: number;
   selectedEndRow: number;
   blankCellsSkipped: number;
+  cachedFormulaCellsUsed: number;
 };
 
 type WorkbookAccountingRangePreview = {
@@ -95,7 +96,8 @@ type WorkbookAccountingRangePreview = {
   selectedStartRow: number;
   selectedEndRow: number;
   selectedRowCount: number;
-  previewRows: { worksheetRow: number; possibleTotal: boolean; cells: { fieldId: string; cell: string; value: string }[] }[];
+  missingCachedFormulaCount: number;
+  previewRows: { worksheetRow: number; possibleTotal: boolean; cells: { fieldId: string; cell: string; value: string; isFormulaCell: boolean; missingCachedValue: boolean }[] }[];
   previewTruncated: boolean;
   possibleTotalRowCount: number;
   possibleTotalRows: { worksheetRow: number; labels: string[] }[];
@@ -221,7 +223,8 @@ export default function ExcelIntelligence() {
     && rangePreview.sheetName === sheet.name && rangePreview.formulaId === formulaId
     && rangePreview.selectedStartRow === Number(accountingStartRow)
     && rangePreview.selectedEndRow === Number(accountingEndRow);
-  const previewHasNoTotalRows = previewMatchesCurrent && rangePreview?.possibleTotalRowCount === 0;
+  const previewHasNoTotalRows = previewMatchesCurrent && rangePreview?.possibleTotalRowCount === 0
+    && rangePreview?.missingCachedFormulaCount === 0;
 
   async function previewAccountingRange() {
     if (!analysis || !sheet || !canCalculate || !validAccountingRows || rangePreviewBusy) return;
@@ -455,6 +458,12 @@ export default function ExcelIntelligence() {
                 <strong>Source-range review</strong>
                 <p>{rangePreview.fileName} · {rangePreview.sheetName} · rows {rangePreview.selectedStartRow}–{rangePreview.selectedEndRow} · {rangePreview.selectedRowCount} selected row(s)</p>
                 <p>Preview shows {rangePreview.previewRows.length} row(s){rangePreview.previewTruncated ? "; the selection is larger than the preview window." : "."} Values are read from the retained source session.</p>
+                {rangePreview.missingCachedFormulaCount > 0 && (
+                  <div className="excel-error" role="alert">
+                    <strong>Calculation blocked: {rangePreview.missingCachedFormulaCount} formula cell(s) have no cached result.</strong>
+                    <p>FRIDAY will not substitute zero, skip these formula cells, or recalculate them. Open the workbook in Excel, recalculate and save it, then reimport the source.</p>
+                  </div>
+                )}
                 {rangePreview.possibleTotalRowCount > 0 ? (
                   <div className="excel-error" role="alert">
                     <strong>Review required: {rangePreview.possibleTotalRowCount} possible subtotal/total row(s) detected.</strong>
@@ -466,11 +475,11 @@ export default function ExcelIntelligence() {
                 <div className="excel-table-wrap">
                   <table className="excel-data-table">
                     <thead><tr><th>Worksheet row</th>{rangePreview.confirmedMappings.map(mapping => <th key={mapping.fieldId}>{mapping.fieldId}</th>)}<th>Review flag</th></tr></thead>
-                    <tbody>{rangePreview.previewRows.slice(0, 25).map(row => <tr key={row.worksheetRow}><td>{row.worksheetRow}</td>{row.cells.map(cell => <td key={cell.fieldId}>{cell.cell}: {cell.value || "(blank)"}</td>)}<td>{row.possibleTotal ? "Possible total" : "—"}</td></tr>)}</tbody>
+                    <tbody>{rangePreview.previewRows.slice(0, 25).map(row => <tr key={row.worksheetRow}><td>{row.worksheetRow}</td>{row.cells.map(cell => <td key={cell.fieldId}>{cell.cell}: {cell.value || "(blank)"}{cell.isFormulaCell ? (cell.missingCachedValue ? " · formula cache missing" : " · cached formula value") : ""}</td>)}<td>{row.possibleTotal ? "Possible total" : "—"}</td></tr>)}</tbody>
                   </table>
                 </div>
                 {rangePreview.previewRows.length > 25 && <p>Showing the first 25 preview rows on screen; the preview response is bounded to 100 rows.</p>}
-                <p>Review the selected rows and mapping columns before calculating. Changing the sheet, formula or row range requires a fresh preview.</p>
+                <p>Review the selected rows and mapping columns before calculating. Formula results shown here are cached workbook values, not recalculated values; they may be stale. Changing the sheet, formula or row range requires a fresh preview.</p>
               </div>
             )}
             {calculationError && <div className="excel-error" role="alert">{calculationError}</div>}
@@ -482,6 +491,7 @@ export default function ExcelIntelligence() {
                 <ul>{calculationResult.confirmedMappings.map(mapping => <li key={mapping.fieldId}>{mapping.fieldId}: {mapping.sheetName}!{mapping.headerCell} ({mapping.header}) · {mapping.dataRange}</li>)}</ul>
                 <strong>Calculation trace</strong>
                 <ul>{calculationResult.formula.trace.map((line, index) => <li key={index}>{line}</li>)}</ul>
+                {calculationResult.cachedFormulaCellsUsed > 0 && <p>{calculationResult.cachedFormulaCellsUsed} formula cell(s) contributed cached values. FRIDAY did not recalculate them; results may be stale or differ from Excel's next recalculation.</p>}
                 {calculationResult.sourceCells.length > 0 && <p>Source evidence sample: {calculationResult.sourceCells.slice(0, 20).map(cell => cell.cell + "=" + cell.value).join(" · ")}{calculationResult.sourceCells.length > 20 ? " · …" : ""}</p>}
                 {calculationResult.formula.warnings.map((warning, index) => <p key={index}>{warning}</p>)}
               </div>
