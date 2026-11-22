@@ -2068,8 +2068,10 @@ mod tests {
             assert_eq!(preview.possible_total_row_count, 1, "label column {label_column} must be detected");
             assert_eq!(preview.possible_total_rows[0].worksheet_row, 4);
             assert_eq!(preview.possible_total_rows[0].labels, vec![label.to_string()]);
-            let error = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4)
-                .expect_err("every candidate column position must block aggregation");
+            let error = match store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4) {
+                Ok(_) => panic!("every candidate column position must block aggregation"),
+                Err(error) => error,
+            };
             assert!(error.contains("row 4"), "unexpected error for {label}: {error}");
         }
     }
