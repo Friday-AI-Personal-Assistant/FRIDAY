@@ -1691,7 +1691,7 @@ mod tests {
         let labels = ["Subtotal", "Grand Total (PKR)", "Invoice Total", "Gesamtsumme", "Zwischensumme", "Total de ventas", "Total geral", "الإجمالي العام", "جمع کل"];
         for label in labels {
             let csv = format!(
-                "Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n{label},150,8,3\\n"
+                "Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\n{label},150,8,3\n"
             );
             let store = WorkbookSessionStore::default();
             let analysis = analyze_csv("localized-sales.csv".into(), csv.as_bytes()).unwrap();
@@ -1715,7 +1715,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "customers.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\nTotal Customers,10,1,1\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\nTotal Customers,10,1,1\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
