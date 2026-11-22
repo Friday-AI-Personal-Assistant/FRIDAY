@@ -3028,12 +3028,12 @@ mod tests {
             assert_eq!(result.source_sha256, first.source_sha256);
             assert_eq!(result.formula.output_value, first.formula.output_value);
             let mapping_signature = |items: &[ConfirmedAccountingMapping]| items.iter().map(|item| (
-                item.field_id.as_str(), item.sheet_name.as_str(), item.header.as_str(),
-                item.source_column_index, item.header_cell.as_str(), item.data_range.as_str(),
-                item.source_sha256.as_str(),
+                item.field_id.clone(), item.sheet_name.clone(), item.header.clone(),
+                item.source_column_index, item.header_cell.clone(), item.data_range.clone(),
+                item.source_sha256.clone(),
             )).collect::<Vec<_>>();
             let cell_signature = |items: &[AccountingSourceCell]| items.iter().map(|item| (
-                item.field_id.as_str(), item.cell.as_str(), item.value.as_str(),
+                item.field_id.clone(), item.cell.clone(), item.value.clone(),
             )).collect::<Vec<_>>();
             assert_eq!(mapping_signature(&result.confirmed_mappings), mapping_signature(&first.confirmed_mappings));
             assert_eq!(cell_signature(&result.source_cells), cell_signature(&first.source_cells));
@@ -3073,12 +3073,12 @@ mod tests {
         // continued presence or mutability of the source session.
         assert_eq!(calculation.source_sha256, expected_fingerprint);
         let cell_signature = |items: &[AccountingSourceCell]| items.iter().map(|item| (
-            item.field_id.as_str(), item.cell.as_str(), item.value.as_str(),
+            item.field_id.clone(), item.cell.clone(), item.value.clone(),
         )).collect::<Vec<_>>();
         let mapping_signature = |items: &[ConfirmedAccountingMapping]| items.iter().map(|item| (
-            item.field_id.as_str(), item.sheet_name.as_str(), item.header.as_str(),
-            item.source_column_index, item.header_cell.as_str(), item.data_range.as_str(),
-            item.source_sha256.as_str(),
+            item.field_id.clone(), item.sheet_name.clone(), item.header.clone(),
+            item.source_column_index, item.header_cell.clone(), item.data_range.clone(),
+            item.source_sha256.clone(),
         )).collect::<Vec<_>>();
         assert_eq!(cell_signature(&calculation.source_cells), cell_signature(&expected_cells));
         assert_eq!(mapping_signature(&calculation.confirmed_mappings), mapping_signature(&expected_mappings));
