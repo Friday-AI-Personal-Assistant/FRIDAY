@@ -57,6 +57,8 @@ pub struct WorkbookAnalysis {
 struct WorkbookSourceSheet {
     name: String,
     rows: Vec<Vec<String>>,
+    start_row: usize,
+    start_column: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -280,13 +282,13 @@ impl WorkbookSessionStore {
             if mapping.source_sha256 != session.source_sha256 {
                 return Err("A confirmed accounting mapping no longer matches this workbook source fingerprint.".into());
             }
-            let column_index = mapping.source_column_index.checked_sub(1)
+            let column_index = mapping.source_column_index.checked_sub(source.start_column + 1)
                 .ok_or_else(|| "The confirmed source column index is invalid.".to_string())?;
             let header = source.rows.first().and_then(|row| row.get(column_index)).map(String::as_str).unwrap_or("");
             if header != mapping.header {
                 return Err("The confirmed accounting header no longer matches the retained source cells.".into());
             }
-            let column_label = excel_column_label(column_index);
+            let column_label = excel_column_label(column_index + source.start_column);
             let mut numeric_values = Vec::new();
             for (row_index, row) in source.rows.iter().enumerate().skip(1) {
                 let raw = row.get(column_index).map(|value| value.trim()).unwrap_or("");
@@ -300,7 +302,7 @@ impl WorkbookSessionStore {
                 numeric_values.push(raw.to_string());
                 source_cells.push(AccountingSourceCell {
                     field_id: field_id.clone(),
-                    cell: format!("{column_label}{}", row_index + 1),
+                    cell: format!("{column_label}{}", source.start_row + row_index + 1),
                     value: raw.to_string(),
                 });
             }
@@ -564,7 +566,9 @@ fn excel_column_label(index: usize) -> String {
     label
 }
 
-fn accounting_field_suggestions(header: &[String], row_count: usize, column_count: usize) -> Vec<AccountingFieldSuggestion> {
+fn accounting_field_suggestions(
+    header: &[String], row_count: usize, column_count: usize, start_row: usize, start_column: usize,
+) -> Vec<AccountingFieldSuggestion> {
     let mut suggestions = Vec::new();
     for column in 0..column_count {
         let name = header.get(column).map(|value| value.trim()).unwrap_or("");
@@ -578,7 +582,7 @@ fn accounting_field_suggestions(header: &[String], row_count: usize, column_coun
             "revenue" | "sales" | "total revenue" => vec!["accounting.gross_sales", "accounting.net_sales"],
             _ => Vec::new(),
         };
-        let letter = excel_column_label(column);
+        let letter = excel_column_label(column + start_column);
         let field_id = if candidates.len() == 1 { Some(candidates[0].to_string()) } else { None };
         let status = if candidates.len() > 1 { "ambiguous" } else if candidates.len() == 1 { "suggested" } else { "unmapped" };
         suggestions.push(AccountingFieldSuggestion {
@@ -586,9 +590,9 @@ fn accounting_field_suggestions(header: &[String], row_count: usize, column_coun
             field_id,
             possible_fields: candidates.iter().map(|candidate| candidate.to_string()).collect(),
             status: status.into(),
-            source_column_index: column + 1,
-            header_cell: format!("{letter}1"),
-            data_range: if row_count > 1 { format!("{letter}2:{letter}{row_count}") } else { format!("{letter}2 (no data rows)") },
+            source_column_index: column + start_column + 1,
+            header_cell: format!("{letter}{}", start_row + 1),
+            data_range: if row_count > 1 { format!("{letter}{}:{letter}{}", start_row + 2, start_row + row_count) } else { format!("{letter}{} (no data rows)", start_row + 2) },
         });
     }
     let mut field_counts: HashMap<String, usize> = HashMap::new();
@@ -606,10 +610,16 @@ fn accounting_field_suggestions(header: &[String], row_count: usize, column_coun
     suggestions
 }
 
-fn analyze_matrix(
+fn analyze_matrix(name: String, rows: Vec<Vec<String>>, formula_cells: usize) -> Result<SheetAnalysis, String> {
+    analyze_matrix_with_origin(name, rows, formula_cells, 0, 0)
+}
+
+fn analyze_matrix_with_origin(
     name: String,
     rows: Vec<Vec<String>>,
     formula_cells: usize,
+    start_row: usize,
+    start_column: usize,
 ) -> Result<SheetAnalysis, String> {
     if rows.is_empty() {
         return Ok(SheetAnalysis {
@@ -764,7 +774,7 @@ fn analyze_matrix(
     let preview = rows.iter().take(PREVIEW_ROWS).map(|row| {
         row.iter().take(PREVIEW_COLUMNS).map(|value| cell_text(value)).collect()
     }).collect();
-    let accounting_field_suggestions = accounting_field_suggestions(&header, rows.len(), column_count);
+    let accounting_field_suggestions = accounting_field_suggestions(&header, rows.len(), column_count, start_row, start_column);
     Ok(SheetAnalysis {
         name, row_count: rows.len(), column_count, non_empty_cells, blank_cells,
         formula_cells, preview, columns, quality_findings, accounting_field_suggestions,
@@ -791,7 +801,7 @@ fn analyze_csv(file_name: String, bytes: &[u8]) -> Result<WorkbookAnalysis, Stri
     if rows.is_empty() {
         return Err("The selected CSV has no rows to analyze.".into());
     }
-    let source_sheets = vec![WorkbookSourceSheet { name: "CSV data".into(), rows: rows.clone() }];
+    let source_sheets = vec![WorkbookSourceSheet { name: "CSV data".into(), rows: rows.clone(), start_row: 0, start_column: 0 }];
     let sheet = analyze_matrix("CSV data".into(), rows, 0)?;
     let total_rows = sheet.row_count;
     let total_non_empty_cells = sheet.non_empty_cells;
@@ -830,14 +840,17 @@ fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, S
             return Err("The workbook exceeds FRIDAY's bounded 20,000-row, 64-column or 200,000-total-cell analysis limit.".into());
         }
         total_cells = total_cells.saturating_add(height.saturating_mul(width));
+        let (start_row, start_column) = range.start().unwrap_or((0, 0));
+        let start_row = start_row as usize;
+        let start_column = start_column as usize;
         let rows = range.rows().map(|row| row.iter().map(|cell| {
             if *cell == Data::Empty { String::new() } else { cell.to_string() }
         }).collect::<Vec<_>>()).collect::<Vec<_>>();
-        source_sheets.push(WorkbookSourceSheet { name: name.clone(), rows: rows.clone() });
+        source_sheets.push(WorkbookSourceSheet { name: name.clone(), rows: rows.clone(), start_row, start_column });
         let formula_cells = workbook.worksheet_formula(&name).ok()
             .map(|formulas| formulas.rows().flat_map(|row| row.iter()).filter(|formula| !formula.trim().is_empty()).count())
             .unwrap_or(0);
-        sheets.push(analyze_matrix(name, rows, formula_cells)?);
+        sheets.push(analyze_matrix_with_origin(name, rows, formula_cells, start_row, start_column)?);
     }
     let total_rows = sheets.iter().map(|sheet| sheet.row_count).sum();
     let total_non_empty_cells = sheets.iter().map(|sheet| sheet.non_empty_cells).sum();
