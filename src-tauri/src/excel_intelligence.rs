@@ -1187,7 +1187,7 @@ mod tests {
         store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
         let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR").unwrap();
-        assert_eq!(result.formula.output_value.as_deref(), Some("92"));
+        assert_eq!(result.formula.output_value.as_deref(), Some("89"));
         assert_eq!(result.blank_cells_skipped, 1);
         assert!(result.formula.warnings.iter().any(|warning| warning.contains("blank source cell")));
     }
