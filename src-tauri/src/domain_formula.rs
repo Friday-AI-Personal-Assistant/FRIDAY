@@ -435,6 +435,20 @@ mod tests {
     }
 
     #[test]
+    fn accounting_decimal_syntax_accepts_plain_signed_values_and_rejects_ambiguous_formats() {
+        assert_eq!(Decimal::parse("  +125.50  ").unwrap().format(), "125.5");
+        assert_eq!(Decimal::parse("-0.25").unwrap().format(), "-0.25");
+        assert_eq!(Decimal::parse("0").unwrap().format(), "0");
+
+        for unsupported in [
+            "1,000", "1.000,50", "1 000", "$100", "100 PKR",
+            "(100)", "50%", "1_000", "1,000.50", "1.000,50",
+        ] {
+            assert!(Decimal::parse(unsupported).is_err(), "unexpectedly accepted {unsupported}");
+        }
+    }
+
+    #[test]
     fn decimal_operations_detect_overflow_and_division_by_zero() {
         let huge = Decimal::parse("170000000000000000000000000000000").unwrap();
         assert!(huge.checked_add(huge).is_err());
