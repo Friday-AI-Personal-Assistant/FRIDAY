@@ -1193,6 +1193,46 @@ mod tests {
     }
 
     #[test]
+    fn accounting_calculation_honors_an_explicit_inclusive_row_range() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "sales.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+        let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 2).unwrap();
+        assert_eq!(result.formula.output_value.as_deref(), Some("93"));
+        assert_eq!(result.selected_start_row, 2);
+        assert_eq!(result.selected_end_row, 2);
+        assert_eq!(result.source_rows_included, 1);
+        assert_eq!(result.source_cells.len(), 3);
+        assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 1, 2).is_err());
+        assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 3, 2).is_err());
+        assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4).is_err());
+    }
+
+    #[test]
+    fn accounting_calculation_rejects_ranges_containing_possible_total_rows() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "sales.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\nGrand Total,150,8,3\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+        let error = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4).unwrap_err();
+        assert!(error.contains("possible subtotal or total row"));
+        assert!(error.contains("row 4"));
+        let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 3).unwrap();
+        assert_eq!(result.formula.output_value.as_deref(), Some("139"));
+    }
+
+    #[test]
     fn accounting_calculation_requires_confirmed_mappings_and_rejects_non_numeric_source_cells() {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
