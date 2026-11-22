@@ -1683,7 +1683,8 @@ mod tests {
             &id, "CSV data", "accounting.gross_profit", "PKR", 2, 3,
         ).unwrap();
         assert_eq!(result.formula.output_value.as_deref(), Some("525"));
-        assert_eq!(result.formula.currency.as_deref(), Some("PKR"));
+        assert_eq!(result.formula.output_unit, "percent");
+        assert!(result.formula.currency.is_none());
         assert_eq!(result.source_rows_included, 2);
         assert_eq!(result.source_cells.len(), 4);
         assert!(result.source_cells.iter().any(|cell|
