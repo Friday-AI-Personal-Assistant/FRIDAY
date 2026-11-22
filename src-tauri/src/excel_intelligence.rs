@@ -1665,7 +1665,10 @@ mod tests {
         let preview = store.preview_accounting_range(&id, "Sales", "accounting.net_sales", 2, 2).unwrap();
         assert_eq!(preview.missing_cached_formula_count, 1);
         assert!(preview.preview_rows[0].cells.iter().any(|cell| cell.cell == "B2" && cell.missing_cached_value));
-        let error = store.calculate_accounting_formula(&id, "Sales", "accounting.net_sales", "PKR", 2, 2).unwrap_err();
+        let error = match store.calculate_accounting_formula(&id, "Sales", "accounting.net_sales", "PKR", 2, 2) {
+            Err(error) => error,
+            Ok(_) => panic!("calculation must reject a formula cell with no cached result"),
+        };
         assert!(error.contains("has no cached result"));
 
         let cached_store = WorkbookSessionStore::default();
