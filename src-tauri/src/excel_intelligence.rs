@@ -381,6 +381,41 @@ fn validate_accounting_mapping(
     Ok(column_index)
 }
 
+fn validate_session_integrity(session: &WorkbookSession) -> Result<(), String> {
+    if session.source_sha256.len() != 64
+        || !session.source_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || session.source_byte_length == 0
+        || !matches!(session.format.as_str(), "CSV" | "XLSX")
+        || session.file_name.is_empty()
+    {
+        return Err("The retained workbook session metadata is inconsistent. Import the workbook again.".into());
+    }
+    if session.sheets.is_empty()
+        || session.sheets.len() != session.source_sheets.len()
+        || session.sheets.len() > MAX_SHEETS
+    {
+        return Err("The retained worksheet summaries do not match the source session. Import the workbook again.".into());
+    }
+    let mut names = HashSet::new();
+    for (summary, source) in session.sheets.iter().zip(session.source_sheets.iter()) {
+        if summary.name != source.name
+            || !names.insert(summary.name.as_str())
+            || summary.row_count != source.rows.len()
+            || summary.column_count != source.rows.iter().map(Vec::len).max().unwrap_or(0)
+            || source.rows.is_empty()
+            || source.rows.len() > MAX_ROWS
+            || source.start_row.saturating_add(source.rows.len()) > MAX_ROWS.saturating_add(1)
+            || source.start_column.saturating_add(summary.column_count) > MAX_COLUMNS
+            || source.formula_cell_positions.iter().any(|(row, column)|
+                *row >= source.rows.len() || *column >= summary.column_count
+            )
+        {
+            return Err("The retained worksheet dimensions or source coordinates are inconsistent. Import the workbook again.".into());
+        }
+    }
+    Ok(())
+}
+
 impl WorkbookSessionStore {
     fn create(&self, analysis: &WorkbookAnalysis) -> Result<String, String> {
         let summary_bytes = serde_json::to_vec(&analysis.sheets)
@@ -431,6 +466,7 @@ impl WorkbookSessionStore {
         sessions.retain(|_, item| item.created_at.elapsed() < WORKBOOK_SESSION_TTL);
         let session = sessions.get(id)
             .ok_or_else(|| "This workbook analysis session has expired or was replaced. Import the workbook again.".to_string())?;
+        validate_session_integrity(session)?;
         let sheet = session.sheets.iter().find(|sheet| sheet.name == sheet_name)
             .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;
         let mut answer = answer_question(question, &sheet.name, sheet.row_count, &sheet.columns);
@@ -459,6 +495,7 @@ impl WorkbookSessionStore {
         sessions.retain(|_, item| item.created_at.elapsed() < WORKBOOK_SESSION_TTL);
         let session = sessions.get(id)
             .ok_or_else(|| "This workbook analysis session has expired or was replaced. Import the workbook again.".to_string())?;
+        validate_session_integrity(session)?;
         let _sheet = session.sheets.iter().find(|sheet| sheet.name == sheet_name)
             .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;
         let source = session.source_sheets.iter().find(|source| source.name == sheet_name)
@@ -558,6 +595,7 @@ impl WorkbookSessionStore {
         sessions.retain(|_, item| item.created_at.elapsed() < WORKBOOK_SESSION_TTL);
         let session = sessions.get(id)
             .ok_or_else(|| "This workbook analysis session has expired or was replaced. Import the workbook again.".to_string())?;
+        validate_session_integrity(session)?;
         let sheet = session.sheets.iter().find(|sheet| sheet.name == sheet_name)
             .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;
         let source = session.source_sheets.iter().find(|source| source.name == sheet_name)
