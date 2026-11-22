@@ -443,6 +443,29 @@ fn validate_session_integrity(session: &WorkbookSession) -> Result<(), String> {
             return Err("The retained worksheet dimensions or source coordinates are inconsistent. Import the workbook again.".into());
         }
     }
+
+    let mut confirmed_fields = HashSet::new();
+    let mut confirmed_columns = HashSet::new();
+    for (key, mapping) in &session.confirmed_mappings {
+        const ALLOWED_FIELDS: &[&str] = &[
+            "accounting.gross_sales",
+            "accounting.discounts",
+            "accounting.sales_returns",
+            "accounting.cost_of_goods_sold",
+            "accounting.net_sales",
+        ];
+        if !ALLOWED_FIELDS.contains(&mapping.field_id.as_str())
+            || !confirmed_fields.insert(mapping.field_id.as_str())
+            || !confirmed_columns.insert((mapping.sheet_name.as_str(), mapping.source_column_index))
+            || key != &format!("{}:{}:{}", mapping.sheet_name, mapping.source_column_index, mapping.field_id)
+        {
+            return Err("The retained confirmed accounting mappings are inconsistent. Re-import the workbook and review the mappings again.".into());
+        }
+        let source = session.source_sheets.iter()
+            .find(|source| source.name == mapping.sheet_name)
+            .ok_or_else(|| "A confirmed accounting mapping refers to a worksheet outside this workbook session.".to_string())?;
+        validate_accounting_mapping(mapping, source, &session.source_sha256)?;
+    }
     Ok(())
 }
 
@@ -2453,6 +2476,41 @@ mod tests {
         }
         assert!(second_store.confirm_accounting_mapping(
             &second_id, "CSV data", 2, "accounting.gross_sales"
+        ).is_err());
+    }
+
+    #[test]
+    fn workbook_operations_reject_tampered_confirmed_mapping_metadata() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "mapping-integrity.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            let mapping = sessions.get_mut(&id).unwrap().confirmed_mappings.values_mut().next().unwrap();
+            mapping.data_range = "Z999:Z1000".into();
+        }
+        assert!(store.answer(&id, "CSV data", "total gross sales").is_err());
+        assert!(store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 2).is_err());
+        assert!(store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").is_err());
+
+        let second_store = WorkbookSessionStore::default();
+        let second_analysis = analyze_csv(
+            "mapping-fingerprint.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
+        ).unwrap();
+        let second_id = second_store.create(&second_analysis).unwrap();
+        second_store.confirm_accounting_mapping(&second_id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        {
+            let mut sessions = second_store.sessions.lock().unwrap();
+            let mapping = sessions.get_mut(&second_id).unwrap().confirmed_mappings.values_mut().next().unwrap();
+            mapping.source_sha256 = "0".repeat(64);
+        }
+        assert!(second_store.calculate_accounting_formula(
+            &second_id, "CSV data", "accounting.net_sales", "PKR", 2, 2
         ).is_err());
     }
 
