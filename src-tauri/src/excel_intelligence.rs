@@ -3092,7 +3092,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "evidence-identity.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\n",
         ).unwrap();
         let expected_fingerprint = analysis.source_sha256.clone();
         let id = store.create(&analysis).unwrap();
@@ -3145,7 +3145,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "selected-range-evidence.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\nCake,20,1,0\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\nCake,20,1,0\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
