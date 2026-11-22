@@ -87,6 +87,22 @@ type WorkbookAccountingCalculation = {
   blankCellsSkipped: number;
 };
 
+type WorkbookAccountingRangePreview = {
+  sourceSha256: string;
+  fileName: string;
+  sheetName: string;
+  formulaId: string;
+  selectedStartRow: number;
+  selectedEndRow: number;
+  selectedRowCount: number;
+  previewRows: { worksheetRow: number; possibleTotal: boolean; cells: { fieldId: string; cell: string; value: string }[] }[];
+  previewTruncated: boolean;
+  possibleTotalRowCount: number;
+  possibleTotalRows: { worksheetRow: number; labels: string[] }[];
+  totalCandidatesTruncated: boolean;
+  confirmedMappings: ConfirmedAccountingMapping[];
+};
+
 type WorkbookAnalysis = {
   sessionId: string;
   fileName: string;
@@ -120,6 +136,9 @@ export default function ExcelIntelligence() {
   const [calculationBusy, setCalculationBusy] = useState(false);
   const [calculationError, setCalculationError] = useState("");
   const [calculationResult, setCalculationResult] = useState<WorkbookAccountingCalculation | null>(null);
+  const [rangePreview, setRangePreview] = useState<WorkbookAccountingRangePreview | null>(null);
+  const [rangePreviewBusy, setRangePreviewBusy] = useState(false);
+  const [rangePreviewError, setRangePreviewError] = useState("");
 
   async function chooseWorkbook() {
     setBusy(true);
@@ -136,6 +155,8 @@ export default function ExcelIntelligence() {
       setMappingMessage("");
       setCalculationResult(null);
       setCalculationError("");
+      setRangePreview(null);
+      setRangePreviewError("");
     } catch (reason) {
       const message = String(reason);
       if (!message.toLowerCase().includes("cancel")) setError(message);
@@ -169,6 +190,8 @@ export default function ExcelIntelligence() {
       setConfirmedMappings(current => [...current.filter(existing =>
         !(existing.sheetName === mapping.sheetName && existing.sourceColumnIndex === mapping.sourceColumnIndex)
       ), mapping]);
+      setRangePreview(null);
+      setRangePreviewError("");
       setMappingMessage("Confirmed " + mapping.header + " as " + mapping.fieldId + ". Source: " + mapping.sheetName + "!" + mapping.headerCell + " and " + mapping.dataRange + ".");
     } catch (reason) {
       setMappingMessage(String(reason));
@@ -192,8 +215,37 @@ export default function ExcelIntelligence() {
     && Number(accountingStartRow) >= accountingMinRow && Number(accountingEndRow) >= Number(accountingStartRow)
     && Number(accountingEndRow) <= accountingMaxRow;
 
+  const previewMatchesCurrent = !!rangePreview && !!analysis && !!sheet
+    && rangePreview.sourceSha256 === analysis.sourceSha256
+    && rangePreview.sheetName === sheet.name && rangePreview.formulaId === formulaId
+    && rangePreview.selectedStartRow === Number(accountingStartRow)
+    && rangePreview.selectedEndRow === Number(accountingEndRow);
+
+  async function previewAccountingRange() {
+    if (!analysis || !sheet || !canCalculate || !validAccountingRows || rangePreviewBusy) return;
+    setRangePreviewBusy(true);
+    setRangePreview(null);
+    setRangePreviewError("");
+    setCalculationResult(null);
+    setCalculationError("");
+    try {
+      const result = await invoke<WorkbookAccountingRangePreview>("preview_excel_accounting_range", {
+        sessionId: analysis.sessionId,
+        sheetName: sheet.name,
+        formulaId,
+        startRow: Number(accountingStartRow),
+        endRow: Number(accountingEndRow),
+      });
+      setRangePreview(result);
+    } catch (reason) {
+      setRangePreviewError(String(reason));
+    } finally {
+      setRangePreviewBusy(false);
+    }
+  }
+
   async function calculateAccounting() {
-    if (!analysis || !sheet || !currency.trim() || !canCalculate || calculationBusy) return;
+    if (!analysis || !sheet || !currency.trim() || !canCalculate || calculationBusy || !previewMatchesCurrent) return;
     setCalculationBusy(true);
     setCalculationError("");
     setCalculationResult(null);
@@ -378,20 +430,47 @@ export default function ExcelIntelligence() {
             </div>
             <p className="excel-table-caption">FRIDAY reads the confirmed columns from this workbook session, sums their nonblank numeric cells using exact-decimal arithmetic, and keeps the source-cell references with the result. No workbook cells are changed.</p>
             <div className="excel-question-form">
-              <select aria-label="Accounting formula" value={formulaId} onChange={event => { setFormulaId(event.target.value); setCalculationResult(null); setCalculationError(""); }}>
+              <select aria-label="Accounting formula" value={formulaId} onChange={event => { setFormulaId(event.target.value); setCalculationResult(null); setCalculationError(""); setRangePreview(null); setRangePreviewError(""); }}>
                 <option value="accounting.net_sales">Net sales</option>
                 <option value="accounting.gross_profit">Gross profit</option>
                 <option value="accounting.gross_margin">Gross margin</option>
               </select>
               <input aria-label="Source currency code" value={currency} onChange={event => { setCurrency(event.target.value.toUpperCase().slice(0, 3)); setCalculationResult(null); }} placeholder="Currency (e.g. PKR)" maxLength={3} />
-              <input aria-label="First source row (inclusive)" type="number" min={accountingMinRow} max={accountingMaxRow} value={accountingStartRow} onChange={event => { setAccountingStartRow(event.target.value); setCalculationResult(null); }} placeholder="First row" />
-              <input aria-label="Last source row (inclusive)" type="number" min={accountingMinRow} max={accountingMaxRow} value={accountingEndRow} onChange={event => { setAccountingEndRow(event.target.value); setCalculationResult(null); }} placeholder="Last row" />
-              <button type="button" onClick={() => void calculateAccounting()} disabled={!canCalculate || !validAccountingRows || !/^[A-Z]{3}$/.test(currency.trim()) || calculationBusy}>
+              <input aria-label="First source row (inclusive)" type="number" min={accountingMinRow} max={accountingMaxRow} value={accountingStartRow} onChange={event => { setAccountingStartRow(event.target.value); setCalculationResult(null); setRangePreview(null); setRangePreviewError(""); }} placeholder="First row" />
+              <input aria-label="Last source row (inclusive)" type="number" min={accountingMinRow} max={accountingMaxRow} value={accountingEndRow} onChange={event => { setAccountingEndRow(event.target.value); setCalculationResult(null); setRangePreview(null); setRangePreviewError(""); }} placeholder="Last row" />
+              <button type="button" className="secondary-button" onClick={() => void previewAccountingRange()} disabled={!canCalculate || !validAccountingRows || rangePreviewBusy}>
+                {rangePreviewBusy ? "Preparing preview…" : "Preview selected rows"}
+              </button>
+              <button type="button" onClick={() => void calculateAccounting()} disabled={!canCalculate || !validAccountingRows || !previewMatchesCurrent || !/^[A-Z]{3}$/.test(currency.trim()) || calculationBusy}>
                 {calculationBusy ? "Calculating…" : "Calculate from source"}
               </button>
             </div>
             {!canCalculate && <p className="excel-table-caption">Confirm each required accounting field above before calculating: {requiredFormulaFields.map(field => field.replace("accounting.", "")).join(", ") || "select a supported formula"}.</p>}
             <p className="excel-table-caption">Selected source rows: {accountingStartRow}–{accountingEndRow} (inclusive). FRIDAY rejects a range containing a likely subtotal or grand-total row instead of silently double-counting it. Non-numeric values are rejected; blank cells are skipped with a warning. Currency is supplied explicitly; no conversion occurs.</p>
+            {rangePreviewError && <div className="excel-error" role="alert">{rangePreviewError}</div>}
+            {rangePreview && previewMatchesCurrent && (
+              <div className="excel-answer-card" aria-live="polite">
+                <strong>Source-range review</strong>
+                <p>{rangePreview.fileName} · {rangePreview.sheetName} · rows {rangePreview.selectedStartRow}–{rangePreview.selectedEndRow} · {rangePreview.selectedRowCount} selected row(s)</p>
+                <p>Preview shows {rangePreview.previewRows.length} row(s){rangePreview.previewTruncated ? "; the selection is larger than the preview window." : "."} Values are read from the retained source session.</p>
+                {rangePreview.possibleTotalRowCount > 0 ? (
+                  <div className="excel-error" role="alert">
+                    <strong>Review required: {rangePreview.possibleTotalRowCount} possible subtotal/total row(s) detected.</strong>
+                    <p>FRIDAY will not calculate this range while these rows are included. Narrow the range to exclude candidate rows, preview again, and inspect the source workbook yourself.</p>
+                    <ul>{rangePreview.possibleTotalRows.map(candidate => <li key={candidate.worksheetRow}>Worksheet row {candidate.worksheetRow}: {candidate.labels.join(" · ") || "label unavailable"}</li>)}</ul>
+                    {rangePreview.totalCandidatesTruncated && <p>Additional candidate rows were detected but are not all listed here.</p>}
+                  </div>
+                ) : <p>No known total-row label pattern was detected in the selected range. This is not a guarantee that all subtotal or total formats have been recognized.</p>}
+                <div className="excel-table-wrap">
+                  <table className="excel-data-table">
+                    <thead><tr><th>Worksheet row</th>{rangePreview.confirmedMappings.map(mapping => <th key={mapping.fieldId}>{mapping.fieldId}</th>)}<th>Review flag</th></tr></thead>
+                    <tbody>{rangePreview.previewRows.slice(0, 25).map(row => <tr key={row.worksheetRow}><td>{row.worksheetRow}</td>{row.cells.map(cell => <td key={cell.fieldId}>{cell.cell}: {cell.value || "(blank)"}</td>)}<td>{row.possibleTotal ? "Possible total" : "—"}</td></tr>)}</tbody>
+                  </table>
+                </div>
+                {rangePreview.previewRows.length > 25 && <p>Showing the first 25 preview rows on screen; the preview response is bounded to 100 rows.</p>}
+                <p>Review the selected rows and mapping columns before calculating. Changing the sheet, formula or row range requires a fresh preview.</p>
+              </div>
+            )}
             {calculationError && <div className="excel-error" role="alert">{calculationError}</div>}
             {calculationResult && (
               <div className="excel-answer-card answered" aria-live="polite">
