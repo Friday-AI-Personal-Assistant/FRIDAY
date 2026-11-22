@@ -2040,7 +2040,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "multiline-total.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\n\\\"Grand\nTotal\\\",150,8,3\n\\\"Grand\nTotal Forecast\\\",200,10,4\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\n\"Grand\nTotal\",150,8,3\n\"Grand\nTotal Forecast\",200,10,4\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
