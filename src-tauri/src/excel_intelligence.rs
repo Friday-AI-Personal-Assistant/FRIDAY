@@ -2047,7 +2047,7 @@ mod tests {
         for (label_column, label) in cases {
             let headers = ["Product", "Gross Sales", "Discounts", "Sales Returns", "Note 1", "Note 2", "Note 3", "Note 4"];
             let mut total = vec![String::new(); headers.len()];
-            total[0] = "Grand Total".to_string();
+            total[0] = if label_column == 0 { label.to_string() } else { "Products".to_string() };
             total[1] = "150".to_string();
             total[2] = "8".to_string();
             total[3] = "3".to_string();
