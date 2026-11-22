@@ -3088,6 +3088,95 @@ mod tests {
     }
 
     #[test]
+    fn accounting_calculation_evidence_is_bound_to_formula_mapping_and_source_identity() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "evidence-identity.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n",
+        ).unwrap();
+        let expected_fingerprint = analysis.source_sha256.clone();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        let result = store.calculate_accounting_formula(
+            &id, "CSV data", "accounting.net_sales", "PKR", 2, 3
+        ).unwrap();
+
+        assert_eq!(result.source_sha256, expected_fingerprint);
+        assert_eq!(result.source_sha256.len(), 64);
+        assert_eq!(result.file_name, "evidence-identity.csv");
+        assert_eq!(result.sheet_name, "CSV data");
+        assert_eq!(result.formula.formula_id, "accounting.net_sales");
+        assert_eq!(result.formula.formula_version, 1);
+        assert_eq!(result.formula.currency.as_deref(), Some("PKR"));
+        assert_eq!(result.formula.output_unit, "currency");
+        assert_eq!(result.formula.status, "calculated");
+        assert_eq!(result.formula.output_value.as_deref(), Some("139"));
+
+        let mapping_fields = result.confirmed_mappings.iter()
+            .map(|mapping| mapping.field_id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(mapping_fields, HashSet::from([
+            "accounting.gross_sales",
+            "accounting.discounts",
+            "accounting.sales_returns",
+        ]));
+        assert!(result.confirmed_mappings.iter().all(|mapping|
+            mapping.sheet_name == result.sheet_name
+                && mapping.source_sha256 == result.source_sha256
+        ));
+        assert!(result.source_cells.iter().all(|cell|
+            mapping_fields.contains(cell.field_id.as_str())
+                && matches!(cell.cell.as_str(), "B2" | "B3" | "C2" | "C3" | "D2" | "D3")
+        ));
+        assert_eq!(result.source_cells.len(), 6);
+        assert!(result.formula.trace.iter().any(|line|
+            line.contains("Source mapping: accounting.gross_sales")
+        ));
+        assert!(result.formula.trace.iter().any(|line|
+            line.contains("Source cells retained in evidence: 6")
+        ));
+    }
+
+    #[test]
+    fn accounting_calculation_evidence_contains_only_selected_inclusive_source_rows() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "selected-range-evidence.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\nCake,20,1,0\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        // Worksheet row 3 is the Coffee record; rows 2 and 4 must not leak
+        // into either the aggregate or its retained source-cell evidence.
+        let result = store.calculate_accounting_formula(
+            &id, "CSV data", "accounting.net_sales", "PKR", 3, 3
+        ).unwrap();
+
+        assert_eq!(result.selected_start_row, 3);
+        assert_eq!(result.selected_end_row, 3);
+        assert_eq!(result.source_rows_included, 1);
+        assert_eq!(result.formula.output_value.as_deref(), Some("46"));
+        assert_eq!(result.source_cells.len(), 3);
+        let mut evidence = result.source_cells.iter()
+            .map(|cell| (cell.field_id.as_str(), cell.cell.as_str(), cell.value.as_str()))
+            .collect::<Vec<_>>();
+        evidence.sort_unstable();
+        assert_eq!(evidence, vec![
+            ("accounting.discounts", "C3", "3"),
+            ("accounting.gross_sales", "B3", "50"),
+            ("accounting.sales_returns", "D3", "1"),
+        ]);
+        assert_eq!(result.blank_cells_skipped, 0);
+        assert_eq!(result.cached_formula_cells_used, 0);
+    }
+
+    #[test]
     fn concurrent_workbook_imports_preserve_session_count_and_unique_ids() {
         let store = std::sync::Arc::new(WorkbookSessionStore::default());
         let analysis = std::sync::Arc::new(session_test_analysis());
