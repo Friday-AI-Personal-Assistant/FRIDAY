@@ -1343,6 +1343,29 @@ mod tests {
     }
 
     #[test]
+    fn accounting_range_preview_is_source_bound_bounded_and_flags_total_candidates() {
+        let store = WorkbookSessionStore::default();
+        let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns\\n");
+        for index in 0..104 {
+            csv.push_str(&format!("Item {index},100,5,2\\n"));
+        }
+        csv.push_str("Grand Total,10400,520,208\\n");
+        let analysis = analyze_csv("sales.csv".into(), csv.as_bytes()).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+        let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 106).unwrap();
+        assert_eq!(preview.selected_row_count, 105);
+        assert_eq!(preview.preview_rows.len(), MAX_ACCOUNTING_PREVIEW_ROWS);
+        assert!(preview.preview_truncated);
+        assert_eq!(preview.possible_total_row_count, 1);
+        assert_eq!(preview.possible_total_rows[0].worksheet_row, 106);
+        assert!(preview.preview_rows[0].cells.iter().any(|cell| cell.cell == "B2" && cell.value == "100"));
+        assert!(preview.confirmed_mappings.iter().any(|mapping| mapping.field_id == "accounting.gross_sales"));
+    }
+
+    #[test]
     fn accounting_calculation_honors_an_explicit_inclusive_row_range() {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
