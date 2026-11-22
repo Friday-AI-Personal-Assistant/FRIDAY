@@ -2010,6 +2010,58 @@ mod tests {
     }
 
     #[test]
+    fn accounting_total_label_normalization_handles_unusual_whitespace_and_line_breaks() {
+        let positive = [
+            "Grand\\nTotal",
+            "Grand\\u{00A0}Total",
+            "FY\\t2026\\tGrand\\tTotal",
+            "Grand—Total",
+            "Eindtotaal\\u{00A0}CHF",
+            "مبلغ\\u{00A0}کل",
+            "سَرْبَمُوت",
+        ];
+        for label in positive {
+            assert!(is_accounting_total_label(label), "expected unusual-layout total label: {label}");
+        }
+
+        let negative = [
+            "Total\\nCustomers",
+            "Grand\\tTotalist",
+            "Overall\\nTotal\\nForecast",
+            "Eindtotaal\\u{00A0}klanten",
+        ];
+        for label in negative {
+            assert!(!is_accounting_total_label(label), "unexpected unusual-layout total label: {label}");
+        }
+    }
+
+    #[test]
+    fn accounting_preview_and_calculation_block_multiline_total_labels_without_blocking_descriptive_rows() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "multiline-total.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n\\\"Grand\\nTotal\\\",150,8,3\\n\\\"Grand\\nTotal Forecast\\\",200,10,4\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        let preview = store.preview_accounting_range(
+            &id, "CSV data", "accounting.net_sales", 2, 5,
+        ).unwrap();
+        assert_eq!(preview.possible_total_row_count, 1);
+        assert_eq!(preview.possible_total_rows[0].worksheet_row, 4);
+        assert_eq!(preview.possible_total_rows[0].labels, vec!["Grand\\nTotal".to_string()]);
+        assert!(preview.preview_rows.iter().any(|row| row.worksheet_row == 5 && !row.possible_total));
+
+        let error = store.calculate_accounting_formula(
+            &id, "CSV data", "accounting.net_sales", "PKR", 2, 5,
+        ).unwrap_err();
+        assert!(error.contains("possible subtotal or total row at worksheet row 4"));
+    }
+
+    #[test]
     fn accounting_total_label_detection_avoids_broad_total_word_false_positives() {
         let negative = [
             "",
