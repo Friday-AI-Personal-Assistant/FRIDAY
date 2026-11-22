@@ -2018,7 +2018,7 @@ mod tests {
             "Grand—Total",
             "Eindtotaal\u{00A0}CHF",
             "مبلغ\u{00A0}کل",
-            "سَرْبَمُوت",
+            "سর্বমোট",
         ];
         for label in positive {
             assert!(is_accounting_total_label(label), "expected unusual-layout total label: {label}");
