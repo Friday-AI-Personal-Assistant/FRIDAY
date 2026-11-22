@@ -1596,14 +1596,20 @@ mod tests {
             mapping.data_range = "C2:C999".into();
         }
 
-        let preview_error = store.preview_accounting_range(
+        let preview_error = match store.preview_accounting_range(
             &id, "CSV data", "accounting.net_sales", 2, 3,
-        ).unwrap_err();
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("preview must reject tampered mapping range metadata"),
+        };
         assert!(preview_error.contains("range metadata"));
 
-        let calculation_error = store.calculate_accounting_formula(
+        let calculation_error = match store.calculate_accounting_formula(
             &id, "CSV data", "accounting.net_sales", "PKR", 2, 3,
-        ).unwrap_err();
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("calculation must reject tampered mapping range metadata"),
+        };
         assert!(calculation_error.contains("range metadata"));
     }
 
