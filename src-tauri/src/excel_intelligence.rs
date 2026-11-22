@@ -189,7 +189,7 @@ impl Default for WorkbookSessionStore {
 
 
 fn is_accounting_total_candidate(row: &[String]) -> bool {
-    row.iter().take(4).filter(|value| !value.trim().is_empty()).any(|value| {
+    row.iter().filter(|value| !value.trim().is_empty()).any(|value| {
         let normalized = value.trim().to_ascii_lowercase()
             .chars().map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
             .collect::<String>();
