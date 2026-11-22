@@ -3027,8 +3027,16 @@ mod tests {
         for result in results.iter().skip(1) {
             assert_eq!(result.source_sha256, first.source_sha256);
             assert_eq!(result.formula.output_value, first.formula.output_value);
-            assert_eq!(result.confirmed_mappings, first.confirmed_mappings);
-            assert_eq!(result.source_cells, first.source_cells);
+            let mapping_signature = |items: &[ConfirmedAccountingMapping]| items.iter().map(|item| (
+                item.field_id.as_str(), item.sheet_name.as_str(), item.header.as_str(),
+                item.source_column_index, item.header_cell.as_str(), item.data_range.as_str(),
+                item.source_sha256.as_str(),
+            )).collect::<Vec<_>>();
+            let cell_signature = |items: &[AccountingSourceCell]| items.iter().map(|item| (
+                item.field_id.as_str(), item.cell.as_str(), item.value.as_str(),
+            )).collect::<Vec<_>>();
+            assert_eq!(mapping_signature(&result.confirmed_mappings), mapping_signature(&first.confirmed_mappings));
+            assert_eq!(cell_signature(&result.source_cells), cell_signature(&first.source_cells));
         }
         let sessions = store.sessions.lock().unwrap();
         validate_session_integrity(sessions.get(&id).unwrap()).unwrap();
@@ -3064,8 +3072,16 @@ mod tests {
         // The completed result owns its evidence; it must not depend on the
         // continued presence or mutability of the source session.
         assert_eq!(calculation.source_sha256, expected_fingerprint);
-        assert_eq!(calculation.source_cells, expected_cells);
-        assert_eq!(calculation.confirmed_mappings, expected_mappings);
+        let cell_signature = |items: &[AccountingSourceCell]| items.iter().map(|item| (
+            item.field_id.as_str(), item.cell.as_str(), item.value.as_str(),
+        )).collect::<Vec<_>>();
+        let mapping_signature = |items: &[ConfirmedAccountingMapping]| items.iter().map(|item| (
+            item.field_id.as_str(), item.sheet_name.as_str(), item.header.as_str(),
+            item.source_column_index, item.header_cell.as_str(), item.data_range.as_str(),
+            item.source_sha256.as_str(),
+        )).collect::<Vec<_>>();
+        assert_eq!(cell_signature(&calculation.source_cells), cell_signature(&expected_cells));
+        assert_eq!(mapping_signature(&calculation.confirmed_mappings), mapping_signature(&expected_mappings));
         assert_eq!(calculation.formula.output_value, expected_output);
         assert_eq!(calculation.formula.output_value.as_deref(), Some("139"));
         assert_eq!(calculation.source_cells.len(), 6);
