@@ -2265,6 +2265,45 @@ mod tests {
     }
 
     #[test]
+    fn workbook_sessions_keep_backend_snapshot_when_client_analysis_is_mutated() {
+        let store = WorkbookSessionStore::default();
+        let mut analysis = session_test_analysis();
+        let id = store.create(&analysis).unwrap();
+
+        // The serialized analysis is a client-facing snapshot, not an authority.
+        // Mutating it after session creation must not alter backend-held answers.
+        analysis.sheets[0].row_count = 999_999;
+        analysis.sheets[0].columns[0].sum = Some(999_999.0);
+
+        let answer = store.answer(&id, "CSV data", "total revenue").unwrap();
+        assert!(answer.answer.contains("30.00"));
+        assert!(!answer.answer.contains("999999"));
+    }
+
+    #[test]
+    fn concurrent_workbook_imports_preserve_session_count_and_unique_ids() {
+        let store = std::sync::Arc::new(WorkbookSessionStore::default());
+        let analysis = std::sync::Arc::new(session_test_analysis());
+        let mut workers = Vec::new();
+
+        for _ in 0..(MAX_WORKBOOK_SESSIONS * 4) {
+            let store = std::sync::Arc::clone(&store);
+            let analysis = std::sync::Arc::clone(&analysis);
+            workers.push(std::thread::spawn(move || store.create(&analysis).unwrap()));
+        }
+
+        let ids = workers.into_iter()
+            .map(|worker| worker.join().expect("concurrent workbook import should not panic"))
+            .collect::<Vec<_>>();
+        let unique_ids = ids.iter().collect::<HashSet<_>>();
+
+        assert_eq!(ids.len(), MAX_WORKBOOK_SESSIONS * 4);
+        assert_eq!(unique_ids.len(), ids.len());
+        assert_eq!(store.session_count(), MAX_WORKBOOK_SESSIONS);
+        assert!(store.answer(ids.last().unwrap(), "CSV data", "total revenue").is_ok());
+    }
+
+    #[test]
     fn csv_analysis_counts_missing_values_and_numeric_statistics() {
         let csv = b"Product,Units,Revenue\nA,2,12.5\nB,,17.5\nC,4,20\n";
         let analysis = analyze_csv("sales.csv".into(), csv).unwrap();
