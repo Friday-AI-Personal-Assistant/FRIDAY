@@ -36,6 +36,8 @@ const WORKBOOK_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 const MAX_SESSION_SUMMARY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SESSION_SOURCE_BYTES: usize = 40 * 1024 * 1024;
 const MAX_ACCOUNTING_SOURCE_REFERENCES: usize = 20_000;
+const MAX_ACCOUNTING_PREVIEW_ROWS: usize = 100;
+const MAX_ACCOUNTING_TOTAL_CANDIDATES: usize = 100;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,6 +155,47 @@ pub struct AccountingSourceCell {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AccountingRangePreviewCell {
+    pub field_id: String,
+    pub cell: String,
+    pub value: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountingRangePreviewRow {
+    pub worksheet_row: usize,
+    pub cells: Vec<AccountingRangePreviewCell>,
+    pub possible_total: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountingTotalRowCandidate {
+    pub worksheet_row: usize,
+    pub labels: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbookAccountingRangePreview {
+    pub source_sha256: String,
+    pub file_name: String,
+    pub sheet_name: String,
+    pub formula_id: String,
+    pub selected_start_row: usize,
+    pub selected_end_row: usize,
+    pub selected_row_count: usize,
+    pub preview_rows: Vec<AccountingRangePreviewRow>,
+    pub preview_truncated: bool,
+    pub possible_total_row_count: usize,
+    pub possible_total_rows: Vec<AccountingTotalRowCandidate>,
+    pub total_candidates_truncated: bool,
+    pub confirmed_mappings: Vec<ConfirmedAccountingMapping>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkbookAccountingCalculation {
     pub source_sha256: String,
     pub file_name: String,
@@ -258,6 +301,100 @@ impl WorkbookSessionStore {
         answer.evidence.push(format!("Source SHA-256: {}… ({} bytes)", &session.source_sha256[..12], session.source_byte_length));
         answer.method.push_str("; bound to the imported workbook session");
         Ok(answer)
+    }
+
+    fn preview_accounting_range(
+        &self,
+        id: &str,
+        sheet_name: &str,
+        formula_id: &str,
+        start_row: usize,
+        end_row: usize,
+    ) -> Result<WorkbookAccountingRangePreview, String> {
+        if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("This workbook analysis session is invalid. Import the workbook again.".into());
+        }
+        if sheet_name.chars().count() > 180 || formula_id.len() > 100 {
+            return Err("The worksheet or formula selector exceeds FRIDAY's safe limits.".into());
+        }
+        let mut sessions = self.sessions.lock()
+            .map_err(|_| "The workbook session store is unavailable. Import the workbook again.".to_string())?;
+        sessions.retain(|_, item| item.created_at.elapsed() < WORKBOOK_SESSION_TTL);
+        let session = sessions.get(id)
+            .ok_or_else(|| "This workbook analysis session has expired or was replaced. Import the workbook again.".to_string())?;
+        let _sheet = session.sheets.iter().find(|sheet| sheet.name == sheet_name)
+            .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;
+        let source = session.source_sheets.iter().find(|source| source.name == sheet_name)
+            .ok_or_else(|| "The original source cells are unavailable in this workbook session. Import the workbook again.".to_string())?;
+        let first_data_row = source.start_row.saturating_add(2);
+        let last_data_row = source.start_row.saturating_add(source.rows.len());
+        if start_row < first_data_row || end_row < start_row || end_row > last_data_row {
+            return Err(format!("Choose a valid inclusive source row range from {first_data_row} to {last_data_row}."));
+        }
+        let selected_row_count = end_row.saturating_sub(start_row).saturating_add(1);
+        if selected_row_count > MAX_ROWS {
+            return Err("The selected accounting row range exceeds FRIDAY's safe row limit.".into());
+        }
+        let definition = crate::domain_formula::formula_registry().into_iter()
+            .find(|item| item.id == formula_id)
+            .ok_or_else(|| "This formula is not in FRIDAY's reviewed formula registry.".to_string())?;
+        let mut mappings = Vec::with_capacity(definition.required_inputs.len());
+        let mut columns = Vec::with_capacity(definition.required_inputs.len());
+        for input_name in &definition.required_inputs {
+            let field_id = format!("accounting.{input_name}");
+            let mapping = session.confirmed_mappings.values().find(|mapping|
+                mapping.sheet_name == sheet_name && mapping.field_id == field_id
+            ).ok_or_else(|| format!("Confirm the '{}' source column in this worksheet before previewing.", input_name))?;
+            if mapping.source_sha256 != session.source_sha256 {
+                return Err("A confirmed accounting mapping no longer matches this workbook source fingerprint.".into());
+            }
+            let column_index = mapping.source_column_index.checked_sub(source.start_column + 1)
+                .ok_or_else(|| "The confirmed source column index is invalid.".to_string())?;
+            let header = source.rows.first().and_then(|row| row.get(column_index)).map(String::as_str).unwrap_or("");
+            if header != mapping.header {
+                return Err("The confirmed accounting header no longer matches the retained source cells.".into());
+            }
+            columns.push((mapping.field_id.clone(), excel_column_label(column_index + source.start_column), column_index));
+            mappings.push(mapping.clone());
+        }
+        let mut preview_rows = Vec::with_capacity(selected_row_count.min(MAX_ACCOUNTING_PREVIEW_ROWS));
+        let mut possible_total_rows = Vec::new();
+        let mut possible_total_row_count = 0usize;
+        for (row_index, row) in source.rows.iter().enumerate().skip(1) {
+            let absolute_row = source.start_row.saturating_add(row_index).saturating_add(1);
+            if absolute_row < start_row || absolute_row > end_row { continue; }
+            let possible_total = is_accounting_total_candidate(row);
+            if possible_total {
+                possible_total_row_count = possible_total_row_count.saturating_add(1);
+                if possible_total_rows.len() < MAX_ACCOUNTING_TOTAL_CANDIDATES {
+                    let labels = row.iter().filter(|value| !value.trim().is_empty()).take(3)
+                        .map(|value| value.chars().take(100).collect::<String>()).collect::<Vec<_>>();
+                    possible_total_rows.push(AccountingTotalRowCandidate { worksheet_row: absolute_row, labels });
+                }
+            }
+            if preview_rows.len() < MAX_ACCOUNTING_PREVIEW_ROWS {
+                let cells = columns.iter().map(|(field_id, column_label, column_index)| {
+                    let value = row.get(*column_index).map(|value| value.chars().take(120).collect::<String>()).unwrap_or_default();
+                    AccountingRangePreviewCell { field_id: field_id.clone(), cell: format!("{column_label}{absolute_row}"), value }
+                }).collect();
+                preview_rows.push(AccountingRangePreviewRow { worksheet_row: absolute_row, cells, possible_total });
+            }
+        }
+        Ok(WorkbookAccountingRangePreview {
+            source_sha256: session.source_sha256.clone(),
+            file_name: session.file_name.clone(),
+            sheet_name: sheet_name.to_string(),
+            formula_id: formula_id.to_string(),
+            selected_start_row: start_row,
+            selected_end_row: end_row,
+            selected_row_count,
+            preview_truncated: selected_row_count > preview_rows.len(),
+            possible_total_row_count,
+            total_candidates_truncated: possible_total_row_count > possible_total_rows.len(),
+            preview_rows,
+            possible_total_rows,
+            confirmed_mappings: mappings,
+        })
     }
 
     fn calculate_accounting_formula(
@@ -1050,6 +1187,19 @@ pub fn confirm_excel_accounting_mapping(
 ) -> Result<ConfirmedAccountingMapping, String> {
     crate::permissions::authorize_command("excel.confirm_accounting_mapping", "excel.mapping.confirm")?;
     sessions.confirm_accounting_mapping(&session_id, &sheet_name, source_column_index, &field_id)
+}
+
+#[tauri::command]
+pub fn preview_excel_accounting_range(
+    session_id: String,
+    sheet_name: String,
+    formula_id: String,
+    start_row: usize,
+    end_row: usize,
+    sessions: State<'_, WorkbookSessionStore>,
+) -> Result<WorkbookAccountingRangePreview, String> {
+    crate::permissions::authorize_command("excel.preview_accounting_range", "excel.accounting.preview")?;
+    sessions.preview_accounting_range(&session_id, &sheet_name, &formula_id, start_row, end_row)
 }
 
 #[tauri::command]
