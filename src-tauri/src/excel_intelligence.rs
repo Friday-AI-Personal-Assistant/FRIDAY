@@ -2643,7 +2643,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "duplicate-headers.csv".into(),
-            b"Product,Gross Sales,Gross Sales\\nTea,10,12\\n",
+            b"Product,Gross Sales,Gross Sales\nTea,10,12\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         let sheet = &analysis.sheets[0];
@@ -2652,7 +2652,7 @@ mod tests {
                 .find(|item| item.source_column_index == source_column_index).unwrap();
             assert_eq!(suggestion.status, "ambiguous");
             assert_eq!(suggestion.field_id, None);
-            assert_eq!(suggestion.possible_fields, vec!["accounting.gross_sales"]);
+            assert_eq!(suggestion.possible_fields, vec!["accounting.gross_sales".to_string()]);
             assert!(store.confirm_accounting_mapping(
                 &id, "CSV data", source_column_index, "accounting.gross_sales"
             ).is_err());
