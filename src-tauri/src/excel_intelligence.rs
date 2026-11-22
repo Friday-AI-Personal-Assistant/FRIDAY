@@ -1809,6 +1809,83 @@ mod tests {
     }
 
     #[test]
+    fn accounting_preview_scans_past_visible_rows_and_calculation_still_rejects_late_total() {
+        let store = WorkbookSessionStore::default();
+        let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns,Note\n");
+        for index in 0..120 {
+            csv.push_str(&format!("Item {index},100,5,2,\n"));
+        }
+        csv.push_str("12000,600,240,Grand Total (PKR)\n");
+        let analysis = analyze_csv("late-total.csv".into(), csv.as_bytes()).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 122).unwrap();
+        assert_eq!(preview.preview_rows.len(), MAX_ACCOUNTING_PREVIEW_ROWS);
+        assert!(preview.preview_truncated);
+        assert_eq!(preview.possible_total_row_count, 1);
+        assert_eq!(preview.possible_total_rows[0].worksheet_row, 122);
+
+        let error = match store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 122) {
+            Err(error) => error,
+            Ok(_) => panic!("a total row beyond the visible preview must still block calculation"),
+        };
+        assert!(error.contains("row 122"));
+    }
+
+    #[test]
+    fn accounting_preview_bounds_candidate_list_but_counts_every_candidate() {
+        let store = WorkbookSessionStore::default();
+        let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns\n");
+        for index in 0..(MAX_ACCOUNTING_TOTAL_CANDIDATES + 5) {
+            csv.push_str(&format!("Grand Total,{},1,1\n", index + 10));
+        }
+        let analysis = analyze_csv("many-totals.csv".into(), csv.as_bytes()).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        let end_row = 1 + MAX_ACCOUNTING_TOTAL_CANDIDATES + 5;
+        let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, end_row).unwrap();
+        assert_eq!(preview.possible_total_row_count, MAX_ACCOUNTING_TOTAL_CANDIDATES + 5);
+        assert_eq!(preview.possible_total_rows.len(), MAX_ACCOUNTING_TOTAL_CANDIDATES);
+        assert!(preview.total_candidates_truncated);
+        assert_eq!(preview.possible_total_rows.first().unwrap().worksheet_row, 2);
+        assert_eq!(preview.possible_total_rows.last().unwrap().worksheet_row, 1 + MAX_ACCOUNTING_TOTAL_CANDIDATES);
+
+        let error = match store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, end_row) {
+            Err(error) => error,
+            Ok(_) => panic!("candidate-list truncation must never permit calculation"),
+        };
+        assert!(error.contains("row 2"));
+    }
+
+    #[test]
+    fn accounting_preview_limits_matched_labels_per_candidate_row() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "many-labels.csv".into(),
+            b"Gross Sales,Discounts,Sales Returns,Note 1,Note 2,Note 3,Note 4\n100,5,2,Grand Total,Subtotal,Grand Total (PKR),Overall Total\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 1, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.sales_returns").unwrap();
+
+        let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 2).unwrap();
+        assert_eq!(preview.possible_total_row_count, 1);
+        assert_eq!(preview.possible_total_rows[0].labels.len(), 3);
+        assert_eq!(preview.possible_total_rows[0].labels, vec![
+            "Grand Total".to_string(),
+            "Subtotal".to_string(),
+            "Grand Total (PKR)".to_string(),
+        ]);
+    }
+
+    #[test]
     fn accounting_calculation_does_not_reject_ordinary_labels_containing_total() {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
