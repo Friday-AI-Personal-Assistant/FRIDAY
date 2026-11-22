@@ -61,6 +61,7 @@ struct WorkbookSourceSheet {
     rows: Vec<Vec<String>>,
     start_row: usize,
     start_column: usize,
+    formula_cell_positions: Vec<(usize, usize)>,
 }
 
 #[derive(Serialize, Clone)]
@@ -159,6 +160,8 @@ pub struct AccountingRangePreviewCell {
     pub field_id: String,
     pub cell: String,
     pub value: String,
+    pub is_formula_cell: bool,
+    pub missing_cached_value: bool,
 }
 
 #[derive(Serialize)]
@@ -207,6 +210,7 @@ pub struct WorkbookAccountingCalculation {
     pub selected_start_row: usize,
     pub selected_end_row: usize,
     pub blank_cells_skipped: usize,
+    pub cached_formula_cells_used: usize,
 }
 
 struct WorkbookSession {
@@ -375,7 +379,9 @@ impl WorkbookSessionStore {
             if preview_rows.len() < MAX_ACCOUNTING_PREVIEW_ROWS {
                 let cells = columns.iter().map(|(field_id, column_label, column_index)| {
                     let value = row.get(*column_index).map(|value| value.chars().take(120).collect::<String>()).unwrap_or_default();
-                    AccountingRangePreviewCell { field_id: field_id.clone(), cell: format!("{column_label}{absolute_row}"), value }
+                    let is_formula_cell = source.formula_cell_positions.contains(&(row_index, *column_index));
+                    let missing_cached_value = is_formula_cell && row.get(*column_index).map(|value| value.trim().is_empty()).unwrap_or(true);
+                    AccountingRangePreviewCell { field_id: field_id.clone(), cell: format!("{column_label}{absolute_row}"), value, is_formula_cell, missing_cached_value }
                 }).collect();
                 preview_rows.push(AccountingRangePreviewRow { worksheet_row: absolute_row, cells, possible_total });
             }
@@ -437,6 +443,7 @@ impl WorkbookSessionStore {
         let mut source_cells = Vec::new();
         let mut contributing_rows = HashSet::new();
         let mut blank_cells_skipped = 0usize;
+        let mut cached_formula_cells_used = 0usize;
         for input_name in &definition.required_inputs {
             let field_id = format!("accounting.{input_name}");
             let mapping = session.confirmed_mappings.values().find(|mapping|
@@ -460,6 +467,13 @@ impl WorkbookSessionStore {
                     return Err(format!("The selected range includes a possible subtotal or total row at worksheet row {absolute_row}. Narrow the range to exclude it, then review the source before recalculating."));
                 }
                 let raw = row.get(column_index).map(|value| value.trim()).unwrap_or("");
+                let is_formula_cell = source.formula_cell_positions.contains(&(row_index, column_index));
+                if is_formula_cell && raw.is_empty() {
+                    return Err(format!("Formula cell {}{} has no cached result. FRIDAY will not recalculate it or treat it as zero; open and recalculate the workbook in Excel, save it, then reimport.", column_label, absolute_row));
+                }
+                if is_formula_cell {
+                    cached_formula_cells_used = cached_formula_cells_used.saturating_add(1);
+                }
                 if raw.is_empty() {
                     blank_cells_skipped = blank_cells_skipped.saturating_add(1);
                     continue;
@@ -495,6 +509,9 @@ impl WorkbookSessionStore {
         if blank_cells_skipped > 0 {
             formula.warnings.push(format!("{blank_cells_skipped} blank source cell(s) were skipped during column aggregation."));
         }
+        if cached_formula_cells_used > 0 {
+            formula.warnings.push(format!("{cached_formula_cells_used} formula cell(s) contributed cached values. FRIDAY did not recalculate them; cached results may be stale or differ from Excel's next recalculation."));
+        }
         Ok(WorkbookAccountingCalculation {
             source_sha256: session.source_sha256.clone(),
             file_name: session.file_name.clone(),
@@ -506,6 +523,7 @@ impl WorkbookSessionStore {
             selected_start_row: start_row,
             selected_end_row: end_row,
             blank_cells_skipped,
+            cached_formula_cells_used,
         })
     }
 
@@ -972,7 +990,7 @@ fn analyze_csv(file_name: String, bytes: &[u8]) -> Result<WorkbookAnalysis, Stri
     if rows.is_empty() {
         return Err("The selected CSV has no rows to analyze.".into());
     }
-    let source_sheets = vec![WorkbookSourceSheet { name: "CSV data".into(), rows: rows.clone(), start_row: 0, start_column: 0 }];
+    let source_sheets = vec![WorkbookSourceSheet { name: "CSV data".into(), rows: rows.clone(), start_row: 0, start_column: 0, formula_cell_positions: Vec::new() }];
     let sheet = analyze_matrix("CSV data".into(), rows, 0)?;
     let total_rows = sheet.row_count;
     let total_non_empty_cells = sheet.non_empty_cells;
@@ -1017,10 +1035,15 @@ fn analyze_xlsx(file_name: String, bytes: Vec<u8>) -> Result<WorkbookAnalysis, S
         let rows = range.rows().map(|row| row.iter().map(|cell| {
             if *cell == Data::Empty { String::new() } else { cell.to_string() }
         }).collect::<Vec<_>>()).collect::<Vec<_>>();
-        source_sheets.push(WorkbookSourceSheet { name: name.clone(), rows: rows.clone(), start_row, start_column });
-        let formula_cells = workbook.worksheet_formula(&name).ok()
-            .map(|formulas| formulas.rows().flat_map(|row| row.iter()).filter(|formula| !formula.trim().is_empty()).count())
-            .unwrap_or(0);
+        let formula_cell_positions = workbook.worksheet_formula(&name).ok()
+            .map(|formulas| formulas.rows().enumerate().flat_map(|(row_index, row)| {
+                row.iter().enumerate().filter_map(move |(column_index, formula)| {
+                    (!formula.trim().is_empty()).then_some((row_index, column_index))
+                })
+            }).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let formula_cells = formula_cell_positions.len();
+        source_sheets.push(WorkbookSourceSheet { name: name.clone(), rows: rows.clone(), start_row, start_column, formula_cell_positions });
         sheets.push(analyze_matrix_with_origin(name, rows, formula_cells, start_row, start_column)?);
     }
     let total_rows = sheets.iter().map(|sheet| sheet.row_count).sum();
