@@ -2980,6 +2980,98 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_accounting_calculations_return_consistent_complete_evidence() {
+        let store = std::sync::Arc::new(WorkbookSessionStore::default());
+        let analysis = analyze_csv(
+            "concurrent-calculations.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\n",
+        ).unwrap();
+        let expected_fingerprint = analysis.source_sha256.clone();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(6));
+        let mut workers = Vec::new();
+        for _ in 0..6 {
+            let store = std::sync::Arc::clone(&store);
+            let barrier = std::sync::Arc::clone(&barrier);
+            let id = id.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                store.calculate_accounting_formula(
+                    &id, "CSV data", "accounting.net_sales", "PKR", 2, 3
+                ).unwrap()
+            }));
+        }
+
+        let results = workers.into_iter()
+            .map(|worker| worker.join().expect("calculation worker should not panic"))
+            .collect::<Vec<_>>();
+        for result in &results {
+            assert_eq!(result.source_sha256, expected_fingerprint);
+            assert_eq!(result.formula.status, "calculated");
+            assert_eq!(result.formula.output_value.as_deref(), Some("139"));
+            assert_eq!(result.confirmed_mappings.len(), 3);
+            assert_eq!(result.source_cells.len(), 6);
+            assert_eq!(result.source_rows_included, 2);
+            assert_eq!(result.selected_start_row, 2);
+            assert_eq!(result.selected_end_row, 3);
+            assert!(result.formula.trace.iter().any(|line|
+                line.contains("Source cells retained in evidence: 6")
+            ));
+        }
+
+        let first = &results[0];
+        for result in results.iter().skip(1) {
+            assert_eq!(result.source_sha256, first.source_sha256);
+            assert_eq!(result.formula.output_value, first.formula.output_value);
+            assert_eq!(result.confirmed_mappings, first.confirmed_mappings);
+            assert_eq!(result.source_cells, first.source_cells);
+        }
+        let sessions = store.sessions.lock().unwrap();
+        validate_session_integrity(sessions.get(&id).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn completed_accounting_calculation_evidence_survives_session_eviction() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "immutable-calculation.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\n",
+        ).unwrap();
+        let expected_fingerprint = analysis.source_sha256.clone();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        let calculation = store.calculate_accounting_formula(
+            &id, "CSV data", "accounting.net_sales", "PKR", 2, 3
+        ).unwrap();
+        let expected_cells = calculation.source_cells.clone();
+        let expected_mappings = calculation.confirmed_mappings.clone();
+        let expected_output = calculation.formula.output_value.clone();
+
+        // Fill the bounded store until the original session is evicted.
+        for _ in 0..MAX_WORKBOOK_SESSIONS {
+            store.create(&analysis).unwrap();
+        }
+        assert!(store.answer(&id, "CSV data", "total revenue").is_err());
+        assert_eq!(store.session_count(), MAX_WORKBOOK_SESSIONS);
+
+        // The completed result owns its evidence; it must not depend on the
+        // continued presence or mutability of the source session.
+        assert_eq!(calculation.source_sha256, expected_fingerprint);
+        assert_eq!(calculation.source_cells, expected_cells);
+        assert_eq!(calculation.confirmed_mappings, expected_mappings);
+        assert_eq!(calculation.formula.output_value, expected_output);
+        assert_eq!(calculation.formula.output_value.as_deref(), Some("139"));
+        assert_eq!(calculation.source_cells.len(), 6);
+    }
+
+    #[test]
     fn concurrent_workbook_imports_preserve_session_count_and_unique_ids() {
         let store = std::sync::Arc::new(WorkbookSessionStore::default());
         let analysis = std::sync::Arc::new(session_test_analysis());
