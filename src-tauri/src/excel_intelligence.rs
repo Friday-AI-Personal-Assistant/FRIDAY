@@ -1978,7 +1978,20 @@ mod tests {
 
     #[test]
     fn accounting_calculation_rejects_localized_total_rows_end_to_end() {
-        let labels = ["Subtotal", "Grand Total (PKR)", "Invoice Total", "Gesamtsumme", "Zwischensumme", "Total de ventas", "Total geral", "الإجمالي العام", "جمع کل"];
+        let labels = [
+            "Subtotal", "Grand Total (PKR)", "Invoice Total", "Gesamtsumme", "Zwischensumme",
+            "Total de ventas", "Total ingresos", "Sous total", "Total des ventes", "Total des revenus",
+            "Summe gesamt", "Totale generale", "Totale vendite", "Total geral", "Total de vendas",
+            "Total de receitas", "Total de gastos", "Total de compras", "Total de despesas",
+            "Total de impuestos", "Importe total", "Suma total", "Total facturado", "Montant total",
+            "Montant dû", "Total TTC", "Total HT", "Somme totale", "Gesamtbetrag", "Gesamt",
+            "Summe", "Gesamtergebnis", "Totale", "Totale complessivo", "Importo totale",
+            "Somma totale", "Valor total", "Soma total", "Total a pagar", "Valor a pagar",
+            "إجمالي المبيعات", "إجمالي الإيرادات", "إجمالي المبلغ", "إجمالي المستحق",
+            "مجموعی فروخت", "مجموعی آمدنی", "کل رقم", "کل واجب الادا", "الإجمالي",
+            "الإجمالي العام", "المجموع", "المجموع الكلي", "المجموع الفرعي", "مجموعی کل",
+            "ذیلی کل", "کل فروخت", "کل آمدنی", "جمع کل", "جمع فرعی",
+        ];
         for label in labels {
             let csv = format!(
                 "Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\n{label},150,8,3\n"
@@ -2116,6 +2129,34 @@ mod tests {
         assert_eq!(preview.possible_total_row_count, 0);
         let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4).unwrap();
         assert_eq!(result.formula.output_value.as_deref(), Some("147"));
+    }
+
+    #[test]
+    fn accounting_preview_and_calculation_ignore_descriptive_total_lookalikes_end_to_end() {
+        let labels = [
+            "Total Expenses", "Total Employees", "Total Customers USD",
+            "Total Forecast 2026", "Grand Total Products PKR", "Total Due Date",
+            "Total Revenue Growth", "Grand Total Q1", "Gesamtbetrag Customers",
+            "Montant total clients", "Importo totale articoli", "Valor total clientes",
+            "Total Salesperson", "Subtotal Forecast",
+        ];
+        for label in labels {
+            let csv = format!(
+                "Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n{label},10,1,1\\n"
+            );
+            let store = WorkbookSessionStore::default();
+            let analysis = analyze_csv("descriptive-labels.csv".into(), csv.as_bytes()).unwrap();
+            let id = store.create(&analysis).unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+            store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+            let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 4).unwrap();
+            assert_eq!(preview.possible_total_row_count, 0, "descriptive label must not be flagged: {label}");
+            let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4)
+                .unwrap_or_else(|error| panic!("descriptive label must not block calculation ({label}): {error}"));
+            assert_eq!(result.formula.output_value.as_deref(), Some("157"), "unexpected result for label: {label}");
+        }
     }
 
     #[test]
