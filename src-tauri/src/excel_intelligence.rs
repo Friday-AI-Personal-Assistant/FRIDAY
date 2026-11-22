@@ -2142,7 +2142,7 @@ mod tests {
         ];
         for label in labels {
             let csv = format!(
-                "Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n{label},10,1,1\\n"
+                "Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\nCoffee,50,3,1\n{label},10,1,1\n"
             );
             let store = WorkbookSessionStore::default();
             let analysis = analyze_csv("descriptive-labels.csv".into(), csv.as_bytes()).unwrap();
@@ -2155,7 +2155,7 @@ mod tests {
             assert_eq!(preview.possible_total_row_count, 0, "descriptive label must not be flagged: {label}");
             let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4)
                 .unwrap_or_else(|error| panic!("descriptive label must not block calculation ({label}): {error}"));
-            assert_eq!(result.formula.output_value.as_deref(), Some("157"), "unexpected result for label: {label}");
+            assert_eq!(result.formula.output_value.as_deref(), Some("147"), "unexpected result for label: {label}");
         }
     }
 
