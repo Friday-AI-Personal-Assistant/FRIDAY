@@ -2536,7 +2536,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "integrity.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         {
@@ -2550,7 +2550,7 @@ mod tests {
         let second = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "coordinates.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
         ).unwrap();
         let id = second.create(&analysis).unwrap();
         {
@@ -2565,7 +2565,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "identity.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         {
@@ -2766,7 +2766,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "mapped-expiry.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
@@ -2789,7 +2789,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "mapped-eviction.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
         ).unwrap();
         let first_id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(
@@ -2814,7 +2814,7 @@ mod tests {
     fn session_integrity_rejects_forged_mapping_keys_and_duplicate_assignments() {
         let analysis = analyze_csv(
             "mapping-invariants.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
         ).unwrap();
 
         let key_store = WorkbookSessionStore::default();
@@ -2878,7 +2878,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "mapping-atomicity.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(
