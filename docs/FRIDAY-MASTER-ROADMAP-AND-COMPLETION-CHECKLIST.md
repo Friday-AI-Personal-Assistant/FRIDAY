@@ -1422,7 +1422,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ### 33.5.1 Source-bound Accounting Calculation (Initial Read-only Integration)
 
-**Status:** IN PROGRESS — initial integration and row-range batches passed (#1265–#1267 and #1273–#1279). The selected-range preview/review fixes are verified by #1290 and #1291 (both Windows and Linux passed). The next XLSX Accounting Reliability batch is now implemented on `foundation/evaluation`; its CI verification is pending.
+**Status:** IN PROGRESS — initial integration and row-range batches passed (#1265–#1267 and #1273–#1279). Selected-range preview/review fixes passed #1290 and #1291. Total-label matching and false-positive safeguards passed #1304, #1307 and #1308; calculation/preview evidence parity passed #1311; full-range scanning, bounded preview/candidate truncation and frontend disclosure passed #1312 and #1313. Confirmed accounting mappings are now bound to the retained source fingerprint, header, worksheet coordinates and exact data-range metadata; tampering is rejected by both preview and calculation. Latest verification #1316 passed Linux tests and the Windows build, including installer/artifact steps (commit `63cc148432a96c4d020359ae4e881f2f7914ce13`; run [44994127182](https://github.com/Friday-AI-Personal-Assistant/FRIDAY/actions/runs/44994127182)). Earlier #1314 and #1315 failures were superseded by #1316.
 
 - [x] Retain parsed CSV/XLSX source cells privately inside the backend workbook session; the private source-cell structure is skipped from the serialized workbook-analysis response.
 - [x] Expose a permission-gated calculation command that accepts only session ID, worksheet, registered formula ID and explicit three-letter currency code. It does not accept frontend-provided values, summaries or cell contents.
@@ -1444,8 +1444,12 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] Mark formula cells and missing cached values in the selected-range preview; warn that cached formula results are not recalculated and may be stale.
 - [x] Add regression coverage for XLSX formula cells with cached values and missing cached values, including source-bound accounting calculation and the warning returned for cached values.
 - [x] Define and test the accounting decimal syntax: plain signed decimal values with up to six fractional places are accepted; grouping separators, locale-ambiguous forms, currency symbols, parentheses and percent suffixes are rejected rather than guessed.
-- [ ] Expand subtotal/grand-total detection and review coverage for unusual layouts, localized labels and false-positive behavior; never silently exclude a row.
-- [ ] Complete Linux and Windows CI for the XLSX Accounting Reliability batch, including Windows installer build and artifact upload.
+- [x] Tighten total-label recognition to exact phrases with narrowly allowed period/currency qualifiers; reject ordinary labels such as `Total Customers`, `Total Salesperson PKR`, `Subtotal Forecast` and `Grand Totalist PKR` (#1304, #1307, #1308).
+- [x] Preserve the actual matched total-label cells in preview evidence, cap labels per candidate row, and test that preview and calculation agree on the same source rows (#1311).
+- [x] Scan the entire selected range for possible total rows even when the visible preview is capped at 100 rows; count every candidate while bounding the displayed candidate list and clearly disclose truncation (#1312, #1313).
+- [x] Validate confirmed mapping provenance consistently for preview and calculation: source fingerprint, retained worksheet bounds, exact header cell and exact data-range coordinates. Reject tampered/stale mapping metadata with regression coverage (#1316).
+- [x] Complete Linux and Windows CI for the verified batches above, including Windows installer build and artifact upload (#1316, run `44994127182`).
+- [ ] Expand subtotal/grand-total detection and review coverage for unusual layouts and localized labels; continue measuring false positives without ever silently excluding a row.
 
 **Safety boundary:** This integration is read-only. It does not modify workbook cells, save a workbook, execute workbook formulas, recalculate cached formulas, or create a backup. It is not an audit opinion or a guarantee that source data is correct. CSV/XLSX source values are interpreted as provided; formula cells in XLSX use cached values and may differ from a workbook recalculated by Excel. Currency is explicitly supplied by the user and is never inferred or converted.
 
