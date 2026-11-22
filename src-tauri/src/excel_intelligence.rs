@@ -1702,8 +1702,10 @@ mod tests {
 
             let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 4).unwrap();
             assert_eq!(preview.possible_total_row_count, 1, "label should be surfaced in preview: {label}");
-            let error = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4)
-                .expect_err("a localized total row must block aggregation");
+            let error = match store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4) {
+                Err(error) => error,
+                Ok(_) => panic!("a localized total row must block aggregation: {label}"),
+            };
             assert!(error.contains("possible subtotal or total row"), "unexpected error for {label}: {error}");
         }
     }
