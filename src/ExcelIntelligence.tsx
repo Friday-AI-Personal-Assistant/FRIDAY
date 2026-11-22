@@ -82,6 +82,8 @@ type WorkbookAccountingCalculation = {
   confirmedMappings: ConfirmedAccountingMapping[];
   sourceCells: { fieldId: string; cell: string; value: string }[];
   sourceRowsIncluded: number;
+  selectedStartRow: number;
+  selectedEndRow: number;
   blankCellsSkipped: number;
 };
 
@@ -113,6 +115,8 @@ export default function ExcelIntelligence() {
   const [mappingMessage, setMappingMessage] = useState("");
   const [formulaId, setFormulaId] = useState("accounting.net_sales");
   const [currency, setCurrency] = useState("");
+  const [accountingStartRow, setAccountingStartRow] = useState("2");
+  const [accountingEndRow, setAccountingEndRow] = useState("2");
   const [calculationBusy, setCalculationBusy] = useState(false);
   const [calculationError, setCalculationError] = useState("");
   const [calculationResult, setCalculationResult] = useState<WorkbookAccountingCalculation | null>(null);
@@ -127,6 +131,8 @@ export default function ExcelIntelligence() {
       setQuestion("");
       setQuestionAnswer(null);
       setConfirmedMappings([]);
+      setAccountingStartRow("2");
+      setAccountingEndRow(String(result.sheets[0]?.rowCount ?? 2));
       setMappingMessage("");
       setCalculationResult(null);
       setCalculationError("");
@@ -170,6 +176,12 @@ export default function ExcelIntelligence() {
   const requiredFormulaFields = formulaInputs[formulaId] ?? [];
   const confirmedFieldIds = confirmedMappings.filter(mapping => mapping.sheetName === sheet?.name).map(mapping => mapping.fieldId);
   const canCalculate = requiredFormulaFields.length > 0 && requiredFormulaFields.every(field => confirmedFieldIds.includes(field));
+  const mappingRanges = confirmedMappings.filter(mapping => mapping.sheetName === sheet?.name).map(mapping => mapping.dataRange.split(":").map(cell => Number(cell.match(/[0-9]+$/)?.[0] ?? 0)));
+  const accountingMinRow = mappingRanges.length ? Math.max(...mappingRanges.map(range => range[0])) : 2;
+  const accountingMaxRow = mappingRanges.length ? Math.min(...mappingRanges.map(range => range[1])) : (sheet?.rowCount ?? 2);
+  const validAccountingRows = /^\\d+$/.test(accountingStartRow) && /^\\d+$/.test(accountingEndRow)
+    && Number(accountingStartRow) >= accountingMinRow && Number(accountingEndRow) >= Number(accountingStartRow)
+    && Number(accountingEndRow) <= accountingMaxRow;
 
   async function calculateAccounting() {
     if (!analysis || !sheet || !currency.trim() || !canCalculate || calculationBusy) return;
@@ -182,6 +194,8 @@ export default function ExcelIntelligence() {
         sheetName: sheet.name,
         formulaId,
         currency: currency.trim().toUpperCase(),
+        startRow: Number(accountingStartRow),
+        endRow: Number(accountingEndRow),
       });
       setCalculationResult(result);
     } catch (reason) {
@@ -361,7 +375,9 @@ export default function ExcelIntelligence() {
                 <option value="accounting.gross_margin">Gross margin</option>
               </select>
               <input aria-label="Source currency code" value={currency} onChange={event => { setCurrency(event.target.value.toUpperCase().slice(0, 3)); setCalculationResult(null); }} placeholder="Currency (e.g. PKR)" maxLength={3} />
-              <button type="button" onClick={() => void calculateAccounting()} disabled={!canCalculate || !/^[A-Z]{3}$/.test(currency.trim()) || calculationBusy}>
+              <input aria-label="First source row (inclusive)" type="number" min={accountingMinRow} max={accountingMaxRow} value={accountingStartRow} onChange={event => { setAccountingStartRow(event.target.value); setCalculationResult(null); }} placeholder="First row" />
+              <input aria-label="Last source row (inclusive)" type="number" min={accountingMinRow} max={accountingMaxRow} value={accountingEndRow} onChange={event => { setAccountingEndRow(event.target.value); setCalculationResult(null); }} placeholder="Last row" />
+              <button type="button" onClick={() => void calculateAccounting()} disabled={!canCalculate || !validAccountingRows || !/^[A-Z]{3}$/.test(currency.trim()) || calculationBusy}>
                 {calculationBusy ? "Calculating…" : "Calculate from source"}
               </button>
             </div>
@@ -372,7 +388,7 @@ export default function ExcelIntelligence() {
               <div className="excel-answer-card answered" aria-live="polite">
                 <strong>{calculationResult.formula.outputValue ?? "Calculation incomplete"} {calculationResult.formula.currency ?? calculationResult.formula.outputUnit}</strong>
                 <p>{calculationResult.formula.formulaId} v{calculationResult.formula.formulaVersion} · {calculationResult.sheetName} · Source SHA-256 {calculationResult.sourceSha256.slice(0, 12)}…</p>
-                <p>{calculationResult.sourceCells.length} source-cell reference(s) retained across {calculationResult.sourceRowsIncluded} contributing row(s); {calculationResult.blankCellsSkipped} blank cell(s) skipped.</p>
+                <p>Selected worksheet rows {calculationResult.selectedStartRow}–{calculationResult.selectedEndRow}; {calculationResult.sourceCells.length} source-cell reference(s) retained across {calculationResult.sourceRowsIncluded} contributing row(s); {calculationResult.blankCellsSkipped} blank cell(s) skipped.</p>
                 <ul>{calculationResult.confirmedMappings.map(mapping => <li key={mapping.fieldId}>{mapping.fieldId}: {mapping.sheetName}!{mapping.headerCell} ({mapping.header}) · {mapping.dataRange}</li>)}</ul>
                 <strong>Calculation trace</strong>
                 <ul>{calculationResult.formula.trace.map((line, index) => <li key={index}>{line}</li>)}</ul>
