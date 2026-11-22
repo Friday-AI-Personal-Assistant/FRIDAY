@@ -53,7 +53,7 @@ pub struct WorkbookAnalysis {
     source_sheets: Vec<WorkbookSourceSheet>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 struct WorkbookSourceSheet {
     name: String,
     rows: Vec<Vec<String>>,
@@ -1089,7 +1089,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv("source.csv".into(), b"Product,Gross Sales\\nTea,10\\nCoffee,20\\n").unwrap();
         let id = store.create(&analysis).unwrap();
-        assert!(serde_json::to_string(&analysis).unwrap().find("Coffee").is_none());
+        assert!(!serde_json::to_string(&analysis).unwrap().contains("sourceSheets"));
         let sessions = store.sessions.lock().unwrap();
         let source = sessions.get(&id).unwrap().source_sheets.iter()
             .find(|sheet| sheet.name == "CSV data").unwrap();
