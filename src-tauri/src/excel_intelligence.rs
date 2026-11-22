@@ -2153,6 +2153,70 @@ mod tests {
     }
 
     #[test]
+    fn accounting_preview_tracks_multiple_total_candidates_at_exact_worksheet_rows() {
+        let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns,Note 1,Note 2\\n");
+        csv.push_str("Tea,100,5,2,,\\n");
+        csv.push_str("Grand Total (PKR),100,5,2,,\\n");
+        csv.push_str("Coffee,50,3,1,,\\n");
+        csv.push_str("إجمالي الإيرادات,150,8,3,,\\n");
+        csv.push_str("Total Customers,10,1,1,,\\n");
+        csv.push_str("مجموعی فروخت,150,8,3,,\\n");
+        csv.push_str("Biscuits,25,2,1,,\\n");
+
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv("multiple-total-candidates.csv".into(), csv.as_bytes()).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        let preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 2, 8).unwrap();
+        assert_eq!(preview.selected_start_row, 2);
+        assert_eq!(preview.selected_end_row, 8);
+        assert_eq!(preview.possible_total_row_count, 3);
+        assert_eq!(
+            preview.possible_total_rows.iter().map(|candidate| candidate.worksheet_row).collect::<Vec<_>>(),
+            vec![3, 5, 7],
+            "all genuine candidates must retain their absolute worksheet row numbers"
+        );
+        assert_eq!(
+            preview.possible_total_rows.iter().map(|candidate| candidate.labels.clone()).collect::<Vec<_>>(),
+            vec![
+                vec!["Grand Total (PKR)".to_string()],
+                vec!["إجمالي الإيرادات".to_string()],
+                vec!["مجموعی فروخت".to_string()],
+            ],
+            "localized genuine labels must be preserved while descriptive lookalikes remain excluded"
+        );
+        assert_eq!(
+            preview.preview_rows.iter()
+                .filter(|row| row.possible_total)
+                .map(|row| row.worksheet_row)
+                .collect::<Vec<_>>(),
+            vec![3, 5, 7],
+            "row-level preview flags must agree with the candidate list"
+        );
+
+        let full_range_error = match store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 8) {
+            Err(error) => error,
+            Ok(_) => panic!("multiple candidate total rows must block aggregation"),
+        };
+        assert!(full_range_error.contains("row 3"), "unexpected first-candidate error: {full_range_error}");
+
+        let narrowed_preview = store.preview_accounting_range(&id, "CSV data", "accounting.net_sales", 4, 8).unwrap();
+        assert_eq!(narrowed_preview.possible_total_row_count, 2);
+        assert_eq!(
+            narrowed_preview.possible_total_rows.iter().map(|candidate| candidate.worksheet_row).collect::<Vec<_>>(),
+            vec![5, 7]
+        );
+        let narrowed_error = match store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 4, 8) {
+            Err(error) => error,
+            Ok(_) => panic!("remaining candidate total rows must still block aggregation"),
+        };
+        assert!(narrowed_error.contains("row 5"), "unexpected narrowed-range error: {narrowed_error}");
+    }
+
+    #[test]
     fn accounting_preview_scans_past_visible_rows_and_calculation_still_rejects_late_total() {
         let store = WorkbookSessionStore::default();
         let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns,Note\n");
