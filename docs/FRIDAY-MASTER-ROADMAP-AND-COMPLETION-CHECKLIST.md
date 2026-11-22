@@ -1422,7 +1422,7 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 
 ### 33.5.1 Source-bound Accounting Calculation (Initial Read-only Integration)
 
-**Status:** IMPLEMENTED — initial integration and row-range batches have successful CI runs (#1265–#1267 and #1273–#1279); the source-range preview/review batch is committed and its Linux/Windows CI verification is in progress.
+**Status:** IN PROGRESS — initial integration and row-range batches passed (#1265–#1267 and #1273–#1279). The selected-range preview/review fixes are verified by #1290 and #1291 (both Windows and Linux passed). The next XLSX Accounting Reliability batch is now implemented on `foundation/evaluation`; its CI verification is pending.
 
 - [x] Retain parsed CSV/XLSX source cells privately inside the backend workbook session; the private source-cell structure is skipped from the serialized workbook-analysis response.
 - [x] Expose a permission-gated calculation command that accepts only session ID, worksheet, registered formula ID and explicit three-letter currency code. It does not accept frontend-provided values, summaries or cell contents.
@@ -1439,9 +1439,13 @@ The four guarantees remain mandatory: Safety, User control, Cost transparency an
 - [x] Show source-cell coordinates, mapped values, selected worksheet rows and possible total-row labels before calculation. Changing the workbook, sheet, formula or row range invalidates the preview and requires a fresh review.
 - [x] Block calculation when the current preview detects possible subtotal/grand-total rows. The user must narrow the range and preview again; FRIDAY does not silently include, exclude or override candidate rows.
 - [x] Add adversarial tests proving source-fingerprint mismatch rejects both preview and calculation, oversized source evidence fails closed at the 20,000-reference limit, and comma-grouped numeric strings are rejected rather than guessed.
-- [ ] Add dedicated XLSX cached-formula-value regression coverage; the UI and report must continue to disclose that FRIDAY reads cached values and does not recalculate workbook formulas.
-- [ ] Add adversarial coverage for source mismatch, oversized source evidence, unusual numeric formats and workbook formula cached-value caveats.
-- [ ] Complete Linux and Windows CI for the selected-range preview/review and adversarial-test batch, including Windows installer build and artifact upload. Runs #1283 and #1284 failed on issues corrected in subsequent commits; runs #1285 onward are the current verification set.
+- [x] Add XLSX formula-cell position tracking in the retained source session so FRIDAY can distinguish an ordinary blank from a formula cell with no cached result.
+- [x] Fail closed when a selected accounting formula cell has no cached result; do not silently skip it, substitute zero or recalculate it. The preview scans the entire selected range and blocks calculation when any mapped formula cache is missing.
+- [x] Mark formula cells and missing cached values in the selected-range preview; warn that cached formula results are not recalculated and may be stale.
+- [x] Add regression coverage for XLSX formula cells with cached values and missing cached values, including source-bound accounting calculation and the warning returned for cached values.
+- [x] Define and test the accounting decimal syntax: plain signed decimal values with up to six fractional places are accepted; grouping separators, locale-ambiguous forms, currency symbols, parentheses and percent suffixes are rejected rather than guessed.
+- [ ] Expand subtotal/grand-total detection and review coverage for unusual layouts, localized labels and false-positive behavior; never silently exclude a row.
+- [ ] Complete Linux and Windows CI for the XLSX Accounting Reliability batch, including Windows installer build and artifact upload.
 
 **Safety boundary:** This integration is read-only. It does not modify workbook cells, save a workbook, execute workbook formulas, recalculate cached formulas, or create a backup. It is not an audit opinion or a guarantee that source data is correct. CSV/XLSX source values are interpreted as provided; formula cells in XLSX use cached values and may differ from a workbook recalculated by Excel. Currency is explicitly supplied by the user and is never inferred or converted.
 
