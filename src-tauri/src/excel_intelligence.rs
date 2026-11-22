@@ -2217,6 +2217,73 @@ mod tests {
     }
 
     #[test]
+    fn accounting_preview_and_calculation_preserve_non_a1_rows_across_blank_rows() {
+        let rows = vec![
+            vec!["Product".to_string(), "Gross Sales".to_string(), "Discounts".to_string(), "Sales Returns".to_string()],
+            vec!["Tea".to_string(), "100".to_string(), "5".to_string(), "2".to_string()],
+            vec!["".to_string(), "".to_string(), "".to_string(), "".to_string()],
+            vec!["Coffee".to_string(), "50".to_string(), "3".to_string(), "1".to_string()],
+            vec!["Grand Total (PKR)".to_string(), "150".to_string(), "8".to_string(), "3".to_string()],
+            vec!["Biscuits".to_string(), "25".to_string(), "2".to_string(), "1".to_string()],
+        ];
+        let sheet = analyze_matrix_with_origin("Offset".into(), rows.clone(), 0, 4, 3).unwrap();
+        assert_eq!(sheet.accounting_field_suggestions[0].header_cell, "E5");
+        assert_eq!(sheet.accounting_field_suggestions[0].data_range, "E6:E10");
+        let source_sha256 = format!("{:x}", Sha256::digest(b"non-a1-source"));
+        let analysis = WorkbookAnalysis {
+            session_id: String::new(),
+            file_name: "non-a1-blank-rows.xlsx".into(),
+            format: "XLSX".into(),
+            source_sha256: source_sha256.clone(),
+            source_byte_length: 13,
+            sheets: vec![sheet],
+            total_rows: rows.len(),
+            total_non_empty_cells: rows.iter().flatten().filter(|cell| !cell.trim().is_empty()).count(),
+            notes: Vec::new(),
+            source_sheets: vec![WorkbookSourceSheet {
+                name: "Offset".into(),
+                rows,
+                start_row: 4,
+                start_column: 3,
+                formula_cell_positions: Vec::new(),
+            }],
+        };
+
+        let store = WorkbookSessionStore::default();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "Offset", 4, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "Offset", 5, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "Offset", 6, "accounting.sales_returns").unwrap();
+
+        let preview = store.preview_accounting_range(&id, "Offset", "accounting.net_sales", 6, 10).unwrap();
+        assert_eq!(preview.selected_start_row, 6);
+        assert_eq!(preview.selected_end_row, 10);
+        assert_eq!(
+            preview.preview_rows.iter().map(|row| row.worksheet_row).collect::<Vec<_>>(),
+            vec![6, 7, 8, 9, 10],
+            "blank rows must not collapse or renumber absolute worksheet coordinates"
+        );
+        assert_eq!(preview.possible_total_row_count, 1);
+        assert_eq!(preview.possible_total_rows[0].worksheet_row, 9);
+
+        let total_error = match store.calculate_accounting_formula(&id, "Offset", "accounting.net_sales", "PKR", 6, 10) {
+            Err(error) => error,
+            Ok(_) => panic!("the total row at its absolute worksheet coordinate must block calculation"),
+        };
+        assert!(total_error.contains("row 9"), "unexpected total-row error: {total_error}");
+
+        let narrowed = store.preview_accounting_range(&id, "Offset", "accounting.net_sales", 6, 8).unwrap();
+        assert_eq!(narrowed.possible_total_row_count, 0);
+        let calculation = store.calculate_accounting_formula(&id, "Offset", "accounting.net_sales", "PKR", 6, 8).unwrap();
+        assert_eq!(calculation.formula.output_value.as_deref(), Some("139"));
+        assert_eq!(calculation.source_rows_included, 2);
+        assert_eq!(calculation.blank_cells_skipped, 3);
+        assert!(calculation.source_cells.iter().any(|cell| cell.cell == "E6"));
+        assert!(calculation.source_cells.iter().any(|cell| cell.cell == "E8"));
+        assert!(calculation.source_cells.iter().all(|cell| !cell.cell.ends_with('7')));
+    }
+
+    #[test]
     fn accounting_preview_scans_past_visible_rows_and_calculation_still_rejects_late_total() {
         let store = WorkbookSessionStore::default();
         let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns,Note\n");
