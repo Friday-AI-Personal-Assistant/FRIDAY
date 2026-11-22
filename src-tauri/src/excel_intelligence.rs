@@ -2980,6 +2980,106 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_workbook_sessions_never_mix_accounting_source_evidence() {
+        let store = std::sync::Arc::new(WorkbookSessionStore::default());
+        let first_analysis = analyze_csv(
+            "session-alpha.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n",
+        ).unwrap();
+        let second_analysis = analyze_csv(
+            "session-beta.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,250,10,5\n",
+        ).unwrap();
+        let first_fingerprint = first_analysis.source_sha256.clone();
+        let second_fingerprint = second_analysis.source_sha256.clone();
+        assert_ne!(first_fingerprint, second_fingerprint);
+
+        let first_id = store.create(&first_analysis).unwrap();
+        let second_id = store.create(&second_analysis).unwrap();
+        for id in [&first_id, &second_id] {
+            store.confirm_accounting_mapping(id, "CSV data", 2, "accounting.gross_sales").unwrap();
+            store.confirm_accounting_mapping(id, "CSV data", 3, "accounting.discounts").unwrap();
+            store.confirm_accounting_mapping(id, "CSV data", 4, "accounting.sales_returns").unwrap();
+        }
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let requests = [
+            (first_id.clone(), "session-alpha.csv", first_fingerprint.clone(), "93", "100", "5", "2"),
+            (second_id.clone(), "session-beta.csv", second_fingerprint.clone(), "235", "250", "10", "5"),
+        ];
+        let workers = requests.into_iter().map(
+            |(id, file_name, fingerprint, expected_total, gross_sales, discounts, returns)| {
+                let store = std::sync::Arc::clone(&store);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let preview = store.preview_accounting_range(
+                        &id, "CSV data", "accounting.net_sales", 2, 2,
+                    ).unwrap();
+                    let result = store.calculate_accounting_formula(
+                        &id, "CSV data", "accounting.net_sales", "PKR", 2, 2,
+                    ).unwrap();
+                    (preview, result, file_name, fingerprint, expected_total, gross_sales, discounts, returns)
+                })
+            }
+        ).collect::<Vec<_>>();
+
+        let results = workers.into_iter()
+            .map(|worker| worker.join().expect("workbook session worker should not panic"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.len(), 2);
+
+        for (preview, result, file_name, fingerprint, expected_total, gross_sales, discounts, returns) in &results {
+            assert_eq!(preview.source_sha256, *fingerprint);
+            assert_eq!(preview.formula_id, "accounting.net_sales");
+            assert_eq!(preview.selected_start_row, 2);
+            assert_eq!(preview.selected_end_row, 2);
+            assert_eq!(preview.selected_row_count, 1);
+            assert_eq!(result.file_name, *file_name);
+            assert_eq!(result.sheet_name, "CSV data");
+            assert_eq!(result.source_sha256, *fingerprint);
+            assert_eq!(result.formula.formula_id, "accounting.net_sales");
+            assert_eq!(result.formula.output_value.as_deref(), Some(*expected_total));
+            assert_eq!(result.formula.currency.as_deref(), Some("PKR"));
+            assert_eq!(result.confirmed_mappings.len(), 3);
+            assert_eq!(result.source_cells.len(), 3);
+            assert!(result.confirmed_mappings.iter().all(|mapping|
+                mapping.source_sha256 == *fingerprint
+                    && mapping.sheet_name == "CSV data"
+            ));
+
+            let mut evidence = result.source_cells.iter()
+                .map(|cell| (cell.field_id.as_str(), cell.cell.as_str(), cell.value.as_str()))
+                .collect::<Vec<_>>();
+            evidence.sort_unstable();
+            assert_eq!(evidence, vec![
+                ("accounting.discounts", "C2", *discounts),
+                ("accounting.gross_sales", "B2", *gross_sales),
+                ("accounting.sales_returns", "D2", *returns),
+            ]);
+        }
+
+        let first_result = results.iter().find(|(_, result, file_name, ..)|
+            *file_name == "session-alpha.csv"
+        ).unwrap();
+        let second_result = results.iter().find(|(_, result, file_name, ..)|
+            *file_name == "session-beta.csv"
+        ).unwrap();
+        assert_eq!(first_result.1.formula.output_value.as_deref(), Some("93"));
+        assert_eq!(second_result.1.formula.output_value.as_deref(), Some("235"));
+        assert_ne!(first_result.1.source_sha256, second_result.1.source_sha256);
+        assert!(first_result.1.source_cells.iter().all(|cell|
+            !second_result.1.source_cells.iter().any(|other|
+                other.field_id == cell.field_id && other.value == cell.value
+            )
+        ));
+
+        let sessions = store.sessions.lock().unwrap();
+        validate_session_integrity(sessions.get(&first_id).unwrap()).unwrap();
+        validate_session_integrity(sessions.get(&second_id).unwrap()).unwrap();
+    }
+
+    #[test]
     fn concurrent_accounting_formulas_keep_their_own_inputs_and_source_evidence() {
         let store = std::sync::Arc::new(WorkbookSessionStore::default());
         let analysis = analyze_csv(
