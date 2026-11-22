@@ -1121,6 +1121,62 @@ mod tests {
     }
 
     #[test]
+    fn accounting_calculation_uses_only_confirmed_backend_source_cells_and_keeps_trace() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "sales.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+        let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR").unwrap();
+        assert_eq!(result.formula.status, "calculated");
+        assert_eq!(result.formula.output_value.as_deref(), Some("139"));
+        assert_eq!(result.formula.currency.as_deref(), Some("PKR"));
+        assert_eq!(result.confirmed_mappings.len(), 3);
+        assert_eq!(result.source_cells.len(), 6);
+        assert!(result.source_cells.iter().any(|cell| cell.cell == "B2" && cell.value == "100"));
+        assert!(result.source_cells.iter().any(|cell| cell.cell == "D3" && cell.value == "1"));
+        assert!(result.formula.trace.iter().any(|line| line.contains("Source mapping: accounting.gross_sales")));
+        assert_eq!(result.source_sha256, analysis.source_sha256);
+    }
+
+    #[test]
+    fn accounting_calculation_requires_confirmed_mappings_and_rejects_non_numeric_source_cells() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "sales.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,not-a-number,3,1\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        assert!(store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR").is_err());
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+        let error = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR").unwrap_err();
+        assert!(error.contains("non-numeric"));
+    }
+
+    #[test]
+    fn accounting_calculation_skips_blank_cells_with_an_explicit_warning() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "sales.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,,3,1\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+        let result = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR").unwrap();
+        assert_eq!(result.formula.output_value.as_deref(), Some("92"));
+        assert_eq!(result.blank_cells_skipped, 1);
+        assert!(result.formula.warnings.iter().any(|warning| warning.contains("blank source cell")));
+    }
+
+    #[test]
     fn accounting_mapping_rejects_ambiguous_unknown_and_duplicate_mappings() {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv("mapping.csv".into(), b"Product,Revenue,Gross Sales\nTea,10,12\n").unwrap();
