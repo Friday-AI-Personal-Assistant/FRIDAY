@@ -350,6 +350,37 @@ fn is_accounting_total_candidate(row: &[String]) -> bool {
     !accounting_total_labels(row).is_empty()
 }
 
+fn validate_accounting_mapping(
+    mapping: &ConfirmedAccountingMapping,
+    source: &WorkbookSourceSheet,
+    expected_source_sha256: &str,
+) -> Result<usize, String> {
+    if mapping.source_sha256 != expected_source_sha256 {
+        return Err("A confirmed accounting mapping no longer matches this workbook source fingerprint.".into());
+    }
+    let column_index = mapping.source_column_index.checked_sub(source.start_column + 1)
+        .ok_or_else(|| "The confirmed source column index is invalid.".to_string())?;
+    let header_row = source.rows.first()
+        .ok_or_else(|| "The retained worksheet header row is unavailable.".to_string())?;
+    let header = header_row.get(column_index)
+        .ok_or_else(|| "The confirmed source column is outside the retained worksheet bounds.".to_string())?;
+    if header != &mapping.header {
+        return Err("The confirmed accounting header no longer matches the retained source cells.".into());
+    }
+
+    let column_label = excel_column_label(source.start_column + column_index);
+    let expected_header_cell = format!("{column_label}{}", source.start_row + 1);
+    let expected_data_range = if source.rows.len() > 1 {
+        format!("{column_label}{}:{column_label}{}", source.start_row + 2, source.start_row + source.rows.len())
+    } else {
+        format!("{column_label}{} (no data rows)", source.start_row + 2)
+    };
+    if mapping.header_cell != expected_header_cell || mapping.data_range != expected_data_range {
+        return Err("The confirmed accounting mapping range metadata no longer matches the retained worksheet coordinates.".into());
+    }
+    Ok(column_index)
+}
+
 impl WorkbookSessionStore {
     fn create(&self, analysis: &WorkbookAnalysis) -> Result<String, String> {
         let summary_bytes = serde_json::to_vec(&analysis.sheets)
@@ -451,15 +482,7 @@ impl WorkbookSessionStore {
             let mapping = session.confirmed_mappings.values().find(|mapping|
                 mapping.sheet_name == sheet_name && mapping.field_id == field_id
             ).ok_or_else(|| format!("Confirm the '{}' source column in this worksheet before previewing.", input_name))?;
-            if mapping.source_sha256 != session.source_sha256 {
-                return Err("A confirmed accounting mapping no longer matches this workbook source fingerprint.".into());
-            }
-            let column_index = mapping.source_column_index.checked_sub(source.start_column + 1)
-                .ok_or_else(|| "The confirmed source column index is invalid.".to_string())?;
-            let header = source.rows.first().and_then(|row| row.get(column_index)).map(String::as_str).unwrap_or("");
-            if header != mapping.header {
-                return Err("The confirmed accounting header no longer matches the retained source cells.".into());
-            }
+            let column_index = validate_accounting_mapping(mapping, source, &session.source_sha256)?;
             columns.push((mapping.field_id.clone(), excel_column_label(column_index + source.start_column), column_index));
             mappings.push(mapping.clone());
         }
@@ -561,15 +584,7 @@ impl WorkbookSessionStore {
             let mapping = session.confirmed_mappings.values().find(|mapping|
                 mapping.sheet_name == sheet_name && mapping.field_id == field_id
             ).ok_or_else(|| format!("Confirm the '{}' source column in this worksheet before calculating.", input_name))?;
-            if mapping.source_sha256 != session.source_sha256 {
-                return Err("A confirmed accounting mapping no longer matches this workbook source fingerprint.".into());
-            }
-            let column_index = mapping.source_column_index.checked_sub(source.start_column + 1)
-                .ok_or_else(|| "The confirmed source column index is invalid.".to_string())?;
-            let header = source.rows.first().and_then(|row| row.get(column_index)).map(String::as_str).unwrap_or("");
-            if header != mapping.header {
-                return Err("The confirmed accounting header no longer matches the retained source cells.".into());
-            }
+            let column_index = validate_accounting_mapping(mapping, source, &session.source_sha256)?;
             let column_label = excel_column_label(column_index + source.start_column);
             let mut numeric_values = Vec::new();
             for (row_index, row) in source.rows.iter().enumerate().skip(1) {
@@ -1559,6 +1574,37 @@ mod tests {
         assert_eq!(mapping.header_cell, "B1");
         assert_eq!(mapping.data_range, "B2:B2");
         assert_eq!(mapping.source_sha256, analysis.source_sha256);
+    }
+
+    #[test]
+    fn accounting_preview_and_calculation_reject_tampered_mapping_range_metadata() {
+        let store = WorkbookSessionStore::default();
+        let analysis = analyze_csv(
+            "mapping-integrity.csv".into(),
+            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\nCoffee,50,3,1\\n",
+        ).unwrap();
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "CSV data", 4, "accounting.sales_returns").unwrap();
+
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            let session = sessions.get_mut(&id).unwrap();
+            let mapping = session.confirmed_mappings.values_mut()
+                .find(|mapping| mapping.field_id == "accounting.discounts").unwrap();
+            mapping.data_range = "C2:C999".into();
+        }
+
+        let preview_error = store.preview_accounting_range(
+            &id, "CSV data", "accounting.net_sales", 2, 3,
+        ).unwrap_err();
+        assert!(preview_error.contains("range metadata"));
+
+        let calculation_error = store.calculate_accounting_formula(
+            &id, "CSV data", "accounting.net_sales", "PKR", 2, 3,
+        ).unwrap_err();
+        assert!(calculation_error.contains("range metadata"));
     }
 
     #[test]
