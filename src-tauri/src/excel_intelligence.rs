@@ -2251,9 +2251,9 @@ mod tests {
 
         let store = WorkbookSessionStore::default();
         let id = store.create(&analysis).unwrap();
-        store.confirm_accounting_mapping(&id, "Offset", 4, "accounting.gross_sales").unwrap();
-        store.confirm_accounting_mapping(&id, "Offset", 5, "accounting.discounts").unwrap();
-        store.confirm_accounting_mapping(&id, "Offset", 6, "accounting.sales_returns").unwrap();
+        store.confirm_accounting_mapping(&id, "Offset", 5, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "Offset", 6, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "Offset", 7, "accounting.sales_returns").unwrap();
 
         let preview = store.preview_accounting_range(&id, "Offset", "accounting.net_sales", 6, 10).unwrap();
         assert_eq!(preview.selected_start_row, 6);
@@ -2278,8 +2278,8 @@ mod tests {
         assert_eq!(calculation.formula.output_value.as_deref(), Some("139"));
         assert_eq!(calculation.source_rows_included, 2);
         assert_eq!(calculation.blank_cells_skipped, 3);
-        assert!(calculation.source_cells.iter().any(|cell| cell.cell == "D6"));
-        assert!(calculation.source_cells.iter().any(|cell| cell.cell == "D8"));
+        assert!(calculation.source_cells.iter().any(|cell| cell.cell == "E6"));
+        assert!(calculation.source_cells.iter().any(|cell| cell.cell == "E8"));
         assert!(calculation.source_cells.iter().all(|cell| !cell.cell.ends_with('7')));
     }
 
