@@ -1345,11 +1345,11 @@ mod tests {
     #[test]
     fn accounting_range_preview_is_source_bound_bounded_and_flags_total_candidates() {
         let store = WorkbookSessionStore::default();
-        let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns\\n");
+        let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns\n");
         for index in 0..104 {
-            csv.push_str(&format!("Item {index},100,5,2\\n"));
+            csv.push_str(&format!("Item {index},100,5,2\n"));
         }
-        csv.push_str("Grand Total,10400,520,208\\n");
+        csv.push_str("Grand Total,10400,520,208\n");
         let analysis = analyze_csv("sales.csv".into(), csv.as_bytes()).unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
