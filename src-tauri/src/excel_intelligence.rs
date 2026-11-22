@@ -1801,8 +1801,10 @@ mod tests {
         assert_eq!(preview.possible_total_rows[0].worksheet_row, 4);
         assert_eq!(preview.possible_total_rows[0].labels, vec!["Grand Total (PKR)".to_string()]);
 
-        let error = store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4)
-            .expect_err("calculation must reject the same row preview flagged");
+        let error = match store.calculate_accounting_formula(&id, "CSV data", "accounting.net_sales", "PKR", 2, 4) {
+            Err(error) => error,
+            Ok(_) => panic!("calculation must reject the same row preview flagged"),
+        };
         assert!(error.contains("row 4"));
     }
 
