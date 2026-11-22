@@ -35,6 +35,7 @@ const MAX_WORKBOOK_SESSIONS: usize = 8;
 const WORKBOOK_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 const MAX_SESSION_SUMMARY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SESSION_SOURCE_BYTES: usize = 40 * 1024 * 1024;
+const MAX_ACCOUNTING_SOURCE_REFERENCES: usize = 20_000;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,6 +141,27 @@ pub struct ConfirmedAccountingMapping {
     pub source_sha256: String,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountingSourceCell {
+    pub field_id: String,
+    pub cell: String,
+    pub value: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbookAccountingCalculation {
+    pub source_sha256: String,
+    pub file_name: String,
+    pub sheet_name: String,
+    pub formula: crate::domain_formula::CalculationResult,
+    pub confirmed_mappings: Vec<ConfirmedAccountingMapping>,
+    pub source_cells: Vec<AccountingSourceCell>,
+    pub source_rows_included: usize,
+    pub blank_cells_skipped: usize,
+}
+
 struct WorkbookSession {
     created_at: Instant,
     source_sha256: String,
@@ -218,6 +240,100 @@ impl WorkbookSessionStore {
         answer.evidence.push(format!("Source SHA-256: {}… ({} bytes)", &session.source_sha256[..12], session.source_byte_length));
         answer.method.push_str("; bound to the imported workbook session");
         Ok(answer)
+    }
+
+    fn calculate_accounting_formula(
+        &self,
+        id: &str,
+        sheet_name: &str,
+        formula_id: &str,
+        currency: &str,
+    ) -> Result<WorkbookAccountingCalculation, String> {
+        if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("This workbook analysis session is invalid. Import the workbook again.".into());
+        }
+        if sheet_name.chars().count() > 180 || formula_id.len() > 100 {
+            return Err("The worksheet or formula selector exceeds FRIDAY's safe limits.".into());
+        }
+        let mut sessions = self.sessions.lock()
+            .map_err(|_| "The workbook session store is unavailable. Import the workbook again.".to_string())?;
+        sessions.retain(|_, item| item.created_at.elapsed() < WORKBOOK_SESSION_TTL);
+        let session = sessions.get(id)
+            .ok_or_else(|| "This workbook analysis session has expired or was replaced. Import the workbook again.".to_string())?;
+        let sheet = session.sheets.iter().find(|sheet| sheet.name == sheet_name)
+            .ok_or_else(|| "That worksheet does not belong to this workbook session.".to_string())?;
+        let source = session.source_sheets.iter().find(|source| source.name == sheet_name)
+            .ok_or_else(|| "The original source cells are unavailable in this workbook session. Import the workbook again.".to_string())?;
+        let definition = crate::domain_formula::formula_registry().into_iter()
+            .find(|item| item.id == formula_id)
+            .ok_or_else(|| "This formula is not in FRIDAY's reviewed formula registry.".to_string())?;
+        let mut values = Vec::with_capacity(definition.required_inputs.len());
+        let mut mappings = Vec::with_capacity(definition.required_inputs.len());
+        let mut source_cells = Vec::new();
+        let mut source_rows_included = 0usize;
+        let mut blank_cells_skipped = 0usize;
+        for input_name in &definition.required_inputs {
+            let field_id = format!("accounting.{input_name}");
+            let mapping = session.confirmed_mappings.values().find(|mapping|
+                mapping.sheet_name == sheet_name && mapping.field_id == field_id
+            ).ok_or_else(|| format!("Confirm the '{}' source column in this worksheet before calculating.", input_name))?;
+            if mapping.source_sha256 != session.source_sha256 {
+                return Err("A confirmed accounting mapping no longer matches this workbook source fingerprint.".into());
+            }
+            let column_index = mapping.source_column_index.checked_sub(1)
+                .ok_or_else(|| "The confirmed source column index is invalid.".to_string())?;
+            let header = source.rows.first().and_then(|row| row.get(column_index)).map(String::as_str).unwrap_or("");
+            if header != mapping.header {
+                return Err("The confirmed accounting header no longer matches the retained source cells.".into());
+            }
+            let column_label = excel_column_label(column_index);
+            let mut numeric_values = Vec::new();
+            for (row_index, row) in source.rows.iter().enumerate().skip(1) {
+                let raw = row.get(column_index).map(|value| value.trim()).unwrap_or("");
+                if raw.is_empty() {
+                    blank_cells_skipped = blank_cells_skipped.saturating_add(1);
+                    continue;
+                }
+                if source_cells.len() >= MAX_ACCOUNTING_SOURCE_REFERENCES {
+                    return Err("This calculation exceeds FRIDAY's 20,000-cell evidence limit. Narrow the source data before calculating.".into());
+                }
+                numeric_values.push(raw.to_string());
+                source_cells.push(AccountingSourceCell {
+                    field_id: field_id.clone(),
+                    cell: format!("{column_label}{}", row_index + 1),
+                    value: raw.to_string(),
+                });
+            }
+            if numeric_values.is_empty() {
+                return Err(format!("The confirmed '{}' column contains no numeric source values.", input_name));
+            }
+            let total = crate::domain_formula::sum_currency_values(&numeric_values)
+                .map_err(|_| format!("The confirmed '{}' column contains a non-numeric or unsupported value. No calculation was performed.", input_name))?;
+            source_rows_included = source_rows_included.max(numeric_values.len());
+            values.push((input_name.to_string(), total));
+            mappings.push(mapping.clone());
+        }
+        let mut formula = crate::domain_formula::calculate_from_workbook(formula_id, currency, values)?;
+        for mapping in &mappings {
+            formula.trace.push(format!(
+                "Source mapping: {} <- {}!{} ({})",
+                mapping.field_id, mapping.sheet_name, mapping.header_cell, mapping.header
+            ));
+        }
+        formula.trace.push(format!("Source cells retained in evidence: {}", source_cells.len()));
+        if blank_cells_skipped > 0 {
+            formula.warnings.push(format!("{blank_cells_skipped} blank source cell(s) were skipped during column aggregation."));
+        }
+        Ok(WorkbookAccountingCalculation {
+            source_sha256: session.source_sha256.clone(),
+            file_name: session.file_name.clone(),
+            sheet_name: sheet_name.to_string(),
+            formula,
+            confirmed_mappings: mappings,
+            source_cells,
+            source_rows_included,
+            blank_cells_skipped,
+        })
     }
 
     fn confirm_accounting_mapping(
@@ -887,6 +1003,18 @@ pub fn confirm_excel_accounting_mapping(
 ) -> Result<ConfirmedAccountingMapping, String> {
     crate::permissions::authorize_command("excel.confirm_accounting_mapping", "excel.mapping.confirm")?;
     sessions.confirm_accounting_mapping(&session_id, &sheet_name, source_column_index, &field_id)
+}
+
+#[tauri::command]
+pub fn calculate_excel_accounting_formula(
+    session_id: String,
+    sheet_name: String,
+    formula_id: String,
+    currency: String,
+    sessions: State<'_, WorkbookSessionStore>,
+) -> Result<WorkbookAccountingCalculation, String> {
+    crate::permissions::authorize_command("excel.calculate_accounting_formula", "excel.accounting.calculate")?;
+    sessions.calculate_accounting_formula(&session_id, &sheet_name, &formula_id, &currency)
 }
 
 #[tauri::command]
