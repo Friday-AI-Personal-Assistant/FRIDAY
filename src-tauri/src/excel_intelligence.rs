@@ -2254,6 +2254,58 @@ mod tests {
     }
 
     #[test]
+    fn workbook_sessions_evict_oldest_when_aggregate_source_budget_is_exceeded() {
+        let store = WorkbookSessionStore::default();
+        let analysis = session_test_analysis();
+        let first_id = store.create(&analysis).unwrap();
+        let incoming_source_bytes = serde_json::to_vec(&analysis.source_sheets).unwrap().len();
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            sessions.get_mut(&first_id).unwrap().source_bytes =
+                MAX_SESSION_SOURCE_BYTES.saturating_sub(incoming_source_bytes).saturating_add(1);
+        }
+
+        let second_id = store.create(&analysis).unwrap();
+        assert_eq!(store.session_count(), 1);
+        assert!(store.answer(&first_id, "CSV data", "total revenue").is_err());
+        assert!(store.answer(&second_id, "CSV data", "total revenue").is_ok());
+    }
+
+    #[test]
+    fn workbook_sessions_evict_oldest_when_aggregate_summary_budget_is_exceeded() {
+        let store = WorkbookSessionStore::default();
+        let analysis = session_test_analysis();
+        let first_id = store.create(&analysis).unwrap();
+        let incoming_summary_bytes = serde_json::to_vec(&analysis.sheets).unwrap().len();
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            sessions.get_mut(&first_id).unwrap().summary_bytes =
+                MAX_SESSION_SUMMARY_BYTES.saturating_sub(incoming_summary_bytes).saturating_add(1);
+        }
+
+        let second_id = store.create(&analysis).unwrap();
+        assert_eq!(store.session_count(), 1);
+        assert!(store.answer(&first_id, "CSV data", "total revenue").is_err());
+        assert!(store.answer(&second_id, "CSV data", "total revenue").is_ok());
+    }
+
+    #[test]
+    fn workbook_sessions_prune_expired_entries_before_accepting_new_sessions() {
+        let store = WorkbookSessionStore::default();
+        let expired_id = store.create(&session_test_analysis()).unwrap();
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            sessions.get_mut(&expired_id).unwrap().created_at =
+                Instant::now() - WORKBOOK_SESSION_TTL - Duration::from_secs(1);
+        }
+
+        let current_id = store.create(&session_test_analysis()).unwrap();
+        assert_eq!(store.session_count(), 1);
+        assert!(store.answer(&expired_id, "CSV data", "total revenue").is_err());
+        assert!(store.answer(&current_id, "CSV data", "total revenue").is_ok());
+    }
+
+    #[test]
     fn workbook_sessions_keep_backend_snapshot_when_client_analysis_is_mutated() {
         let store = WorkbookSessionStore::default();
         let mut analysis = session_test_analysis();
