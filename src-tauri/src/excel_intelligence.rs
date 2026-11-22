@@ -302,9 +302,14 @@ fn is_accounting_total_label(value: &str) -> bool {
     ];
 
     TOTAL_LABELS.iter().any(|phrase| {
-        label == *phrase
-            || label.starts_with(&format!("{phrase} "))
-            || label.ends_with(&format!(" {phrase}"))
+        if *phrase == "total" {
+            // A bare "Total" is a candidate; "Total Customers" is not.
+            label == *phrase
+        } else {
+            label == *phrase
+                || label.starts_with(&format!("{phrase} "))
+                || label.ends_with(&format!(" {phrase}"))
+        }
     })
 }
 
