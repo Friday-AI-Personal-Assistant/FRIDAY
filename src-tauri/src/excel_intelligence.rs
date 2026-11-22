@@ -301,15 +301,41 @@ fn is_accounting_total_label(value: &str) -> bool {
         "جمع فرعی",
     ];
 
+    fn is_period_qualifier(token: &str) -> bool {
+        matches!(token, "fy" | "q1" | "q2" | "q3" | "q4" | "h1" | "h2")
+            || (token.len() == 4 && token.chars().all(|ch| ch.is_ascii_digit()))
+    }
+
+    fn is_currency_qualifier(token: &str) -> bool {
+        matches!(
+            token,
+            "pkr" | "usd" | "eur" | "gbp" | "inr" | "aed" | "sar" | "cad" | "aud" | "jpy"
+        )
+    }
+
     TOTAL_LABELS.iter().any(|phrase| {
-        if *phrase == "total" {
-            // A bare "Total" is a candidate; "Total Customers" is not.
-            label == *phrase
-        } else {
-            label == *phrase
-                || label.starts_with(&format!("{phrase} "))
-                || label.ends_with(&format!(" {phrase}"))
+        let phrase_tokens = phrase.split_whitespace().collect::<Vec<_>>();
+        let label_tokens = label.split_whitespace().collect::<Vec<_>>();
+        if label_tokens == phrase_tokens {
+            return true;
         }
+        if phrase_tokens == ["total"] {
+            // A bare "Total" is a candidate; descriptive labels are not.
+            return false;
+        }
+        if label_tokens.len() <= phrase_tokens.len() {
+            return false;
+        }
+
+        let prefix_matches = label_tokens.ends_with(&phrase_tokens)
+            && label_tokens[..label_tokens.len() - phrase_tokens.len()]
+                .iter()
+                .all(|token| is_period_qualifier(token));
+        let suffix_matches = label_tokens.starts_with(&phrase_tokens)
+            && label_tokens[phrase_tokens.len()..]
+                .iter()
+                .all(|token| is_currency_qualifier(token));
+        prefix_matches || suffix_matches
     })
 }
 
@@ -1610,6 +1636,8 @@ mod tests {
             "Invoice Total",
             "Q1 Subtotal",
             "FY 2026 Grand Total",
+            "Q1 Subtotal",
+            "Grand Total PKR",
             "Total general",
             "Total de ventas",
             "Total ingresos",
@@ -1643,6 +1671,11 @@ mod tests {
             "Sales Totality",
             "Grand Totalist",
             "Customer Subtotalization",
+            "Grand Total Customers",
+            "Grand Total Products",
+            "Total Salesperson PKR",
+            "Subtotal Forecast",
+            "Grand Totalist PKR",
         ];
         for label in negative {
             assert!(!is_accounting_total_label(label), "unexpected total label: {label}");
