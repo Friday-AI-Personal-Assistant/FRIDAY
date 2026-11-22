@@ -391,7 +391,7 @@ export default function ExcelIntelligence() {
               </button>
             </div>
             {!canCalculate && <p className="excel-table-caption">Confirm each required accounting field above before calculating: {requiredFormulaFields.map(field => field.replace("accounting.", "")).join(", ") || "select a supported formula"}.</p>}
-            <p className="excel-table-caption">The calculation includes every nonblank numeric cell in each confirmed column. Review the selected data range for subtotal or grand-total rows before relying on the result. FRIDAY will reject non-numeric values rather than guess how to interpret them. Currency is supplied explicitly; no conversion occurs.</p>
+            <p className="excel-table-caption">Selected source rows: {accountingStartRow}–{accountingEndRow} (inclusive). FRIDAY rejects a range containing a likely subtotal or grand-total row instead of silently double-counting it. Non-numeric values are rejected; blank cells are skipped with a warning. Currency is supplied explicitly; no conversion occurs.</p>
             {calculationError && <div className="excel-error" role="alert">{calculationError}</div>}
             {calculationResult && (
               <div className="excel-answer-card answered" aria-live="polite">
