@@ -1292,18 +1292,26 @@ mod tests {
     use std::io::Write;
 
     fn test_xlsx(include_macro: bool) -> Vec<u8> {
+        test_xlsx_with_formula_cache(include_macro, true)
+    }
+
+    fn test_xlsx_with_formula_cache(include_macro: bool, include_cached_formula_value: bool) -> Vec<u8> {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
-        let mut entries = vec![
-            ("[Content_Types].xml", r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#),
-            ("_rels/.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#),
-            ("xl/workbook.xml", r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sales" sheetId="1" r:id="rId1"/></sheets></workbook>"#),
-            ("xl/_rels/workbook.xml.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#),
-            ("xl/worksheets/sheet1.xml", r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Product</t></is></c><c r="B1" t="inlineStr"><is><t>Units</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>Book</t></is></c><c r="B2"><f>1+2</f><v>3</v></c></row></sheetData></worksheet>"#),
+        let cached_value = if include_cached_formula_value { "<v>3</v>" } else { "" };
+        let worksheet = format!(
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Product</t></is></c><c r="B1" t="inlineStr"><is><t>Gross Sales</t></is></c><c r="C1" t="inlineStr"><is><t>Discounts</t></is></c><c r="D1" t="inlineStr"><is><t>Sales Returns</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>Book</t></is></c><c r="B2"><f>1+2</f>{cached_value}</c><c r="C2"><v>1</v></c><c r="D2"><v>0</v></c></row></sheetData></worksheet>"#
+        );
+        let mut entries: Vec<(&str, String)> = vec![
+            ("[Content_Types].xml", r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#.into()),
+            ("_rels/.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#.into()),
+            ("xl/workbook.xml", r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sales" sheetId="1" r:id="rId1"/></sheets></workbook>"#.into()),
+            ("xl/_rels/workbook.xml.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#.into()),
+            ("xl/worksheets/sheet1.xml", worksheet),
         ];
         if include_macro {
-            entries.push(("xl/vbaProject.bin", "macro-bytes"));
+            entries.push(("xl/vbaProject.bin", "macro-bytes".into()));
         }
         for (name, body) in entries {
             writer.start_file(name, options).unwrap();
@@ -1642,6 +1650,34 @@ mod tests {
         assert_eq!(analysis.sheets[0].formula_cells, 1);
         assert_eq!(analysis.sheets[0].columns[1].sum, Some(3.0));
         assert!(analysis.notes.iter().any(|note| note.contains("does not execute")));
+    }
+
+    #[test]
+    fn xlsx_accounting_blocks_formula_cells_without_cached_values_and_warns_when_cache_is_used() {
+        let store = WorkbookSessionStore::default();
+        let bytes = test_xlsx_with_formula_cache(false, false);
+        let analysis = analyze_xlsx("missing-cache.xlsx".into(), bytes).unwrap();
+        assert!(analysis.source_sheets[0].formula_cell_positions.contains(&(1, 1)));
+        let id = store.create(&analysis).unwrap();
+        store.confirm_accounting_mapping(&id, "Sales", 2, "accounting.gross_sales").unwrap();
+        store.confirm_accounting_mapping(&id, "Sales", 3, "accounting.discounts").unwrap();
+        store.confirm_accounting_mapping(&id, "Sales", 4, "accounting.sales_returns").unwrap();
+        let preview = store.preview_accounting_range(&id, "Sales", "accounting.net_sales", 2, 2).unwrap();
+        assert_eq!(preview.missing_cached_formula_count, 1);
+        assert!(preview.preview_rows[0].cells.iter().any(|cell| cell.cell == "B2" && cell.missing_cached_value));
+        let error = store.calculate_accounting_formula(&id, "Sales", "accounting.net_sales", "PKR", 2, 2).unwrap_err();
+        assert!(error.contains("has no cached result"));
+
+        let cached_store = WorkbookSessionStore::default();
+        let cached_analysis = analyze_xlsx("cached.xlsx".into(), test_xlsx_with_formula_cache(false, true)).unwrap();
+        let cached_id = cached_store.create(&cached_analysis).unwrap();
+        cached_store.confirm_accounting_mapping(&cached_id, "Sales", 2, "accounting.gross_sales").unwrap();
+        cached_store.confirm_accounting_mapping(&cached_id, "Sales", 3, "accounting.discounts").unwrap();
+        cached_store.confirm_accounting_mapping(&cached_id, "Sales", 4, "accounting.sales_returns").unwrap();
+        let result = cached_store.calculate_accounting_formula(&cached_id, "Sales", "accounting.net_sales", "PKR", 2, 2).unwrap();
+        assert_eq!(result.formula.output_value.as_deref(), Some("2"));
+        assert_eq!(result.cached_formula_cells_used, 1);
+        assert!(result.formula.warnings.iter().any(|warning| warning.contains("may be stale")));
     }
 
     #[test]
