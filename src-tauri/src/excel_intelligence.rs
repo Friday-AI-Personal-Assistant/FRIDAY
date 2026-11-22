@@ -246,6 +246,8 @@ fn normalize_accounting_total_label(value: &str) -> String {
             // matching remains against the explicit phrase allowlist below.
             if matches!(ch, '\u{0640}' | '\u{0670}' | '\u{06D6}'..='\u{06DC}' | '\u{06DF}'..='\u{06E4}' | '\u{06E7}'..='\u{06ED}')
                 || matches!(ch, '\u{064B}'..='\u{065F}')
+                // Bengali virama joins consonants into a single written word.
+                || ch == '\u{09CD}'
             {
                 return None;
             }
@@ -385,7 +387,10 @@ fn is_accounting_total_label(value: &str) -> bool {
     }
 
     TOTAL_LABELS.iter().any(|phrase| {
-        let phrase_tokens = phrase.split_whitespace().collect::<Vec<_>>();
+        // Normalize both sides. Otherwise Arabic alef/yeh/kaf variants in
+        // the allowlist differ from the normalized source label.
+        let normalized_phrase = normalize_accounting_total_label(phrase);
+        let phrase_tokens = normalized_phrase.split_whitespace().collect::<Vec<_>>();
         let label_tokens = label.split_whitespace().collect::<Vec<_>>();
         if label_tokens == phrase_tokens {
             return true;
@@ -1984,6 +1989,7 @@ mod tests {
             "उपयोग",
             "মোট কর্মচারী",
             "সর্বমোট পণ্য",
+            "মোট কর্মচারী",
             "جمع کل مشتریان",
             "کل فروشندگان",
             "Genel Toplam Q1",
