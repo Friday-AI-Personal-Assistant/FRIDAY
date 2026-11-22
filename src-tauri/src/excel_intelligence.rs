@@ -1430,7 +1430,7 @@ mod tests {
     #[test]
     fn accounting_preview_and_calculation_reject_a_session_source_mismatch() {
         let store = WorkbookSessionStore::default();
-        let analysis = analyze_csv("sales.csv".into(), b"Product,Gross Sales,Discounts,Sales Returns\\nTea,100,5,2\\n").unwrap();
+        let analysis = analyze_csv("sales.csv".into(), b"Product,Gross Sales,Discounts,Sales Returns\nTea,100,5,2\n").unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 3, "accounting.discounts").unwrap();
@@ -1448,7 +1448,7 @@ mod tests {
         let store = WorkbookSessionStore::default();
         let analysis = analyze_csv(
             "sales.csv".into(),
-            b"Product,Gross Sales,Discounts,Sales Returns\\nTea,\\"1,000\\",0,0\\n",
+            b"Product,Gross Sales,Discounts,Sales Returns\nTea,\"1,000\",0,0\n",
         ).unwrap();
         let id = store.create(&analysis).unwrap();
         store.confirm_accounting_mapping(&id, "CSV data", 2, "accounting.gross_sales").unwrap();
@@ -1461,9 +1461,9 @@ mod tests {
     #[test]
     fn accounting_calculation_fails_closed_when_source_evidence_limit_is_exceeded() {
         let store = WorkbookSessionStore::default();
-        let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns\\n");
+        let mut csv = String::from("Product,Gross Sales,Discounts,Sales Returns\n");
         for index in 0..6_667 {
-            csv.push_str(&format!("Item {index},1,1,1\\n"));
+            csv.push_str(&format!("Item {index},1,1,1\n"));
         }
         let analysis = analyze_csv("large-sales.csv".into(), csv.as_bytes()).unwrap();
         let id = store.create(&analysis).unwrap();
